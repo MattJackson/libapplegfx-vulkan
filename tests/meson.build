@@ -150,3 +150,19 @@ if fs.is_file(meson.current_source_dir() / 'vulkan-render.c') \
   )
   test('vulkan render', vulkan_render_test)
 endif
+
+# Phase 3.C scaffold: shader catalog lookup smoke. Exercises the
+# static catalog table and SPIR-V-magic asserts on every stock
+# shader's vertex + fragment blob. Darwin-compatible — does not
+# touch Vulkan at runtime (vkCreateShaderModule lands Phase 3.E);
+# the gate is only on the test source existing. Reaches into src/
+# for shaders/catalog.h, so it needs internal_include_dir.
+if fs.is_file(meson.current_source_dir() / 'shader-catalog.c')
+  shader_catalog_test = executable('shader-catalog',
+    'shader-catalog.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('shader catalog', shader_catalog_test)
+endif

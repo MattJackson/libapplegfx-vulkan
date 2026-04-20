@@ -33,3 +33,6 @@ tests/header-syntax-check
 # Python caches (if we script RE)
 __pycache__/
 *.pyc
+
+# clang/ccache caches written under the source tree by some tooling
+.cache/

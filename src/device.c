@@ -16,6 +16,7 @@
 #include "display.h"
 #include "protocol/protocol.h"
 #include "vulkan/instance.h"
+#include "shaders/catalog.h"
 #include "common/log.h"
 
 #include <stdio.h>
@@ -135,6 +136,20 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
         memset(dev, 0, sizeof(*dev));
         free(dev);
         return NULL;
+    }
+
+    /* Phase 3.C scaffold: pre-register the stock shader catalog. This
+     * currently only logs; Phase 3.E promotes it to a real
+     * VkShaderEXT pre-creation pass per
+     * paravirt-re/phase-3-metal-vulkan-plan.md §3.E. A failure here
+     * does NOT unwind the device — the catalog is a scaffold and
+     * downstream consumers fall back cleanly (shader-catalog-plan.md
+     * §7). */
+    lagfx_status_t cat_st = lagfx_device_register_shader_catalog(dev);
+    if (cat_st != LAGFX_OK) {
+        LAGFX_WARN("device_new: shader catalog registration returned %d "
+                   "(non-fatal, continuing)",
+                   (int)cat_st);
     }
 
     LAGFX_LOG("device_new: dev=%p mmio_size=%zu shell_opaque=%p vk=%p",

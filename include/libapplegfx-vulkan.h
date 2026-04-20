@@ -322,6 +322,38 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
                                          size_t *stride_out,
                                          bool *new_frame_out);
 
+/* === Shader catalog (Phase 3.C scaffold) ======================
+ *
+ * Enumerates the stock shaders libapplegfx-vulkan ships pre-built
+ * for the paravirt compositor fast path. Each kind maps to a
+ * vertex + fragment SPIR-V blob embedded in the library at build
+ * time from src/shaders/msl/<name>.metal (Apple-side source of
+ * truth) and src/shaders/glsl/<name>.{vert,frag} (the GLSL twin
+ * compiled to SPIR-V).
+ *
+ * The catalog is keyed on this enum at Phase 3.C scaffold time;
+ * Phase 3.C.2 flips the primary key to SHA-256-truncated-64 of
+ * the raw AIR bytes submitted by the guest (see
+ * paravirt-re/shader-catalog-plan.md §5). The enum then becomes
+ * a secondary/debug index.
+ *
+ * Enum values are 32-bit so they can be exchanged across
+ * in-process boundaries (tests, future FFI). Values are
+ * append-only — never reorder or delete. */
+typedef enum {
+    LAGFX_SHADER_BLIT           = 1,  /* texture-sample blit  */
+    LAGFX_SHADER_CLEAR          = 2,  /* fullscreen colour fill */
+    LAGFX_SHADER_COMPOSITE_OVER = 3,  /* Porter-Duff OVER    */
+    LAGFX_SHADER_CURSOR         = 4,  /* cursor glyph quad   */
+    LAGFX_SHADER_COLOR_FILL     = 5,  /* solid-colour region */
+} lagfx_shader_kind_t;
+
+/* Pre-register the 5-shader catalog into the device's internal
+ * table. Called from lagfx_device_new; exposed for tests that
+ * want to simulate a fresh device without going through the full
+ * lifecycle. */
+lagfx_status_t lagfx_device_register_shader_catalog(lagfx_device_t *device);
+
 /* === Capability / introspection =============================== */
 
 int lagfx_version_major(void);

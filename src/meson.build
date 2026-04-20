@@ -16,3 +16,4 @@ lagfx_sources += files(
 subdir('common')
 subdir('protocol')
 subdir('vulkan')
+subdir('shaders')

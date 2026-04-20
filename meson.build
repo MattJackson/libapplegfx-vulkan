@@ -85,7 +85,8 @@ endif
 # --- Library --------------------------------------------------------------
 libapplegfx_vulkan = library('applegfx-vulkan',
   lagfx_sources,
-  include_directories : [include_dir, internal_include_dir],
+  include_directories : [include_dir, internal_include_dir,
+                         shader_catalog_build_inc],
   dependencies : lagfx_deps,
   version : meson.project_version(),
   soversion : version_major,
