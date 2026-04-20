@@ -40,6 +40,20 @@ if fs.is_file(meson.current_source_dir() / 'memory-task.c') and \
   endif
 endif
 
+# gpu_cores / thread_count env-plumbing test. Verifies that
+# lagfx_device_descriptor_t::thread_count is translated into the
+# LP_NUM_THREADS env var by lagfx_device_new, per the spec at
+# paravirt-re/gpu-cores-implementation-spec.md.
+if fs.is_file(meson.current_source_dir() / 'gpu-cores.c')
+  gpu_cores_test = executable('gpu-cores',
+    'gpu-cores.c',
+    include_directories : include_dir,
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('gpu cores', gpu_cores_test)
+endif
+
 # Protocol dispatch tests (Phase 1.A.2). Reaches into src/ for
 # internal protocol headers, so it needs internal_include_dir too.
 if fs.is_file(meson.current_source_dir() / 'protocol-dispatch.c')

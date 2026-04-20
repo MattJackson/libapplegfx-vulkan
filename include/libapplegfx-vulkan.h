@@ -230,8 +230,25 @@ typedef struct {
      * use only — typical callers pass NULL. */
     void /* VkInstance */ *shell_vulkan_instance;
 
+    /* Requested lavapipe worker-thread count.
+     *   0 = unset; let lavapipe pick its default (host core count).
+     *   N > 0 = apply via setenv("LP_NUM_THREADS", "N", 1) before the
+     *           first Vulkan call. Values above Mesa's internal cap
+     *           (historically LP_MAX_THREADS = 32) are accepted and
+     *           silently clamped by the ICD.
+     *
+     * End-to-end path: QEMU `-device apple-gfx-pci,gpu_cores=N` -> this
+     * field -> LP_NUM_THREADS. Must be consumed BEFORE vkCreateInstance;
+     * lagfx_device_new does this inside the library.
+     *
+     * LP_NUM_THREADS is process-global: if multiple lagfx devices are
+     * created in one process, the first thread_count value wins for
+     * the lavapipe worker pool (env var is read once at ICD init).
+     * See libapplegfx-vulkan/README.md + gpu-cores spec. */
+    uint32_t thread_count;
+
     /* Reserved for future expansion — must be NULL for now. */
-    void *reserved[4];
+    void *reserved[3];
 } lagfx_device_descriptor_t;
 
 /* === Device lifecycle ========================================= */

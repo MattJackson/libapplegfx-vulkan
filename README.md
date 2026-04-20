@@ -91,6 +91,17 @@ tests/         Unit + integration tests
 docs/          Architecture notes, protocol spec, design docs
 ```
 
+## Configuration
+
+**Descriptor fields** (`lagfx_device_descriptor_t` in the public header):
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `shell` | `lagfx_shell_callbacks_t` | — | Host-side callbacks (memory, IRQ) the library invokes. |
+| `mmio_region_size` | `size_t` | `0` | MMIO BAR size hint (`0` = library default, 16 KB). |
+| `shell_vulkan_instance` | `VkInstance *` | `NULL` | Pre-existing Vulkan instance to reuse. |
+| `thread_count` | `uint32_t` | `0` | Lavapipe worker-pool size. `0` = let lavapipe pick (host core count); `N` = `setenv("LP_NUM_THREADS", "N", 1)` before Vulkan init. Plumbed from QEMU's `-device apple-gfx-pci,gpu_cores=N`. Must be set before the first Vulkan call in the process; `lagfx_device_new` applies it. Process-global: if multiple devices are created, the first non-zero value wins. |
+
 ## Building
 
 **Dependencies:**

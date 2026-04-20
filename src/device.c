@@ -17,6 +17,7 @@
 #include "protocol/protocol.h"
 #include "common/log.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -41,12 +42,46 @@ static void set_err(char **errp_out, const char *msg) {
     *errp_out = buf;
 }
 
+/* Apply thread_count via LP_NUM_THREADS env var for Mesa lavapipe.
+ *
+ * Mesa reads LP_NUM_THREADS exactly once, at ICD-init time (triggered by
+ * the first Vulkan call in the process — typically vkCreateInstance).
+ * After that point, changes are invisible to the already-initialized
+ * worker pool. Therefore this MUST be called before the first Vulkan
+ * call in the process.
+ *
+ * In Phase 1.A.1 lagfx_device_new does not yet touch Vulkan, so the
+ * ordering constraint is trivially satisfied; it remains correct when
+ * Phase 1.B wires vkCreateInstance here.
+ *
+ * n == 0 is the "unset" sentinel — we leave LP_NUM_THREADS untouched so
+ * any user/system-provided value (or lavapipe's default of host-core-
+ * count) wins. */
+static void lagfx_apply_thread_count_env(uint32_t n) {
+    if (n == 0) {
+        return;
+    }
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%u", n);
+    /* overwrite=1: descriptor request takes priority over environment. */
+    if (setenv("LP_NUM_THREADS", buf, 1) != 0) {
+        LAGFX_WARN("thread_count: setenv(LP_NUM_THREADS=%s) failed", buf);
+        return;
+    }
+    LAGFX_LOG("thread_count: LP_NUM_THREADS=%s", buf);
+}
+
 lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
                                   char **errp_out) {
     if (!desc) {
         set_err(errp_out, "lagfx_device_new: desc is NULL");
         return NULL;
     }
+
+    /* Apply LP_NUM_THREADS BEFORE any Vulkan call. Must run on every
+     * lagfx_device_new path, including error returns below, so that the
+     * env var is consistent even if the allocation later fails. */
+    lagfx_apply_thread_count_env(desc->thread_count);
 
     lagfx_device_t *dev = (lagfx_device_t *)calloc(1, sizeof(*dev));
     if (!dev) {
