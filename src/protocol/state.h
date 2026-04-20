@@ -44,8 +44,17 @@ typedef struct {
     uint64_t buffer_va;
     uint32_t size;
     bool     live;
+    /* Phase 1.A.2 scaffold marker: set by CmdSynchronizeResources /
+     * other barrier ops to indicate the resource has been quiesced.
+     * Full sync semantics (per-resource barrier tracking) land in
+     * Phase 3. */
+    bool     synced;
 } lagfx_childfifo_entry_t;
 
+/* Per-task resource sync scaffold. Phase 1.A.2 tracks only a monotonically
+ * increasing counter of successful syncs per task (so tests can observe
+ * that CmdSynchronizeResources for a known taskID actually reached the
+ * task). Full per-resource barrier tracking is Phase 3 work. */
 typedef struct {
     uint32_t stamp;
     uint16_t opcode;
@@ -111,5 +120,63 @@ static inline bool lagfx_protocol_is_valid(const lagfx_protocol_t *p) {
  * dylib's handler tails always call the "signal stamp" selector
  * (re-followup-spec-gaps.md §5.1). */
 void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp);
+
+/* === Task / FIFO table helpers =================================
+ *
+ * Tiny linear scans — the tables are small (16 and 8 entries) and
+ * Phase 1.A.2 is single-threaded. All helpers return NULL on miss
+ * or if the protocol handle is invalid. */
+
+static inline lagfx_task_entry_t *
+lagfx_protocol_find_task(lagfx_protocol_t *p, uint32_t task_id) {
+    if (!lagfx_protocol_is_valid(p)) {
+        return NULL;
+    }
+    for (unsigned i = 0; i < LAGFX_MAX_TASKS; ++i) {
+        if (p->tasks[i].live && p->tasks[i].id == task_id) {
+            return &p->tasks[i];
+        }
+    }
+    return NULL;
+}
+
+static inline lagfx_task_entry_t *
+lagfx_protocol_alloc_task_slot(lagfx_protocol_t *p) {
+    if (!lagfx_protocol_is_valid(p)) {
+        return NULL;
+    }
+    for (unsigned i = 0; i < LAGFX_MAX_TASKS; ++i) {
+        if (!p->tasks[i].live) {
+            return &p->tasks[i];
+        }
+    }
+    return NULL;
+}
+
+static inline lagfx_childfifo_entry_t *
+lagfx_protocol_find_fifo(lagfx_protocol_t *p, uint32_t fifo_id) {
+    if (!lagfx_protocol_is_valid(p)) {
+        return NULL;
+    }
+    for (unsigned i = 0; i < LAGFX_MAX_CHILDFIFOS; ++i) {
+        if (p->fifos[i].live && p->fifos[i].id == fifo_id) {
+            return &p->fifos[i];
+        }
+    }
+    return NULL;
+}
+
+static inline lagfx_childfifo_entry_t *
+lagfx_protocol_alloc_fifo_slot(lagfx_protocol_t *p) {
+    if (!lagfx_protocol_is_valid(p)) {
+        return NULL;
+    }
+    for (unsigned i = 0; i < LAGFX_MAX_CHILDFIFOS; ++i) {
+        if (!p->fifos[i].live) {
+            return &p->fifos[i];
+        }
+    }
+    return NULL;
+}
 
 #endif /* LIBAPPLEGFX_PROTOCOL_STATE_H */

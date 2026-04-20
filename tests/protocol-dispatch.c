@@ -462,6 +462,347 @@ static void test_mmio_status_control_arms_ring(void) {
     lagfx_device_free(dev);
 }
 
+/* === P0 handler tests (Phase 1.A.2 — real implementations) ===
+ *
+ * Each builds a command with the exact payload shape from
+ * re-followup-spec-gaps.md + phase-1a2-decoder-plan.md §4.1 and asserts
+ * on state mutation. */
+
+/* LE writers for payload synthesis. */
+static void put_le32(uint8_t *b, uint32_t v) {
+    b[0] = (uint8_t)(v & 0xffu);
+    b[1] = (uint8_t)((v >> 8)  & 0xffu);
+    b[2] = (uint8_t)((v >> 16) & 0xffu);
+    b[3] = (uint8_t)((v >> 24) & 0xffu);
+}
+static void put_le64(uint8_t *b, uint64_t v) {
+    for (int i = 0; i < 8; ++i) {
+        b[i] = (uint8_t)((v >> (i * 8)) & 0xffu);
+    }
+}
+
+static void test_get_device_info_handler(void) {
+    fprintf(stdout, "\n--- test: get_device_info_handler ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Request: {u32 key=1, u32 outOff=0x100, u32 flags=0}. Total len=24. */
+    uint8_t buf[24];
+    build_header(buf, LAGFX_OP_GET_DEVICE_INFO, /*arg_count_8b=*/0,
+                 /*total_length=*/24, /*stamp=*/0x51510001u);
+    put_le32(buf + 12, 0x1u);    /* keyIndex = 1 (maxTasks) */
+    put_le32(buf + 16, 0x100u);  /* outOffset */
+    put_le32(buf + 20, 0x0u);    /* flags */
+
+    int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_OK, "GetDeviceInfo(key=maxTasks) returns OK");
+    CHECK(shell.raise_irq_count == 1, "GetDeviceInfo raised completion IRQ");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x51510001u,
+          "GetDeviceInfo stamp carried to cell");
+
+    /* Too-small payload — dispatcher's min_payload check traps before
+     * the handler runs; expect ERR_SIZE but stamp still signals. */
+    uint8_t short_buf[16];
+    build_header(short_buf, LAGFX_OP_GET_DEVICE_INFO, 0,
+                 /*total_length=*/16, /*stamp=*/0x51510002u);
+    put_le32(short_buf + 12, 0x0u); /* only one u32, not three */
+    rc = lagfx_protocol_dispatch_one(p, short_buf, sizeof(short_buf));
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "GetDeviceInfo rejects 4-byte payload (< 12 min)");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x51510002u,
+          "GetDeviceInfo still signals stamp on size error (fail-open)");
+
+    lagfx_device_free(dev);
+}
+
+static void test_task_lifecycle_handler(void) {
+    fprintf(stdout, "\n--- test: task_lifecycle_handler ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* CmdDefineTask2: taskID=7, rootVA=0xcafe0000, length=0x100000, reserved=0 */
+    uint8_t define_buf[36];
+    build_header(define_buf, LAGFX_OP_DEFINE_TASK2, 0,
+                 /*total_length=*/36, /*stamp=*/0x70000001u);
+    put_le32(define_buf + 12, 7u);           /* taskID */
+    put_le64(define_buf + 16, 0xcafe0000ull); /* rootVA */
+    put_le64(define_buf + 24, 0x100000ull);   /* length */
+    put_le32(define_buf + 32, 0u);           /* reserved */
+
+    int rc = lagfx_protocol_dispatch_one(p, define_buf, sizeof(define_buf));
+    CHECK(rc == LAGFX_HANDLER_OK, "CmdDefineTask2 returns OK");
+    CHECK(shell.create_task_count == 1,
+          "CmdDefineTask2 invoked shell.create_task exactly once");
+
+    /* Confirm the task table has the entry. */
+    lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, 7u);
+    CHECK(entry != NULL, "task table contains taskID=7");
+    CHECK(entry && entry->live, "task entry marked live");
+    CHECK(entry && entry->length == 0x100000ull,
+          "task entry length matches payload");
+    CHECK(entry && entry->base_va == 0xcafe0000ull,
+          "task entry base_va matches rootVA");
+
+    /* CmdDeleteTask with taskID=7 — should call shell.destroy_task and
+     * mark entry !live. */
+    uint8_t del_buf[16];
+    build_header(del_buf, LAGFX_OP_DELETE_TASK, 0,
+                 /*total_length=*/16, /*stamp=*/0x70000002u);
+    put_le32(del_buf + 12, 7u);
+    rc = lagfx_protocol_dispatch_one(p, del_buf, sizeof(del_buf));
+    CHECK(rc == LAGFX_HANDLER_OK, "CmdDeleteTask returns OK");
+    CHECK(shell.destroy_task_count == 1,
+          "CmdDeleteTask invoked shell.destroy_task exactly once");
+    CHECK(lagfx_protocol_find_task(p, 7u) == NULL,
+          "task entry removed after DeleteTask");
+
+    /* Deleting a non-existent task returns ERR_STATE but still
+     * completes the stamp (fail-open). */
+    build_header(del_buf, LAGFX_OP_DELETE_TASK, 0, 16, 0x70000003u);
+    put_le32(del_buf + 12, 99u);
+    rc = lagfx_protocol_dispatch_one(p, del_buf, sizeof(del_buf));
+    CHECK(rc == LAGFX_HANDLER_ERR_STATE,
+          "CmdDeleteTask on missing taskID returns ERR_STATE");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x70000003u,
+          "CmdDeleteTask stamp still signals on miss");
+
+    lagfx_device_free(dev);
+}
+
+static void test_child_fifo_lifecycle_handler(void) {
+    fprintf(stdout, "\n--- test: child_fifo_lifecycle_handler ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Define two child FIFOs with distinct IDs. */
+    uint8_t buf[16];
+    build_header(buf, LAGFX_OP_DEFINE_CHILD_FIFO, 0, 16, 0x80000001u);
+    put_le32(buf + 12, 3u);
+    int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_OK, "DefineChildFIFO(id=3) returns OK");
+
+    build_header(buf, LAGFX_OP_DEFINE_CHILD_FIFO, 0, 16, 0x80000002u);
+    put_le32(buf + 12, 5u);
+    rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_OK, "DefineChildFIFO(id=5) returns OK");
+
+    CHECK(lagfx_protocol_find_fifo(p, 3u) != NULL,
+          "fifo table contains id=3");
+    CHECK(lagfx_protocol_find_fifo(p, 5u) != NULL,
+          "fifo table contains id=5");
+    CHECK(lagfx_protocol_find_fifo(p, 4u) == NULL,
+          "fifo table does NOT contain id=4 (never defined)");
+
+    /* DeleteChildFIFO(id=3). */
+    build_header(buf, LAGFX_OP_DELETE_CHILD_FIFO, 0, 16, 0x80000003u);
+    put_le32(buf + 12, 3u);
+    rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_OK, "DeleteChildFIFO(id=3) returns OK");
+    CHECK(lagfx_protocol_find_fifo(p, 3u) == NULL,
+          "id=3 removed from fifo table");
+    CHECK(lagfx_protocol_find_fifo(p, 5u) != NULL,
+          "id=5 still live");
+
+    /* Delete a non-existent ID — ERR_STATE but stamp still signals. */
+    build_header(buf, LAGFX_OP_DELETE_CHILD_FIFO, 0, 16, 0x80000004u);
+    put_le32(buf + 12, 42u);
+    rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_ERR_STATE,
+          "DeleteChildFIFO(unknown id) returns ERR_STATE");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x80000004u,
+          "DeleteChildFIFO stamp signals on miss");
+
+    lagfx_device_free(dev);
+}
+
+static void test_synchronize_resources_handler(void) {
+    fprintf(stdout, "\n--- test: synchronize_resources_handler ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Empty list — the metal-no-op completion path. payload = 8 bytes
+     * (taskID=0, count=0). Must complete immediately, raise IRQ. */
+    uint8_t empty_buf[20];
+    build_header(empty_buf, LAGFX_OP_SYNCHRONIZE_RESOURCES, 0,
+                 /*total_length=*/20, /*stamp=*/0x90000001u);
+    put_le32(empty_buf + 12, 0u); /* taskID */
+    put_le32(empty_buf + 16, 0u); /* count=0 */
+
+    int rc = lagfx_protocol_dispatch_one(p, empty_buf, sizeof(empty_buf));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "SynchronizeResources(count=0) returns OK immediately");
+    CHECK(shell.raise_irq_count == 1,
+          "SynchronizeResources(count=0) raised IRQ");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x90000001u,
+          "SynchronizeResources(count=0) stamp signalled");
+
+    /* Non-empty list — define two child FIFOs first so the handler can
+     * find them, then issue a sync that names IDs 10 and 20. Only
+     * FIFO with id=10 is registered, so matched=1. */
+    uint8_t def_buf[16];
+    build_header(def_buf, LAGFX_OP_DEFINE_CHILD_FIFO, 0, 16, 0x90000002u);
+    put_le32(def_buf + 12, 10u);
+    lagfx_protocol_dispatch_one(p, def_buf, sizeof(def_buf));
+
+    uint8_t sync_buf[28];
+    build_header(sync_buf, LAGFX_OP_SYNCHRONIZE_RESOURCES, 0,
+                 /*total_length=*/28, /*stamp=*/0x90000003u);
+    put_le32(sync_buf + 12, 0u);  /* taskID (unknown, fail-open) */
+    put_le32(sync_buf + 16, 2u);  /* count=2 */
+    put_le32(sync_buf + 20, 10u); /* id[0]=10 (matches) */
+    put_le32(sync_buf + 24, 20u); /* id[1]=20 (miss) */
+    rc = lagfx_protocol_dispatch_one(p, sync_buf, sizeof(sync_buf));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "SynchronizeResources(count=2) returns OK (fail-open on unknown taskID)");
+
+    lagfx_childfifo_entry_t *f = lagfx_protocol_find_fifo(p, 10u);
+    CHECK(f != NULL && f->synced,
+          "fifo id=10 marked synced by SynchronizeResources");
+
+    /* Malformed: count=5 but payload size only covers 2 u32s — reject. */
+    uint8_t bad_buf[20];
+    build_header(bad_buf, LAGFX_OP_SYNCHRONIZE_RESOURCES, 0,
+                 /*total_length=*/20, /*stamp=*/0x90000004u);
+    put_le32(bad_buf + 12, 0u);
+    put_le32(bad_buf + 16, 5u); /* count=5, but only 8 bytes after */
+    rc = lagfx_protocol_dispatch_one(p, bad_buf, sizeof(bad_buf));
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "SynchronizeResources(count > payload) rejected");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x90000004u,
+          "SynchronizeResources size-mismatch still signals stamp");
+
+    lagfx_device_free(dev);
+}
+
+static void test_metal_no_op_sequence(void) {
+    fprintf(stdout, "\n--- test: metal_no_op_sequence ---\n");
+
+    /* Mini integration: issue the exact opcode sequence that a successful
+     * [cmdbuf commit] on empty cmdbuf is expected to produce per
+     * phase-1a2-decoder-plan.md §1.2:
+     *
+     *   CmdGetDeviceInfo → CmdDefineTask2 → CmdDefineChildFIFO →
+     *   CmdSynchronizeResources(count=0) →
+     *   CmdDeleteChildFIFO → CmdDeleteTask
+     *
+     * Asserts shell callback counts match end-to-end expectations. */
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* 1. CmdGetDeviceInfo(key=0). */
+    uint8_t gdi[24];
+    build_header(gdi, LAGFX_OP_GET_DEVICE_INFO, 0, 24, 0xe2e00001u);
+    put_le32(gdi + 12, 0u);
+    put_le32(gdi + 16, 0u);
+    put_le32(gdi + 20, 0u);
+    lagfx_protocol_dispatch_one(p, gdi, sizeof(gdi));
+
+    /* 2. CmdDefineTask2(taskID=1, length=4KB). */
+    uint8_t dt[36];
+    build_header(dt, LAGFX_OP_DEFINE_TASK2, 0, 36, 0xe2e00002u);
+    put_le32(dt + 12, 1u);
+    put_le64(dt + 16, 0u);
+    put_le64(dt + 24, 0x1000ull);
+    put_le32(dt + 32, 0u);
+    lagfx_protocol_dispatch_one(p, dt, sizeof(dt));
+
+    /* 3. CmdDefineChildFIFO(fifoID=1). */
+    uint8_t dcf[16];
+    build_header(dcf, LAGFX_OP_DEFINE_CHILD_FIFO, 0, 16, 0xe2e00003u);
+    put_le32(dcf + 12, 1u);
+    lagfx_protocol_dispatch_one(p, dcf, sizeof(dcf));
+
+    /* 4. CmdSynchronizeResources(count=0) — the "commit empty cmdbuf"
+     *    completion path. */
+    uint8_t sync[20];
+    build_header(sync, LAGFX_OP_SYNCHRONIZE_RESOURCES, 0, 20, 0xe2e00004u);
+    put_le32(sync + 12, 1u); /* taskID=1 (known) */
+    put_le32(sync + 16, 0u); /* count=0 */
+    lagfx_protocol_dispatch_one(p, sync, sizeof(sync));
+
+    /* 5. CmdDeleteChildFIFO(fifoID=1). */
+    uint8_t ddf[16];
+    build_header(ddf, LAGFX_OP_DELETE_CHILD_FIFO, 0, 16, 0xe2e00005u);
+    put_le32(ddf + 12, 1u);
+    lagfx_protocol_dispatch_one(p, ddf, sizeof(ddf));
+
+    /* 6. CmdDeleteTask(taskID=1). */
+    uint8_t drt[16];
+    build_header(drt, LAGFX_OP_DELETE_TASK, 0, 16, 0xe2e00006u);
+    put_le32(drt + 12, 1u);
+    lagfx_protocol_dispatch_one(p, drt, sizeof(drt));
+
+    /* Shell call tallies. */
+    CHECK(shell.create_task_count == 1,
+          "metal-no-op sequence: exactly one shell.create_task");
+    CHECK(shell.destroy_task_count == 1,
+          "metal-no-op sequence: exactly one shell.destroy_task");
+    CHECK(shell.raise_irq_count == 6,
+          "metal-no-op sequence: one IRQ per command (6)");
+
+    /* Final stamp is DeleteTask's stamp. */
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xe2e00006u,
+          "metal-no-op last stamp matches DeleteTask");
+
+    /* Tables empty again after teardown. */
+    CHECK(lagfx_protocol_find_task(p, 1u) == NULL,
+          "task 1 removed after sequence");
+    CHECK(lagfx_protocol_find_fifo(p, 1u) == NULL,
+          "fifo 1 removed after sequence");
+
+    uint64_t seen, completed, unknown;
+    lagfx_protocol_stats(p, &seen, &completed, &unknown);
+    CHECK(seen == 6, "metal-no-op: 6 commands seen");
+    CHECK(completed == 6, "metal-no-op: 6 commands completed");
+    CHECK(unknown == 0, "metal-no-op: no unknown opcodes");
+
+    lagfx_device_free(dev);
+}
+
+static void test_task_table_full(void) {
+    fprintf(stdout, "\n--- test: task_table_full ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Fill the task table to capacity and then overflow. */
+    uint8_t buf[36];
+    for (unsigned i = 0; i < LAGFX_MAX_TASKS; ++i) {
+        build_header(buf, LAGFX_OP_DEFINE_TASK2, 0, 36,
+                     (uint32_t)(0xa0000000u + i));
+        put_le32(buf + 12, 100u + i);
+        put_le64(buf + 16, 0ull);
+        put_le64(buf + 24, 0x1000ull);
+        put_le32(buf + 32, 0u);
+        int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+        CHECK(rc == LAGFX_HANDLER_OK, "DefineTask2 slot alloc");
+    }
+
+    /* Overflow attempt. */
+    build_header(buf, LAGFX_OP_DEFINE_TASK2, 0, 36, 0xa0000fffu);
+    put_le32(buf + 12, 999u);
+    put_le64(buf + 16, 0ull);
+    put_le64(buf + 24, 0x1000ull);
+    put_le32(buf + 32, 0u);
+    int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_ERR_STATE,
+          "DefineTask2 returns ERR_STATE when table full");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xa0000fffu,
+          "DefineTask2 stamp still signals on overflow");
+
+    lagfx_device_free(dev);
+}
+
 static void test_reset_clears_state(void) {
     fprintf(stdout, "\n--- test: reset_clears_state ---\n");
 
@@ -503,6 +844,12 @@ int main(void) {
     test_dispatch_routes_to_correct_handler();
     test_mmio_setter_candidate_probe();
     test_mmio_status_control_arms_ring();
+    test_get_device_info_handler();
+    test_task_lifecycle_handler();
+    test_child_fifo_lifecycle_handler();
+    test_synchronize_resources_handler();
+    test_metal_no_op_sequence();
+    test_task_table_full();
     test_reset_clears_state();
 
     fprintf(stdout, "\n=== Summary: %d passed, %d failed ===\n",
