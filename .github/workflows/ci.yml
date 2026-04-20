@@ -35,17 +35,119 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             meson ninja-build pkg-config \
-            libvulkan-dev vulkan-headers mesa-vulkan-drivers glslang-tools \
+            libvulkan-dev vulkan-headers mesa-vulkan-drivers \
+            vulkan-tools glslang-tools \
             clang
+
+      - name: Verify Vulkan toolchain
+        # Hard-fail if the apt install above did not yield a usable Vulkan
+        # pkg-config + loadable ICD. Without this the meson setup below
+        # silently falls back to the no-op stub path and every vulkan-*
+        # test SKIPs — which is exactly the M1 validation gap we're here
+        # to close.
+        run: |
+          set -e
+          echo "--- pkg-config vulkan ---"
+          pkg-config --modversion vulkan
+          pkg-config --cflags --libs vulkan
+          echo "--- loadable ICDs ---"
+          ls -1 /usr/share/vulkan/icd.d/ || true
+          echo "--- vulkaninfo --summary ---"
+          vulkaninfo --summary | head -40
 
       - name: Configure
         run: meson setup build
+
+      - name: Assert Vulkan detected by meson
+        # meson.build prints "Vulkan found — building real Vulkan init
+        # path" on success. If we fall through to the warning branch the
+        # vulkan-* tests will SKIP at configure time (they're gated on
+        # vulkan_dep.found()). Grep the meson log and hard-fail if the
+        # real path wasn't taken.
+        run: |
+          set -e
+          if grep -q "Vulkan not found" build/meson-logs/meson-log.txt; then
+            echo "::error::meson did not detect Vulkan — vulkan-* tests will SKIP"
+            grep -E "vulkan|Vulkan" build/meson-logs/meson-log.txt || true
+            exit 1
+          fi
+          grep -q "Vulkan found" build/meson-logs/meson-log.txt
 
       - name: Compile
         run: meson compile -C build
 
       - name: Test
         run: meson test -C build --print-errorlogs
+
+      - name: Assert vulkan-* tests actually ran
+        # meson test registers the vulkan-init / vulkan-command /
+        # vulkan-render / translate-render tests at configure time when
+        # vulkan_dep was present. We additionally require them to have
+        # exit-0 status in the testlog — a SKIP or test-internal bail-out
+        # would mean either the ICD isn't loading or the test self-skipped
+        # on first vkEnum call, both of which are exactly what M1 needed
+        # to catch. meson writes a multi-line block per test:
+        #   test:         libapplegfx-vulkan:<name>
+        #   ...
+        #   result:       exit status 0
+        # so we python-parse that structure rather than trying to awk it.
+        run: |
+          set -e
+          log=build/meson-logs/testlog.txt
+          [ -f "$log" ] || { echo "::error::no testlog"; exit 1; }
+          python3 - "$log" <<'PY'
+          import re, sys
+          log = open(sys.argv[1]).read()
+          required = [
+              "vulkan init",
+              "vulkan command",
+              "vulkan render",
+              "translate render",
+          ]
+          # Split on the "===== N/M =====" separators that meson uses.
+          blocks = re.split(r"={10,}\s+\d+/\d+\s+={10,}", log)
+          # name -> (exit_status_line, body)
+          info = {}
+          for b in blocks:
+              m = re.search(r"test:\s+[^:\s]+:([^\n]+)", b)
+              r = re.search(r"result:\s+([^\n]+)", b)
+              if m and r:
+                  info[m.group(1).strip()] = (r.group(1).strip(), b)
+          problems = []
+          for name in required:
+              entry = info.get(name)
+              if entry is None:
+                  problems.append(f"{name}: NOT REGISTERED — Vulkan dep missing at configure time")
+                  continue
+              status, body = entry
+              if status != "exit status 0":
+                  problems.append(f"{name}: {status}")
+                  continue
+              # Test returned 0 but may have internally self-skipped after
+              # failing to find a loadable ICD. Count SKIP vs PASS lines in
+              # its stdout; if it's pure-SKIP or majority-SKIP we flag it.
+              skip_count = len(re.findall(r"^SKIP:", body, re.M))
+              pass_count = len(re.findall(r"^PASS:", body, re.M))
+              if pass_count == 0 and skip_count > 0:
+                  problems.append(
+                      f"{name}: exit 0 but 0 PASS + {skip_count} SKIP — "
+                      "test self-skipped (likely no loadable ICD at runtime)"
+                  )
+          if problems:
+              print("::error::required vulkan-* tests did not actually execute:")
+              for p in problems:
+                  print(f"  - {p}")
+              print("\nAll registered test results:")
+              for k, (s, _) in info.items():
+                  print(f"  {k}: {s}")
+              sys.exit(1)
+          print("All required vulkan-* tests executed and passed:")
+          for name in required:
+              s, body = info[name]
+              pc = len(re.findall(r"^PASS:", body, re.M))
+              sc = len(re.findall(r"^SKIP:", body, re.M))
+              print(f"  {name}: {s} ({pc} PASS, {sc} SKIP)")
+          PY
 
       - name: Upload testlog on failure
         if: failure()
@@ -77,11 +179,38 @@ jobs:
             apk-alpine321-meson-v1-
 
       - name: Install build deps
+        # vulkan-loader-dev ships /usr/lib/pkgconfig/vulkan.pc (the
+        # piece meson needs to set vulkan_dep.found() = true).
+        # mesa-vulkan-swrast ships the lavapipe ICD JSON at
+        # /usr/share/vulkan/icd.d/lvp_icd.x86_64.json (the piece the
+        # loader needs at runtime to actually hand out a VkInstance).
+        # glslang + glslang-dev give us glslangValidator (used by
+        # air2spirv fixtures and any future shader compile tests).
+        # vulkan-tools provides `vulkaninfo` for the verification step
+        # below — without that we can't cheaply prove the toolchain
+        # actually works before running meson.
         run: |
           apk add --no-cache \
             build-base meson ninja pkgconf \
-            vulkan-loader-dev vulkan-headers mesa-vulkan-swrast glslang \
-            git bash
+            vulkan-loader-dev vulkan-headers vulkan-tools \
+            mesa-vulkan-swrast \
+            glslang glslang-dev \
+            git bash python3
+
+      - name: Verify Vulkan toolchain
+        # Hard-fail if the apk install above did not yield a usable
+        # Vulkan pkg-config + loadable ICD. Mirrors the linux-meson job
+        # so Alpine (production container base) and Ubuntu are held to
+        # the same standard.
+        run: |
+          set -e
+          echo "--- pkg-config vulkan ---"
+          pkg-config --modversion vulkan
+          pkg-config --cflags --libs vulkan
+          echo "--- loadable ICDs ---"
+          ls -1 /usr/share/vulkan/icd.d/
+          echo "--- vulkaninfo --summary ---"
+          vulkaninfo --summary | head -40
 
       - name: Mark workspace as safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -89,11 +218,65 @@ jobs:
       - name: Configure
         run: meson setup build
 
+      - name: Assert Vulkan detected by meson
+        run: |
+          set -e
+          if grep -q "Vulkan not found" build/meson-logs/meson-log.txt; then
+            echo "::error::meson did not detect Vulkan on Alpine — vulkan-* tests will SKIP"
+            grep -E "vulkan|Vulkan" build/meson-logs/meson-log.txt || true
+            exit 1
+          fi
+          grep -q "Vulkan found" build/meson-logs/meson-log.txt
+
       - name: Compile
         run: meson compile -C build
 
       - name: Test
         run: meson test -C build --print-errorlogs
+
+      - name: Assert vulkan-* tests actually ran
+        # Same strict parser as the linux-meson job — requires exit 0 AND
+        # non-zero PASS-line count in each required test's stdout block.
+        run: |
+          set -e
+          log=build/meson-logs/testlog.txt
+          [ -f "$log" ] || { echo "::error::no testlog"; exit 1; }
+          python3 - "$log" <<'PY'
+          import re, sys
+          log = open(sys.argv[1]).read()
+          required = ["vulkan init", "vulkan command", "vulkan render", "translate render"]
+          blocks = re.split(r"={10,}\s+\d+/\d+\s+={10,}", log)
+          info = {}
+          for b in blocks:
+              m = re.search(r"test:\s+[^:\s]+:([^\n]+)", b)
+              r = re.search(r"result:\s+([^\n]+)", b)
+              if m and r:
+                  info[m.group(1).strip()] = (r.group(1).strip(), b)
+          problems = []
+          for name in required:
+              entry = info.get(name)
+              if entry is None:
+                  problems.append(f"{name}: NOT REGISTERED — Vulkan dep missing at configure time")
+                  continue
+              status, body = entry
+              if status != "exit status 0":
+                  problems.append(f"{name}: {status}")
+                  continue
+              pc = len(re.findall(r"^PASS:", body, re.M))
+              sc = len(re.findall(r"^SKIP:", body, re.M))
+              if pc == 0 and sc > 0:
+                  problems.append(f"{name}: exit 0 but 0 PASS + {sc} SKIP — self-skipped (no loadable ICD)")
+          if problems:
+              print("::error::required vulkan-* tests did not actually execute:")
+              for p in problems: print(f"  - {p}")
+              sys.exit(1)
+          print("All required vulkan-* tests executed and passed:")
+          for name in required:
+              s, body = info[name]
+              pc = len(re.findall(r"^PASS:", body, re.M))
+              sc = len(re.findall(r"^SKIP:", body, re.M))
+              print(f"  {name}: {s} ({pc} PASS, {sc} SKIP)")
+          PY
 
       - name: Upload testlog on failure
         if: failure()
@@ -175,7 +358,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             meson ninja-build pkg-config clang \
-            libvulkan-dev vulkan-headers mesa-vulkan-drivers glslang-tools
+            libvulkan-dev vulkan-headers mesa-vulkan-drivers \
+            vulkan-tools glslang-tools
+
+      - name: Verify Vulkan toolchain
+        run: |
+          set -e
+          pkg-config --modversion vulkan
+          ls -1 /usr/share/vulkan/icd.d/ || true
 
       - name: Configure with ASAN+UBSAN
         env:
