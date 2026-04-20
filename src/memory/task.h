@@ -39,11 +39,14 @@
  *
  * Q: How to alias pages QEMU already owns?
  * A: QEMU passes us raw host pointers (via memory_region_get_ram_ptr).
- *    We do NOT mmap() those directly (we don't own them). Instead,
- *    we create memfd mappings that the guest can then address, and
- *    rely on page-table tricks (not implemented yet) or copy-on-write
- *    semantics to keep them in sync. For now: guest DMA ranges
- *    allocate fresh memfd-backed storage, separate from QEMU's RAMBlock.
+ *    We do NOT mmap() those directly (we don't own them). Instead, on
+ *    Linux we use mremap(old_size=0, MREMAP_MAYMOVE|MREMAP_FIXED) to
+ *    create a duplicate mapping of the same underlying pages at our
+ *    task VA. This requires the source VMA to be MAP_SHARED (which
+ *    QEMU's memfd-backed RAMBlock is). On Darwin dev hosts and when
+ *    the source is MAP_PRIVATE, we fall back to copy-on-map with a
+ *    loud warning — coherence is broken in that mode. See
+ *    docs/memory-coherence-audit.md for the full treatment.
  *
  * === Future Enhancements ========================================
  *

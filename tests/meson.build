@@ -40,6 +40,32 @@ if fs.is_file(meson.current_source_dir() / 'memory-task.c') and \
   endif
 endif
 
+# memory-coherence test (Phase 1.C gate for Phase 2 first-pixel).
+# Proves lagfx_task_map_host_memory aliases host_ptr's pages into the
+# task VA rather than copying them. See docs/memory-coherence-audit.md
+# and tests/memory-coherence.c for the full rationale.
+#
+# Linux-only test() registration: the fix uses mremap() which is Linux-
+# specific. On Darwin the library intentionally falls back to copy-on-
+# map (dev path only, per audit §4), and the test would correctly fail
+# there — so we BUILD on Darwin for syntax coverage but only RUN on
+# Linux. The test itself exits 77 (meson SKIP) at runtime if the host
+# kernel lacks memfd_create, keeping CI green on very old Linux.
+if fs.is_file(meson.current_source_dir() / 'memory-coherence.c') and \
+   fs.is_file(meson.project_source_root() / 'src' / 'memory' / 'task.c')
+  memory_coherence_test = executable('memory-coherence',
+    'memory-coherence.c',
+    include_directories : include_dir,
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  if host_machine.system() == 'linux'
+    test('memory coherence', memory_coherence_test)
+  else
+    message('memory-coherence test built but not run (non-Linux host; copy-on-map fallback is expected there).')
+  endif
+endif
+
 # gpu_cores / thread_count env-plumbing test. Verifies that
 # lagfx_device_descriptor_t::thread_count is translated into the
 # LP_NUM_THREADS env var by lagfx_device_new, per the spec at
