@@ -189,15 +189,28 @@ if fs.is_file(meson.current_source_dir() / 'translate-render.c')
 endif
 
 # Phase 3.C.2: air2spirv (metallib extraction + LLVM Bitcode
-# target-triple retarget) smoke. Pure in-process test — synthesises
-# its own MTLB + LLVM Bitcode fixtures so we don't depend on the
-# Phase 0 metallib corpus (which lives in the mos tree, not here).
+# target-triple retarget) smoke. In-process test — exercises the
+# parser against both synthesised MTLB fixtures AND a real-bytes
+# `default.metallib` copy (when fixtures/default.metallib exists at
+# configure time). The real fixture ships at tests/fixtures/ so the
+# Linux + Darwin test runs can validate that our MTLB walker
+# agrees with Apple's actual container layout (u16 tag lengths,
+# entry-size-prefixed records, stage enum 0/1/2 = vertex/fragment/
+# kernel) — the kind of format details a synthesised fixture would
+# never surface.
 # Reaches into src/ for air2spirv/*.h, so it needs internal_include_dir.
 if fs.is_file(meson.current_source_dir() / 'air2spirv.c')
+  air2spirv_args = [
+    '-DLAGFX_TEST_FIXTURE_DIR="' + (meson.current_source_dir() / 'fixtures') + '"',
+  ]
+  if fs.is_file(meson.current_source_dir() / 'fixtures' / 'default.metallib')
+    air2spirv_args += [ '-DLAGFX_HAVE_REAL_METALLIB=1' ]
+  endif
   air2spirv_test = executable('air2spirv',
     'air2spirv.c',
     include_directories : [include_dir, internal_include_dir],
     dependencies : libapplegfx_vulkan_dep,
+    c_args : air2spirv_args,
     build_by_default : true,
   )
   test('air2spirv', air2spirv_test)

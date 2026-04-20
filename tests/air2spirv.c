@@ -5,11 +5,19 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Exercises src/air2spirv/ with synthesised fixtures so we don't
- * depend on the Phase 0 metallib corpus (which lives in the mos
- * tree, not in the library repo). Three cases:
+ * Exercises src/air2spirv/ with BOTH synthesised fixtures and a
+ * real-bytes copy of Apple's `default.metallib` (shipped at
+ * tests/fixtures/default.metallib, sourced from
+ * paravirt-re/metallib/default.metallib). The real-bytes case is the
+ * primary validation gate — a synthesised fixture can accidentally
+ * agree with our parser even when the parser disagrees with Apple's
+ * actual container layout (e.g. u16 vs u32 tag lengths, entry
+ * size-prefix framing, stage enum values). The real-bytes test
+ * catches those cases.
  *
- *   (A) Metallib extractor:
+ * Cases:
+ *
+ *   (A) Metallib extractor, synthesised:
  *       - Synthesise a minimal MTLB header + one function entry
  *         (NAME + TYPE + OFFT + MDSZ + ENDT) + a 16-byte "LLVM
  *         Bitcode" payload (wrapper magic only — not a valid
@@ -23,7 +31,7 @@
  *       - No MTLB magic → ERR_INVALID_ARG.
  *       - FET offset past EOF → ERR_INVALID_ARG.
  *
- *   (C) Bitcode retarget:
+ *   (C) Bitcode retarget, synthesised:
  *       - Synthesise an LLVM Bitcode wrapper header + embedded
  *         `air64-apple-macosx26.3.0` triple.
  *       - Call retarget_to_spirv; assert the output contains
@@ -33,8 +41,28 @@
  *       - No AIR pattern in bitcode → ERR_PROTOCOL.
  *       - Unknown format (no bitcode magic) → ERR_INVALID_ARG.
  *
- * Pure in-process test, no Vulkan, no file IO. Runs on every
- * host.
+ *   (D) Real-bytes metallib extractor + retarget (only when
+ *       LAGFX_HAVE_REAL_METALLIB is defined at compile time, i.e.
+ *       tests/fixtures/default.metallib exists; see
+ *       tests/meson.build):
+ *       - Read tests/fixtures/default.metallib (24,500 bytes,
+ *         MTLB v1.2.9, 5 shaders per paravirt-re/metallib-analysis.md).
+ *       - Assert MTLB magic recognised, function count == 5.
+ *       - Assert the 5 function names match the known set
+ *         (BlitInRGB_2P_XR10_A8, BlitOutRGB_2P_XR10_A8,
+ *         displayPresentVertex, displayPresentFragment,
+ *         displayPresentFragmentWithGammaTableAndColorMatrix).
+ *       - Assert every extracted bitcode payload begins with the
+ *         LLVM Bitcode wrapper magic 0x0B17C0DE (little-endian
+ *         DE C0 17 0B).
+ *       - Assert every extracted function name is ASCII + non-empty.
+ *       - Assert every extracted bitcode contains an `air64*-apple-macosx`
+ *         triple (before retarget).
+ *       - Retarget each bitcode to SPIR-V, assert the output contains
+ *         `spir64-unknown-vulkan1.3`.
+ *
+ * Pure in-process test, no Vulkan. Reads one small fixture from
+ * disk on the real-bytes path. Runs on every host.
  */
 
 #include "libapplegfx-vulkan.h"
@@ -332,6 +360,218 @@ static void test_retarget(void) {
           "NULL out_buf → INVALID_ARG");
 }
 
+/* --- Test (D): real-bytes metallib ---------------------------- */
+
+#ifdef LAGFX_HAVE_REAL_METALLIB
+
+/* Known-good function name set for paravirt-re/metallib/default.metallib
+ * (MTLB v1.2.9, 24,500 bytes). See metallib-analysis.md §"Shader
+ * inventory". */
+static const char *kExpectedRealNames[] = {
+    "BlitInRGB_2P_XR10_A8",
+    "BlitOutRGB_2P_XR10_A8",
+    "displayPresentVertex",
+    "displayPresentFragmentWithGammaTableAndColorMatrix",
+    "displayPresentFragment",
+};
+#define K_EXPECTED_REAL_COUNT \
+    ((size_t)(sizeof(kExpectedRealNames) / sizeof(kExpectedRealNames[0])))
+
+/* Return 1 iff `name` matches one of the expected real names. Order
+ * of the metallib entries is stable (see metallib-analysis.md hex
+ * dump) but we match via set-membership for resilience. */
+static int is_expected_real_name(const char *name) {
+    for (size_t i = 0; i < K_EXPECTED_REAL_COUNT; ++i) {
+        if (strcmp(name, kExpectedRealNames[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Read the entire file at `path` into a malloc'd buffer. Returns
+ * NULL on error; *out_len set to 0 in that case. Caller frees. */
+static uint8_t *slurp_file(const char *path, size_t *out_len) {
+    *out_len = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "slurp_file: cannot open '%s'\n", path);
+        return NULL;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    long sz = ftell(f);
+    if (sz < 0) {
+        fclose(f);
+        return NULL;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    size_t n = fread(buf, 1u, (size_t)sz, f);
+    fclose(f);
+    if (n != (size_t)sz) {
+        free(buf);
+        return NULL;
+    }
+    *out_len = n;
+    return buf;
+}
+
+static void test_real_metallib(void) {
+    const char *dir = LAGFX_TEST_FIXTURE_DIR;
+    char path[1024];
+    int r = snprintf(path, sizeof(path), "%s/default.metallib", dir);
+    CHECK(r > 0 && (size_t)r < sizeof(path),
+          "real-metallib fixture path fits");
+
+    size_t buf_len = 0;
+    uint8_t *buf = slurp_file(path, &buf_len);
+    CHECK(buf != NULL, "real-metallib fixture loads from disk");
+    if (!buf) {
+        return;
+    }
+    fprintf(stdout, "real-metallib: loaded %zu bytes from %s\n",
+            buf_len, path);
+
+    /* The Phase 0 corpus is exactly 24,500 bytes per
+     * metallib-analysis.md. Allow a little wiggle (±256) in case a
+     * future corpus refresh nudges the size but the structural
+     * assertions below still apply. */
+    CHECK(buf_len > 24000u && buf_len < 25000u,
+          "real-metallib size in expected range (~24,500 bytes)");
+
+    CHECK(lagfx_metallib_has_magic(buf, buf_len),
+          "real-metallib recognised via MTLB magic");
+
+    /* Two-pass: first learn the count, then extract all entries. */
+    size_t n = 0;
+    lagfx_status_t st = lagfx_metallib_extract_functions(
+        buf, buf_len, NULL, 0, &n);
+    CHECK(st == LAGFX_OK,
+          "real-metallib probe (capacity=0) returns LAGFX_OK");
+    CHECK(n == K_EXPECTED_REAL_COUNT,
+          "real-metallib function count == 5");
+
+    /* Full extract with capacity matched to what we saw. */
+    lagfx_metallib_function_t fns[16];
+    memset(fns, 0, sizeof(fns));
+    size_t n2 = 0;
+    st = lagfx_metallib_extract_functions(
+        buf, buf_len, fns,
+        sizeof(fns) / sizeof(fns[0]),
+        &n2);
+    CHECK(st == LAGFX_OK,
+          "real-metallib full extract returns LAGFX_OK");
+    CHECK(n2 == K_EXPECTED_REAL_COUNT,
+          "real-metallib full extract count == 5");
+
+    /* Per-entry assertions. */
+    for (size_t i = 0; i < n2 && i < K_EXPECTED_REAL_COUNT; ++i) {
+        char label[192];
+
+        /* Name is non-empty + ASCII. */
+        int nlen = (int)strlen(fns[i].name);
+        snprintf(label, sizeof(label),
+                 "real-metallib fn[%zu] name non-empty", i);
+        CHECK(nlen > 0, label);
+
+        int ascii_ok = 1;
+        for (int k = 0; k < nlen; ++k) {
+            uint8_t c = (uint8_t)fns[i].name[k];
+            if (c < 0x20 || c > 0x7e) { ascii_ok = 0; break; }
+        }
+        snprintf(label, sizeof(label),
+                 "real-metallib fn[%zu] name ASCII (got '%s')",
+                 i, fns[i].name);
+        CHECK(ascii_ok, label);
+
+        /* Name is in the expected set. */
+        snprintf(label, sizeof(label),
+                 "real-metallib fn[%zu] name '%s' in expected set",
+                 i, fns[i].name);
+        CHECK(is_expected_real_name(fns[i].name), label);
+
+        /* Stage is not UNKNOWN — the real corpus has vertex,
+         * fragment, and kernel shaders. A parser that does not
+         * recognise Apple's real stage enum would leave stage as
+         * UNKNOWN, so this is a meaningful assertion. */
+        snprintf(label, sizeof(label),
+                 "real-metallib fn[%zu] stage recognised (raw=%u)",
+                 i, (unsigned)fns[i].stage_raw);
+        CHECK(fns[i].stage != LAGFX_METALLIB_STAGE_UNKNOWN, label);
+
+        /* Bitcode payload resolved. */
+        snprintf(label, sizeof(label),
+                 "real-metallib fn[%zu] bitcode pointer resolved",
+                 i);
+        CHECK(fns[i].bitcode != NULL && fns[i].bitcode_len > 0, label);
+        if (!fns[i].bitcode || fns[i].bitcode_len == 0) {
+            continue;
+        }
+
+        /* Bitcode starts with LLVM Bitcode wrapper magic. */
+        snprintf(label, sizeof(label),
+                 "real-metallib fn[%zu] bitcode has LLVM wrapper magic",
+                 i);
+        CHECK(fns[i].bitcode[0] == 0xDE
+              && fns[i].bitcode[1] == 0xC0
+              && fns[i].bitcode[2] == 0x17
+              && fns[i].bitcode[3] == 0x0B,
+              label);
+
+        /* Bitcode contains an `air64*-apple-macosx` triple. */
+        snprintf(label, sizeof(label),
+                 "real-metallib fn[%zu] bitcode contains AIR triple",
+                 i);
+        CHECK(buf_contains(fns[i].bitcode, fns[i].bitcode_len,
+                           "air64")
+              && buf_contains(fns[i].bitcode, fns[i].bitcode_len,
+                              "apple-macosx"),
+              label);
+
+        /* Retarget to SPIR-V — exercises bitcode_retarget.c
+         * against REAL AIR bitcode bytes. */
+        uint8_t *rt_out = NULL;
+        size_t   rt_len = 0;
+        lagfx_status_t rs = lagfx_bitcode_retarget_to_spirv(
+            fns[i].bitcode, fns[i].bitcode_len, &rt_out, &rt_len);
+        snprintf(label, sizeof(label),
+                 "real-metallib fn[%zu] retarget returns LAGFX_OK",
+                 i);
+        CHECK(rs == LAGFX_OK, label);
+
+        if (rs == LAGFX_OK && rt_out != NULL) {
+            snprintf(label, sizeof(label),
+                     "real-metallib fn[%zu] retarget output "
+                     "contains spir64 triple", i);
+            CHECK(buf_contains(rt_out, rt_len,
+                               "spir64-unknown-vulkan1.3"),
+                  label);
+        }
+        free(rt_out);
+    }
+
+    free(buf);
+}
+
+#else  /* !LAGFX_HAVE_REAL_METALLIB */
+
+static void test_real_metallib(void) {
+    fprintf(stdout, "real-metallib: skipped (fixture not present at "
+                    "configure time)\n");
+}
+
+#endif
+
 int main(void) {
     fprintf(stdout, "=== libapplegfx-vulkan air2spirv smoke ===\n");
     fprintf(stdout, "build: %s\n", lagfx_build_info());
@@ -339,6 +579,7 @@ int main(void) {
     test_extract_happy();
     test_extract_corners();
     test_retarget();
+    test_real_metallib();
 
     fprintf(stdout, "\n=== Summary: %s ===\n",
             g_fail ? "FAILURES" : "ALL GOOD");
