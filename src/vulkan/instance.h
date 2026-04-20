@@ -51,6 +51,13 @@ struct lagfx_vk_state {
     bool have_descriptor_indexing;
     bool have_shader_object;
     bool have_extended_dynamic_state3;
+
+    /* Phase 1.B.2: command pool bound to the graphics queue family.
+     * Created at lagfx_vk_init completion, destroyed in
+     * lagfx_vk_shutdown BEFORE the VkDevice. Owned by src/vulkan/command.c;
+     * this struct just carries the handle so the init/shutdown plumbing
+     * in instance.c can reach it. */
+    VkCommandPool    cmd_pool;
 #else
     /* Pad so sizeof(struct) > 0 on no-vulkan builds. */
     int _placeholder;

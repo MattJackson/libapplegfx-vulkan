@@ -95,3 +95,18 @@ if fs.is_file(meson.current_source_dir() / 'vulkan-init.c') \
   )
   test('vulkan init', vulkan_init_test)
 endif
+
+# Phase 1.B.2: Vulkan command pool + empty submit smoke. Same gating
+# + runtime SKIP policy as the Phase 1.B init test — depends on the
+# vulkan dep at configure time, tolerates the no-loadable-ICD case at
+# runtime by emitting SKIP instead of failing.
+if fs.is_file(meson.current_source_dir() / 'vulkan-command.c') \
+   and vulkan_dep.found()
+  vulkan_command_test = executable('vulkan-command',
+    'vulkan-command.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : [libapplegfx_vulkan_dep, vulkan_dep],
+    build_by_default : true,
+  )
+  test('vulkan command', vulkan_command_test)
+endif

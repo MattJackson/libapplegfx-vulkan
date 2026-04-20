@@ -42,6 +42,7 @@
  */
 
 #include "instance.h"
+#include "command.h"
 #include "common/log.h"
 
 #include <stdio.h>
@@ -391,6 +392,19 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
               (int)s->have_shader_object,
               (int)s->have_extended_dynamic_state3);
 
+    /* Phase 1.B.2: create the command pool AFTER the device + queue are
+     * live. Failure here unwinds the whole Vulkan state — a device
+     * without a command pool can't make progress in Phase 2. */
+    lagfx_status_t cp_st = lagfx_vk_command_pool_create(s);
+    if (cp_st != LAGFX_OK) {
+        LAGFX_ERR("vk_init: lagfx_vk_command_pool_create failed (status=%d)",
+                  (int)cp_st);
+        vkDestroyDevice(s->device, NULL);
+        vkDestroyInstance(s->instance, NULL);
+        free(s);
+        return LAGFX_ERR_VULKAN_INIT;
+    }
+
     *out = s;
     return LAGFX_OK;
 }
@@ -399,6 +413,10 @@ void lagfx_vk_shutdown(struct lagfx_vk_state *state) {
     if (!state) {
         return;
     }
+    /* Phase 1.B.2: tear down the command pool BEFORE the device —
+     * VkCommandPool is a device child object and its lifetime must
+     * end strictly before vkDestroyDevice. */
+    lagfx_vk_command_pool_destroy(state);
     if (state->device != VK_NULL_HANDLE) {
         vkDestroyDevice(state->device, NULL);
     }
