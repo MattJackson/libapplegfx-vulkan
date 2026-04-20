@@ -187,3 +187,18 @@ if fs.is_file(meson.current_source_dir() / 'translate-render.c')
   )
   test('translate render', translate_render_test)
 endif
+
+# Phase 3.C.2: air2spirv (metallib extraction + LLVM Bitcode
+# target-triple retarget) smoke. Pure in-process test — synthesises
+# its own MTLB + LLVM Bitcode fixtures so we don't depend on the
+# Phase 0 metallib corpus (which lives in the mos tree, not here).
+# Reaches into src/ for air2spirv/*.h, so it needs internal_include_dir.
+if fs.is_file(meson.current_source_dir() / 'air2spirv.c')
+  air2spirv_test = executable('air2spirv',
+    'air2spirv.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('air2spirv', air2spirv_test)
+endif
