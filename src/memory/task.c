@@ -171,7 +171,9 @@ static bool task_map_via_copy(lagfx_task_t *task, uint64_t vm_offset,
         }
     }
 
-    void *mapped = mmap(target, (size_t)len, prot,
+    /* Always map R/W for the copy — we're about to memcpy into it.
+     * If the caller asked for read-only, tighten via mprotect after. */
+    void *mapped = mmap(target, (size_t)len, PROT_READ | PROT_WRITE,
                          MAP_FIXED | MAP_SHARED, task->memfd,
                          (off_t)vm_offset);
     if (mapped == MAP_FAILED) {
@@ -182,6 +184,14 @@ static bool task_map_via_copy(lagfx_task_t *task, uint64_t vm_offset,
 
     if (host_addr) {
         memcpy(target, host_addr, (size_t)len);
+    }
+
+    if (prot != (PROT_READ | PROT_WRITE)) {
+        if (mprotect(target, (size_t)len, prot) != 0) {
+            fprintf(stderr, "mprotect to caller prot=0x%x failed: %s\n",
+                    prot, strerror(errno));
+            return false;
+        }
     }
 
     return true;
