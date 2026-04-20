@@ -1,11 +1,34 @@
 # libapplegfx-vulkan
 
-Linux implementation of Apple's `ParavirtualizedGraphics.framework`
-with a Vulkan backend. Enables macOS guest VMs to have
+**Linux clean-room reimplementation of Apple's `ParavirtualizedGraphics`
+framework (the `PGDevice` / `PGShellCallbacks` / `PGDisplay` host API),
+with a Vulkan rendering backend.** Enables macOS guest VMs to get
 hardware-agnostic Metal acceleration on Linux hosts — routes guest
 Metal commands through Vulkan, rendered by Mesa's `lavapipe` on CPU.
 
-**Status:** Phase 0 — protocol reverse-engineering. Not yet functional.
+**Status:** Phase 1 — host-library scaffold and protocol decoder
+landing. Not yet functional end-to-end.
+
+## PG API alignment
+
+Our C API mirrors the shape of Apple's Swift/Obj-C
+`ParavirtualizedGraphics.framework`. Prefix is `lagfx_*` (not `PG*`)
+to make the independent-reimplementation clear and sidestep any
+trademark-adjacent naming concerns. Mapping:
+
+| Apple `ParavirtualizedGraphics` | `libapplegfx-vulkan` |
+|---|---|
+| `PGDevice`                      | `lagfx_device_t` + `lagfx_device_new/free/reset` |
+| `PGDeviceDescriptor`            | `lagfx_device_descriptor_t` |
+| `PGShellCallbacks`              | `lagfx_shell_callbacks_t` |
+| `PGDisplay`                     | `lagfx_display_t` + `lagfx_display_new/free` |
+| `PGDisplayDescriptor`           | `lagfx_display_descriptor_t` |
+| `PGCommandQueue` (implicit)     | handled inside the device + protocol decoder |
+| MMIO in/out (shell provides)    | `lagfx_mmio_read` / `lagfx_mmio_write` |
+| `mach_vm_remap` (Darwin-side)   | `lagfx_task_*` (memfd + `mmap(MAP_FIXED)` on Linux) |
+
+If you came here from Apple's `ParavirtualizedGraphics` docs looking
+for a Linux equivalent: this is it.
 
 ## What this is for
 
@@ -71,14 +94,22 @@ docs/          Architecture notes, protocol spec, design docs
 ## Building
 
 **Dependencies:**
-- Mesa with `lavapipe` enabled (Vulkan CPU driver)
-- Linux kernel 5.4+ (for `memfd_create` + `mmap(MAP_FIXED)`)
-- C11 compiler
+- Mesa with `lavapipe` enabled (Vulkan CPU driver) — optional at
+  build time during scaffold phases, required for actual rendering
+- Linux kernel 5.4+ (for `memfd_create` + `mmap(MAP_FIXED)`);
+  Darwin builds with a `mkstemp` fallback for dev convenience
+- C11 compiler, meson ≥ 1.0, ninja, pkg-config
 
 **Build:**
 ```
-# TBD: will use meson or CMake. Coming in Phase 1.
+meson setup build
+meson compile -C build
+meson test -C build
 ```
+
+Produces a shared library + pkg-config file; QEMU's
+`apple-gfx-pci-linux` device picks it up via
+`dependency('applegfx-vulkan')`.
 
 ## License
 
@@ -104,3 +135,10 @@ Architected as part of the mos project by Matthew Jackson.
 Paravirt GPU QEMU device template follows Phil Dennis-Jordan's
 upstream QEMU work. Naming convention follows QEMU's `apple-gfx-*`
 family.
+
+## Keywords
+
+Apple ParavirtualizedGraphics, PGDevice Linux, PGShellCallbacks,
+macOS Metal on Linux, QEMU apple-gfx-pci, paravirt GPU Linux,
+AppleParavirtGPU kext, PVG Linux implementation, MTLCopyAllDevices
+QEMU, Metal over Vulkan, lavapipe Metal, AIR to SPIR-V.
