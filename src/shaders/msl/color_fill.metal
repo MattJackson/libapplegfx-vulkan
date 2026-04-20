@@ -12,7 +12,10 @@
  * is smaller than the full attachment.
  *
  * Inputs: VB0 is a stream of 2D positions (triangle list) in NDC.
- * Uniform buffer 0 carries the fill RGBA.
+ * Fragment uniform buffer(0) carries the fill RGBA.
+ *
+ * Binding layout (matches the GLSL twin):
+ *   buffer(0) (fragment) ←→ GLSL set=0,binding=0 UBO { vec4 color; }
  */
 
 #include <metal_stdlib>

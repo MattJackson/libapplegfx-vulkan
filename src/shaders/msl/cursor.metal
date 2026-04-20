@@ -11,8 +11,13 @@
  * cursor_glyph shape in libapplegfx-vulkan.h).
  *
  * Vertex stage consumes a 2D quad (4 verts, triangle strip).
- * Position uniform (buffer 0) carries (pos.xy, size.xy) in NDC.
- * Fragment samples + returns with premultiplied-alpha blend.
+ * Uniform buffer(0) carries (pos.xy, size.xy) in NDC.
+ * Fragment samples + discards transparent fragments so the mouse
+ * silhouette is precise.
+ *
+ * Binding layout (matches the GLSL twin):
+ *   buffer(0) (vertex)             ←→ GLSL set=0,binding=0 CursorParams UBO
+ *   texture(0) + sampler(0) (frag) ←→ GLSL set=0,binding=1 sampler2D
  */
 
 #include <metal_stdlib>
@@ -47,5 +52,11 @@ vertex VertexOut cursor_vertex(uint vid [[vertex_id]],
 fragment float4 cursor_fragment(VertexOut in [[stage_in]],
                                 texture2d<float> glyph [[texture(0)]],
                                 sampler samp [[sampler(0)]]) {
-    return glyph.sample(samp, in.uv);
+    float4 t = glyph.sample(samp, in.uv);
+    if (t.a <= 0.0) {
+        /* MSL discards via discard_fragment(); keeps the
+         * behaviour identical to the GLSL twin. */
+        discard_fragment();
+    }
+    return t;
 }

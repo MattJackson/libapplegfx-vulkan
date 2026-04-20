@@ -5,14 +5,16 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Draws a constant colour over the full attachment. Used when a
- * CALayer compositor emits a clear-like fill that the paravirt
- * plumbing does not translate to VkAttachmentLoadOp.CLEAR
- * (fixed-function clear is Phase 2's path — this is the fallback
- * for paths that route the clear through the draw stream).
+ * Fragment-shader clear path. Distinct from VK_ATTACHMENT_LOAD_OP_CLEAR
+ * (which Phase 2.B prefers whenever the guest transaction maps 1:1
+ * to a full-attachment clear) — this is the fallback for partial
+ * clears that the paravirt plumbing cannot rewrite as a load-op.
  *
- * Fragment push-constants / buffer(0) carry the RGBA to emit.
- * Vertex is the same fullscreen-triangle trick as blit.metal.
+ * Vertex stage emits the same fullscreen triangle as blit.metal.
+ * Fragment returns the uniform colour from buffer(0).
+ *
+ * Binding layout (matches the GLSL twin):
+ *   buffer(0) (fragment) ←→ GLSL set=0,binding=0 UBO { vec4 color; }
  */
 
 #include <metal_stdlib>
