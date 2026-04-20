@@ -23,6 +23,7 @@
 #include "device.h"
 #include "display.h"
 #include "vulkan/instance.h"
+#include "vulkan/command.h"
 #include "vulkan/render_target.h"
 #include "common/log.h"
 
