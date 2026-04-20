@@ -88,6 +88,8 @@
 #include "protocol.h"
 #include "state.h"
 #include "../common/log.h"
+#include "../device.h"
+#include "../display.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -365,9 +367,37 @@ lagfx_handler_status_t lagfx_op_display_transaction3(
 
     p->display_transactions_submitted += 1;
 
+    /* Phase 2.B: if the first attachment carries a clear-load, drive it
+     * through to the display's render target + readback path. We look
+     * up the backing lagfx_display_t via the device's display array
+     * (Phase 2 only ever attaches one display; displayID routing grows
+     * when we add multi-display support in Phase 4). Failure here is
+     * non-fatal — the guest still gets its stamp + IRQ through the
+     * normal completion path, the user just sees no pixels. */
+    if (d->last_load_action == 2u && p->dev != NULL) {
+        lagfx_display_t *disp = NULL;
+        for (size_t i = 0; i < LAGFX_MAX_DISPLAYS; ++i) {
+            if (p->dev->displays[i] != NULL) {
+                disp = p->dev->displays[i];
+                break;
+            }
+        }
+        if (disp != NULL) {
+            lagfx_status_t st = lagfx_display_submit_clear_color(
+                disp, d->last_clear_rgba);
+            if (st != LAGFX_OK) {
+                LAGFX_WARN("CmdDisplayTransaction3: submit_clear_color "
+                           "failed (%d) — continuing without frame",
+                           (int)st);
+            }
+        } else {
+            LAGFX_LOG("CmdDisplayTransaction3: no display attached to "
+                      "device — clear trigger skipped");
+        }
+    }
+
     LAGFX_LOG("CmdDisplayTransaction3: displayID=%u transactionID=%u "
-              "attachments=%u parsed=%u stamp=0x%08x "
-              "(Phase 2.A parse-and-log; Phase 2.B will submit VkClear)",
+              "attachments=%u parsed=%u stamp=0x%08x (Phase 2.B)",
               display_id, transaction_id, attach_count, parse_count,
               hdr->stamp);
 

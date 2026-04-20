@@ -33,6 +33,7 @@
 
 #include "libapplegfx-vulkan.h"
 #include "../src/device.h"
+#include "../src/display.h"
 #include "../src/protocol/protocol.h"
 #include "../src/protocol/opcodes.h"
 #include "../src/protocol/fifo.h"
@@ -1366,6 +1367,26 @@ static void test_metal_clear_color_sequence(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
+    /* Phase 2.B: attach a display so lagfx_op_display_transaction3 has
+     * a lagfx_display_t to trigger the clear-colour render + readback
+     * path against. On a non-Vulkan build this short-circuits to
+     * "new_frame_ready=true"; on a Vulkan build it submits a real
+     * VkClear + readback. Either way we assert the flag + read_frame
+     * semantics below. */
+    static const lagfx_display_mode_t modes[] = {
+        { 64u, 64u, 60u },
+    };
+    lagfx_display_descriptor_t disp_desc;
+    memset(&disp_desc, 0, sizeof(disp_desc));
+    disp_desc.name = "test clear display";
+    disp_desc.modes = modes;
+    disp_desc.mode_count = 1u;
+    char *derr = NULL;
+    lagfx_display_t *display =
+        lagfx_display_new(dev, &disp_desc, 1u, 1u, &derr);
+    CHECK(display != NULL, "Phase 2.B: display attached for clear-color test");
+    free(derr);
+
     /* 1. DefineTask2(taskID=5, length=64K) */
     uint8_t dt[36];
     build_header(dt, LAGFX_OP_DEFINE_TASK2, 0, 36, 0xc10c0001u);
@@ -1470,6 +1491,54 @@ static void test_metal_clear_color_sequence(void) {
     CHECK(completed == 6, "clear-color sequence: 6 commands completed");
     CHECK(unknown == 0, "clear-color sequence: no unknown opcodes");
 
+    /* Phase 2.B: DisplayTransaction3 with loadAction=clear must have
+     * flipped the display's new_frame_ready flag. read_frame clears it
+     * on consumption — second call returns NO_FRAME. On a non-Vulkan
+     * build read_frame returns NO_FRAME even on the first call (the
+     * flag gets cleared as part of the no-backend path). */
+    CHECK(display != NULL && display->new_frame_ready,
+          "Phase 2.B: new_frame_ready set after clear transaction");
+
+    size_t stride_out = 0;
+    bool   new_frame  = false;
+    /* 64x64 BGRA8 = 16 KiB. */
+    uint8_t frame_buf[64u * 64u * 4u];
+    lagfx_status_t rf_st = lagfx_display_read_frame(
+        display, frame_buf, sizeof(frame_buf), &stride_out, &new_frame);
+#ifdef LAGFX_HAVE_VULKAN
+    /* With a live Vulkan init the readback should succeed and the
+     * centre pixel should be red in BGRA byte order. */
+    if (dev->vk && dev->vk->initialized) {
+        CHECK(rf_st == LAGFX_OK,
+              "Phase 2.B: read_frame returns LAGFX_OK after clear");
+        CHECK(new_frame == true,
+              "Phase 2.B: new_frame=true on first read after clear");
+        CHECK(stride_out == 64u * 4u,
+              "Phase 2.B: read_frame stride == width*4");
+        size_t off = (size_t)32u * stride_out + (size_t)32u * 4u;
+        CHECK(frame_buf[off + 0] == 0u   &&
+              frame_buf[off + 1] == 0u   &&
+              frame_buf[off + 2] == 255u &&
+              frame_buf[off + 3] == 255u,
+              "Phase 2.B: centre pixel is red BGRA (0,0,255,255)");
+    } else {
+        CHECK(rf_st == LAGFX_ERR_NO_FRAME,
+              "Phase 2.B: read_frame NO_FRAME with uninit Vulkan");
+    }
+#else
+    CHECK(rf_st == LAGFX_ERR_NO_FRAME,
+          "Phase 2.B: read_frame NO_FRAME on no-Vulkan build");
+#endif
+
+    /* Second call always returns NO_FRAME (one-shot latch). */
+    rf_st = lagfx_display_read_frame(display, frame_buf, sizeof(frame_buf),
+                                     &stride_out, &new_frame);
+    CHECK(rf_st == LAGFX_ERR_NO_FRAME,
+          "Phase 2.B: read_frame NO_FRAME on second call (one-shot latch)");
+    CHECK(new_frame == false,
+          "Phase 2.B: new_frame_out=false on second call");
+
+    lagfx_display_free(display);
     lagfx_device_free(dev);
 }
 

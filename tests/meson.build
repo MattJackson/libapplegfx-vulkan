@@ -136,3 +136,17 @@ if fs.is_file(meson.current_source_dir() / 'vulkan-command.c') \
   )
   test('vulkan command', vulkan_command_test)
 endif
+
+# Phase 2.B: Vulkan render target + clear + readback smoke. Same gating
+# + runtime SKIP policy — the test creates a 64x64 BGRA8 render target,
+# clears it to red, reads back, and asserts the centre pixel is red.
+if fs.is_file(meson.current_source_dir() / 'vulkan-render.c') \
+   and vulkan_dep.found()
+  vulkan_render_test = executable('vulkan-render',
+    'vulkan-render.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : [libapplegfx_vulkan_dep, vulkan_dep],
+    build_by_default : true,
+  )
+  test('vulkan render', vulkan_render_test)
+endif

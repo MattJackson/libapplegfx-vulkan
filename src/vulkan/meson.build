@@ -8,4 +8,5 @@
 lagfx_sources += files(
   'instance.c',
   'command.c',
+  'render_target.c',
 )

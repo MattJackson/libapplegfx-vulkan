@@ -11,6 +11,7 @@
 
 #include "libapplegfx-vulkan.h"
 #include "device.h"
+#include "vulkan/render_target.h"
 
 struct lagfx_display {
     uint32_t magic;                     /* LAGFX_DISPLAY_MAGIC */
@@ -23,9 +24,37 @@ struct lagfx_display {
      * for now stays at (0,0). */
     lagfx_coord_t cursor_pos;
 
-    /* Phase 1.A.1 has no renderer. Future: VkImage handles, frame
-     * counter, dirty flag. */
+    /* Phase 2.B render target: a VkImage+view+memory quartet sized
+     * width_px × height_px in BGRA8Unorm. Populated by lagfx_display_new
+     * when Vulkan is initialised; torn down in lagfx_display_free. In
+     * no-vulkan builds rt is a placeholder and rt_ready stays false. */
+    lagfx_vk_render_target_t rt;
+    bool rt_ready;
+    uint32_t rt_width;
+    uint32_t rt_height;
+
+    /* Latched "a new frame has rendered" flag. Set by the protocol
+     * decoder (ops_display.c) when a clear-colour transaction has been
+     * submitted + waited-on. Consumed + cleared by
+     * lagfx_display_read_frame so the shell only calls dpy_gfx_update
+     * once per rendered frame. */
+    bool new_frame_ready;
+
+    /* Phase 1.A.1 legacy: true once a frame has rendered (retained for
+     * observability; superseded by new_frame_ready semantically). */
     int has_frame;
 };
+
+/* Internal accessor: called by ops_display.c when a clear-colour
+ * transaction lands. Renders the clear into the display's render
+ * target, reads the pixels back, and sets new_frame_ready. On
+ * no-vulkan builds this records the clear colour + flips the flag
+ * but does no Vulkan work — read_frame returns NO_FRAME in that
+ * configuration anyway.
+ *
+ * rgba may be NULL in which case a (0,0,0,1) black clear is used;
+ * Phase 2 callers always pass the transaction's last_clear_rgba. */
+lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
+                                                const float rgba[4]);
 
 #endif /* LIBAPPLEGFX_DISPLAY_INTERNAL_H */
