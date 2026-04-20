@@ -70,10 +70,15 @@ endif
 vulkan_dep = dependency('vulkan', required : false)
 if vulkan_dep.found()
   lagfx_deps = [vulkan_dep]
-  message('Vulkan found — will build real renderer in Phase 1.B.')
+  # Flip the compile-time gate consumed by src/vulkan/instance.c so
+  # the real init path (vkCreateInstance, vkCreateDevice, ...) is
+  # selected. Without this symbol the file compiles a tiny no-op
+  # fallback that still satisfies the lifecycle contract.
+  add_project_arguments('-DLAGFX_HAVE_VULKAN=1', language : 'c')
+  message('Vulkan found — building real Vulkan init path (Phase 1.B).')
 else
   # Early Phase 1 can build without vulkan (stubbed rendering).
-  warning('Vulkan not found — building with stub renderer.')
+  warning('Vulkan not found — building with no-op Vulkan init stubs.')
   lagfx_deps = []
 endif
 

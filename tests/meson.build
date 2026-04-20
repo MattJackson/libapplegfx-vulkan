@@ -79,3 +79,19 @@ if fs.is_file(meson.current_source_dir() / 'lavapipe-smoke.c') \
   # the host which CI may or may not provide. Run with:
   #   meson compile -C build lavapipe-smoke && ./build/tests/lavapipe-smoke
 endif
+
+# Phase 1.B: Vulkan init smoke. Only registered when vulkan_dep is
+# present at configure time; the test itself emits SKIP at runtime
+# if the host has no loadable ICD (typical on a Darwin dev box —
+# the library's LAGFX_HAVE_VULKAN path still falls back to the no-op
+# stub init, which the test recognises and skips gracefully).
+if fs.is_file(meson.current_source_dir() / 'vulkan-init.c') \
+   and vulkan_dep.found()
+  vulkan_init_test = executable('vulkan-init',
+    'vulkan-init.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : [libapplegfx_vulkan_dep, vulkan_dep],
+    build_by_default : true,
+  )
+  test('vulkan init', vulkan_init_test)
+endif

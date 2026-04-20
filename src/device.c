@@ -15,6 +15,7 @@
 #include "device.h"
 #include "display.h"
 #include "protocol/protocol.h"
+#include "vulkan/instance.h"
 #include "common/log.h"
 
 #include <stdio.h>
@@ -50,9 +51,9 @@ static void set_err(char **errp_out, const char *msg) {
  * worker pool. Therefore this MUST be called before the first Vulkan
  * call in the process.
  *
- * In Phase 1.A.1 lagfx_device_new does not yet touch Vulkan, so the
- * ordering constraint is trivially satisfied; it remains correct when
- * Phase 1.B wires vkCreateInstance here.
+ * Phase 1.B hooks lagfx_vk_init() (which calls vkCreateInstance) into
+ * lagfx_device_new. The ordering below is load-bearing: this function
+ * MUST run before lagfx_vk_init, not after.
  *
  * n == 0 is the "unset" sentinel — we leave LP_NUM_THREADS untouched so
  * any user/system-provided value (or lavapipe's default of host-core-
@@ -80,7 +81,15 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
 
     /* Apply LP_NUM_THREADS BEFORE any Vulkan call. Must run on every
      * lagfx_device_new path, including error returns below, so that the
-     * env var is consistent even if the allocation later fails. */
+     * env var is consistent even if the allocation later fails.
+     *
+     * Ordering note (Phase 1.B): this setenv MUST precede the
+     * lagfx_vk_init call below. Mesa lavapipe reads LP_NUM_THREADS at
+     * ICD init triggered by the first Vulkan call in the process —
+     * and vkCreateInstance inside lagfx_vk_init is exactly that first
+     * call on a fresh lavapipe worker pool. Inverting the two lines
+     * would silently lose the gpu_cores setting the first time through
+     * and leave later devices stuck on whatever the first one picked. */
     lagfx_apply_thread_count_env(desc->thread_count);
 
     lagfx_device_t *dev = (lagfx_device_t *)calloc(1, sizeof(*dev));
@@ -107,11 +116,30 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
         return NULL;
     }
 
-    /* Phase 1.B+: init Vulkan instance/device here. */
-    dev->vulkan_state = NULL;
+    /* Phase 1.B: Vulkan instance + device + queue. In no-vulkan builds
+     * this is a no-op that still returns LAGFX_OK with a tiny placeholder
+     * state (see src/vulkan/instance.c). We still surface real Vulkan
+     * init failures as LAGFX_ERR_BACKEND so the shell can route them to
+     * a clean error path rather than a cryptic later-stage crash. */
+    lagfx_status_t vk_st = lagfx_vk_init(&dev->vk, desc);
+    if (vk_st != LAGFX_OK) {
+        set_err(errp_out,
+                "lagfx_device_new: Vulkan backend init failed");
+        lagfx_protocol_free((lagfx_protocol_t *)dev->protocol_state);
+        dev->protocol_state = NULL;
+        /* Log the intended error class + underlying status so a
+         * consumer without errp_out can still see why we failed. */
+        LAGFX_ERR("device_new: lagfx_vk_init failed (status=%d) -> "
+                  "LAGFX_ERR_BACKEND (%d)", (int)vk_st,
+                  (int)LAGFX_ERR_BACKEND);
+        memset(dev, 0, sizeof(*dev));
+        free(dev);
+        return NULL;
+    }
 
-    LAGFX_LOG("device_new: dev=%p mmio_size=%zu shell_opaque=%p",
-              (void *)dev, dev->mmio_region_size, dev->desc.shell.opaque);
+    LAGFX_LOG("device_new: dev=%p mmio_size=%zu shell_opaque=%p vk=%p",
+              (void *)dev, dev->mmio_region_size, dev->desc.shell.opaque,
+              (void *)dev->vk);
 
     return dev;
 }
@@ -142,6 +170,13 @@ void lagfx_device_free(lagfx_device_t *device) {
     if (device->protocol_state) {
         lagfx_protocol_free((lagfx_protocol_t *)device->protocol_state);
         device->protocol_state = NULL;
+    }
+
+    /* Tear down Vulkan state (safe on NULL; in no-vulkan builds this
+     * just free()s the placeholder struct). */
+    if (device->vk) {
+        lagfx_vk_shutdown(device->vk);
+        device->vk = NULL;
     }
 
     LAGFX_LOG("device_free: dev=%p", (void *)device);

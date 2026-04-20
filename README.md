@@ -6,8 +6,10 @@ with a Vulkan rendering backend.** Enables macOS guest VMs to get
 hardware-agnostic Metal acceleration on Linux hosts — routes guest
 Metal commands through Vulkan, rendered by Mesa's `lavapipe` on CPU.
 
-**Status:** Phase 1 — host-library scaffold and protocol decoder
-landing. Not yet functional end-to-end.
+**Status:** Phase 1 — host-library scaffold, protocol decoder, and
+minimum-viable Vulkan init (instance + physical-device selection +
+device + queue) landed. Phase 1.B rendering work and Phase 2 Metal
+translation next. Not yet functional end-to-end.
 
 ## PG API alignment
 
@@ -86,6 +88,7 @@ src/           C source
                Darwin mach_vm_remap)
   protocol/    PVG wire protocol decoder
   translate/   Metal commands → Vulkan API translation
+  vulkan/      Vulkan instance + device + queue init (Phase 1.B)
 include/       Public headers (C API consumed by mos-qemu)
 tests/         Unit + integration tests
 docs/          Architecture notes, protocol spec, design docs

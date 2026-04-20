@@ -63,6 +63,7 @@ typedef enum {
     LAGFX_ERR_PROTOCOL      = -4,  /* unknown / malformed paravirt traffic */
     LAGFX_ERR_INTERNAL      = -5,
     LAGFX_ERR_NO_FRAME      = -6,  /* no rendered frame available yet */
+    LAGFX_ERR_BACKEND       = -7,  /* rendering backend (Vulkan) init failed */
 } lagfx_status_t;
 
 /* === Memory model callbacks ===================================

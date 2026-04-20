@@ -18,6 +18,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Forward decl; defined in src/vulkan/instance.h. Kept opaque here so
+ * non-vulkan TUs don't need to pull <vulkan/vulkan.h>. */
+struct lagfx_vk_state;
+
 /* Magic cookie for liveness / sanity checks; ASCII "LAGX". */
 #define LAGFX_DEVICE_MAGIC   0x4C414758u
 #define LAGFX_DISPLAY_MAGIC  0x4C414744u  /* "LAGD" */
@@ -38,9 +42,9 @@ struct lagfx_device {
     lagfx_display_t *displays[LAGFX_MAX_DISPLAYS];
     size_t display_count;
 
-    /* Reserved for Phase 1.A.2+: protocol state, Vulkan handles. */
+    /* Protocol state (Phase 1.A.2) and Vulkan state (Phase 1.B). */
     void *protocol_state;
-    void *vulkan_state;
+    struct lagfx_vk_state *vk;
 };
 
 /* Called by display.c when a display attaches/detaches. Returns 0
