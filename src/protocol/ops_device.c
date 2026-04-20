@@ -263,45 +263,193 @@ lagfx_handler_status_t lagfx_op_delete_task(lagfx_protocol_t *p,
 }
 
 /* ===========================================================================
- * CmdMapMemory2 (0x02) — P1 (deferred to Phase 1.A.3)
+ * CmdMapMemory2 (0x02) — P1 (Phase 1.A.2)
  *
- * Request layout (plan §4.2 + command-buffer-format.md §4): variable
- * length, tentatively:
- *   u32 taskID, u64 vm_offset, u32 read_only, u32 range_count,
- *   lagfx_physical_range_t ranges[range_count]
+ * Request layout (command-buffer-format.md §4 "Variable-Length Arrays",
+ * PARTIAL confidence per re-followup-spec-gaps.md — re-followup did not
+ * decode this opcode, so the shape inherits from the pre-v1.2 spec and
+ * the dylib handler signature implied by the shell.map_memory callback
+ * at libapplegfx-vulkan.h:110):
  *
- * Re-followup-spec-gaps.md does NOT cover this opcode — layout remains
- * MEDIUM confidence. Kext may emit it during child-FIFO ring backing;
- * metal-no-op probably does NOT require it to succeed (empty cmdbuf
- * path short-circuits through CmdSynchronizeResources).
+ *     payload[0..3]   u32 taskID
+ *     payload[4..11]  u64 virtualOffset
+ *     payload[12..15] u32 readOnly  (bool, lsb meaningful)
+ *     payload[16..19] u32 rangeCount
+ *     payload[20..]   struct { u64 gpa; u64 length; } ranges[rangeCount]
  *
- * Leaving this stubbed so the dispatcher still completes the stamp
- * (fail-open) and we observe whether real guest traffic fires it.
+ * Semantics (scaffolded against shell callback):
+ *   - Look up the task entry by taskID (fail-open on miss — log and
+ *     continue with a NULL shell_task; Apple's memory-model.md §2 shows
+ *     the shell callback can reject per-range and we surface that).
+ *   - Invoke shell.map_memory ONCE with the full ranges array — the
+ *     callback's own contract (memory-model.md §2, "Multi-Range Batch
+ *     Mapping") is to loop per-range and advance virtual_offset
+ *     internally. We do NOT advance virtualOffset ourselves per range;
+ *     the host callback owns that advance (see memory-model.md §2
+ *     line "Advance virtual_offset by the range length").
+ *   - Completion: unconditional via the dispatcher. Mid-list failure
+ *     returns LAGFX_HANDLER_ERR_STATE but the stamp still signals.
+ *
+ * NOTE: re-followup-spec-gaps.md does not re-verify the 20-byte prefix;
+ * runtime capture (§2.5) will be needed to confirm field ordering.
+ * Flagged PARTIAL in opcode descriptor comments.
  * =========================================================================== */
 
 lagfx_handler_status_t lagfx_op_map_memory2(lagfx_protocol_t *p,
                                             const lagfx_cmd_header_t *hdr) {
-    (void)p;
-    LAGFX_LOG("CmdMapMemory2: TODO(P1) stamp=0x%08x payload_size=%u — "
-              "layout unconfirmed; see re-followup-spec-gaps.md gap list",
-              hdr ? hdr->stamp : 0u,
-              hdr ? (unsigned)hdr->payload_size : 0u);
-    return LAGFX_HANDLER_OK;
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 20) {
+        LAGFX_WARN("CmdMapMemory2: payload missing or too small "
+                   "(size=%u, need >= 20)", (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint32_t task_id        = lagfx_le32(hdr->payload + 0);
+    uint64_t virtual_offset = lagfx_le64(hdr->payload + 4);
+    uint32_t read_only      = lagfx_le32(hdr->payload + 12);
+    uint32_t range_count    = lagfx_le32(hdr->payload + 16);
+
+    /* Overflow-safe size check: each range is 16 bytes (u64 gpa + u64 len).
+     * Required payload: 20 + 16*range_count. Mirrors dylib-style
+     * multiplicative-overflow guards (cf. CmdSynchronizeResources §4.3). */
+    if (range_count > ((uint32_t)hdr->payload_size - 20u) / 16u) {
+        LAGFX_WARN("CmdMapMemory2: range_count=%u exceeds payload "
+                   "(size=%u, need >= %u)",
+                   range_count, (unsigned)hdr->payload_size,
+                   20u + 16u * range_count);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    /* Look up task. Unknown taskID: log but continue — the map callback
+     * may still accept a NULL task handle (memory-model.md §1 shows
+     * apple_gfx_create_task can return a stub handle in bring-up; the
+     * shell may map against a default/root task). Fail-open. */
+    lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
+    if (!task) {
+        LAGFX_WARN("CmdMapMemory2: taskID=%u not found "
+                   "(continuing fail-open)", task_id);
+    }
+
+    /* Empty ranges: degenerate case — still a valid completion. */
+    if (range_count == 0) {
+        LAGFX_LOG("CmdMapMemory2: taskID=%u vm_off=0x%llx ro=%u "
+                  "range_count=0 (no-op map) stamp=0x%08x",
+                  task_id, (unsigned long long)virtual_offset,
+                  read_only & 1u, hdr->stamp);
+        return LAGFX_HANDLER_OK;
+    }
+
+    /* Stack-assemble the ranges array for the callback. The on-wire
+     * field order is (gpa, length) per 16-byte slot — matches
+     * lagfx_physical_range_t exactly (libapplegfx-vulkan.h:88). */
+    enum { LAGFX_MAP_MAX_RANGES = 64 };
+    if (range_count > LAGFX_MAP_MAX_RANGES) {
+        LAGFX_WARN("CmdMapMemory2: range_count=%u exceeds batch cap %u "
+                   "(truncating would lose mappings — rejecting)",
+                   range_count, LAGFX_MAP_MAX_RANGES);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+    lagfx_physical_range_t ranges[LAGFX_MAP_MAX_RANGES];
+    for (uint32_t i = 0; i < range_count; ++i) {
+        const uint8_t *r = hdr->payload + 20u + 16u * i;
+        ranges[i].guest_physical_address = lagfx_le64(r + 0);
+        ranges[i].length                 = lagfx_le64(r + 8);
+    }
+
+    lagfx_handler_status_t status = LAGFX_HANDLER_OK;
+    if (p->dev && p->dev->desc.shell.map_memory) {
+        lagfx_task_t *shell_task = task ? task->shell_task : NULL;
+        bool ok = p->dev->desc.shell.map_memory(
+            p->dev->desc.shell.opaque,
+            shell_task,
+            virtual_offset,
+            ranges,
+            (size_t)range_count,
+            (read_only & 1u) != 0u);
+        if (!ok) {
+            LAGFX_WARN("CmdMapMemory2: shell.map_memory returned false "
+                       "for taskID=%u vm_off=0x%llx range_count=%u "
+                       "(completing stamp anyway — fail-open)",
+                       task_id, (unsigned long long)virtual_offset,
+                       range_count);
+            status = LAGFX_HANDLER_ERR_STATE;
+        }
+    } else {
+        LAGFX_WARN("CmdMapMemory2: no shell.map_memory callback; "
+                   "taskID=%u treated as success (scaffold)", task_id);
+    }
+
+    LAGFX_LOG("CmdMapMemory2: taskID=%u vm_off=0x%llx ro=%u "
+              "range_count=%u stamp=0x%08x status=%d",
+              task_id, (unsigned long long)virtual_offset,
+              read_only & 1u, range_count, hdr->stamp, (int)status);
+    return status;
 }
 
 /* ===========================================================================
- * CmdUnmapMemory (0x03) — P1 (deferred to Phase 1.A.3)
+ * CmdUnmapMemory (0x03) — P1 (Phase 1.A.2)
  *
- * Request layout per plan §4.2: {u32 taskID, u64 vm_offset, u64 length}
- * (20 bytes). Same confidence caveat as CmdMapMemory2.
+ * Request layout (plan §4.2, PARTIAL confidence — re-followup did not
+ * decode this opcode; shape inherits from pre-v1.2 spec and matches the
+ * shell.unmap_memory signature at libapplegfx-vulkan.h:116):
+ *
+ *     payload[0..3]    u32 taskID
+ *     payload[4..11]   u64 virtualOffset
+ *     payload[12..19]  u64 length
+ *
+ * Total payload: 20 bytes (exact, per opcode descriptor).
+ *
+ * Semantics: look up task, call shell.unmap_memory(task, vm_off, length).
+ * Unknown taskID is fail-open (logged, continues with NULL shell_task).
  * =========================================================================== */
 
 lagfx_handler_status_t lagfx_op_unmap_memory(lagfx_protocol_t *p,
                                              const lagfx_cmd_header_t *hdr) {
-    (void)p;
-    LAGFX_LOG("CmdUnmapMemory: TODO(P1) stamp=0x%08x payload_size=%u — "
-              "layout unconfirmed; see re-followup-spec-gaps.md gap list",
-              hdr ? hdr->stamp : 0u,
-              hdr ? (unsigned)hdr->payload_size : 0u);
-    return LAGFX_HANDLER_OK;
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 20) {
+        LAGFX_WARN("CmdUnmapMemory: payload missing or too small "
+                   "(size=%u, need 20)", (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint32_t task_id        = lagfx_le32(hdr->payload + 0);
+    uint64_t virtual_offset = lagfx_le64(hdr->payload + 4);
+    uint64_t length         = lagfx_le64(hdr->payload + 12);
+
+    lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
+    if (!task) {
+        LAGFX_WARN("CmdUnmapMemory: taskID=%u not found "
+                   "(continuing fail-open)", task_id);
+    }
+
+    lagfx_handler_status_t status = LAGFX_HANDLER_OK;
+    if (p->dev && p->dev->desc.shell.unmap_memory) {
+        lagfx_task_t *shell_task = task ? task->shell_task : NULL;
+        bool ok = p->dev->desc.shell.unmap_memory(
+            p->dev->desc.shell.opaque,
+            shell_task,
+            virtual_offset,
+            length);
+        if (!ok) {
+            LAGFX_WARN("CmdUnmapMemory: shell.unmap_memory returned false "
+                       "for taskID=%u vm_off=0x%llx length=%llu "
+                       "(completing stamp anyway — fail-open)",
+                       task_id, (unsigned long long)virtual_offset,
+                       (unsigned long long)length);
+            status = LAGFX_HANDLER_ERR_STATE;
+        }
+    } else {
+        LAGFX_WARN("CmdUnmapMemory: no shell.unmap_memory callback; "
+                   "taskID=%u treated as success (scaffold)", task_id);
+    }
+
+    LAGFX_LOG("CmdUnmapMemory: taskID=%u vm_off=0x%llx length=%llu "
+              "stamp=0x%08x status=%d",
+              task_id, (unsigned long long)virtual_offset,
+              (unsigned long long)length, hdr->stamp, (int)status);
+    return status;
 }

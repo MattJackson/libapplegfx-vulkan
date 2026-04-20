@@ -13,9 +13,13 @@
  *     bytes. count=0 is the completion path for `[cmdbuf commit]` on
  *     an empty cmdbuf (plan §6.2).
  *
- *   CmdExecIndirect2 (0x20) P1 — stubbed but documents the alternate
- *     empty-cmdbuf completion path (R2). Empty list completes
- *     immediately (fail-open via dispatcher).
+ *   CmdExecIndirect2 (0x20) P1 — scaffolded. Per
+ *     re-followup-spec-gaps.md R2 and phase-1a2-decoder-plan.md §6.2,
+ *     empty-list case (count=0) is the alternate completion path for
+ *     `[cmdbuf commit]` on an empty cmdbuf; count>0 path is scaffolded
+ *     by walking the list and marking implicated child-FIFOs synced
+ *     (mirroring CmdSynchronizeResources count>0 behaviour). Real
+ *     indirect-exec dispatch is Phase 3.
  */
 
 #include "opcodes.h"
@@ -111,29 +115,101 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
 }
 
 /* ===========================================================================
- * CmdExecIndirect2 (0x20) — P1 (deferred)
+ * CmdExecIndirect2 (0x20) — P1 (Phase 1.A.2, scaffolded)
  *
  * Alternate empty-cmdbuf completion path per re-followup-spec-gaps.md
- * R2 (plan §9). Empty-list case should complete immediately, matching
- * the observed pattern for `[cmdbuf commit]` on an empty command
- * buffer. Full render/compute execution is out of 1.A.2 scope (plan §1
- * "Out of scope").
+ * R2 (plan §9, scope-audit-1080p30fps.md §Phase 2.A). The
+ * `[cmdbuf commit]` path for an empty command buffer may land on 0x22
+ * (CmdSynchronizeResources) OR 0x20 (CmdExecIndirect2) with an empty
+ * buffer list. This handler mirrors the CmdSynchronizeResources
+ * count-handling pattern so both paths look identical to the guest.
  *
- * Layout (plan §4.2, MED confidence):
- *   u32 cmdBufCount, CommandBuffer buffers[],
- *   u32 resourceCount, ResourceRef resources[]
+ * Request layout (PARTIAL confidence — re-followup-spec-gaps.md does
+ * NOT decode this opcode). Conservative guess, aligned with
+ * command-buffer-format.md §3 (MED-HIGH):
  *
- * Until the layout is confirmed we treat ANY length as instant
- * success — the dispatcher's completion stamp is sufficient to keep
- * the guest unblocked.
+ *     payload[0..3]             u32 taskID
+ *     payload[4..7]             u32 count            (# of indirect cmd ids)
+ *     payload[8..(8 + 4*count)] u32 indirect_cmd_id[count]
+ *
+ * Minimum payload: 8 bytes (count=0, empty-list completion). Matches
+ * the dispatcher's min_payload=0 gate (we tolerate shorter payloads by
+ * treating them as count=0 — the real dylib handler almost certainly
+ * has its own min check that we don't yet know).
+ *
+ * Semantics:
+ *   - count=0 (or payload < 8 bytes): instant completion — the
+ *     metal-no-op alternate path.
+ *   - count>0: SCAFFOLDED — walk the ID list, mark matching child-FIFO
+ *     entries synced (same pattern as CmdSynchronizeResources). This is
+ *     placeholder behaviour; real indirect-exec dispatch (driving GPU
+ *     work through nested command buffers) is Phase 3.
+ *
+ * Completion is unconditional via the dispatcher.
  * =========================================================================== */
 
 lagfx_handler_status_t lagfx_op_exec_indirect2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    (void)p;
-    LAGFX_LOG("CmdExecIndirect2: TODO(P1) stamp=0x%08x payload_size=%u "
-              "(empty-list completion path — layout unconfirmed)",
-              hdr ? hdr->stamp : 0u,
-              hdr ? (unsigned)hdr->payload_size : 0u);
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+
+    /* No payload or < 8 bytes: treat as empty-list completion (the
+     * fallback metal-no-op path an implementation might choose instead
+     * of CmdSynchronizeResources). Spec descriptor sets min_payload=0,
+     * so this branch is valid. */
+    if (!hdr->payload || hdr->payload_size < 8) {
+        LAGFX_LOG("CmdExecIndirect2: stamp=0x%08x payload_size=%u "
+                  "(empty-list completion — metal-no-op alternate path)",
+                  hdr->stamp, (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_OK;
+    }
+
+    uint32_t task_id = lagfx_le32(hdr->payload + 0);
+    uint32_t count   = lagfx_le32(hdr->payload + 4);
+
+    /* count=0: explicit empty list. Complete cleanly. */
+    if (count == 0) {
+        LAGFX_LOG("CmdExecIndirect2: taskID=%u count=0 "
+                  "(empty-list completion) stamp=0x%08x",
+                  task_id, hdr->stamp);
+        return LAGFX_HANDLER_OK;
+    }
+
+    /* Overflow-safe size check: 8 + 4*count must fit in payload_size.
+     * If the guest supplied a count>0 but the payload is too short,
+     * refuse — but the dispatcher still signals the stamp. */
+    if (count > ((uint32_t)hdr->payload_size - 8u) / 4u) {
+        LAGFX_WARN("CmdExecIndirect2: count=%u exceeds payload "
+                   "(size=%u)", count, (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    /* Non-empty: fail-open on unknown task (layout guess; real RE may
+     * show a different first-field encoding — see re-followup spec gap
+     * flag above). */
+    lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
+    if (!task) {
+        LAGFX_WARN("CmdExecIndirect2: taskID=%u not found "
+                   "(continuing fail-open)", task_id);
+    }
+
+    /* count>0 path is scaffolded; real indirect-exec dispatch is Phase 3.
+     * For now we mirror CmdSynchronizeResources behaviour: walk the ID
+     * list, mark any matching child-FIFO entries synced so tests can
+     * observe that the handler actually reached those IDs. */
+    unsigned matched = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t rid = lagfx_le32(hdr->payload + 8u + 4u * i);
+        lagfx_childfifo_entry_t *fifo = lagfx_protocol_find_fifo(p, rid);
+        if (fifo) {
+            fifo->synced = true;
+            matched++;
+        }
+    }
+
+    LAGFX_LOG("CmdExecIndirect2: taskID=%u count=%u matched=%u "
+              "stamp=0x%08x (scaffolded — real exec dispatch is Phase 3)",
+              task_id, count, matched, hdr->stamp);
     return LAGFX_HANDLER_OK;
 }

@@ -682,6 +682,256 @@ static void test_synchronize_resources_handler(void) {
     lagfx_device_free(dev);
 }
 
+/* === CmdMapMemory2 / CmdUnmapMemory / CmdExecIndirect2 ===
+ *
+ * P1 handlers implemented in Phase 1.A.2 against command-buffer-format.md
+ * §4 and re-followup-spec-gaps.md R2. The map-memory shape is PARTIAL
+ * (re-followup did not decode 0x02/0x03); tests fix the on-wire shape
+ * to what the current handler expects. */
+
+static void test_map_memory2_handler(void) {
+    fprintf(stdout, "\n--- test: map_memory2_handler ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Define a task first so the map has a valid taskID to bind to. */
+    uint8_t dt[36];
+    build_header(dt, LAGFX_OP_DEFINE_TASK2, 0, 36, 0xb0000001u);
+    put_le32(dt + 12, 42u);
+    put_le64(dt + 16, 0ull);
+    put_le64(dt + 24, 0x10000ull);
+    put_le32(dt + 32, 0u);
+    lagfx_protocol_dispatch_one(p, dt, sizeof(dt));
+    CHECK(shell.create_task_count == 1, "task created for map_memory test");
+
+    /* CmdMapMemory2 with one range:
+     *   [0..3]   taskID=42
+     *   [4..11]  virtualOffset=0x2000
+     *   [12..15] readOnly=1
+     *   [16..19] rangeCount=1
+     *   [20..27] ranges[0].gpa=0xcafed000
+     *   [28..35] ranges[0].length=0x1000
+     * payload=36 bytes, header=12, total=48 bytes. */
+    uint8_t buf[48];
+    build_header(buf, LAGFX_OP_MAP_MEMORY2, 0,
+                 /*total_length=*/48, /*stamp=*/0xb0000002u);
+    put_le32(buf + 12, 42u);              /* taskID */
+    put_le64(buf + 16, 0x2000ull);        /* virtualOffset */
+    put_le32(buf + 24, 1u);               /* readOnly */
+    put_le32(buf + 28, 1u);               /* rangeCount */
+    put_le64(buf + 32, 0xcafed000ull);    /* ranges[0].gpa */
+    put_le64(buf + 40, 0x1000ull);        /* ranges[0].length */
+
+    int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_OK, "CmdMapMemory2(1 range) returns OK");
+    CHECK(shell.map_memory_count == 1,
+          "CmdMapMemory2 invoked shell.map_memory exactly once");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xb0000002u,
+          "CmdMapMemory2 stamp propagated to cell");
+
+    /* Empty-ranges case (count=0) — still completes, NO shell call. */
+    uint8_t empty[32];
+    build_header(empty, LAGFX_OP_MAP_MEMORY2, 0,
+                 /*total_length=*/32, /*stamp=*/0xb0000003u);
+    put_le32(empty + 12, 42u);       /* taskID */
+    put_le64(empty + 16, 0x4000ull); /* virtualOffset */
+    put_le32(empty + 24, 0u);        /* readOnly */
+    put_le32(empty + 28, 0u);        /* rangeCount=0 */
+    rc = lagfx_protocol_dispatch_one(p, empty, sizeof(empty));
+    CHECK(rc == LAGFX_HANDLER_OK, "CmdMapMemory2(count=0) returns OK");
+    CHECK(shell.map_memory_count == 1,
+          "CmdMapMemory2(count=0) does not invoke shell.map_memory");
+
+    /* Multi-range: 3 ranges. payload=20 + 3*16 = 68, total=80. */
+    uint8_t multi[80];
+    build_header(multi, LAGFX_OP_MAP_MEMORY2, 0, 80, 0xb0000004u);
+    put_le32(multi + 12, 42u);
+    put_le64(multi + 16, 0x10000ull);
+    put_le32(multi + 24, 0u);
+    put_le32(multi + 28, 3u);
+    for (int i = 0; i < 3; ++i) {
+        put_le64(multi + 32 + i * 16,     0x100000ull + (uint64_t)i * 0x1000ull);
+        put_le64(multi + 32 + i * 16 + 8, 0x1000ull);
+    }
+    rc = lagfx_protocol_dispatch_one(p, multi, sizeof(multi));
+    CHECK(rc == LAGFX_HANDLER_OK, "CmdMapMemory2(3 ranges) returns OK");
+    CHECK(shell.map_memory_count == 2,
+          "CmdMapMemory2(3 ranges) produced one shell.map_memory call "
+          "(batched; callback internally iterates)");
+
+    /* Malformed: rangeCount=5 but payload only holds 1 range — reject. */
+    uint8_t bad[36];
+    build_header(bad, LAGFX_OP_MAP_MEMORY2, 0, 36, 0xb0000005u);
+    put_le32(bad + 12, 42u);
+    put_le64(bad + 16, 0ull);
+    put_le32(bad + 24, 0u);
+    put_le32(bad + 28, 5u);        /* claims 5 ranges */
+    put_le64(bad + 32, 0xdeadull); /* only 8 bytes follow (< 1 range) */
+    /* Actually we have 4 bytes of room past rangeCount; header padding
+     * above only covered the first 4 bytes of a u64 and the overflow
+     * check must reject. Total payload = 36 - 12 = 24 bytes; count=5
+     * demands 20 + 80 = 100. */
+    rc = lagfx_protocol_dispatch_one(p, bad, sizeof(bad));
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "CmdMapMemory2(count > payload capacity) rejected as ERR_SIZE");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xb0000005u,
+          "CmdMapMemory2 size-mismatch still signals stamp (fail-open)");
+
+    lagfx_device_free(dev);
+}
+
+static void test_unmap_memory_handler(void) {
+    fprintf(stdout, "\n--- test: unmap_memory_handler ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Define a task. */
+    uint8_t dt[36];
+    build_header(dt, LAGFX_OP_DEFINE_TASK2, 0, 36, 0xc0000001u);
+    put_le32(dt + 12, 99u);
+    put_le64(dt + 16, 0ull);
+    put_le64(dt + 24, 0x10000ull);
+    put_le32(dt + 32, 0u);
+    lagfx_protocol_dispatch_one(p, dt, sizeof(dt));
+
+    /* CmdUnmapMemory: taskID=99, virtualOffset=0x3000, length=0x2000.
+     * payload=20, total=32. */
+    uint8_t buf[32];
+    build_header(buf, LAGFX_OP_UNMAP_MEMORY, 0, 32, 0xc0000002u);
+    put_le32(buf + 12, 99u);
+    put_le64(buf + 16, 0x3000ull);
+    put_le64(buf + 24, 0x2000ull);
+
+    int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_OK, "CmdUnmapMemory returns OK");
+    CHECK(shell.unmap_memory_count == 1,
+          "CmdUnmapMemory invoked shell.unmap_memory exactly once");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xc0000002u,
+          "CmdUnmapMemory stamp propagated");
+
+    /* Unknown taskID is fail-open: handler still calls shell.unmap_memory
+     * with NULL task handle, stamp signals. */
+    build_header(buf, LAGFX_OP_UNMAP_MEMORY, 0, 32, 0xc0000003u);
+    put_le32(buf + 12, 123u); /* not defined */
+    put_le64(buf + 16, 0x0ull);
+    put_le64(buf + 24, 0x1000ull);
+    rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdUnmapMemory(unknown task) still OK (fail-open)");
+    CHECK(shell.unmap_memory_count == 2,
+          "CmdUnmapMemory(unknown task) still reaches shell");
+
+    /* Truncated payload — reject. */
+    uint8_t short_buf[24];
+    build_header(short_buf, LAGFX_OP_UNMAP_MEMORY, 0, 24, 0xc0000004u);
+    put_le32(short_buf + 12, 99u);
+    /* only 8 bytes remain, not 16 for (u64 vm_off, u64 len). But
+     * dispatcher's min_payload check traps it before the handler — 20
+     * bytes required, we supplied 12. Expect ERR_SIZE. */
+    rc = lagfx_protocol_dispatch_one(p, short_buf, sizeof(short_buf));
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "CmdUnmapMemory short payload rejected");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xc0000004u,
+          "CmdUnmapMemory short payload still signals stamp");
+
+    lagfx_device_free(dev);
+}
+
+static void test_exec_indirect2_empty(void) {
+    fprintf(stdout, "\n--- test: exec_indirect2_empty ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Truly empty (header-only) ExecIndirect2 — descriptor has
+     * min_payload=0, so even a 12-byte command should dispatch
+     * successfully and complete the stamp. This is the fallback that
+     * metal-no-op may use in place of CmdSynchronizeResources. */
+    uint8_t buf[LAGFX_CMD_HEADER_BYTES];
+    build_header(buf, LAGFX_OP_EXEC_INDIRECT2, 0,
+                 /*total_length=*/12, /*stamp=*/0xd0000001u);
+    int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdExecIndirect2(header-only) returns OK");
+    CHECK(shell.raise_irq_count == 1,
+          "CmdExecIndirect2(header-only) raised IRQ");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd0000001u,
+          "CmdExecIndirect2(header-only) stamp signalled");
+
+    /* Explicit count=0 with taskID. payload=8, total=20. */
+    uint8_t zero[20];
+    build_header(zero, LAGFX_OP_EXEC_INDIRECT2, 0, 20, 0xd0000002u);
+    put_le32(zero + 12, 1u);  /* taskID */
+    put_le32(zero + 16, 0u);  /* count=0 */
+    rc = lagfx_protocol_dispatch_one(p, zero, sizeof(zero));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdExecIndirect2(count=0) returns OK");
+    CHECK(shell.raise_irq_count == 2,
+          "CmdExecIndirect2(count=0) raised IRQ");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd0000002u,
+          "CmdExecIndirect2(count=0) stamp signalled");
+
+    lagfx_device_free(dev);
+}
+
+static void test_exec_indirect2_scaffold(void) {
+    fprintf(stdout, "\n--- test: exec_indirect2_scaffold ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Register two child FIFOs. */
+    uint8_t def[16];
+    build_header(def, LAGFX_OP_DEFINE_CHILD_FIFO, 0, 16, 0xd1000001u);
+    put_le32(def + 12, 7u);
+    lagfx_protocol_dispatch_one(p, def, sizeof(def));
+    build_header(def, LAGFX_OP_DEFINE_CHILD_FIFO, 0, 16, 0xd1000002u);
+    put_le32(def + 12, 8u);
+    lagfx_protocol_dispatch_one(p, def, sizeof(def));
+
+    /* Issue ExecIndirect2 with count=2, IDs [7, 8]. Both FIFOs should
+     * be flagged synced as the scaffold side-effect. payload=16, total=28. */
+    uint8_t buf[28];
+    build_header(buf, LAGFX_OP_EXEC_INDIRECT2, 0,
+                 /*total_length=*/28, /*stamp=*/0xd1000003u);
+    put_le32(buf + 12, 0u);  /* taskID (unknown; fail-open) */
+    put_le32(buf + 16, 2u);  /* count=2 */
+    put_le32(buf + 20, 7u);  /* indirect_cmd_id[0] = fifoID 7 */
+    put_le32(buf + 24, 8u);  /* indirect_cmd_id[1] = fifoID 8 */
+
+    int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdExecIndirect2(count=2) returns OK (scaffolded)");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd1000003u,
+          "CmdExecIndirect2(count=2) stamp signalled");
+
+    lagfx_childfifo_entry_t *f7 = lagfx_protocol_find_fifo(p, 7u);
+    lagfx_childfifo_entry_t *f8 = lagfx_protocol_find_fifo(p, 8u);
+    CHECK(f7 != NULL && f7->synced,
+          "CmdExecIndirect2 scaffold marked fifo 7 synced");
+    CHECK(f8 != NULL && f8->synced,
+          "CmdExecIndirect2 scaffold marked fifo 8 synced");
+
+    /* Overflow: count=10 in a payload too small. */
+    uint8_t bad[20];
+    build_header(bad, LAGFX_OP_EXEC_INDIRECT2, 0, 20, 0xd1000004u);
+    put_le32(bad + 12, 0u);
+    put_le32(bad + 16, 10u); /* 10 ids demanded, but only 0 bytes follow */
+    rc = lagfx_protocol_dispatch_one(p, bad, sizeof(bad));
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "CmdExecIndirect2(count > payload) rejected");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd1000004u,
+          "CmdExecIndirect2 size-mismatch still signals stamp");
+
+    lagfx_device_free(dev);
+}
+
 static void test_metal_no_op_sequence(void) {
     fprintf(stdout, "\n--- test: metal_no_op_sequence ---\n");
 
@@ -692,6 +942,9 @@ static void test_metal_no_op_sequence(void) {
      *   CmdGetDeviceInfo → CmdDefineTask2 → CmdDefineChildFIFO →
      *   CmdSynchronizeResources(count=0) →
      *   CmdDeleteChildFIFO → CmdDeleteTask
+     *
+     * Also exercises CmdExecIndirect2(count=0) as the alternate empty
+     * cmdbuf completion path (per re-followup R2 / plan §6.2).
      *
      * Asserts shell callback counts match end-to-end expectations. */
     mock_shell_t shell = {0};
@@ -729,6 +982,16 @@ static void test_metal_no_op_sequence(void) {
     put_le32(sync + 16, 0u); /* count=0 */
     lagfx_protocol_dispatch_one(p, sync, sizeof(sync));
 
+    /* 4b. Alternate empty-cmdbuf completion path: CmdExecIndirect2
+     *     with count=0. Should complete cleanly, symmetric to 0x22.
+     *     (Per re-followup R2 / plan §6.2 this is the documented
+     *     alternate path that metal-no-op may take.) */
+    uint8_t exi[20];
+    build_header(exi, LAGFX_OP_EXEC_INDIRECT2, 0, 20, 0xe2e0004au);
+    put_le32(exi + 12, 1u);
+    put_le32(exi + 16, 0u);
+    lagfx_protocol_dispatch_one(p, exi, sizeof(exi));
+
     /* 5. CmdDeleteChildFIFO(fifoID=1). */
     uint8_t ddf[16];
     build_header(ddf, LAGFX_OP_DELETE_CHILD_FIFO, 0, 16, 0xe2e00005u);
@@ -746,8 +1009,8 @@ static void test_metal_no_op_sequence(void) {
           "metal-no-op sequence: exactly one shell.create_task");
     CHECK(shell.destroy_task_count == 1,
           "metal-no-op sequence: exactly one shell.destroy_task");
-    CHECK(shell.raise_irq_count == 6,
-          "metal-no-op sequence: one IRQ per command (6)");
+    CHECK(shell.raise_irq_count == 7,
+          "metal-no-op sequence: one IRQ per command (7 incl. ExecIndirect2)");
 
     /* Final stamp is DeleteTask's stamp. */
     CHECK(lagfx_protocol_last_completed_stamp(p) == 0xe2e00006u,
@@ -761,8 +1024,8 @@ static void test_metal_no_op_sequence(void) {
 
     uint64_t seen, completed, unknown;
     lagfx_protocol_stats(p, &seen, &completed, &unknown);
-    CHECK(seen == 6, "metal-no-op: 6 commands seen");
-    CHECK(completed == 6, "metal-no-op: 6 commands completed");
+    CHECK(seen == 7, "metal-no-op: 7 commands seen");
+    CHECK(completed == 7, "metal-no-op: 7 commands completed");
     CHECK(unknown == 0, "metal-no-op: no unknown opcodes");
 
     lagfx_device_free(dev);
@@ -848,6 +1111,10 @@ int main(void) {
     test_task_lifecycle_handler();
     test_child_fifo_lifecycle_handler();
     test_synchronize_resources_handler();
+    test_map_memory2_handler();
+    test_unmap_memory_handler();
+    test_exec_indirect2_empty();
+    test_exec_indirect2_scaffold();
     test_metal_no_op_sequence();
     test_task_table_full();
     test_reset_clears_state();
