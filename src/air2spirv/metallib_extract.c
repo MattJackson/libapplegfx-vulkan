@@ -9,23 +9,41 @@
  * metallib_extract.h for the API and paravirt-re/metallib-analysis.md
  * §"Container format" for the spec references. The Phase 0 corpus at
  * paravirt-re/metallib/default.metallib is the known-good test fixture
- * (5 functions, 24,500 bytes, MTLB v1.2.9).
+ * (5 functions, 24,500 bytes, MTLB v1.2.9) — see
+ * tests/fixtures/default.metallib.
  *
- * Format walk (condensed):
+ * Format walk (condensed, as observed in the real 2026-04-20 corpus):
  *
  *   offset 0x00: 'M' 'T' 'L' 'B'                              magic
  *   offset 0x04: u32 version (little-endian mangled 1.2.9 = 0x00028001)
  *   offset 0x18: u64 function-entry-table offset              (FET_OFFSET)
+ *   offset 0x48: u64 bitcode-region base offset               (BC_BASE)
  *   ...
- *   FET_OFFSET: <entry count u32> <entry records>
- *     each entry record is a series of tagged fields:
- *       "NAME" u32 len | <utf-8 bytes>
- *       "TYPE" u32 len | u8 stage_raw
- *       "HASH" u32 len | 32 bytes
- *       "MDSZ" u32 len | u64 bitcode_size
- *       "OFFT" u32 len | u64 bitcode_file_offset
- *       "VERS" u32 len | ...
- *       "ENDT" u32 len | -                                   (end marker)
+ *   FET_OFFSET:
+ *     u32 entry_count
+ *     for each entry:
+ *       u32 entry_size      (INCLUDES the u32 itself, so body spans
+ *                            [entry_off + 4, entry_off + entry_size))
+ *       entry body: a run of tagged fields, terminated by ENDT.
+ *
+ *   entry body tagged fields:
+ *       "NAME" u16 len | <utf-8 bytes, NUL-terminated>
+ *       "TYPE" u16 len | u8 stage_raw
+ *       "HASH" u16 len | 32 bytes
+ *       "MDSZ" u16 len | u64 bitcode_size
+ *       "OFFT" u16 len | 3x u64 (see below)
+ *       "VERS" u16 len | ...
+ *       "RFLT" u16 len | ...
+ *       "ENDT" (no length field — just the 4-byte tag)
+ *
+ *   OFFT payload (24 bytes): three little-endian u64s. The third is
+ *   the bitcode offset relative to BC_BASE (the u64 at header offset
+ *   0x48). The first two are secondary offsets for the function's
+ *   reflection metadata, not used at the Phase 3.C.2 scaffold.
+ *   Absolute file offset of the bitcode payload = BC_BASE + OFFT[2].
+ *
+ *   TYPE payload stage enum (observed in default.metallib):
+ *       0 = vertex, 1 = fragment, 2 = kernel
  *
  * Tolerances:
  *   - Unknown tags: logged, skipped (len-driven advance).
@@ -33,6 +51,11 @@
  *     had; malformed entries don't abort the whole walk.
  *   - bitcode extents that point past buf_len: the function entry is
  *     emitted with bitcode=NULL/len=0 and the walker continues.
+ *   - Older pre-v1.2.9 metallibs have historically been documented
+ *     as using u32 tag-length fields. We still default to u16 (the
+ *     2026-04-20 real-corpus finding) because the worthdoingbadly
+ *     writeup predated our direct bytes inspection and, on the
+ *     only file we have, u16 is definitively correct.
  */
 
 #include "metallib_extract.h"
@@ -42,6 +65,11 @@
 #include <string.h>
 
 /* --- Little-endian load helpers ----------------------------- */
+
+static uint16_t rd_u16_le(const uint8_t *p) {
+    return (uint16_t)((uint16_t)p[0]
+                   | ((uint16_t)p[1] << 8));
+}
 
 static uint32_t rd_u32_le(const uint8_t *p) {
     return  (uint32_t)p[0]
@@ -112,15 +140,40 @@ lagfx_status_t lagfx_metallib_extract_functions(
         return LAGFX_ERR_INVALID_ARG;
     }
 
+    /* Bitcode-region base offset lives at header offset 0x48. Per
+     * function OFFT[2] is a relative offset from this base. We
+     * require the header to extend at least to 0x50 (i.e. to the
+     * byte after the 0x48 u64) to read it. When the header is
+     * shorter we fall back to bc_base=0 and interpret OFFT[2] as
+     * absolute — this keeps the synthesised Phase 3.C.2 fixture
+     * (which writes an absolute bitcode offset with no BC_BASE
+     * field) working. */
+    uint64_t bc_base = 0ull;
+    if (buf_len >= 0x50u) {
+        bc_base = rd_u64_le(buf + 0x48);
+        /* Sanity: base must land inside the buffer. A zero base is
+         * legal for synth fixtures (absolute mode). */
+        if (bc_base != 0ull && bc_base >= buf_len) {
+            LAGFX_WARN("metallib_extract: BC_BASE 0x%llx >= buf_len "
+                       "%zu — falling back to absolute OFFT[2]",
+                       (unsigned long long)bc_base, buf_len);
+            bc_base = 0ull;
+        }
+    }
+
     /* At the FET offset: a u32 entry count. Followed by
-     * <entry_count> entries, each terminated by an ENDT tag. */
+     * <entry_count> entries, each prefixed by a u32 entry_size
+     * (which includes the size field itself) and terminated by an
+     * ENDT tag inside the body. */
     if (fet_off + 4u > buf_len) {
         LAGFX_ERR("metallib_extract: FET header truncated");
         return LAGFX_ERR_INVALID_ARG;
     }
     uint32_t entry_count = rd_u32_le(buf + fet_off);
-    LAGFX_LOG("metallib_extract: FET @ 0x%llx, entry_count=%u",
-              (unsigned long long)fet_off, entry_count);
+    LAGFX_LOG("metallib_extract: FET @ 0x%llx, entry_count=%u, "
+              "BC_BASE=0x%llx",
+              (unsigned long long)fet_off, entry_count,
+              (unsigned long long)bc_base);
 
     /* Sanity-cap the entry count — anything past a few hundred
      * is almost certainly a parse error on a corrupt metallib. */
@@ -134,35 +187,82 @@ lagfx_status_t lagfx_metallib_extract_functions(
     size_t pos = (size_t)fet_off + 4u;
     size_t produced = 0u;
 
-    for (uint32_t e = 0; e < entry_count && pos < buf_len; ++e) {
+    for (uint32_t e = 0; e < entry_count; ++e) {
+        /* Need at least 4 bytes for the entry size prefix, and 4
+         * more for the first tag inside the body. */
+        if (pos + 8u > buf_len) {
+            LAGFX_ERR("metallib_extract: entry %u size-prefix "
+                      "truncated (pos=%zu buf_len=%zu)",
+                      e, pos, buf_len);
+            return LAGFX_ERR_INVALID_ARG;
+        }
+
+        uint32_t entry_size = rd_u32_le(buf + pos);
+        /* entry_size includes the u32 itself, so the smallest
+         * conceivable entry is 4 (size field only — but that's
+         * degenerate; a real entry is at least size(4) + ENDT(4)
+         * = 8). */
+        if (entry_size < 8u || entry_size > buf_len - pos) {
+            LAGFX_ERR("metallib_extract: entry %u size=%u invalid "
+                      "(pos=%zu buf_len=%zu)",
+                      e, entry_size, pos, buf_len);
+            return LAGFX_ERR_INVALID_ARG;
+        }
+
+        size_t body_end = pos + entry_size;
+        size_t bp       = pos + 4u;
+
         lagfx_metallib_function_t rec;
         memset(&rec, 0, sizeof(rec));
         rec.stage = LAGFX_METALLIB_STAGE_UNKNOWN;
 
-        uint64_t bc_offt = 0ull;
-        uint64_t bc_mdsz = 0ull;
+        uint64_t bc_offt_rel = 0ull;
+        uint64_t bc_mdsz     = 0ull;
         bool got_offt = false;
         bool got_mdsz = false;
         bool entry_ended = false;
 
-        while (!entry_ended && pos + 8u <= buf_len) {
-            const uint8_t *tagp = buf + pos;
-            uint32_t flen = rd_u32_le(buf + pos + 4u);
+        while (!entry_ended && bp + 4u <= body_end) {
+            const uint8_t *tagp = buf + bp;
 
-            /* Length sanity: must fit in the remaining buffer. */
-            if (flen > buf_len - (pos + 8u)) {
+            /* ENDT has no length field — just a 4-byte tag. */
+            if (tag_eq(tagp, "ENDT")) {
+                entry_ended = true;
+                bp += 4u;
+                break;
+            }
+
+            /* Every other tag is followed by a u16 length. */
+            if (bp + 6u > body_end) {
                 LAGFX_ERR("metallib_extract: entry %u tag "
-                          "%c%c%c%c len=%u overflows buffer",
+                          "%c%c%c%c length field overruns entry",
+                          e, tagp[0], tagp[1], tagp[2], tagp[3]);
+                return LAGFX_ERR_INVALID_ARG;
+            }
+            uint16_t flen = rd_u16_le(buf + bp + 4u);
+
+            /* Length must fit inside the entry body. */
+            if ((size_t)flen > body_end - (bp + 6u)) {
+                LAGFX_ERR("metallib_extract: entry %u tag "
+                          "%c%c%c%c len=%u overflows entry "
+                          "(body_end=%zu bp=%zu)",
                           e, tagp[0], tagp[1], tagp[2], tagp[3],
-                          flen);
+                          (unsigned)flen, body_end, bp);
                 return LAGFX_ERR_INVALID_ARG;
             }
 
-            const uint8_t *fdata = buf + pos + 8u;
+            const uint8_t *fdata = buf + bp + 6u;
 
             if (tag_eq(tagp, "NAME")) {
-                /* Copy up to name[]-1 bytes, NUL-terminate. */
+                /* Copy up to name[]-1 bytes, NUL-terminate.
+                 * Apple's NAME payloads already include a trailing
+                 * NUL inside the length, so strncpy-style truncate
+                 * is safe either way. */
                 size_t n = flen;
+                if (n > 0u && fdata[n - 1u] == 0u) {
+                    /* Strip the payload's trailing NUL. */
+                    n -= 1u;
+                }
                 if (n >= sizeof(rec.name)) {
                     n = sizeof(rec.name) - 1u;
                 }
@@ -170,24 +270,40 @@ lagfx_status_t lagfx_metallib_extract_functions(
                 rec.name[n] = '\0';
             } else if (tag_eq(tagp, "TYPE") && flen >= 1u) {
                 rec.stage_raw = fdata[0];
+                /* Stage enum as observed in
+                 * tests/fixtures/default.metallib (Apple MTLB v1.2.9):
+                 *   0 = vertex, 1 = fragment, 2 = kernel.
+                 * This differs from the earlier Phase 3.C.2 guess
+                 * (1/2/3) which was never validated against a real
+                 * file. */
                 switch (fdata[0]) {
-                case 1: rec.stage = LAGFX_METALLIB_STAGE_VERTEX;   break;
-                case 2: rec.stage = LAGFX_METALLIB_STAGE_FRAGMENT; break;
-                case 3: rec.stage = LAGFX_METALLIB_STAGE_KERNEL;   break;
+                case 0: rec.stage = LAGFX_METALLIB_STAGE_VERTEX;   break;
+                case 1: rec.stage = LAGFX_METALLIB_STAGE_FRAGMENT; break;
+                case 2: rec.stage = LAGFX_METALLIB_STAGE_KERNEL;   break;
                 default:
                     rec.stage = LAGFX_METALLIB_STAGE_UNKNOWN;
                     LAGFX_WARN("metallib_extract: entry %u stage_raw=%u "
                                "unknown [FIXME(phase-3c2-metallib-stages)]",
                                e, (unsigned)fdata[0]);
                 }
-            } else if (tag_eq(tagp, "OFFT") && flen >= 8u) {
-                bc_offt = rd_u64_le(fdata);
+            } else if (tag_eq(tagp, "OFFT")) {
+                /* Real OFFT payload is 24 bytes (3 u64s). The
+                 * third is the bitcode offset relative to
+                 * BC_BASE (header 0x48). The synth fixture uses an
+                 * 8-byte absolute offset; accept both. */
+                if (flen >= 24u) {
+                    bc_offt_rel = rd_u64_le(fdata + 16u);
+                } else if (flen >= 8u) {
+                    bc_offt_rel = rd_u64_le(fdata);
+                } else {
+                    LAGFX_WARN("metallib_extract: entry %u OFFT "
+                               "len=%u too small", e, (unsigned)flen);
+                    bc_offt_rel = 0ull;
+                }
                 got_offt = true;
             } else if (tag_eq(tagp, "MDSZ") && flen >= 8u) {
                 bc_mdsz = rd_u64_le(fdata);
                 got_mdsz = true;
-            } else if (tag_eq(tagp, "ENDT")) {
-                entry_ended = true;
             } else if (tag_eq(tagp, "HASH")
                     || tag_eq(tagp, "VERS")
                     || tag_eq(tagp, "RFLT")
@@ -201,31 +317,42 @@ lagfx_status_t lagfx_metallib_extract_functions(
                            "%02x%02x%02x%02x len=%u (skipping) "
                            "[FIXME(phase-3c2-unknown-tag)]",
                            e, tagp[0], tagp[1], tagp[2], tagp[3],
-                           flen);
+                           (unsigned)flen);
             }
 
-            pos += 8u + (size_t)flen;
+            bp += 6u + (size_t)flen;
         }
 
         if (!entry_ended) {
             LAGFX_ERR("metallib_extract: entry %u truncated "
-                      "(no ENDT before EOF)", e);
+                      "(no ENDT inside body)", e);
             return LAGFX_ERR_INVALID_ARG;
         }
 
-        /* Resolve the bitcode payload. If either OFFT or MDSZ is
-         * missing / the combined extent exceeds the buffer, emit
-         * the record with bitcode=NULL so diagnostic callers can
-         * still see the function name/stage. */
-        if (got_offt && got_mdsz
-            && bc_offt + bc_mdsz <= (uint64_t)buf_len) {
-            rec.bitcode     = buf + (size_t)bc_offt;
-            rec.bitcode_len = (size_t)bc_mdsz;
+        /* Resolve the bitcode payload. Absolute file offset is
+         * bc_base + bc_offt_rel. If either OFFT or MDSZ is missing
+         * or the combined extent exceeds the buffer, emit the
+         * record with bitcode=NULL so diagnostic callers can still
+         * see the function name/stage. */
+        if (got_offt && got_mdsz) {
+            uint64_t abs_off = bc_base + bc_offt_rel;
+            if (abs_off <= (uint64_t)buf_len
+                && bc_mdsz <= (uint64_t)buf_len - abs_off) {
+                rec.bitcode     = buf + (size_t)abs_off;
+                rec.bitcode_len = (size_t)bc_mdsz;
+            } else {
+                LAGFX_WARN("metallib_extract: entry %u bitcode "
+                           "unresolvable (abs_off=%llu mdsz=%llu "
+                           "buflen=%zu)",
+                           e, (unsigned long long)abs_off,
+                           (unsigned long long)bc_mdsz, buf_len);
+                rec.bitcode     = NULL;
+                rec.bitcode_len = 0u;
+            }
         } else {
-            LAGFX_WARN("metallib_extract: entry %u bitcode "
-                       "unresolvable (offt=%llu mdsz=%llu buflen=%zu)",
-                       e, (unsigned long long)bc_offt,
-                       (unsigned long long)bc_mdsz, buf_len);
+            LAGFX_WARN("metallib_extract: entry %u missing OFFT or "
+                       "MDSZ (got_offt=%d got_mdsz=%d)",
+                       e, (int)got_offt, (int)got_mdsz);
             rec.bitcode     = NULL;
             rec.bitcode_len = 0u;
         }
@@ -234,6 +361,10 @@ lagfx_status_t lagfx_metallib_extract_functions(
             out_funcs[produced] = rec;
         }
         produced++;
+
+        /* Advance to the next entry regardless of where the inner
+         * walker ended up — the entry_size framing is authoritative. */
+        pos = body_end;
     }
 
     *out_count = produced;

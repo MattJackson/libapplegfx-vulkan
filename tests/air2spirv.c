@@ -98,25 +98,39 @@ static void wr_u64_le(uint8_t *p, uint64_t v) {
     wr_u32_le(p + 4, (uint32_t)((v >> 32) & 0xffffffffull));
 }
 
-/* --- Fixture: synth MTLB buffer ------------------------------ */
+/* --- Little-endian write helpers (u16) ------------------------- */
 
-/* Layout (offsets):
+static void wr_u16_le(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v & 0xffu);
+    p[1] = (uint8_t)((v >> 8) & 0xffu);
+}
+
+/* --- Fixture: synth MTLB buffer ------------------------------- */
+
+/* Layout (offsets) — matches the Apple MTLB v1.2.9 format as
+ * observed in tests/fixtures/default.metallib (see
+ * paravirt-re/metallib-analysis.md §"Container format"):
+ *
  *   0x00 'M' 'T' 'L' 'B'
  *   0x04 .. 0x17  padding / version (ignored at parse time)
  *   0x18 u64 FET_OFFSET
- *   0x20 bitcode payload (16 bytes: wrapper magic + 12 zeros)
- *   0x30 FET: u32 entry_count (=1)
- *   0x34 entry record:
- *         NAME len=5 "blit\0"
- *         TYPE len=1 1 (VERTEX)
- *         OFFT len=8 0x20
- *         MDSZ len=8 0x10
- *         ENDT len=0 -
- *   end.
+ *   0x20 .. 0x47  padding (other header u64s)
+ *   0x48 u64 BC_BASE (absolute file offset of bitcode region)
+ *   0x50 bitcode payload (BC_BASE = 0x50; 16 bytes: wrapper magic
+ *        + 12 zeros)
+ *   0x60 FET:
+ *        u32 entry_count (=1)
+ *        for each entry:
+ *          u32 entry_size (includes the size field itself)
+ *          NAME u16 len | bytes (NUL-terminated)
+ *          TYPE u16 len=1 | u8 stage
+ *          OFFT u16 len=24 | 3x u64 (last is bitcode offset rel. BC_BASE)
+ *          MDSZ u16 len=8 | u64 bitcode_size
+ *          ENDT (no length field)
  *
- * All tag lengths are VBR-style u32 length fields (as documented).
- */
-#define MTLB_BUF_LEN 128u
+ * Stage enum values: 0=vertex, 1=fragment, 2=kernel (per the real
+ * corpus). */
+#define MTLB_BUF_LEN 256u
 
 static size_t make_synth_mtlb(uint8_t *buf, size_t cap,
                               const char *name,
@@ -126,15 +140,17 @@ static size_t make_synth_mtlb(uint8_t *buf, size_t cap,
     memset(buf, 0, cap);
     buf[0] = 'M'; buf[1] = 'T'; buf[2] = 'L'; buf[3] = 'B';
 
-    const uint64_t fet_offset = 0x30ull;
-    const uint64_t bc_offset  = 0x20ull;
-    const uint64_t bc_len     = 0x10ull;
+    const uint64_t fet_offset    = 0x60ull;
+    const uint64_t bc_base       = 0x50ull;
+    const uint64_t bc_offset_rel = 0x00ull;
+    const uint64_t bc_len        = 0x10ull;
 
     wr_u64_le(buf + 0x18, fet_offset);
+    wr_u64_le(buf + 0x48, bc_base);
 
     /* Bitcode payload: LLVM wrapper magic + pad. */
     static const uint8_t bc_magic[4] = { 0xDE, 0xC0, 0x17, 0x0B };
-    memcpy(buf + bc_offset, bc_magic, 4u);
+    memcpy(buf + (size_t)bc_base + (size_t)bc_offset_rel, bc_magic, 4u);
     /* Rest stays zero — we only test extraction, not bitcode
      * parsing. */
 
@@ -143,37 +159,48 @@ static size_t make_synth_mtlb(uint8_t *buf, size_t cap,
     wr_u32_le(buf + p, 1u);
     p += 4u;
 
-    /* Entry record: NAME tag. */
-    const size_t name_len = strlen(name) + 1u;  /* include NUL */
+    /* Remember where the entry begins — we patch its size at the
+     * end once we know how many bytes the body consumed. */
+    size_t entry_start = p;
+    wr_u32_le(buf + p, 0u);  /* placeholder, fixed up below */
+    p += 4u;
+
+    /* NAME tag. Apple includes a trailing NUL inside the length. */
+    const size_t name_len = strlen(name) + 1u;
     memcpy(buf + p, "NAME", 4u);
-    wr_u32_le(buf + p + 4u, (uint32_t)name_len);
-    memcpy(buf + p + 8u, name, name_len);
-    p += 8u + name_len;
+    wr_u16_le(buf + p + 4u, (uint16_t)name_len);
+    memcpy(buf + p + 6u, name, name_len);
+    p += 6u + name_len;
 
-    /* TYPE. */
+    /* TYPE — 1-byte stage. */
     memcpy(buf + p, "TYPE", 4u);
-    wr_u32_le(buf + p + 4u, 1u);
-    buf[p + 8u] = stage;
-    p += 9u;
+    wr_u16_le(buf + p + 4u, 1u);
+    buf[p + 6u] = stage;
+    p += 7u;
 
-    /* OFFT. */
+    /* OFFT — 24 bytes (3 u64s). The third is the bitcode offset
+     * relative to BC_BASE. The first two we leave zero. */
     memcpy(buf + p, "OFFT", 4u);
-    wr_u32_le(buf + p + 4u, 8u);
-    wr_u64_le(buf + p + 8u, bc_offset);
-    p += 16u;
+    wr_u16_le(buf + p + 4u, 24u);
+    wr_u64_le(buf + p +  6u, 0ull);
+    wr_u64_le(buf + p + 14u, 0ull);
+    wr_u64_le(buf + p + 22u, bc_offset_rel);
+    p += 6u + 24u;
 
-    /* MDSZ. */
+    /* MDSZ — 8 bytes (u64 size). */
     memcpy(buf + p, "MDSZ", 4u);
-    wr_u32_le(buf + p + 4u, 8u);
-    wr_u64_le(buf + p + 8u, bc_len);
-    p += 16u;
+    wr_u16_le(buf + p + 4u, 8u);
+    wr_u64_le(buf + p + 6u, bc_len);
+    p += 6u + 8u;
 
-    /* ENDT. */
+    /* ENDT — 4 bytes (no length field). */
     memcpy(buf + p, "ENDT", 4u);
-    wr_u32_le(buf + p + 4u, 0u);
-    p += 8u;
+    p += 4u;
 
-    if (out_bc_offset) *out_bc_offset = (size_t)bc_offset;
+    /* Fix up the entry_size field (includes the size field itself). */
+    wr_u32_le(buf + entry_start, (uint32_t)(p - entry_start));
+
+    if (out_bc_offset) *out_bc_offset = (size_t)(bc_base + bc_offset_rel);
     if (out_bc_len)    *out_bc_len    = (size_t)bc_len;
     return p;
 }
@@ -183,8 +210,10 @@ static size_t make_synth_mtlb(uint8_t *buf, size_t cap,
 static void test_extract_happy(void) {
     uint8_t buf[MTLB_BUF_LEN];
     size_t bc_off = 0, bc_len_x = 0;
+    /* Stage 0 = VERTEX in Apple's enum (see
+     * src/air2spirv/metallib_extract.c). */
     size_t used = make_synth_mtlb(buf, sizeof(buf), "blit",
-                                   1u /* VERTEX */,
+                                   0u /* VERTEX */,
                                    &bc_off, &bc_len_x);
     CHECK(used > 0u && used <= sizeof(buf),
           "synth MTLB fits the buffer");
