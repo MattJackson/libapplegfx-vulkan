@@ -166,3 +166,24 @@ if fs.is_file(meson.current_source_dir() / 'shader-catalog.c')
   )
   test('shader catalog', shader_catalog_test)
 endif
+
+# Phase 3.A: Metal-to-Vulkan render encoder smoke. The state-
+# machine pass runs on every host; the real-Vulkan record path
+# self-skips when no loadable ICD is present. When vulkan_dep is
+# not present at configure time the test still builds (it exercises
+# the LAGFX_ERR_BACKEND stub path) — hence no vulkan_dep gate here.
+# Reaches into src/ for translate/render_encoder.h and the vulkan
+# helpers, so it needs internal_include_dir.
+if fs.is_file(meson.current_source_dir() / 'translate-render.c')
+  translate_render_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    translate_render_deps += [vulkan_dep]
+  endif
+  translate_render_test = executable('translate-render',
+    'translate-render.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : translate_render_deps,
+    build_by_default : true,
+  )
+  test('translate render', translate_render_test)
+endif
