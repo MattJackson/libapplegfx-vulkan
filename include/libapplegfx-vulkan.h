@@ -5,7 +5,7 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * === Status: Phase 0 / 1 DRAFT =================================
+ * === Status: Phase 1.A.1 — no-op scaffolding ===================
  *
  * This header is the C API consumed by the Linux port of QEMU's
  * apple-gfx-pci.m device (which lives in the mos-qemu tree at
@@ -15,10 +15,10 @@
  *
  * Shape mirrors apple-gfx.m's known callback patterns but
  * expressed in C instead of Objective-C blocks + @protocol. Will
- * be refined as Phase 0 reverse-engineering proceeds; this draft
- * is shaped to be API-stable for Phase 1 implementation but with
- * room to add fields (fields are grouped semantically with
- * versioning in mind; future callback additions append).
+ * be refined as reverse-engineering proceeds; Phase 1.A.1 is
+ * shaped to be API-stable with room to add fields (fields are
+ * grouped semantically with versioning in mind; future callback
+ * additions append).
  *
  * === Architecture ==============================================
  *
@@ -62,6 +62,7 @@ typedef enum {
     LAGFX_ERR_VULKAN_INIT   = -3,
     LAGFX_ERR_PROTOCOL      = -4,  /* unknown / malformed paravirt traffic */
     LAGFX_ERR_INTERNAL      = -5,
+    LAGFX_ERR_NO_FRAME      = -6,  /* no rendered frame available yet */
 } lagfx_status_t;
 
 /* === Memory model callbacks ===================================
@@ -79,7 +80,8 @@ typedef enum {
  *
  * On Linux, implementations typically use memfd_create +
  * mmap(MAP_FIXED) to mirror Darwin's mach_vm_remap semantics. See
- * src/memory/ for the reference impl.
+ * src/memory/ for the reference impl, exposed via
+ * lagfx_task_create/destroy/map_host_memory/unmap below.
  * ------------------------------------------------------------- */
 
 /* Single contiguous range of guest physical memory. */
@@ -122,6 +124,41 @@ typedef struct {
     /* Raise an MSI-X interrupt on `vector` back to the guest. */
     void (*raise_interrupt)(void *opaque, uint32_t vector);
 } lagfx_shell_callbacks_t;
+
+/* === Direct task memory API ===================================
+ *
+ * These are the in-tree reference implementations of task memory.
+ * Shells may use these directly (and wire them into their
+ * lagfx_shell_callbacks_t) instead of rolling their own. See
+ * src/memory/task.c for the memfd_create + mmap(MAP_FIXED)
+ * implementation.
+ *
+ * Note the layering: lagfx_shell_callbacks_t is the boundary we
+ * call back across; lagfx_task_* are the primitives a shell can
+ * use to satisfy those callbacks. QEMU may well wrap these
+ * primitives with its own per-task bookkeeping.
+ * ------------------------------------------------------------- */
+
+/* Reserve a contiguous VA range of `vm_size` bytes. On success
+ * writes the reserved base to *base_out and returns an opaque task
+ * handle. On failure returns NULL. The reserved range is initially
+ * PROT_NONE. */
+lagfx_task_t *lagfx_task_create(size_t vm_size, void **base_out);
+
+/* Destroy the task and release the reserved VA range. Safe on NULL. */
+void lagfx_task_destroy(lagfx_task_t *task);
+
+/* Map host-process memory into the task's reserved range at
+ * `vm_offset`. `host_addr` may be NULL (leaves mapping zeroed);
+ * non-NULL contents are copied in. `read_only` requests PROT_READ
+ * mapping. Returns true on success. */
+bool lagfx_task_map_host_memory(lagfx_task_t *task, uint64_t vm_offset,
+                                 void *host_addr, uint64_t len,
+                                 bool read_only);
+
+/* Unmap a range (replaces it with fresh PROT_NONE pages). */
+bool lagfx_task_unmap(lagfx_task_t *task, uint64_t vm_offset,
+                      uint64_t len);
 
 /* === Display descriptor =======================================
  * Per-display configuration + callbacks for display-plane events
@@ -201,14 +238,16 @@ typedef struct {
 
 /* Create a new paravirt GPU device. Shell provides callbacks via
  * the descriptor. Returns opaque handle or NULL on failure (in which
- * case *errp_out is set if non-NULL).
+ * case *errp_out is set to a malloc'd string if non-NULL; caller
+ * must free()).
  *
- * Library initializes Vulkan (via lavapipe), allocates internal
- * state, and prepares to accept MMIO/DMA traffic. */
+ * In Phase 1.A.1 this is a no-op object: allocates state, copies in
+ * descriptor fields, marks it live. Vulkan init and protocol state
+ * come in 1.A.2+. */
 lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
                                   char **errp_out);
 
-/* Destroy the device and all associated displays. */
+/* Destroy the device and all associated displays. Safe on NULL. */
 void lagfx_device_free(lagfx_device_t *device);
 
 /* Reset device state — clear in-flight command buffers, reset
@@ -221,6 +260,10 @@ void lagfx_device_reset(lagfx_device_t *device);
  * layout has MSI-X vectors at 0x0-0xfff and registers at 0x1000+.
  * The library interprets reads/writes according to its internal
  * protocol state machine (per Phase 0 spec).
+ *
+ * In Phase 1.A.1 read returns 0 and write is ack'd; both log via
+ * LAGFX_LOG to stderr. Real dispatch lives in src/protocol/ when
+ * Phase 1.A.2 wires it.
  * ------------------------------------------------------------- */
 
 /* 4-byte read (Apple's protocol is 4-byte aligned per their docs). */
@@ -232,13 +275,14 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
 
 /* === Display ================================================== */
 
-/* Attach a display to a device. Returns handle or NULL. */
+/* Attach a display to a device. Returns handle or NULL (with
+ * *errp_out set to a malloc'd string if non-NULL). */
 lagfx_display_t *lagfx_display_new(lagfx_device_t *device,
                                     const lagfx_display_descriptor_t *desc,
                                     uint32_t port, uint32_t serial_num,
                                     char **errp_out);
 
-/* Detach + free. */
+/* Detach + free. Safe on NULL. */
 void lagfx_display_free(lagfx_display_t *display);
 
 /* Shell queries current cursor position. */
@@ -251,9 +295,9 @@ lagfx_coord_t lagfx_display_cursor_position(lagfx_display_t *display);
  * Typical usage: shell's graphic-update callback calls this to get
  * the latest rendered frame into its DisplaySurface.
  *
- * If no new frame has been rendered since the last call, returns
- * LAGFX_OK but sets *new_frame_out to false — shell can reuse its
- * existing surface. */
+ * Returns LAGFX_ERR_NO_FRAME if no new frame is available yet
+ * (normal during Phase 1.A.1 because no rendering is wired).
+ * new_frame_out, stride_out may be NULL. */
 lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
                                          void *dst,
                                          size_t dst_size_bytes,
@@ -262,12 +306,10 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
 
 /* === Capability / introspection =============================== */
 
-/* Returns 0 if the device has been created with valid parameters.
- * Useful for version-check at startup. */
 int lagfx_version_major(void);
 int lagfx_version_minor(void);
 int lagfx_version_patch(void);
-const char *lagfx_build_info(void);  /* git hash + build date */
+const char *lagfx_build_info(void);  /* short build/ident string */
 
 #ifdef __cplusplus
 } /* extern "C" */

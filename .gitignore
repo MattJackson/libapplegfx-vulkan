@@ -24,6 +24,12 @@ compile_commands.json
 # Test output
 test-results/
 
+# Stray compiled test binaries (pre-meson artifacts)
+tests/memory-task
+tests/lifecycle-smoke
+tests/lavapipe-smoke
+tests/header-syntax-check
+
 # Python caches (if we script RE)
 __pycache__/
 *.pyc

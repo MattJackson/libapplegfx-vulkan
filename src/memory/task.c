@@ -4,10 +4,19 @@
  *
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * The production target is Linux; on Darwin (used for ad-hoc dev
+ * builds) memfd_create is absent and we fall back to mkstemp + unlink
+ * so syntax-check / header-only builds still succeed. The fallback
+ * is NOT production-quality (no MFD_CLOEXEC guarantees, slower) —
+ * callers expecting full semantics must run on Linux.
  */
 
-/* Enable memfd_create() on Linux. Requires Linux 5.4+. */
+/* Enable memfd_create() on Linux. Requires Linux 5.4+. _GNU_SOURCE
+ * may already be injected globally by meson; guard redefinition. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "task.h"
 
@@ -17,8 +26,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
 #include <unistd.h>
+
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 
 /* Private task structure. */
 struct lagfx_task {
@@ -27,18 +39,38 @@ struct lagfx_task {
     int memfd;                /* Backing memfd for current mappings, or -1 */
 };
 
-/* Fallback memfd_create if not in libc (Linux 5.4+). */
-#ifndef __NR_memfd_create
-#define __NR_memfd_create 319  /* x86_64 syscall number */
-#endif
-
 #ifndef MFD_CLOEXEC
 #define MFD_CLOEXEC 0x0001U
+#endif
+
+/* Fallback memfd_create if not in libc (Linux 5.4+). */
+#ifdef __linux__
+#ifndef __NR_memfd_create
+#if defined(__x86_64__)
+#define __NR_memfd_create 319
+#elif defined(__aarch64__)
+#define __NR_memfd_create 279
+#else
+#define __NR_memfd_create 319  /* best guess */
+#endif
 #endif
 
 static int memfd_create_fallback(const char *name, unsigned int flags) {
     return (int)syscall(__NR_memfd_create, name, flags);
 }
+#else
+/* Non-Linux fallback: anonymous tmp file. Production must run on Linux. */
+static int memfd_create_fallback(const char *name, unsigned int flags) {
+    (void)name;
+    (void)flags;
+    char tmpl[] = "/tmp/lagfx-memfd.XXXXXX";
+    int fd = mkstemp(tmpl);
+    if (fd >= 0) {
+        unlink(tmpl);
+    }
+    return fd;
+}
+#endif
 
 /* Utility: Create an anonymous memfd for use as mapping backing. */
 static int task_create_memfd(size_t size) {

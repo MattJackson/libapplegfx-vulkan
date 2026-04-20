@@ -55,56 +55,13 @@
 #ifndef LIBAPPLEGFX_TASK_H
 #define LIBAPPLEGFX_TASK_H
 
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
+/* The lagfx_task_t typedef and lagfx_task_create/_destroy/_map_host_memory/_unmap
+ * declarations now live in the public header. This file remains as a
+ * private entry point for any future in-tree internal helpers (e.g.
+ * debugging introspection, stats) without exposing them to consumers.
+ *
+ * Include the public API here so internal TUs still get the full type. */
 
-/* Opaque task handle. Implementation details fully hidden. */
-typedef struct lagfx_task lagfx_task_t;
-
-/* Reserve a contiguous virtual-address range of vm_size bytes.
- * On success, writes the reserved base address to *base_out and
- * returns an opaque task handle. On failure, returns NULL.
- *
- * The reserved range is initially PROT_NONE (not readable/writable).
- * Callers subsequently populate it via lagfx_task_map_host_memory(). */
-lagfx_task_t *lagfx_task_create(size_t vm_size, void **base_out);
-
-/* Release the task, unmapping the reserved range and closing any
- * associated memfds. Safe to call on NULL. */
-void lagfx_task_destroy(lagfx_task_t *task);
-
-/* Map host-process memory into the task's reserved range.
- *
- * Parameters:
- *   task        — handle from lagfx_task_create()
- *   vm_offset   — byte offset into the task's reserved range
- *   host_addr   — host pointer to memory to alias
- *   len         — number of bytes to map
- *   read_only   — if true, map read-only; else read-write
- *
- * Returns true on success, false on failure (e.g., offset+len exceeds
- * task size, or system mmap() call failed).
- *
- * Design: We DO NOT directly mmap() the host_addr pointer (which may
- * be in use elsewhere). Instead, this creates a fresh memfd and maps
- * it into the task range at vm_offset. Callers must ensure the
- * mapped memory is properly initialized (or use read_memory callback
- * to fetch guest RAM on-demand). */
-bool lagfx_task_map_host_memory(lagfx_task_t *task, uint64_t vm_offset,
-                                 void *host_addr, uint64_t len,
-                                 bool read_only);
-
-/* Unmaps a range within the task, replacing it with fresh PROT_NONE
- * pages. This is the counterpart to map_host_memory() for cleanup.
- *
- * Parameters:
- *   task      — handle from lagfx_task_create()
- *   vm_offset — byte offset into task's reserved range
- *   len       — number of bytes to unmap
- *
- * Returns true on success, false on error. */
-bool lagfx_task_unmap(lagfx_task_t *task, uint64_t vm_offset,
-                       uint64_t len);
+#include "libapplegfx-vulkan.h"
 
 #endif /* LIBAPPLEGFX_TASK_H */
