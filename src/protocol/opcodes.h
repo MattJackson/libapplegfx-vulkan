@@ -228,4 +228,12 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
 lagfx_handler_status_t lagfx_op_exec_indirect2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
+/* ops_display.c — Phase 2.A real (partial-layout) handlers. */
+lagfx_handler_status_t lagfx_op_display_ack(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_display_swap_mapping(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_display_transaction3(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+
 #endif /* LIBAPPLEGFX_PROTOCOL_OPCODES_H */

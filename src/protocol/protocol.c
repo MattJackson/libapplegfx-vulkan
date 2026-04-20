@@ -82,6 +82,7 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     memset(p->tasks,    0, sizeof(p->tasks));
     memset(p->fifos,    0, sizeof(p->fifos));
     memset(p->inflight, 0, sizeof(p->inflight));
+    memset(p->displays, 0, sizeof(p->displays));
 
     p->total_cmds_seen      = 0;
     p->total_cmds_completed = 0;
@@ -93,6 +94,10 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->setter_write_count   = 0;
     p->read_ptr             = 0;
     p->write_ptr            = 0;
+
+    p->display_swaps_applied          = 0;
+    p->display_transactions_submitted = 0;
+    p->display_acks_received          = 0;
 }
 
 /* === Completion path ========================================

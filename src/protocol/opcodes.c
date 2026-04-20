@@ -63,13 +63,15 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_NOP,                  "CmdNOP",
       LAGFX_PRIO_P0, 0, 0, lagfx_op_nop },
 
-    /* --- Display (0x10-0x1a) — P2, deferred ------------------ */
+    /* --- Display (0x10-0x1a) — Phase 2.A promotes 0x10/0x12/0x16 to
+     *     real handlers with PARTIAL-confidence layouts. Remaining
+     *     display ops stay P2 log+ack stubs until Phase 3/4. -------- */
     { LAGFX_OP_DISPLAY_ACK,              "CmdDisplayAck",
-      LAGFX_PRIO_P2, 0, 0, NULL },
+      LAGFX_PRIO_P1, 8, 8, lagfx_op_display_ack },
     { LAGFX_OP_DISPLAY_SET_PROPERTIES,   "CmdDisplaySetProperties",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_DISPLAY_SWAP_MAPPING,     "CmdDisplaySwapMapping",
-      LAGFX_PRIO_P2, 0, 0, NULL },
+      LAGFX_PRIO_P1, 40, 40, lagfx_op_display_swap_mapping },
     { LAGFX_OP_DISPLAY_CURSOR_SHOW,      "CmdDisplayCursorShow",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_DISPLAY_CURSOR_GLYPH,     "CmdDisplayCursorGlyph",
@@ -77,7 +79,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_DISPLAY_TRANSACTION2_DEP, "CmdDisplayTransaction2_DEPRECATED",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_DISPLAY_TRANSACTION3,     "CmdDisplayTransaction3",
-      LAGFX_PRIO_P2, 0, 0, NULL },
+      LAGFX_PRIO_P1, 12, 0, lagfx_op_display_transaction3 },
     { LAGFX_OP_DISPLAY_SET_SHARED_PAGE,  "CmdDisplaySetSharedStatePage",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_DISPLAY_SLEEP_STATE,      "CmdDisplaySleepState",

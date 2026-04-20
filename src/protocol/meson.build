@@ -11,6 +11,7 @@ lagfx_sources += files(
   'ops_device.c',
   'ops_queue.c',
   'ops_cmdbuf.c',
+  'ops_display.c',
 )
 
 # state.h / protocol.h / opcodes.h / fifo.h are private to src/protocol/

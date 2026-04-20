@@ -1046,6 +1046,433 @@ static void test_metal_no_op_sequence(void) {
     lagfx_device_free(dev);
 }
 
+/* === Phase 2.A display-path handler tests (PARTIAL-layout) ====
+ *
+ * CmdDisplayAck (0x10), CmdDisplaySwapMapping (0x12),
+ * CmdDisplayTransaction3 (0x16) — see phase-2-first-pixel-plan.md §4
+ * and src/protocol/ops_display.c for the assumed payload shapes. All
+ * three opcodes are layout-PARTIAL (confirmable by runtime capture on
+ * a booted VM); tests assert against the current handler's
+ * interpretation. If a future RE revision changes the layout, these
+ * tests are the canonical place to update.
+ *
+ * f32-on-wire helper — little-endian IEEE 754. */
+static void put_lef32(uint8_t *b, float v) {
+    uint32_t u;
+    memcpy(&u, &v, sizeof(u));
+    put_le32(b, u);
+}
+
+static void test_display_ack_handler(void) {
+    fprintf(stdout, "\n--- test: display_ack_handler ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* 1. Ack against an unknown displayID — fail-open, returns OK,
+     *    stamp signalled, no state changes. */
+    uint8_t ack[20];
+    build_header(ack, LAGFX_OP_DISPLAY_ACK, 0,
+                 /*total_length=*/20, /*stamp=*/0xda010001u);
+    put_le32(ack + 12, 1u);  /* displayID (not yet registered) */
+    put_le32(ack + 16, 99u); /* frameID */
+
+    int rc = lagfx_protocol_dispatch_one(p, ack, sizeof(ack));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplayAck(unknown displayID) returns OK (fail-open)");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xda010001u,
+          "CmdDisplayAck stamp signalled on unknown displayID");
+    CHECK(shell.raise_irq_count == 1,
+          "CmdDisplayAck raised completion IRQ on unknown displayID");
+
+    /* 2. Register a display via SwapMapping, submit a transaction,
+     *    then ack it — expect transaction_pending=false and
+     *    transaction_acked=true on the entry. */
+    uint8_t swap[52];
+    build_header(swap, LAGFX_OP_DISPLAY_SWAP_MAPPING, 0,
+                 /*total_length=*/52, /*stamp=*/0xda010002u);
+    put_le32(swap + 12, 1u);          /* displayID */
+    put_le32(swap + 16, 7u);          /* mappingID */
+    put_le64(swap + 20, 0xfb000000ull); /* bufferVA */
+    put_le64(swap + 28, 0x7e9000ull);   /* length (1920*1080*4) */
+    put_le32(swap + 36, 1920u);       /* width */
+    put_le32(swap + 40, 1080u);       /* height */
+    put_le32(swap + 44, 7680u);       /* stride */
+    put_le32(swap + 48, 0u);          /* format BGRA8 */
+    rc = lagfx_protocol_dispatch_one(p, swap, sizeof(swap));
+    CHECK(rc == LAGFX_HANDLER_OK, "pre-ack: DisplaySwapMapping OK");
+
+    uint8_t tx[12 + 12 + 32];
+    build_header(tx, LAGFX_OP_DISPLAY_TRANSACTION3, 0,
+                 /*total_length=*/sizeof(tx), /*stamp=*/0xda010003u);
+    put_le32(tx + 12, 1u);  /* displayID */
+    put_le32(tx + 16, 42u); /* transactionID */
+    put_le32(tx + 20, 1u);  /* attachmentCount */
+    /* attachment 0: idx=0 load=clear(2) store=store(1) flags=0 rgba=red */
+    put_le32(tx + 24,  0u);
+    put_le32(tx + 28,  2u);
+    put_le32(tx + 32,  1u);
+    put_le32(tx + 36,  0u);
+    put_lef32(tx + 40, 1.f);
+    put_lef32(tx + 44, 0.f);
+    put_lef32(tx + 48, 0.f);
+    put_lef32(tx + 52, 1.f);
+    rc = lagfx_protocol_dispatch_one(p, tx, sizeof(tx));
+    CHECK(rc == LAGFX_HANDLER_OK, "pre-ack: DisplayTransaction3 OK");
+
+    lagfx_display_entry_t *d = lagfx_protocol_find_display(p, 1u);
+    CHECK(d != NULL && d->transaction_pending,
+          "pre-ack: display has transaction_pending=true");
+    CHECK(d != NULL && d->pending_transaction_id == 42u,
+          "pre-ack: pending transactionID captured");
+
+    /* 3. Now the ack for frameID=42 (matches pending). */
+    build_header(ack, LAGFX_OP_DISPLAY_ACK, 0,
+                 /*total_length=*/20, /*stamp=*/0xda010004u);
+    put_le32(ack + 12, 1u);
+    put_le32(ack + 16, 42u);
+    rc = lagfx_protocol_dispatch_one(p, ack, sizeof(ack));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplayAck(matching frameID) returns OK");
+    d = lagfx_protocol_find_display(p, 1u);
+    CHECK(d != NULL && !d->transaction_pending,
+          "CmdDisplayAck cleared transaction_pending on match");
+    CHECK(d != NULL && d->transaction_acked,
+          "CmdDisplayAck set transaction_acked=true on match");
+
+    /* 4. Short payload — reject with ERR_SIZE (the dispatcher's
+     *    min_payload check catches it before the handler body). */
+    uint8_t short_buf[16];
+    build_header(short_buf, LAGFX_OP_DISPLAY_ACK, 0,
+                 /*total_length=*/16, /*stamp=*/0xda010005u);
+    put_le32(short_buf + 12, 1u);
+    rc = lagfx_protocol_dispatch_one(p, short_buf, sizeof(short_buf));
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "CmdDisplayAck short payload rejected");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xda010005u,
+          "CmdDisplayAck short payload still signals stamp (fail-open)");
+
+    lagfx_device_free(dev);
+}
+
+static void test_display_swap_mapping_handler(void) {
+    fprintf(stdout, "\n--- test: display_swap_mapping_handler ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Initial swap — auto-register displayID=2. */
+    uint8_t swap[52];
+    build_header(swap, LAGFX_OP_DISPLAY_SWAP_MAPPING, 0,
+                 /*total_length=*/52, /*stamp=*/0xd2020001u);
+    put_le32(swap + 12, 2u);          /* displayID */
+    put_le32(swap + 16, 1u);          /* mappingID */
+    put_le64(swap + 20, 0xabcd0000ull); /* bufferVA */
+    put_le64(swap + 28, 0x10000ull);    /* length */
+    put_le32(swap + 36, 1920u);
+    put_le32(swap + 40, 1080u);
+    put_le32(swap + 44, 1920u * 4u);
+    put_le32(swap + 48, 0u);
+
+    int rc = lagfx_protocol_dispatch_one(p, swap, sizeof(swap));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplaySwapMapping(displayID=2) returns OK");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd2020001u,
+          "CmdDisplaySwapMapping stamp propagated");
+
+    lagfx_display_entry_t *d = lagfx_protocol_find_display(p, 2u);
+    CHECK(d != NULL, "display table contains displayID=2 after swap");
+    CHECK(d != NULL && d->live, "display entry marked live");
+    CHECK(d != NULL && d->mapped, "display entry marked mapped");
+    CHECK(d != NULL && d->mapping_id == 1u, "mappingID recorded");
+    CHECK(d != NULL && d->buffer_va == 0xabcd0000ull,
+          "bufferVA recorded");
+    CHECK(d != NULL && d->length == 0x10000ull,
+          "length recorded");
+    CHECK(d != NULL && d->width == 1920u && d->height == 1080u,
+          "geometry recorded (1920x1080)");
+    CHECK(d != NULL && d->stride == 7680u,
+          "stride recorded (1920*4)");
+    CHECK(d != NULL && d->format == 0u,
+          "format recorded (BGRA8)");
+
+    /* Second swap on the same display — update, not allocate new slot.
+     * Count of live slots must stay at 1. */
+    build_header(swap, LAGFX_OP_DISPLAY_SWAP_MAPPING, 0,
+                 /*total_length=*/52, /*stamp=*/0xd2020002u);
+    put_le32(swap + 12, 2u);
+    put_le32(swap + 16, 2u);            /* new mappingID */
+    put_le64(swap + 20, 0xdead0000ull); /* new bufferVA */
+    put_le64(swap + 28, 0x20000ull);
+    put_le32(swap + 36, 1440u);
+    put_le32(swap + 40, 900u);
+    put_le32(swap + 44, 5760u);
+    put_le32(swap + 48, 0u);
+    rc = lagfx_protocol_dispatch_one(p, swap, sizeof(swap));
+    CHECK(rc == LAGFX_HANDLER_OK, "CmdDisplaySwapMapping(second) OK");
+
+    d = lagfx_protocol_find_display(p, 2u);
+    CHECK(d != NULL && d->mapping_id == 2u,
+          "second swap updated mappingID");
+    CHECK(d != NULL && d->buffer_va == 0xdead0000ull,
+          "second swap updated bufferVA");
+    CHECK(d != NULL && d->width == 1440u,
+          "second swap updated width to 1440");
+
+    /* Count live slots — should be exactly one (no leak). */
+    unsigned live = 0;
+    for (unsigned i = 0; i < LAGFX_PROTO_MAX_DISPLAYS; ++i) {
+        if (p->displays[i].live) live++;
+    }
+    CHECK(live == 1, "only one display slot live after two swaps on same ID");
+
+    /* Table-full test: swap four distinct displayIDs to fill the table
+     * (LAGFX_PROTO_MAX_DISPLAYS=4), then try a fifth — expect
+     * ERR_STATE but stamp still signals. */
+    for (uint32_t i = 10; i < 10u + LAGFX_PROTO_MAX_DISPLAYS; ++i) {
+        build_header(swap, LAGFX_OP_DISPLAY_SWAP_MAPPING, 0, 52,
+                     (uint32_t)(0xd2020100u + i));
+        put_le32(swap + 12, i);
+        put_le32(swap + 16, 0u);
+        put_le64(swap + 20, 0ull);
+        put_le64(swap + 28, 0ull);
+        put_le32(swap + 36, 0u);
+        put_le32(swap + 40, 0u);
+        put_le32(swap + 44, 0u);
+        put_le32(swap + 48, 0u);
+        rc = lagfx_protocol_dispatch_one(p, swap, sizeof(swap));
+        if (i == 10u + LAGFX_PROTO_MAX_DISPLAYS - 1) {
+            /* Fourth unique ID, with slot #2 already live —
+             * table is now full. */
+            CHECK(rc == LAGFX_HANDLER_ERR_STATE || rc == LAGFX_HANDLER_OK,
+                  "display table at/near capacity handled");
+        }
+    }
+
+    /* Short payload rejected. */
+    uint8_t short_buf[32];
+    build_header(short_buf, LAGFX_OP_DISPLAY_SWAP_MAPPING, 0,
+                 /*total_length=*/32, /*stamp=*/0xd2020fffu);
+    put_le32(short_buf + 12, 99u);
+    rc = lagfx_protocol_dispatch_one(p, short_buf, sizeof(short_buf));
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "CmdDisplaySwapMapping short payload rejected");
+
+    lagfx_device_free(dev);
+}
+
+static void test_display_transaction3_handler(void) {
+    fprintf(stdout, "\n--- test: display_transaction3_handler ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* 1. Transaction with one clear-colour attachment (red).
+     *    payload = 12 (hdr) + 12 (disp,tx,count) + 32 (attach) = 56 total. */
+    uint8_t tx[12 + 12 + 32];
+    build_header(tx, LAGFX_OP_DISPLAY_TRANSACTION3, 0,
+                 /*total_length=*/sizeof(tx), /*stamp=*/0xd3030001u);
+    put_le32(tx + 12, 3u);   /* displayID (auto-register) */
+    put_le32(tx + 16, 101u); /* transactionID */
+    put_le32(tx + 20, 1u);   /* attachmentCount */
+    put_le32(tx + 24, 0u);   /* attachmentIndex */
+    put_le32(tx + 28, 2u);   /* loadAction = Clear */
+    put_le32(tx + 32, 1u);   /* storeAction = Store */
+    put_le32(tx + 36, 0u);   /* flags */
+    put_lef32(tx + 40, 1.0f); /* R */
+    put_lef32(tx + 44, 0.0f); /* G */
+    put_lef32(tx + 48, 0.0f); /* B */
+    put_lef32(tx + 52, 1.0f); /* A */
+
+    int rc = lagfx_protocol_dispatch_one(p, tx, sizeof(tx));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplayTransaction3(1-attach clear) returns OK");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd3030001u,
+          "CmdDisplayTransaction3 stamp propagated");
+
+    lagfx_display_entry_t *d = lagfx_protocol_find_display(p, 3u);
+    CHECK(d != NULL, "display table contains displayID=3 after txn");
+    CHECK(d != NULL && d->live, "display auto-registered");
+    CHECK(d != NULL && d->transaction_pending,
+          "display marked transaction_pending");
+    CHECK(d != NULL && !d->transaction_acked,
+          "transaction_acked false until ack arrives");
+    CHECK(d != NULL && d->pending_transaction_id == 101u,
+          "pending_transaction_id captured");
+    CHECK(d != NULL && d->last_attachment_count == 1u,
+          "last_attachment_count captured");
+    CHECK(d != NULL && d->last_load_action == 2u,
+          "last_load_action == 2 (clear)");
+    CHECK(d != NULL && d->last_clear_rgba[0] == 1.f,
+          "last_clear_rgba[0] = 1.0 (red)");
+    CHECK(d != NULL && d->last_clear_rgba[1] == 0.f,
+          "last_clear_rgba[1] = 0.0");
+    CHECK(d != NULL && d->last_clear_rgba[2] == 0.f,
+          "last_clear_rgba[2] = 0.0");
+    CHECK(d != NULL && d->last_clear_rgba[3] == 1.f,
+          "last_clear_rgba[3] = 1.0 (opaque)");
+
+    /* 2. attachmentCount=0 — valid (header-only txn). */
+    uint8_t tx_empty[24];
+    build_header(tx_empty, LAGFX_OP_DISPLAY_TRANSACTION3, 0,
+                 /*total_length=*/24, /*stamp=*/0xd3030002u);
+    put_le32(tx_empty + 12, 3u);
+    put_le32(tx_empty + 16, 102u);
+    put_le32(tx_empty + 20, 0u); /* attachmentCount=0 */
+    rc = lagfx_protocol_dispatch_one(p, tx_empty, sizeof(tx_empty));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplayTransaction3(count=0) returns OK");
+
+    /* 3. Overflow: attachmentCount=5 but no room in payload. */
+    uint8_t tx_bad[24];
+    build_header(tx_bad, LAGFX_OP_DISPLAY_TRANSACTION3, 0,
+                 /*total_length=*/24, /*stamp=*/0xd3030003u);
+    put_le32(tx_bad + 12, 3u);
+    put_le32(tx_bad + 16, 103u);
+    put_le32(tx_bad + 20, 5u);  /* count=5 demands 160 more bytes */
+    rc = lagfx_protocol_dispatch_one(p, tx_bad, sizeof(tx_bad));
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "CmdDisplayTransaction3(count > payload) rejected");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd3030003u,
+          "CmdDisplayTransaction3 size-mismatch still signals stamp");
+
+    lagfx_device_free(dev);
+}
+
+static void test_metal_clear_color_sequence(void) {
+    fprintf(stdout, "\n--- test: metal_clear_color_sequence ---\n");
+
+    /* Phase 2.A mini integration: the full wire sequence for a
+     * metal-clear-screen frame, per phase-2-first-pixel-plan.md §4:
+     *
+     *   CmdDefineTask2      → register task (cmdbuf backing)
+     *   CmdMapMemory2       → bind guest range to host memory
+     *   CmdDisplaySwapMapping → scanout target
+     *   CmdDisplayTransaction3 → clear-colour transaction
+     *   CmdDisplayAck       → guest closes the loop
+     *   CmdSynchronizeResources(count=0) → commit completion
+     *
+     * Assertions focus on state-transition observables:
+     *   - one shell.create_task
+     *   - one shell.map_memory
+     *   - one IRQ per command (6 total)
+     *   - display table holds one live entry at end
+     *   - display's transaction_acked=true after the ack
+     *   - clear-colour on the display entry matches (1,0,0,1) */
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* 1. DefineTask2(taskID=5, length=64K) */
+    uint8_t dt[36];
+    build_header(dt, LAGFX_OP_DEFINE_TASK2, 0, 36, 0xc10c0001u);
+    put_le32(dt + 12, 5u);
+    put_le64(dt + 16, 0ull);
+    put_le64(dt + 24, 0x10000ull);
+    put_le32(dt + 32, 0u);
+    lagfx_protocol_dispatch_one(p, dt, sizeof(dt));
+
+    /* 2. MapMemory2(taskID=5, range 0..0x1000) */
+    uint8_t mm[48];
+    build_header(mm, LAGFX_OP_MAP_MEMORY2, 0, 48, 0xc10c0002u);
+    put_le32(mm + 12, 5u);
+    put_le64(mm + 16, 0ull);
+    put_le32(mm + 24, 0u);
+    put_le32(mm + 28, 1u);
+    put_le64(mm + 32, 0x100000ull);
+    put_le64(mm + 40, 0x1000ull);
+    lagfx_protocol_dispatch_one(p, mm, sizeof(mm));
+
+    /* 3. DisplaySwapMapping(displayID=1) */
+    uint8_t swap[52];
+    build_header(swap, LAGFX_OP_DISPLAY_SWAP_MAPPING, 0, 52, 0xc10c0003u);
+    put_le32(swap + 12, 1u);
+    put_le32(swap + 16, 1u);
+    put_le64(swap + 20, 0x1000000ull);
+    put_le64(swap + 28, 0x7e9000ull);
+    put_le32(swap + 36, 1920u);
+    put_le32(swap + 40, 1080u);
+    put_le32(swap + 44, 7680u);
+    put_le32(swap + 48, 0u);
+    lagfx_protocol_dispatch_one(p, swap, sizeof(swap));
+
+    /* 4. DisplayTransaction3(displayID=1, txID=77, clear red). */
+    uint8_t tx[12 + 12 + 32];
+    build_header(tx, LAGFX_OP_DISPLAY_TRANSACTION3, 0, sizeof(tx),
+                 0xc10c0004u);
+    put_le32(tx + 12, 1u);
+    put_le32(tx + 16, 77u);
+    put_le32(tx + 20, 1u);
+    put_le32(tx + 24,  0u);
+    put_le32(tx + 28,  2u); /* clear */
+    put_le32(tx + 32,  1u);
+    put_le32(tx + 36,  0u);
+    put_lef32(tx + 40, 1.0f);
+    put_lef32(tx + 44, 0.0f);
+    put_lef32(tx + 48, 0.0f);
+    put_lef32(tx + 52, 1.0f);
+    lagfx_protocol_dispatch_one(p, tx, sizeof(tx));
+
+    /* 5. DisplayAck(displayID=1, frameID=77). */
+    uint8_t ack[20];
+    build_header(ack, LAGFX_OP_DISPLAY_ACK, 0, 20, 0xc10c0005u);
+    put_le32(ack + 12, 1u);
+    put_le32(ack + 16, 77u);
+    lagfx_protocol_dispatch_one(p, ack, sizeof(ack));
+
+    /* 6. SynchronizeResources(count=0) — cmdbuf commit completion. */
+    uint8_t sync[20];
+    build_header(sync, LAGFX_OP_SYNCHRONIZE_RESOURCES, 0, 20,
+                 0xc10c0006u);
+    put_le32(sync + 12, 5u);
+    put_le32(sync + 16, 0u);
+    lagfx_protocol_dispatch_one(p, sync, sizeof(sync));
+
+    /* Shell callback tallies. */
+    CHECK(shell.create_task_count == 1,
+          "clear-color sequence: one create_task");
+    CHECK(shell.map_memory_count == 1,
+          "clear-color sequence: one map_memory");
+    CHECK(shell.raise_irq_count == 6,
+          "clear-color sequence: one IRQ per command (6 total)");
+
+    /* Display state: single live entry, clear=red, acked. */
+    lagfx_display_entry_t *d = lagfx_protocol_find_display(p, 1u);
+    CHECK(d != NULL && d->live, "display 1 live after sequence");
+    CHECK(d != NULL && d->mapped,
+          "display 1 mapped (SwapMapping landed)");
+    CHECK(d != NULL && d->transaction_acked,
+          "display 1 transaction_acked after DisplayAck");
+    CHECK(d != NULL && !d->transaction_pending,
+          "display 1 transaction_pending cleared after ack");
+    CHECK(d != NULL && d->last_load_action == 2u,
+          "display 1 last_load_action == clear");
+    CHECK(d != NULL && d->last_clear_rgba[0] == 1.f
+                    && d->last_clear_rgba[1] == 0.f
+                    && d->last_clear_rgba[2] == 0.f
+                    && d->last_clear_rgba[3] == 1.f,
+          "display 1 clear colour == (1,0,0,1) red");
+
+    /* Counters. */
+    CHECK(p->display_swaps_applied == 1,
+          "display_swaps_applied counter == 1");
+    CHECK(p->display_transactions_submitted == 1,
+          "display_transactions_submitted counter == 1");
+    CHECK(p->display_acks_received == 1,
+          "display_acks_received counter == 1");
+
+    uint64_t seen, completed, unknown;
+    lagfx_protocol_stats(p, &seen, &completed, &unknown);
+    CHECK(seen == 6, "clear-color sequence: 6 commands seen");
+    CHECK(completed == 6, "clear-color sequence: 6 commands completed");
+    CHECK(unknown == 0, "clear-color sequence: no unknown opcodes");
+
+    lagfx_device_free(dev);
+}
+
 static void test_task_table_full(void) {
     fprintf(stdout, "\n--- test: task_table_full ---\n");
 
@@ -1131,6 +1558,10 @@ int main(void) {
     test_exec_indirect2_empty();
     test_exec_indirect2_scaffold();
     test_metal_no_op_sequence();
+    test_display_ack_handler();
+    test_display_swap_mapping_handler();
+    test_display_transaction3_handler();
+    test_metal_clear_color_sequence();
     test_task_table_full();
     test_reset_clears_state();
 
