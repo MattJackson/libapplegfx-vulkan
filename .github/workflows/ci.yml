@@ -6,27 +6,223 @@ on:
   pull_request:
     branches: [main]
 
+# All jobs are named explicitly so GitHub's status check list shows per-job results.
+# Keep workflow name = `ci.yml` (referenced by repo status badge in README).
+
 jobs:
-  header-syntax:
+  # -------------------------------------------------------------------------
+  # Linux (Ubuntu / glibc) — meson setup + compile + full test suite.
+  # This is the reference platform for local dev and the CI "happy path".
+  # Expected: 7/7 tests pass (validated 2026-04-20 on portainer-1 Alpine; the
+  # Ubuntu and Alpine jobs should agree — any divergence is a glibc-vs-musl bug).
+  # -------------------------------------------------------------------------
+  linux-meson:
+    name: meson (ubuntu-latest, glibc)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install deps
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-meson-v1-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-meson-v1-
+
+      - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build clang
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config \
+            libvulkan-dev vulkan-headers mesa-vulkan-drivers glslang-tools \
+            clang
+
       - name: Configure
         run: meson setup build
-      - name: Build
+
+      - name: Compile
         run: meson compile -C build
+
       - name: Test
         run: meson test -C build --print-errorlogs
 
-  clang-tidy:
+      - name: Upload testlog on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-testlog-linux
+          path: build/meson-logs/testlog.txt
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Alpine 3.21 (musl) — same build as above but on the production container
+  # base image. Catches portability regressions (musl vs glibc: memfd_create
+  # ABI, pthread tunables, locale) before they bite in docker-macos.
+  # Runs inside a container so we get a real Alpine userland.
+  # -------------------------------------------------------------------------
+  alpine-meson:
+    name: meson (alpine:3.21, musl)
+    runs-on: ubuntu-latest
+    container: alpine:3.21
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache apk packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apk
+          key: apk-alpine321-meson-v1-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            apk-alpine321-meson-v1-
+
+      - name: Install build deps
+        run: |
+          apk add --no-cache \
+            build-base meson ninja pkgconf \
+            vulkan-loader-dev vulkan-headers mesa-vulkan-swrast glslang \
+            git bash
+
+      - name: Mark workspace as safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Configure
+        run: meson setup build
+
+      - name: Compile
+        run: meson compile -C build
+
+      - name: Test
+        run: meson test -C build --print-errorlogs
+
+      - name: Upload testlog on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-testlog-alpine
+          path: build/meson-logs/testlog.txt
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Darwin — meson build on macOS. Confirms the library builds and tests pass
+  # on the host dev platform (libapplegfx-vulkan is a Linux-first library but
+  # the header-syntax / memory-task / protocol-dispatch tests must remain
+  # host-portable so contributors can iterate on Apple hardware).
+  # Expected: 7/7 tests pass (validated locally 2026-04-20).
+  # -------------------------------------------------------------------------
+  darwin-meson:
+    name: meson (macos-latest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Homebrew
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar
+          key: brew-macos-meson-v1-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            brew-macos-meson-v1-
+
+      - name: Install build deps
+        run: |
+          brew update
+          brew install meson ninja pkg-config
+
+      - name: Configure
+        # Vulkan loader is not present on stock macOS runners; meson.build
+        # gracefully falls back to the stub init path (see meson.build §Deps).
+        run: meson setup build
+
+      - name: Compile
+        run: meson compile -C build
+
+      - name: Test
+        run: meson test -C build --print-errorlogs
+
+      - name: Upload testlog on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-testlog-darwin
+          path: build/meson-logs/testlog.txt
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Sanitizer job — Linux + clang + ASAN/UBSAN. Catches memory bugs (OOB,
+  # use-after-free) and undefined behavior (signed overflow, null deref)
+  # that the regular test run would miss. -Db_lundef=false is required for
+  # meson+clang+asan to link shared libs correctly.
+  # -------------------------------------------------------------------------
+  sanitizers:
+    name: sanitizers (asan+ubsan, clang)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-sanitizers-v1-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-sanitizers-v1-
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config clang \
+            libvulkan-dev vulkan-headers mesa-vulkan-drivers glslang-tools
+
+      - name: Configure with ASAN+UBSAN
+        env:
+          CC: clang
+        run: meson setup build -Db_sanitize=address,undefined -Db_lundef=false
+
+      - name: Compile
+        run: meson compile -C build
+
+      - name: Test
+        env:
+          # Fail on first UB finding instead of silently continuing.
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+        run: meson test -C build --print-errorlogs --timeout-multiplier 3
+
+      - name: Upload testlog on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meson-testlog-sanitizers
+          path: build/meson-logs/testlog.txt
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # clang-tidy — kept from pre-expansion CI. Does not fail the build yet
+  # (|| true) because the codebase hasn't been fully tidied; flip to fail on
+  # warnings once the backlog is cleared.
+  # -------------------------------------------------------------------------
+  clang-tidy:
+    name: clang-tidy (public header)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-clangtidy-v1-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-clangtidy-v1-
+
       - name: Install clang-tidy
-        run: sudo apt-get install -y clang-tidy
-      - name: Lint header
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-tidy
+
+      - name: Lint public header
         run: clang-tidy include/libapplegfx-vulkan.h -- -I include || true
