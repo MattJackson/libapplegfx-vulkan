@@ -1,0 +1,29 @@
+# Build artifacts
+build/
+_build/
+*.o
+*.so
+*.so.*
+*.dylib
+*.a
+*.dSYM/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Meson / cmake
+meson-*/
+CMakeFiles/
+CMakeCache.txt
+
+# Compile commands
+compile_commands.json
+
+# Test output
+test-results/
+
+# Python caches (if we script RE)
+__pycache__/
+*.pyc
