@@ -880,55 +880,115 @@ static void test_exec_indirect2_empty(void) {
     lagfx_device_free(dev);
 }
 
-static void test_exec_indirect2_scaffold(void) {
-    fprintf(stdout, "\n--- test: exec_indirect2_scaffold ---\n");
+/* Phase 3.A inner-opcode dispatch smoke test — build a synthetic
+ * CmdExecIndirect2 carrying three inner entries (BIND_PIPELINE, DRAW,
+ * SET_VIEWPORT) and assert the per-opcode counters reflect each.
+ *
+ * PARTIAL confidence on the 8-byte inner header layout {u32
+ * inner_opcode, u32 inner_length}; see ops_cmdbuf.c header comment +
+ * phase-3-metal-vulkan-plan.md §R3.6 for the runtime-capture spike that
+ * will confirm the real wire format. */
+static void test_exec_indirect2_inner_dispatch_smoke(void) {
+    fprintf(stdout, "\n--- test: exec_indirect2_inner_dispatch_smoke ---\n");
 
     mock_shell_t shell = {0};
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    /* Register two child FIFOs. */
-    uint8_t def[16];
-    build_header(def, LAGFX_OP_DEFINE_CHILD_FIFO, 0, 16, 0xd1000001u);
-    put_le32(def + 12, 7u);
-    lagfx_protocol_dispatch_one(p, def, sizeof(def));
-    build_header(def, LAGFX_OP_DEFINE_CHILD_FIFO, 0, 16, 0xd1000002u);
-    put_le32(def + 12, 8u);
-    lagfx_protocol_dispatch_one(p, def, sizeof(def));
-
-    /* Issue ExecIndirect2 with count=2, IDs [7, 8]. Both FIFOs should
-     * be flagged synced as the scaffold side-effect. payload=16, total=28. */
-    uint8_t buf[28];
+    /* Outer header (12) + outer args (8: taskID, count) + 3 inner entries.
+     *
+     * Inner entry layout per scaffold: 8-byte inner header {u32
+     * inner_opcode, u32 inner_length} followed by inner_length-8 payload
+     * bytes. inner_length is inclusive of the 8-byte header.
+     *
+     *   - BIND_PIPELINE (0x01): 4-byte pipeline handle  → inner_length=12
+     *   - DRAW (0x05): 8 bytes {u32 vertex_count, u32 instance_count}
+     *                                                  → inner_length=16
+     *   - SET_VIEWPORT (0x06): 16 bytes (x,y,w,h u32)   → inner_length=24
+     *
+     * Total inner stream bytes: 12 + 16 + 24 = 52.
+     * Outer payload: 8 + 52 = 60. Total command: 12 + 60 = 72. */
+    uint8_t buf[72];
     build_header(buf, LAGFX_OP_EXEC_INDIRECT2, 0,
-                 /*total_length=*/28, /*stamp=*/0xd1000003u);
+                 /*total_length=*/72, /*stamp=*/0xd1a0001u);
     put_le32(buf + 12, 0u);  /* taskID (unknown; fail-open) */
-    put_le32(buf + 16, 2u);  /* count=2 */
-    put_le32(buf + 20, 7u);  /* indirect_cmd_id[0] = fifoID 7 */
-    put_le32(buf + 24, 8u);  /* indirect_cmd_id[1] = fifoID 8 */
+    put_le32(buf + 16, 3u);  /* count=3 inner entries */
+
+    /* Inner #0: BIND_PIPELINE, handle=0xcafed00d. */
+    size_t off = 20;
+    put_le32(buf + off + 0, 0x01u);       /* inner_opcode */
+    put_le32(buf + off + 4, 12u);         /* inner_length */
+    put_le32(buf + off + 8, 0xcafed00du); /* pipeline handle */
+    off += 12;
+
+    /* Inner #1: DRAW, vertex_count=6, instance_count=1. */
+    put_le32(buf + off + 0, 0x05u);
+    put_le32(buf + off + 4, 16u);
+    put_le32(buf + off + 8, 6u);
+    put_le32(buf + off + 12, 1u);
+    off += 16;
+
+    /* Inner #2: SET_VIEWPORT, rect=(0,0,1920,1080). */
+    put_le32(buf + off + 0, 0x06u);
+    put_le32(buf + off + 4, 24u);
+    put_le32(buf + off + 8,  0u);
+    put_le32(buf + off + 12, 0u);
+    put_le32(buf + off + 16, 1920u);
+    put_le32(buf + off + 20, 1080u);
 
     int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
     CHECK(rc == LAGFX_HANDLER_OK,
-          "CmdExecIndirect2(count=2) returns OK (scaffolded)");
-    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd1000003u,
-          "CmdExecIndirect2(count=2) stamp signalled");
+          "CmdExecIndirect2(3 inner entries) returns OK");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd1a0001u,
+          "CmdExecIndirect2(3 inner entries) stamp signalled");
 
-    lagfx_childfifo_entry_t *f7 = lagfx_protocol_find_fifo(p, 7u);
-    lagfx_childfifo_entry_t *f8 = lagfx_protocol_find_fifo(p, 8u);
-    CHECK(f7 != NULL && f7->synced,
-          "CmdExecIndirect2 scaffold marked fifo 7 synced");
-    CHECK(f8 != NULL && f8->synced,
-          "CmdExecIndirect2 scaffold marked fifo 8 synced");
+    /* Counters — every inner entry routed to its handler + processed
+     * total bumped thrice. */
+    CHECK(p->inner_opcodes_processed == 3,
+          "inner_opcodes_processed == 3");
+    CHECK(p->inner_opcodes_bind_pipeline == 1,
+          "inner_opcodes_bind_pipeline == 1");
+    CHECK(p->inner_opcodes_draw == 1,
+          "inner_opcodes_draw == 1");
+    CHECK(p->inner_opcodes_set_viewport == 1,
+          "inner_opcodes_set_viewport == 1");
+    CHECK(p->inner_opcodes_unknown == 0,
+          "inner_opcodes_unknown == 0 (all three known)");
 
-    /* Overflow: count=10 in a payload too small. */
-    uint8_t bad[20];
-    build_header(bad, LAGFX_OP_EXEC_INDIRECT2, 0, 20, 0xd1000004u);
-    put_le32(bad + 12, 0u);
-    put_le32(bad + 16, 10u); /* 10 ids demanded, but only 0 bytes follow */
-    rc = lagfx_protocol_dispatch_one(p, bad, sizeof(bad));
-    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
-          "CmdExecIndirect2(count > payload) rejected");
-    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd1000004u,
-          "CmdExecIndirect2 size-mismatch still signals stamp");
+    lagfx_device_free(dev);
+}
+
+/* Phase 3.A: emit an unknown inner opcode and assert the UNKNOWN
+ * counter bumps without any crash. */
+static void test_exec_indirect2_unknown_inner(void) {
+    fprintf(stdout, "\n--- test: exec_indirect2_unknown_inner ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* One inner entry carrying a known-bogus opcode (0xdead) with a
+     * 4-byte payload. inner_length = 8 (header) + 4 = 12. */
+    uint8_t buf[12 + 8 + 12];
+    build_header(buf, LAGFX_OP_EXEC_INDIRECT2, 0,
+                 /*total_length=*/sizeof(buf), /*stamp=*/0xd1a0002u);
+    put_le32(buf + 12, 0u);  /* taskID */
+    put_le32(buf + 16, 1u);  /* count=1 */
+    put_le32(buf + 20, 0xdeadu); /* inner_opcode (unknown) */
+    put_le32(buf + 24, 12u);     /* inner_length */
+    put_le32(buf + 28, 0xfeedfaceu); /* inner payload */
+
+    int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdExecIndirect2(unknown inner) returns OK (fail-open)");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd1a0002u,
+          "CmdExecIndirect2(unknown inner) stamp signalled");
+    CHECK(p->inner_opcodes_processed == 1,
+          "inner_opcodes_processed == 1 (bumped even for unknown)");
+    CHECK(p->inner_opcodes_unknown == 1,
+          "inner_opcodes_unknown == 1");
+    CHECK(p->inner_opcodes_draw == 0,
+          "inner_opcodes_draw untouched by unknown entry");
 
     lagfx_device_free(dev);
 }
@@ -1356,6 +1416,14 @@ static void test_metal_clear_color_sequence(void) {
      *   CmdDisplayAck       → guest closes the loop
      *   CmdSynchronizeResources(count=0) → commit completion
      *
+     * Note: Phase 3's CmdExecIndirect2 nested-draw-stream path
+     * (inner-opcode dispatch — see test_exec_indirect2_inner_dispatch_smoke)
+     * is NOT exercised here. Phase 2's clear-colour path takes the
+     * display transaction route, not the indirect-exec route; Phase 3
+     * will introduce a new end-to-end test once the inner-opcode
+     * RE spike confirms the real wire format (phase-3-metal-vulkan-plan.md
+     * §R3.6).
+     *
      * Assertions focus on state-transition observables:
      *   - one shell.create_task
      *   - one shell.map_memory
@@ -1625,7 +1693,8 @@ int main(void) {
     test_map_memory2_handler();
     test_unmap_memory_handler();
     test_exec_indirect2_empty();
-    test_exec_indirect2_scaffold();
+    test_exec_indirect2_inner_dispatch_smoke();
+    test_exec_indirect2_unknown_inner();
     test_metal_no_op_sequence();
     test_display_ack_handler();
     test_display_swap_mapping_handler();

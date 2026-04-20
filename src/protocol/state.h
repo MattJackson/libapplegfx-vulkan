@@ -70,6 +70,32 @@ typedef struct {
     bool     completed;
 } lagfx_inflight_entry_t;
 
+/* === Phase 3.A inner-opcode dispatch (CmdExecIndirect2 nested stream) ===
+ *
+ * Per phase-3-metal-vulkan-plan.md §3.A and §7 R3.6, `CmdExecIndirect2`
+ * (outer opcode 0x20) carries a nested stream of "inner" opcodes that
+ * encode the actual render-encoder state + draw calls. The real wire
+ * format has not been observed — the inner-opcode names below are the
+ * best-guess set from the Metal BoM mapping table in
+ * phase-3-metal-vulkan-plan.md §3.A. A 2-day runtime-capture RE spike
+ * during Phase 3.A day 1–2 is required to confirm the numeric IDs,
+ * header layout, and payload shapes. This scaffold wires the plumbing so
+ * the translator can be slotted in as inner-opcode semantics land.
+ *
+ * PARTIAL confidence across the board. The IDs chosen here are
+ * contiguous starting at 0x01 for compact dispatch; the real wire may
+ * use completely different numbers, in which case
+ * lagfx_inner_opcode_name() and the dispatch switch need updating. */
+typedef enum {
+    LAGFX_INNER_UNKNOWN              = 0x00,
+    LAGFX_INNER_BIND_PIPELINE        = 0x01,
+    LAGFX_INNER_BIND_VERTEX_BUFFER   = 0x02,
+    LAGFX_INNER_BIND_FRAGMENT_RESOURCE = 0x03,
+    LAGFX_INNER_SET_RENDER_TARGET    = 0x04,
+    LAGFX_INNER_DRAW                 = 0x05,
+    LAGFX_INNER_SET_VIEWPORT         = 0x06,
+} lagfx_inner_opcode_t;
+
 /* Display-pipe tracking (Phase 2.A). Populated by CmdDisplaySwapMapping
  * (0x12) and updated by CmdDisplayTransaction3 (0x16); cleared when the
  * guest issues the matching CmdDisplayAck (0x10).
@@ -113,6 +139,13 @@ typedef struct {
     uint32_t last_attachment_count;
     uint8_t  last_load_action;    /* 0=dontcare,1=load,2=clear (Metal)   */
     float    last_clear_rgba[4];
+
+    /* Phase 3.A scaffold: last pipeline handle observed from a
+     * CmdExecIndirect2 inner-opcode BIND_PIPELINE entry addressed to
+     * this display. Cleared to 0 on reset. Not yet bound to a
+     * VkShaderEXT — Phase 3.A.2 will translate this to
+     * vkCmdBindShadersEXT against a VkCommandBuffer. */
+    uint32_t last_pipeline;
 } lagfx_display_entry_t;
 
 struct lagfx_protocol {
@@ -156,6 +189,19 @@ struct lagfx_protocol {
     uint64_t display_swaps_applied;
     uint64_t display_transactions_submitted;
     uint64_t display_acks_received;
+
+    /* Phase 3.A inner-opcode counters (scaffold). Bumped by
+     * lagfx_process_inner() as CmdExecIndirect2 walks the nested
+     * draw-stream. All PARTIAL — see inner-opcode enum comment above.
+     * Tests consume these to assert dispatch reached each handler. */
+    uint64_t inner_opcodes_processed;
+    uint64_t inner_opcodes_bind_pipeline;
+    uint64_t inner_opcodes_bind_vertex_buffer;
+    uint64_t inner_opcodes_bind_fragment_resource;
+    uint64_t inner_opcodes_set_render_target;
+    uint64_t inner_opcodes_draw;
+    uint64_t inner_opcodes_set_viewport;
+    uint64_t inner_opcodes_unknown;
 };
 
 /* Internal helper — index into reg[] by MMIO offset. Returns -1 if

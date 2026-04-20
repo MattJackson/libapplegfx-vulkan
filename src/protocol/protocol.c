@@ -98,6 +98,16 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->display_swaps_applied          = 0;
     p->display_transactions_submitted = 0;
     p->display_acks_received          = 0;
+
+    /* Phase 3.A inner-opcode counters. */
+    p->inner_opcodes_processed            = 0;
+    p->inner_opcodes_bind_pipeline        = 0;
+    p->inner_opcodes_bind_vertex_buffer   = 0;
+    p->inner_opcodes_bind_fragment_resource = 0;
+    p->inner_opcodes_set_render_target    = 0;
+    p->inner_opcodes_draw                 = 0;
+    p->inner_opcodes_set_viewport         = 0;
+    p->inner_opcodes_unknown              = 0;
 }
 
 /* === Completion path ========================================

@@ -166,38 +166,202 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
 }
 
 /* ===========================================================================
- * CmdExecIndirect2 (0x20) — P1 (Phase 1.A.2, scaffolded)
+ * CmdExecIndirect2 (0x20) — P1 partial (Phase 3.A scaffold)
  *
- * Alternate empty-cmdbuf completion path per re-followup-spec-gaps.md
- * R2 (plan §9, scope-audit-1080p30fps.md §Phase 2.A). The
- * `[cmdbuf commit]` path for an empty command buffer may land on 0x22
- * (CmdSynchronizeResources) OR 0x20 (CmdExecIndirect2) with an empty
- * buffer list. This handler mirrors the CmdSynchronizeResources
- * count-handling pattern so both paths look identical to the guest.
+ * PARTIAL confidence. Per command-buffer-format.md §12 ("hardest opcode
+ * encountered") and phase-3-metal-vulkan-plan.md §R3.6, the inner
+ * command-stream layout inside this opcode's nested buffer is the
+ * single biggest unknown in Phase 3. A 2-day runtime-capture RE spike
+ * at Phase 3.A day 1–2 is required to confirm the inner-opcode numeric
+ * IDs, the per-entry header layout, and the payload encodings.
  *
- * Request layout (PARTIAL confidence — re-followup-spec-gaps.md does
- * NOT decode this opcode). Conservative guess, aligned with
- * command-buffer-format.md §3 (MED-HIGH):
+ * Outer request layout (guess, aligned with command-buffer-format.md
+ * §3 MED-HIGH for the 0x20 wrapper):
  *
  *     payload[0..3]             u32 taskID
- *     payload[4..7]             u32 count            (# of indirect cmd ids)
- *     payload[8..(8 + 4*count)] u32 indirect_cmd_id[count]
+ *     payload[4..7]             u32 count            (# of inner entries)
+ *     payload[8..]              inner entries (see below)
  *
- * Minimum payload: 8 bytes (count=0, empty-list completion). Matches
- * the dispatcher's min_payload=0 gate (we tolerate shorter payloads by
- * treating them as count=0 — the real dylib handler almost certainly
- * has its own min check that we don't yet know).
+ * Inner-entry layout (PARTIAL guess — per phase-3-metal-vulkan-plan.md
+ * §3.A + common Apple PVG conventions, each inner entry is assumed to
+ * carry an 8-byte header of {u32 inner_opcode, u32 inner_length}
+ * followed by inner_length - 8 bytes of inner payload). Runtime RE
+ * capture required to confirm. If the real wire uses a different
+ * header (e.g., packed u16 opcode + u16 length, or 4-byte headers),
+ * only this decode block needs to change — the lagfx_process_inner()
+ * dispatch is stable.
  *
  * Semantics:
  *   - count=0 (or payload < 8 bytes): instant completion — the
- *     metal-no-op alternate path.
- *   - count>0: SCAFFOLDED — walk the ID list, mark matching child-FIFO
- *     entries synced (same pattern as CmdSynchronizeResources). This is
- *     placeholder behaviour; real indirect-exec dispatch (driving GPU
- *     work through nested command buffers) is Phase 3.
+ *     metal-no-op alternate empty-cmdbuf path (pre-Phase-3 behaviour
+ *     preserved).
+ *   - count>0: walk each inner entry, decode its 8-byte inner header,
+ *     invoke lagfx_process_inner() which dispatches to per-inner-opcode
+ *     stub handlers. Each stub logs + bumps counters; Phase 3.A.2 will
+ *     replace the log-only stubs with real Vulkan record operations
+ *     (vkCmdBindShadersEXT, vkCmdDraw, etc.) against a VkCommandBuffer.
  *
- * Completion is unconditional via the dispatcher.
+ * The outer stamp is signalled unconditionally by the dispatcher.
  * =========================================================================== */
+
+/* Inner-opcode stub handlers — minimal work + counter bumps + log.
+ * All take (p, payload, payload_len) where payload is past the 8-byte
+ * inner header. Return LAGFX_HANDLER_OK on success or
+ * LAGFX_HANDLER_ERR_SIZE on underflow. None abort the outer dispatch
+ * — the caller continues walking the inner stream on any single-entry
+ * failure (fail-open per command-buffer-format.md §6). */
+
+static lagfx_handler_status_t lagfx_inner_bind_pipeline(
+    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
+    if (payload_len < 4) {
+        LAGFX_WARN("inner BIND_PIPELINE: payload too small (%zu < 4)",
+                   payload_len);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+    uint32_t pipeline_handle = lagfx_le32(payload);
+    p->inner_opcodes_bind_pipeline++;
+
+    /* Update every live display's last_pipeline. Phase 3.A.2 will bind
+     * against an actual display-scoped VkCommandBuffer; for now we just
+     * observe the handle so tests can see the dispatch landed. */
+    for (unsigned i = 0; i < LAGFX_PROTO_MAX_DISPLAYS; ++i) {
+        if (p->displays[i].live) {
+            p->displays[i].last_pipeline = pipeline_handle;
+        }
+    }
+
+    LAGFX_LOG("inner BIND_PIPELINE: handle=0x%08x", pipeline_handle);
+    return LAGFX_HANDLER_OK;
+}
+
+static lagfx_handler_status_t lagfx_inner_bind_vertex_buffer(
+    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
+    if (payload_len < 12) {
+        LAGFX_WARN("inner BIND_VERTEX_BUFFER: payload too small (%zu < 12)",
+                   payload_len);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+    uint32_t buffer_handle = lagfx_le32(payload);
+    /* offset occupies the next 8 bytes (u64 LE). */
+    uint64_t offset =
+        (uint64_t)lagfx_le32(payload + 4) |
+        ((uint64_t)lagfx_le32(payload + 8) << 32);
+    p->inner_opcodes_bind_vertex_buffer++;
+    LAGFX_LOG("inner BIND_VERTEX_BUFFER: handle=0x%08x offset=0x%llx",
+              buffer_handle, (unsigned long long)offset);
+    return LAGFX_HANDLER_OK;
+}
+
+static lagfx_handler_status_t lagfx_inner_bind_fragment_resource(
+    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
+    if (payload_len < 4) {
+        LAGFX_WARN("inner BIND_FRAGMENT_RESOURCE: payload too small "
+                   "(%zu < 4)", payload_len);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+    uint32_t resource_handle = lagfx_le32(payload);
+    p->inner_opcodes_bind_fragment_resource++;
+    LAGFX_LOG("inner BIND_FRAGMENT_RESOURCE: handle=0x%08x",
+              resource_handle);
+    return LAGFX_HANDLER_OK;
+}
+
+static lagfx_handler_status_t lagfx_inner_set_render_target(
+    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
+    if (payload_len < 4) {
+        LAGFX_WARN("inner SET_RENDER_TARGET: payload too small (%zu < 4)",
+                   payload_len);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+    uint32_t target_handle = lagfx_le32(payload);
+    p->inner_opcodes_set_render_target++;
+    LAGFX_LOG("inner SET_RENDER_TARGET: handle=0x%08x",
+              target_handle);
+    return LAGFX_HANDLER_OK;
+}
+
+static lagfx_handler_status_t lagfx_inner_draw(
+    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
+    if (payload_len < 8) {
+        LAGFX_WARN("inner DRAW: payload too small (%zu < 8)",
+                   payload_len);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+    uint32_t vertex_count   = lagfx_le32(payload);
+    uint32_t instance_count = lagfx_le32(payload + 4);
+    p->inner_opcodes_draw++;
+
+    /* TODO(Phase 3.A.2): Record vkCmdBindPipeline + vkCmdDraw against
+     * the display-scoped VkCommandBuffer here. Need pipeline-state
+     * plumbing from last_pipeline + descriptor sets accumulated from
+     * BIND_VERTEX_BUFFER / BIND_FRAGMENT_RESOURCE. For now, log-only —
+     * per phase-3-metal-vulkan-plan.md §3.A this is the Phase 3.A.2
+     * entry point once the RE spike confirms inner-opcode semantics. */
+    LAGFX_LOG("inner DRAW: vertex_count=%u instance_count=%u "
+              "(Phase 3.A.2 will record vkCmdDraw here)",
+              vertex_count, instance_count);
+    return LAGFX_HANDLER_OK;
+}
+
+static lagfx_handler_status_t lagfx_inner_set_viewport(
+    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
+    if (payload_len < 16) {
+        LAGFX_WARN("inner SET_VIEWPORT: payload too small (%zu < 16)",
+                   payload_len);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+    uint32_t x = lagfx_le32(payload);
+    uint32_t y = lagfx_le32(payload + 4);
+    uint32_t w = lagfx_le32(payload + 8);
+    uint32_t h = lagfx_le32(payload + 12);
+    p->inner_opcodes_set_viewport++;
+    LAGFX_LOG("inner SET_VIEWPORT: rect=(%u,%u,%u,%u)", x, y, w, h);
+    return LAGFX_HANDLER_OK;
+}
+
+static lagfx_handler_status_t lagfx_inner_unknown(
+    lagfx_protocol_t *p, uint32_t inner_opcode,
+    const uint8_t *payload, size_t payload_len) {
+    p->inner_opcodes_unknown++;
+
+    /* Log a short hex dump of up to the first 16 bytes so runtime RE
+     * capture has something to match against. */
+    char hex[3 * 16 + 1];
+    size_t dump = payload_len < 16 ? payload_len : 16;
+    for (size_t i = 0; i < dump; ++i) {
+        snprintf(hex + i * 3, 4, "%02x ", payload[i]);
+    }
+    hex[dump ? dump * 3 - 1 : 0] = '\0';
+    LAGFX_LOG("inner UNKNOWN: opcode=0x%08x payload_len=%zu hex=[%s%s]",
+              inner_opcode, payload_len, hex,
+              payload_len > 16 ? " ..." : "");
+    return LAGFX_HANDLER_OK;
+}
+
+/* Dispatch one inner-opcode entry. payload points past the 8-byte
+ * inner header; payload_len is inner_length - 8. */
+static lagfx_handler_status_t lagfx_process_inner(
+    lagfx_protocol_t *p, uint32_t inner_opcode,
+    const uint8_t *payload, size_t payload_len) {
+    p->inner_opcodes_processed++;
+    switch ((lagfx_inner_opcode_t)inner_opcode) {
+    case LAGFX_INNER_BIND_PIPELINE:
+        return lagfx_inner_bind_pipeline(p, payload, payload_len);
+    case LAGFX_INNER_BIND_VERTEX_BUFFER:
+        return lagfx_inner_bind_vertex_buffer(p, payload, payload_len);
+    case LAGFX_INNER_BIND_FRAGMENT_RESOURCE:
+        return lagfx_inner_bind_fragment_resource(p, payload, payload_len);
+    case LAGFX_INNER_SET_RENDER_TARGET:
+        return lagfx_inner_set_render_target(p, payload, payload_len);
+    case LAGFX_INNER_DRAW:
+        return lagfx_inner_draw(p, payload, payload_len);
+    case LAGFX_INNER_SET_VIEWPORT:
+        return lagfx_inner_set_viewport(p, payload, payload_len);
+    case LAGFX_INNER_UNKNOWN:
+    default:
+        return lagfx_inner_unknown(p, inner_opcode, payload, payload_len);
+    }
+}
 
 lagfx_handler_status_t lagfx_op_exec_indirect2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
@@ -232,40 +396,52 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         return LAGFX_HANDLER_OK;
     }
 
-    /* Overflow-safe size check: 8 + 4*count must fit in payload_size.
-     * If the guest supplied a count>0 but the payload is too short,
-     * refuse — but the dispatcher still signals the stamp. */
-    if (count > ((uint32_t)hdr->payload_size - 8u) / 4u) {
-        LAGFX_WARN("CmdExecIndirect2: count=%u exceeds payload "
-                   "(size=%u)", count, (unsigned)hdr->payload_size);
-        return LAGFX_HANDLER_ERR_SIZE;
-    }
-
-    /* Non-empty: fail-open on unknown task (layout guess; real RE may
-     * show a different first-field encoding — see re-followup spec gap
-     * flag above). */
+    /* Non-empty: fail-open on unknown task. */
     lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
     if (!task) {
         LAGFX_WARN("CmdExecIndirect2: taskID=%u not found "
                    "(continuing fail-open)", task_id);
     }
 
-    /* count>0 path is scaffolded; real indirect-exec dispatch is Phase 3.
-     * For now we mirror CmdSynchronizeResources behaviour: walk the ID
-     * list, mark any matching child-FIFO entries synced so tests can
-     * observe that the handler actually reached those IDs. */
-    unsigned matched = 0;
-    for (uint32_t i = 0; i < count; ++i) {
-        uint32_t rid = lagfx_le32(hdr->payload + 8u + 4u * i);
-        lagfx_childfifo_entry_t *fifo = lagfx_protocol_find_fifo(p, rid);
-        if (fifo) {
-            fifo->synced = true;
-            matched++;
+    /* Walk the inner stream. PARTIAL layout guess — each inner entry is
+     * assumed to carry an 8-byte header {u32 inner_opcode, u32
+     * inner_length} followed by inner_length - 8 payload bytes. The
+     * inner_length field is inclusive of the 8-byte header. A single
+     * malformed entry stops the walk; the outer stamp still signals
+     * unconditionally through the dispatcher. */
+    size_t cursor = 8u;  /* skip outer {taskID, count} */
+    uint32_t processed = 0;
+    while (processed < count) {
+        if (cursor + 8u > hdr->payload_size) {
+            LAGFX_WARN("CmdExecIndirect2: inner entry #%u header "
+                       "overflow (cursor=%zu payload_size=%u)",
+                       processed, cursor,
+                       (unsigned)hdr->payload_size);
+            return LAGFX_HANDLER_ERR_SIZE;
         }
+        uint32_t inner_opcode = lagfx_le32(hdr->payload + cursor);
+        uint32_t inner_length = lagfx_le32(hdr->payload + cursor + 4);
+        if (inner_length < 8u ||
+            (size_t)inner_length > (size_t)hdr->payload_size - cursor) {
+            LAGFX_WARN("CmdExecIndirect2: inner entry #%u bad length "
+                       "(inner_length=%u remaining=%zu)",
+                       processed, inner_length,
+                       (size_t)hdr->payload_size - cursor);
+            return LAGFX_HANDLER_ERR_SIZE;
+        }
+        const uint8_t *inner_payload =
+            hdr->payload + cursor + 8u;
+        size_t inner_payload_len = (size_t)inner_length - 8u;
+
+        (void)lagfx_process_inner(p, inner_opcode,
+                                  inner_payload, inner_payload_len);
+
+        cursor    += inner_length;
+        processed += 1u;
     }
 
-    LAGFX_LOG("CmdExecIndirect2: taskID=%u count=%u matched=%u "
-              "stamp=0x%08x (scaffolded — real exec dispatch is Phase 3)",
-              task_id, count, matched, hdr->stamp);
+    LAGFX_LOG("CmdExecIndirect2: taskID=%u count=%u processed=%u "
+              "stamp=0x%08x (Phase 3.A scaffold — inner-opcode dispatch)",
+              task_id, count, processed, hdr->stamp);
     return LAGFX_HANDLER_OK;
 }
