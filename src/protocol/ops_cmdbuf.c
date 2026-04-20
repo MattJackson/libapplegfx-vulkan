@@ -26,12 +26,58 @@
 #include "protocol.h"
 #include "state.h"
 #include "../common/log.h"
+#include "../device.h"
+#include "../vulkan/command.h"
 
 static inline uint32_t lagfx_le32(const uint8_t *b) {
     return (uint32_t)b[0]
          | ((uint32_t)b[1] << 8)
          | ((uint32_t)b[2] << 16)
          | ((uint32_t)b[3] << 24);
+}
+
+/* Phase 1 end-to-end glue: the empty-cmdbuf completion paths (0x22 and
+ * 0x20 with count=0) represent the guest saying "commit this cmdbuf with
+ * no GPU work". On real hardware Apple still drives the GPU's submission
+ * pipeline — fence, wait, completion interrupt. We mirror that by driving
+ * a fence-gated VkQueueSubmit of an empty command buffer via the
+ * Phase 1.B.2 helper lagfx_vk_submit_empty().
+ *
+ * This is additive: the decoder's own completion path (stamp writeback +
+ * shell IRQ) already ran by the time the handler returns. The vk submit
+ * exercises the Vulkan queue round-trip so we can observe an end-to-end
+ * success even though no rendering occurred. The call is guarded so:
+ *
+ *   - Tests that pass NULL device (pre-Phase-1.B fixtures) skip silently.
+ *   - Builds without Vulkan (LAGFX_HAVE_VULKAN unset) land in the
+ *     command.c no-op stub, which returns LAGFX_OK.
+ *   - Runs where the Vulkan state exists but didn't initialise (Darwin
+ *     dev host with no loadable ICD) return LAGFX_ERR_VULKAN_INIT from
+ *     inside lagfx_vk_submit_empty; we log and carry on — the decoder's
+ *     own completion path is correctness-critical, not this.
+ */
+static void lagfx_cmdbuf_commit_empty_vk_submit(lagfx_protocol_t *p,
+                                                uint16_t opcode,
+                                                uint32_t stamp) {
+    if (!p || !p->dev) {
+        /* Test fixture path — no device attached. Silent skip. */
+        return;
+    }
+    struct lagfx_vk_state *vk = p->dev->vk;
+    if (!vk) {
+        /* Should not happen post-1.B (device_new always populates vk)
+         * but be defensive. */
+        return;
+    }
+    lagfx_status_t vst = lagfx_vk_submit_empty(vk);
+    if (vst != LAGFX_OK) {
+        /* Not fatal for the guest-visible command completion. On Darwin
+         * dev hosts with no ICD this will fire on every empty-cmdbuf
+         * commit; LAGFX_LOG keeps it at the usual verbosity. */
+        LAGFX_LOG("cmdbuf_commit_empty: vk submit skipped/failed "
+                  "(opcode=0x%04x stamp=0x%08x status=%d)",
+                  opcode, stamp, (int)vst);
+    }
 }
 
 /* ===========================================================================
@@ -78,11 +124,16 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
-    /* Empty list — pure completion vehicle. Matches metal-no-op. */
+    /* Empty list — pure completion vehicle. Matches metal-no-op. Drive
+     * the Vulkan queue round-trip so the guest's empty-cmdbuf commit
+     * becomes an end-to-end VkSubmit on the host. See helper comment
+     * above for the guard rationale. */
     if (count == 0) {
         LAGFX_LOG("CmdSynchronizeResources: taskID=%u count=0 "
                   "(empty-list completion) stamp=0x%08x",
                   task_id, hdr->stamp);
+        lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_SYNCHRONIZE_RESOURCES,
+                                            hdr->stamp);
         return LAGFX_HANDLER_OK;
     }
 
@@ -162,17 +213,22 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         LAGFX_LOG("CmdExecIndirect2: stamp=0x%08x payload_size=%u "
                   "(empty-list completion — metal-no-op alternate path)",
                   hdr->stamp, (unsigned)hdr->payload_size);
+        lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
+                                            hdr->stamp);
         return LAGFX_HANDLER_OK;
     }
 
     uint32_t task_id = lagfx_le32(hdr->payload + 0);
     uint32_t count   = lagfx_le32(hdr->payload + 4);
 
-    /* count=0: explicit empty list. Complete cleanly. */
+    /* count=0: explicit empty list. Complete cleanly + drive the Vulkan
+     * queue round-trip (same rationale as the 0x22 count=0 path). */
     if (count == 0) {
         LAGFX_LOG("CmdExecIndirect2: taskID=%u count=0 "
                   "(empty-list completion) stamp=0x%08x",
                   task_id, hdr->stamp);
+        lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
+                                            hdr->stamp);
         return LAGFX_HANDLER_OK;
     }
 

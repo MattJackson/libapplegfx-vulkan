@@ -975,7 +975,19 @@ static void test_metal_no_op_sequence(void) {
     lagfx_protocol_dispatch_one(p, dcf, sizeof(dcf));
 
     /* 4. CmdSynchronizeResources(count=0) — the "commit empty cmdbuf"
-     *    completion path. */
+     *    completion path.
+     *
+     *    Phase 1 end-to-end note: when a real lagfx_device is attached
+     *    (as here — make_dev calls lagfx_device_new), this handler's
+     *    count=0 branch also invokes lagfx_vk_submit_empty() on the
+     *    device's VkQueue. On Darwin dev hosts with no loadable ICD,
+     *    LAGFX_HAVE_VULKAN is unset so the call lands in the no-op
+     *    stub that returns LAGFX_OK; on Linux with Mesa lavapipe, a
+     *    real fence-gated empty VkSubmit runs end-to-end. This mock
+     *    test cannot assert on Vulkan state (no VkDevice introspection
+     *    here), but the code path is exercised — a regression in the
+     *    decoder→vk wiring would show up as an abort or as additional
+     *    LAGFX_LOG spam in test output. */
     uint8_t sync[20];
     build_header(sync, LAGFX_OP_SYNCHRONIZE_RESOURCES, 0, 20, 0xe2e00004u);
     put_le32(sync + 12, 1u); /* taskID=1 (known) */
@@ -985,7 +997,10 @@ static void test_metal_no_op_sequence(void) {
     /* 4b. Alternate empty-cmdbuf completion path: CmdExecIndirect2
      *     with count=0. Should complete cleanly, symmetric to 0x22.
      *     (Per re-followup R2 / plan §6.2 this is the documented
-     *     alternate path that metal-no-op may take.) */
+     *     alternate path that metal-no-op may take.)
+     *
+     *     Same Phase 1 end-to-end note as step 4 applies — this path
+     *     also drives lagfx_vk_submit_empty() when a device is attached. */
     uint8_t exi[20];
     build_header(exi, LAGFX_OP_EXEC_INDIRECT2, 0, 20, 0xe2e0004au);
     put_le32(exi + 12, 1u);
