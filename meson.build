@@ -91,8 +91,15 @@ libapplegfx_vulkan_dep = declare_dependency(
   include_directories : include_dir)
 
 # pkg-config file so downstream consumers (mos-qemu) can locate us.
+# Explicit name/filebase = 'libapplegfx-vulkan' so the resulting .pc file is
+# libapplegfx-vulkan.pc (matches QEMU's dependency('libapplegfx-vulkan')).
+# Without these overrides meson derives the filename from the library name
+# ('applegfx-vulkan'), producing applegfx-vulkan.pc and a silent dependency
+# miss in downstream consumers. See M1 dry-run audit (docker-macos/docs).
 pkg = import('pkgconfig')
 pkg.generate(libapplegfx_vulkan,
+  name : 'libapplegfx-vulkan',
+  filebase : 'libapplegfx-vulkan',
   description : 'Linux impl of Apple PVG framework (Vulkan backend)',
   url : 'https://github.com/MattJackson/libapplegfx-vulkan',
 )
