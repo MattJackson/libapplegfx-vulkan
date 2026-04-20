@@ -77,11 +77,33 @@ format" ties these specs to the library's Phase 0 corpus
 
 ## Tests
 
-`tests/air2spirv.c` synthesises a minimal MTLB + LLVM Bitcode blob
-to exercise extraction + retargeting without depending on the
-Phase 0 corpus (which is too large to commit alongside the library
-and lives in the mos tree). See the test source for the exact
-fixture layout.
+`tests/air2spirv.c` exercises extraction + retargeting against two
+fixtures:
+
+1. **Synthesised MTLB blob** generated in-test (see
+   `make_synth_mtlb` in the test source). Useful for exercising
+   edge cases without touching disk.
+
+2. **Real bytes:** `tests/fixtures/default.metallib` — a direct
+   copy of `paravirt-re/metallib/default.metallib` (24,500 bytes,
+   MTLB v1.2.9, 5 shaders). Validates that our parser agrees with
+   Apple's actual container layout, not just the worthdoingbadly
+   writeup. Asserts:
+   - MTLB magic recognised
+   - Function count == 5
+   - All names match the known-good set
+   - Every bitcode payload begins with `0xDEC017B`
+   - Every bitcode contains an `air64*-apple-macosx` triple
+   - Retarget produces output containing `spir64-unknown-vulkan1.3`
+
+The 2026-04-20 validation pass against this real fixture surfaced
+and fixed four parser bugs (u16 vs u32 tag lengths, missing entry
+size-prefix framing, 24-byte OFFT payload with relative bitcode
+offset, stage enum values). See the commit log for the specifics.
+
+**Validated platforms (2026-04-20):**
+- Darwin arm64: 84/84 PASS (meson test)
+- Alpine 3.21 musl x86_64: 84/84 PASS (via Docker)
 
 ## Build
 
