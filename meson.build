@@ -18,13 +18,16 @@ add_project_arguments([
 
 include_dir = include_directories('include')
 
+fs = import('fs')
+
 # --- Sources --------------------------------------------------------------
 # src/ subdirs are populated incrementally by Phase 1 work. Each subdir adds
 # its files via subdir('src/foo') which appends to the lagfx_sources list.
 lagfx_sources = []
 
-# Populate as subdirs land. Currently empty (Phase 0); Phase 1 fills these.
-if fs := import('fs') and fs.is_dir('src/memory')
+# Populate as subdirs land. Each subdir has its own meson.build that appends
+# to lagfx_sources.
+if fs.is_file(meson.current_source_dir() / 'src' / 'memory' / 'meson.build')
   subdir('src/memory')
 endif
 

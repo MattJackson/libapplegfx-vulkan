@@ -6,8 +6,11 @@ header_test = executable('header-syntax-check',
 )
 test('header syntax', header_test)
 
-# memory-task test (only built when src/memory has produced task.c)
-if fs := import('fs') and fs.is_file('../src/memory/task.c')
+# memory-task test (only built when src/memory has produced task.c AND
+# the local test source exists).
+# fs is inherited from the parent meson.build scope.
+if fs.is_file(meson.current_source_dir() / 'memory-task.c') and \
+   fs.is_file(meson.project_source_root() / 'src' / 'memory' / 'task.c')
   memory_test = executable('memory-task-test',
     'memory-task.c',
     include_directories : include_dir,
