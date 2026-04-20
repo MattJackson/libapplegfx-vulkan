@@ -40,6 +40,18 @@ if fs.is_file(meson.current_source_dir() / 'memory-task.c') and \
   endif
 endif
 
+# Protocol dispatch tests (Phase 1.A.2). Reaches into src/ for
+# internal protocol headers, so it needs internal_include_dir too.
+if fs.is_file(meson.current_source_dir() / 'protocol-dispatch.c')
+  protocol_dispatch_test = executable('protocol-dispatch',
+    'protocol-dispatch.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('protocol dispatch', protocol_dispatch_test)
+endif
+
 # Optional lavapipe smoke test — only built when vulkan is present.
 if fs.is_file(meson.current_source_dir() / 'lavapipe-smoke.c') \
    and vulkan_dep.found()

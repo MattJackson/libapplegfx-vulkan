@@ -141,9 +141,14 @@ int main(void) {
     CHECK(st == LAGFX_ERR_NO_FRAME, "read_frame returns NO_FRAME in 1.A.1");
     CHECK(newf == false, "new_frame_out cleared");
 
-    /* --- MMIO stubs --- */
-    uint32_t r = lagfx_mmio_read(dev, 0x1000);
-    CHECK(r == 0, "mmio_read returns 0 for stub");
+    /* --- MMIO stubs ---
+     * Phase 1.A.2: STATUS_CONTROL (0x1000) returns a non-zero
+     * "present+ready" bitmap from the decoder. An unmapped offset
+     * still reads back as 0. */
+    uint32_t r_status = lagfx_mmio_read(dev, 0x1000);
+    CHECK(r_status != 0, "mmio_read STATUS_CONTROL is non-zero (decoder live)");
+    uint32_t r_unmapped = lagfx_mmio_read(dev, 0x1030);
+    CHECK(r_unmapped == 0, "mmio_read unmapped offset returns 0");
     lagfx_mmio_write(dev, 0x1004, 0xcafebabeu);
     CHECK(1, "mmio_write does not crash");
 

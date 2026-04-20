@@ -14,3 +14,4 @@ lagfx_sources += files(
 # installed. subdir() calls for subsystem-local sources go here.
 
 subdir('common')
+subdir('protocol')

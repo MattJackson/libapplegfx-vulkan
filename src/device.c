@@ -14,6 +14,7 @@
 
 #include "device.h"
 #include "display.h"
+#include "protocol/protocol.h"
 #include "common/log.h"
 
 #include <stdlib.h>
@@ -60,8 +61,17 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
                               ? desc->mmio_region_size
                               : LAGFX_MMIO_DEFAULT_SIZE;
 
-    /* Phase 1.A.2+: init protocol state machine here. */
-    dev->protocol_state = NULL;
+    /* Phase 1.A.2: attach the protocol decoder. It owns the MMIO
+     * register shadow (0x1000..0x1028), doorbell dispatch, and the
+     * opcode jump table. If it fails to allocate we unwind. */
+    dev->protocol_state = lagfx_protocol_new(dev);
+    if (!dev->protocol_state) {
+        set_err(errp_out, "lagfx_device_new: protocol decoder alloc failed");
+        memset(dev, 0, sizeof(*dev));
+        free(dev);
+        return NULL;
+    }
+
     /* Phase 1.B+: init Vulkan instance/device here. */
     dev->vulkan_state = NULL;
 
@@ -93,6 +103,12 @@ void lagfx_device_free(lagfx_device_t *device) {
         }
     }
 
+    /* Tear down the protocol decoder before wiping state. */
+    if (device->protocol_state) {
+        lagfx_protocol_free((lagfx_protocol_t *)device->protocol_state);
+        device->protocol_state = NULL;
+    }
+
     LAGFX_LOG("device_free: dev=%p", (void *)device);
 
     /* Zero before free so use-after-free is noisy. */
@@ -108,9 +124,11 @@ void lagfx_device_reset(lagfx_device_t *device) {
 
     LAGFX_LOG("device_reset: dev=%p", (void *)device);
 
-    /* Phase 1.A.2+: drain command buffers, reset protocol state,
-     * re-init GPU state. For now: nothing to do; no in-flight state. */
-    (void)device;
+    /* Drain decoder tables + inflight state; registers stay. */
+    if (device->protocol_state) {
+        lagfx_protocol_reset((lagfx_protocol_t *)device->protocol_state);
+    }
+    /* Phase 1.B+: re-init GPU state. */
 }
 
 /* === Internal display attach/detach ============================ */
