@@ -23,6 +23,7 @@
 #ifndef LIBAPPLEGFX_PROTOCOL_OPCODES_H
 #define LIBAPPLEGFX_PROTOCOL_OPCODES_H
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -81,14 +82,14 @@ typedef enum {
     LAGFX_OP_DELETE_SHARED_TEX_BACK   = 0x82,
 
     /* Sentinel — MUST be last. Not a real opcode. */
-    LAGFX_OP__MAX                     = 0xff,
+    LAGFX_OP__MAX                     = 0xffff,
 } lagfx_opcode_t;
 
-/* Number of opcodes documented. The phase-1a2 brief says "all 37"; the
- * authoritative command-buffer-format.md §10 tally is 36 (14 core +
- * 1 NOP + 11 display + 7 exec/sync + 3 heap). We go with the spec's
- * self-count. If a 37th opcode surfaces during bring-up, add it to
- * the enum + descriptor table and bump this constant. */
+/* Number of opcodes documented. Spec tally (command-buffer-format.md
+ * §10) is 36 (14 core + 1 NOP + 11 display + 7 exec/sync + 3 heap).
+ * Per re-followup-spec-gaps.md §5.3 the host jump table tolerates
+ * 0x00..0x44 (69 entries) with the extras stubbed to "unknown opcode";
+ * we only populate the named 36 here. */
 #define LAGFX_OPCODE_COUNT 36
 
 /* === Priority bands ============================================ */
@@ -108,28 +109,54 @@ typedef enum {
     LAGFX_HANDLER_ERR_INTERNAL = 3,
 } lagfx_handler_status_t;
 
-/* === Parsed command header ===================================== */
+/* === Parsed command header =====================================
+ *
+ * 12-byte on-wire layout per re-followup-spec-gaps.md §5.1 and
+ * `processFifo` evidence (literal `movl $0xc, %edx` at disasm line
+ * 74293 fixes the read-size at 12).
+ *
+ * Prior scaffold (Phase 1.A.2 initial drop) used a 16-byte layout
+ * derived from an incorrect reading of the command-buffer-format spec
+ * (which is itself scheduled for revision). This is the corrected
+ * shape; there is no separate `flags` byte — each command
+ * unconditionally signals its stamp on completion, and per-opcode
+ * "expectations" are implicit in the opcode itself.
+ */
+typedef struct lagfx_cmd_header {
+    uint16_t opcode;       /* 0x0000..0x0044 — index into dispatch table     */
+    uint16_t arg_count_8b; /* number of 8-byte inline-argument slots (0..64) */
+    uint32_t length;       /* total command bytes on ring (>= 12)            */
+    uint32_t stamp;        /* completion stamp, u32                          */
 
-/* Corresponds to struct PGCommand in command-buffer-format.md §2.
- * Populated by the FIFO dequeue path before the handler runs. */
-typedef struct {
-    uint8_t  opcode;
-    uint8_t  flags;
-    uint16_t length;        /* total command size including header */
-    uint32_t stamp;
-    uint32_t reserved;
-    uint16_t payload_size;  /* length - 16 */
-    uint16_t padding;
-    const uint8_t *payload; /* points into guest-copy buffer; may be NULL */
+    /* --- Derived (not on wire) ----------------------------------
+     * Set by lagfx_fifo_parse_header() from the wire fields above.
+     * payload_size = length - sizeof(on-wire header) = length - 12.
+     * payload points just past the 12-byte header if the caller
+     * passed a buffer long enough to contain the full command; else
+     * payload is NULL and payload_size may still be > 0 so handlers
+     * can detect the header-only case. */
+    uint16_t       payload_size;
+    const uint8_t *payload;
 } lagfx_cmd_header_t;
 
-#define LAGFX_CMD_HEADER_BYTES 16u
+/* On-wire header size. The derived fields above are NOT part of this
+ * size. */
+#define LAGFX_CMD_HEADER_BYTES 12u
 
-/* Flag bit positions (see command-buffer-format.md §2). R6 in brief
- * notes bit-0 is inferred; narrow once confirmed against live guest. */
-#define LAGFX_FLAG_COMPLETION_EXPECTED (1u << 0)
-#define LAGFX_FLAG_PRIORITY_HIGH       (1u << 1)
-#define LAGFX_FLAG_FLUSH_CACHE         (1u << 2)
+/* Compile-time guarantee that the four wire fields at the top of the
+ * struct occupy exactly 12 bytes (on every sane C11 target, opcode,
+ * arg_count_8b, length, stamp pack to 2+2+4+4=12 with no padding). */
+_Static_assert(offsetof(struct lagfx_cmd_header, opcode)       == 0,
+               "opcode at offset 0");
+_Static_assert(offsetof(struct lagfx_cmd_header, arg_count_8b) == 2,
+               "arg_count_8b at offset 2");
+_Static_assert(offsetof(struct lagfx_cmd_header, length)       == 4,
+               "length at offset 4");
+_Static_assert(offsetof(struct lagfx_cmd_header, stamp)        == 8,
+               "stamp at offset 8");
+_Static_assert(offsetof(struct lagfx_cmd_header, payload_size) == 12,
+               "payload_size (derived) must sit just past the on-wire "
+               "12-byte header");
 
 /* === Handler signature + descriptor ============================ */
 
@@ -138,7 +165,7 @@ typedef lagfx_handler_status_t (*lagfx_op_handler_fn)(
     const lagfx_cmd_header_t *hdr);
 
 typedef struct {
-    uint8_t            opcode;     /* LAGFX_OP_* value */
+    uint16_t           opcode;     /* LAGFX_OP_* value (u16 on the wire) */
     const char        *name;       /* short, log-friendly */
     lagfx_priority_t   priority;
     uint16_t           min_payload;/* floor (inclusive); 0 = none */
@@ -148,13 +175,12 @@ typedef struct {
 
 /* Look up the descriptor for an opcode. Returns NULL if the opcode
  * is not in the table (caller falls back to default handler). */
-const lagfx_op_descriptor_t *lagfx_opcode_lookup(uint8_t opcode);
+const lagfx_op_descriptor_t *lagfx_opcode_lookup(uint16_t opcode);
 
 /* Short human-readable name for tracing. Never returns NULL —
- * unknown opcodes yield "Unknown(0xNN)" into a static thread-local
- * (actually a shared static buffer in phase 1.A.2; single-threaded
- * per the header comment in protocol.h). */
-const char *lagfx_opcode_name(uint8_t opcode);
+ * unknown opcodes yield "Unknown(0xNNNN)" into a static buffer
+ * (single-threaded per the header comment in protocol.h). */
+const char *lagfx_opcode_name(uint16_t opcode);
 
 /* Iterate the full descriptor table. For tests / stats. */
 size_t lagfx_opcode_table_size(void);

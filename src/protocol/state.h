@@ -48,8 +48,7 @@ typedef struct {
 
 typedef struct {
     uint32_t stamp;
-    uint8_t  opcode;
-    uint8_t  flags;
+    uint16_t opcode;
     bool     completed;
 } lagfx_inflight_entry_t;
 
@@ -57,18 +56,26 @@ struct lagfx_protocol {
     uint32_t magic;                 /* LAGFX_PROTOCOL_MAGIC */
     struct lagfx_device *dev;       /* back-pointer for shell callbacks */
 
-    /* MMIO register shadow — 11 regs * 4 bytes, indexed by
-     * (offset - LAGFX_REG_BASE) / 4. */
+    /* MMIO register shadow — 15 regs * 4 bytes, indexed by
+     * (offset - LAGFX_REG_BASE) / 4. Covers 0x1000..0x1038. */
     uint32_t reg[LAGFX_REG_COUNT];
 
-    /* Ring state (stubbed per R1). */
+    /* Ring geometry (stubbed per R1 — ring_base_gpa is derived from
+     * the three setter MMIO writes once the offset↔setter mapping is
+     * nailed down by runtime capture). */
     bool     ring_armed;
     uint64_t ring_base_gpa;         /* TODO(R1): not populated yet */
     uint32_t ring_size;
     uint32_t read_ptr;              /* decoder drain cursor */
-    uint32_t write_ptr;             /* last-seen guest write ptr */
-    uint32_t last_doorbell_stamp;
+    uint32_t write_ptr;             /* last-seen guest write ptr (doorbell) */
     uint32_t last_completed_stamp;
+
+    /* Setter-candidate probe state — see protocol.h:
+     * the true doorbell offset in 0x1004..0x1034 is unknown, so we
+     * log each write to the range and expose it for runtime capture. */
+    uint32_t last_setter_offset;    /* last offset in the candidate range */
+    uint32_t last_setter_value;     /* last value written there */
+    uint64_t setter_write_count;
 
     /* Handle tables. */
     lagfx_task_entry_t      tasks[LAGFX_MAX_TASKS];
@@ -79,7 +86,6 @@ struct lagfx_protocol {
     uint64_t total_cmds_seen;
     uint64_t total_cmds_completed;
     uint64_t unknown_opcode_count;
-    uint64_t doorbell_writes;
     uint64_t interrupts_raised;
 };
 
@@ -99,9 +105,11 @@ static inline bool lagfx_protocol_is_valid(const lagfx_protocol_t *p) {
     return p != NULL && p->magic == LAGFX_PROTOCOL_MAGIC;
 }
 
-/* Completion path — writes fence, optionally raises interrupt.
- * Defined in protocol.c; called by handlers + fifo.c. */
-void lagfx_protocol_complete_stamp(lagfx_protocol_t *p,
-                                   uint32_t stamp, uint8_t flags);
+/* Completion path — writes the host-to-guest stamp cell (readable at
+ * MMIO 0x1014) and raises the IRQ. Every command completes
+ * unconditionally; the 12-byte header has no flags field and the
+ * dylib's handler tails always call the "signal stamp" selector
+ * (re-followup-spec-gaps.md §5.1). */
+void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp);
 
 #endif /* LIBAPPLEGFX_PROTOCOL_STATE_H */

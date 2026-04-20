@@ -7,10 +7,11 @@
  *
  * The protocol decoder owns command-buffer interpretation:
  *
- *   - MMIO register shadow (0x1000..0x1028).
- *   - FIFO ring dequeue driven by the 0x101c doorbell.
+ *   - MMIO register shadow (0x1000..0x1038; 15 registers).
+ *   - FIFO ring dequeue driven by the guest "write pointer" doorbell.
  *   - Dispatch to opcode handlers (opcodes.h / ops_*.c).
- *   - Completion path: write 0x1020 fence + call shell.raise_interrupt.
+ *   - Completion path: write stamp to the host-to-guest stamp cell
+ *     (readable at MMIO 0x1014) and call shell.raise_interrupt.
  *
  * Concurrency: Phase 1.A.2 is single-threaded. Every entry point is
  * expected to run under the QEMU BQL (or the device's AIO context —
@@ -35,28 +36,64 @@ struct lagfx_device;
 typedef struct lagfx_protocol lagfx_protocol_t;
 
 /* === MMIO register offsets ====================================
- * These live in the BAR at 0x1000+. Phase 1.A.2 shadows them in
- * an 11-entry table. See phase-1a2-decoder-plan.md §3.
+ *
+ * These live in the BAR at 0x1000+. Phase 1.A.2 shadows them in a
+ * 15-entry table (offsets 0x1000..0x1038, stride 4). The layout below
+ * supersedes the prior scaffold's map, which incorrectly named 0x101c
+ * a doorbell. Evidence: re-followup-spec-gaps.md §5.2 (mmioReadAtOffset
+ * dispatch lines 40785+, mmioWriteAtOffset dispatch lines 42340+).
+ *
+ * KNOWN:
+ *   0x1000  STATUS_CONTROL (master FIFO enable; R: _fifo state u32)
+ *   0x1014  STAMP_CELL_1 read-side is an atomic xchg of the
+ *           host-to-guest stamp latch at _PGDevice+0xf8; guests poll
+ *           this to learn of completions without taking an IRQ.
+ *   0x1018  STAMP_CELL_2 (aka _interruptStamp) read-side is an atomic
+ *           xchg of _PGDevice+0x1c0; paired with IRQ delivery.
+ *   0x101c  ROOT_PAGE_NUMBER — read-only getter for _rootPageNumber
+ *           (u32 at _PGDevice+0x210). This is NOT a doorbell; the
+ *           prior scaffold was wrong.
+ *   0x1034  BINARY_VERSION — read-only _binaryVersion u32.
+ *
+ * OPEN (runtime capture needed):
+ *   One of {0x1004, 0x1008, 0x1010, 0x101c, 0x1020, 0x1024, 0x1028,
+ *           0x1030, 0x1034} is the write-pointer doorbell
+ *   (setFifoWritten:) — the write-side setter that forwards to
+ *   _rootFIFO and drains the ring up to the provided byte offset.
+ *   Three others (out of the same set) are setFifoBasePage:,
+ *   setFifoLength:, setFifoStart: (ring geometry). The remaining
+ *   five are other per-device setters.
+ *
+ *   Until the offset↔setter mapping is resolved by a runtime trace
+ *   (see re-followup-spec-gaps.md §1.5), any write landing in this
+ *   range is routed to a common "doorbell candidate" handler that
+ *   logs (offset, value) so the capture immediately reveals which
+ *   offset carries the write pointer.
  * ------------------------------------------------------------- */
 
-#define LAGFX_REG_STATUS_CONTROL  0x1000u  /* RW — device status */
-#define LAGFX_REG_INTR_CONTROL    0x1004u  /* RW — interrupt enable / raise */
-#define LAGFX_REG_INTR_CLEAR      0x1008u  /* RW — clear pending / queue write ptr */
-#define LAGFX_REG_CONFIG          0x100cu  /* RW — config flags / queue size */
-#define LAGFX_REG_FEATURE_ENABLE  0x1010u  /* RW */
-#define LAGFX_REG_QUEUE_CONTROL   0x1014u  /* RW — ring arm */
-#define LAGFX_REG_FIFO_STATE      0x1018u  /* R  — drain state */
-#define LAGFX_REG_DOORBELL        0x101cu  /* RW — ATOMIC_SWAP_1; hot path */
-#define LAGFX_REG_FENCE           0x1020u  /* RW — ATOMIC_SWAP_2; host writes stamps */
-#define LAGFX_REG_UNKNOWN_24      0x1024u
-#define LAGFX_REG_UNKNOWN_28      0x1028u
+#define LAGFX_REG_STATUS_CONTROL      0x1000u  /* RW — FIFO enable / state       */
+#define LAGFX_REG_FIFO_FAULT_OFFSET   0x100cu  /* R  — _rootFIFO.fifoFaultOffset */
+#define LAGFX_REG_STAMP_CELL_1        0x1014u  /* R  — atomic-xchg stamp latch   */
+#define LAGFX_REG_STAMP_CELL_2        0x1018u  /* R  — atomic-xchg _interruptStamp */
+#define LAGFX_REG_ROOT_PAGE_NUMBER    0x101cu  /* R  — _rootPageNumber (NOT doorbell) */
+#define LAGFX_REG_BINARY_VERSION      0x1034u  /* R  — _binaryVersion            */
 
-#define LAGFX_REG_BASE            0x1000u
-#define LAGFX_REG_COUNT           11u
-#define LAGFX_REG_LAST            0x1028u
+/* Bank covers 0x1000..0x1038 inclusive (15 regs), stride 4. */
+#define LAGFX_REG_BASE                0x1000u
+#define LAGFX_REG_COUNT               15u
+#define LAGFX_REG_LAST                0x1038u
+
+/* Candidate range for the setFifoWritten doorbell + the three ring
+ * geometry setters + five other per-device setters. Until runtime
+ * capture disambiguates, writes to any offset here are funneled
+ * through lagfx_fifo_on_mmio_setter() in fifo.c. Reads from this range
+ * are served by the plain register shadow (most return the last
+ * value written; 0x101c returns _rootPageNumber). */
+#define LAGFX_REG_SETTER_CAND_FIRST   0x1004u
+#define LAGFX_REG_SETTER_CAND_LAST    0x1034u
 
 /* MSI-X table lives below the register bank; decoder must not claim. */
-#define LAGFX_MSIX_RANGE_END      0x1000u
+#define LAGFX_MSIX_RANGE_END          0x1000u
 
 /* === Lifecycle ================================================ */
 
@@ -81,7 +118,9 @@ void lagfx_protocol_reset(lagfx_protocol_t *p);
 uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset);
 
 /* Write a 4-byte register. Out-of-range writes are logged and dropped.
- * A write to LAGFX_REG_DOORBELL triggers the FIFO drain path. */
+ * Writes in the setter-candidate range (0x1004..0x1034) log the
+ * (offset, value) pair and trigger the FIFO drain probe — the real
+ * doorbell offset is not yet known, so every candidate is observed. */
 void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                                uint32_t value);
 
@@ -93,8 +132,10 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
  * ------------------------------------------------------------- */
 
 /* Dispatch a single pre-parsed command. The handler's return code is
- * passed back verbatim. Also runs the completion path (fence + IRQ)
- * if the command's flags include LAGFX_FLAG_COMPLETION_EXPECTED.
+ * passed back verbatim. Also runs the completion path (stamp writeback
+ * + IRQ) unconditionally — the 12-byte header has no flags field and
+ * every command signals its stamp on completion (see
+ * re-followup-spec-gaps.md §5.1).
  *
  * Used by fifo.c once it has read a command from the ring and by
  * tests/protocol-dispatch.c to drive handlers directly. */
@@ -109,8 +150,14 @@ void lagfx_protocol_stats(const lagfx_protocol_t *p,
                           uint64_t *total_cmds_completed_out,
                           uint64_t *unknown_opcode_count_out);
 
-/* Query the last completed / doorbell stamps (tests + observability). */
+/* Query the last completed stamp (tests + observability). */
 uint32_t lagfx_protocol_last_completed_stamp(const lagfx_protocol_t *p);
-uint32_t lagfx_protocol_last_doorbell_stamp(const lagfx_protocol_t *p);
+
+/* Last value written to any setter-candidate MMIO offset, together
+ * with the offset itself. Until the true doorbell offset is known,
+ * tests use these to confirm the probe captured the write. */
+uint32_t lagfx_protocol_last_setter_offset(const lagfx_protocol_t *p);
+uint32_t lagfx_protocol_last_setter_value(const lagfx_protocol_t *p);
+uint64_t lagfx_protocol_setter_write_count(const lagfx_protocol_t *p);
 
 #endif /* LIBAPPLEGFX_PROTOCOL_H */

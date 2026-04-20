@@ -35,8 +35,9 @@ lagfx_handler_status_t lagfx_op_nop(lagfx_protocol_t *p,
     if (!hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
-    LAGFX_LOG("CmdNOP: stamp=0x%08x flags=0x%02x",
-              hdr->stamp, hdr->flags);
+    LAGFX_LOG("CmdNOP: stamp=0x%08x arg_count_8b=%u length=%u",
+              hdr->stamp, (unsigned)hdr->arg_count_8b,
+              (unsigned)hdr->length);
     return LAGFX_HANDLER_OK;
 }
 
@@ -58,15 +59,15 @@ lagfx_handler_status_t lagfx_op_debug(lagfx_protocol_t *p,
             snprintf(hex + (i * 3), sizeof(hex) - (i * 3),
                      "%02x ", hdr->payload[i]);
         }
-        LAGFX_LOG("CmdDebug: stamp=0x%08x flags=0x%02x "
+        LAGFX_LOG("CmdDebug: stamp=0x%08x arg_count_8b=%u "
                   "payload_size=%u bytes=[%s%s]",
-                  hdr->stamp, hdr->flags,
+                  hdr->stamp, (unsigned)hdr->arg_count_8b,
                   (unsigned)hdr->payload_size,
                   hex,
                   hdr->payload_size > 16 ? "..." : "");
     } else {
-        LAGFX_LOG("CmdDebug: stamp=0x%08x flags=0x%02x (no payload)",
-                  hdr->stamp, hdr->flags);
+        LAGFX_LOG("CmdDebug: stamp=0x%08x arg_count_8b=%u (no payload)",
+                  hdr->stamp, (unsigned)hdr->arg_count_8b);
     }
     return LAGFX_HANDLER_OK;
 }

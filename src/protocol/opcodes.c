@@ -5,13 +5,19 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * All 37 opcodes from command-buffer-format.md §3 are recognized by
- * name. Handlers are wired to the real implementations in ops_misc.c
- * (NOP, Debug) and stubs in ops_device.c / ops_queue.c / ops_cmdbuf.c
- * for P0/P1 that the next agent will fill in. P2 entries have
- * handler=NULL; the dispatcher falls through to the default log+ack
- * handler, matching the dylib's fail-open semantics
+ * All 36 named opcodes from command-buffer-format.md §3 are recognized
+ * by name. Handlers are wired to the real implementations in
+ * ops_misc.c (NOP, Debug) and stubs in ops_device.c / ops_queue.c /
+ * ops_cmdbuf.c for P0/P1 that the next agent will fill in. P2 entries
+ * have handler=NULL; the dispatcher falls through to the default
+ * log+ack handler, matching the dylib's fail-open semantics
  * (command-buffer-format.md §6).
+ *
+ * min_payload for the three gap-closed opcodes (0x04, 0x0a, 0x22) was
+ * corrected against re-followup-spec-gaps.md:
+ *   0x04 CmdDefineChildFIFO   — 4 bytes (§3.3); was 16 in the scaffold
+ *   0x0a CmdGetDeviceInfo     — 12 bytes (§2.2)
+ *   0x22 CmdSynchronizeResources — 8 bytes minimum (empty list) (§4.3)
  */
 
 #include "opcodes.h"
@@ -22,11 +28,6 @@
 #include <stddef.h>
 #include <stdio.h>
 
-/* Table is declared here; lookups use a small linear scan. 37 entries
- * fit easily in one cache line's worth of work — we're not on a hot
- * path yet. When the ring-drain is live, the inner loop likely wants
- * a 256-entry direct jump table keyed on opcode byte; that's a trivial
- * future refactor. */
 static const lagfx_op_descriptor_t g_op_table[] = {
     /* --- Core / Task / Memory (0x00-0x0d) -------------------- */
     { LAGFX_OP_DEFINE_TASK2,         "CmdDefineTask2",
@@ -38,7 +39,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_UNMAP_MEMORY,         "CmdUnmapMemory",
       LAGFX_PRIO_P1, 20, 20, lagfx_op_unmap_memory },
     { LAGFX_OP_DEFINE_CHILD_FIFO,    "CmdDefineChildFIFO",
-      LAGFX_PRIO_P0, 16, 16, lagfx_op_define_child_fifo },
+      LAGFX_PRIO_P0, 4,  4,  lagfx_op_define_child_fifo },
     { LAGFX_OP_DELETE_CHILD_FIFO,    "CmdDeleteChildFIFO",
       LAGFX_PRIO_P0, 4,  4,  lagfx_op_delete_child_fifo },
     { LAGFX_OP_INVALIDATE_RESOURCES, "CmdInvalidateResources",
@@ -50,7 +51,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_REPLACE_PHYSICAL,     "CmdReplacePhysical",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_GET_DEVICE_INFO,      "CmdGetDeviceInfo",
-      LAGFX_PRIO_P0, 0, 0, lagfx_op_get_device_info },
+      LAGFX_PRIO_P0, 12, 0, lagfx_op_get_device_info },
     { LAGFX_OP_GET_COMPUTE_INFO,     "CmdGetComputeInfo",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_DELAY,                "CmdDelay",
@@ -92,7 +93,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_EXEC_INDIRECT3,        "CmdExecIndirect3",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_SYNCHRONIZE_RESOURCES, "CmdSynchronizeResources",
-      LAGFX_PRIO_P0, 0, 0, lagfx_op_synchronize_resources },
+      LAGFX_PRIO_P0, 8, 0, lagfx_op_synchronize_resources },
     { LAGFX_OP_SYNCHRONIZE_DISCARD,   "CmdSynchronizeAndDiscardResources",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_SET_OBJECT_LIST,       "CmdSetObjectList",
@@ -119,7 +120,7 @@ _Static_assert(sizeof(g_op_table) / sizeof(g_op_table[0]) ==
                LAGFX_OPCODE_COUNT,
                "opcode descriptor table size mismatch");
 
-const lagfx_op_descriptor_t *lagfx_opcode_lookup(uint8_t opcode) {
+const lagfx_op_descriptor_t *lagfx_opcode_lookup(uint16_t opcode) {
     for (size_t i = 0; i < g_op_table_count; ++i) {
         if (g_op_table[i].opcode == opcode) {
             return &g_op_table[i];
@@ -128,7 +129,7 @@ const lagfx_op_descriptor_t *lagfx_opcode_lookup(uint8_t opcode) {
     return NULL;
 }
 
-const char *lagfx_opcode_name(uint8_t opcode) {
+const char *lagfx_opcode_name(uint16_t opcode) {
     const lagfx_op_descriptor_t *d = lagfx_opcode_lookup(opcode);
     if (d) {
         return d->name;
@@ -136,7 +137,7 @@ const char *lagfx_opcode_name(uint8_t opcode) {
     /* Phase 1.A.2 is single-threaded (see protocol.h header comment),
      * so a file-static buffer is safe. */
     static char unknown_buf[24];
-    snprintf(unknown_buf, sizeof(unknown_buf), "Unknown(0x%02x)", opcode);
+    snprintf(unknown_buf, sizeof(unknown_buf), "Unknown(0x%04x)", opcode);
     return unknown_buf;
 }
 
@@ -163,7 +164,7 @@ lagfx_handler_status_t lagfx_op_default_handler(lagfx_protocol_t *p,
      * bring-up we prefer to ack so the guest doesn't hang waiting
      * for a completion that will never come. Re-RE this once real
      * guest traffic is observed. */
-    LAGFX_WARN("dispatch: unrecognized opcode 0x%02x (stamp 0x%08x, "
+    LAGFX_WARN("dispatch: unrecognized opcode 0x%04x (stamp 0x%08x, "
                "length %u) — log+ack fallback",
                hdr->opcode, hdr->stamp, (unsigned)hdr->length);
     return LAGFX_HANDLER_OK;

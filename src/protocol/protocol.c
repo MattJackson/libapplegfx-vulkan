@@ -8,10 +8,10 @@
  * Phase 1.A.2 scaffold. Provides:
  *
  *   - lagfx_protocol_{new,free,reset} lifecycle.
- *   - lagfx_protocol_mmio_{read,write} register shadow + doorbell
- *     forwarding.
- *   - lagfx_protocol_dispatch_one — parse header, look up opcode,
- *     invoke handler, run completion path.
+ *   - lagfx_protocol_mmio_{read,write} register shadow + setter
+ *     candidate probe (doorbell offset is not yet identified).
+ *   - lagfx_protocol_dispatch_one — parse 12-byte header, look up
+ *     opcode, invoke handler, run completion path.
  *
  * The FIFO ring dequeue itself is stubbed in fifo.c (R1 gap).
  * Tests drive dispatch via lagfx_protocol_dispatch_one directly.
@@ -86,49 +86,55 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->total_cmds_seen      = 0;
     p->total_cmds_completed = 0;
     p->unknown_opcode_count = 0;
-    p->doorbell_writes      = 0;
     p->interrupts_raised    = 0;
     p->last_completed_stamp = 0;
-    p->last_doorbell_stamp  = 0;
+    p->last_setter_offset   = 0;
+    p->last_setter_value    = 0;
+    p->setter_write_count   = 0;
     p->read_ptr             = 0;
     p->write_ptr            = 0;
 }
 
-/* === Completion path ======================================== */
-
-void lagfx_protocol_complete_stamp(lagfx_protocol_t *p,
-                                   uint32_t stamp, uint8_t flags) {
+/* === Completion path ========================================
+ *
+ * Every command unconditionally signals its stamp when done. Per
+ * re-followup-spec-gaps.md §5.1, the 12-byte header has no flags
+ * field; the dylib's Cmd* handler tails always invoke the "signal
+ * stamp" selector, which pushes the stamp into PGPendingStampQueue,
+ * and the dequeue thread later writes the stamp into the host-to-
+ * guest stamp cell (readable at MMIO 0x1014) and raises the IRQ.
+ * We model that here by writing the stamp to the STAMP_CELL_1 shadow
+ * and calling shell.raise_interrupt. */
+void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     if (!lagfx_protocol_is_valid(p)) {
         return;
     }
 
-    /* Fence register always gets the latest stamp. Guests that
-     * poll 0x1020 see it immediately. */
-    int fence_idx = lagfx_protocol_reg_index(LAGFX_REG_FENCE);
-    if (fence_idx >= 0) {
-        p->reg[fence_idx] = stamp;
+    int cell_idx = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_1);
+    if (cell_idx >= 0) {
+        p->reg[cell_idx] = stamp;
     }
+    /* Also mirror into STAMP_CELL_2 (interrupt-cause cell) — the real
+     * device uses two distinct u32 slots, read-side is atomic-xchg. */
+    int irq_cell_idx = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_2);
+    if (irq_cell_idx >= 0) {
+        p->reg[irq_cell_idx] = stamp;
+    }
+
     p->last_completed_stamp = stamp;
     p->total_cmds_completed += 1;
 
-    /* Interrupt arm is conditional. R6: bit-0 of flags is inferred
-     * as COMPLETION_EXPECTED; until confirmed we also fire on any
-     * non-zero flags byte. */
-    bool completion_requested =
-        (flags & LAGFX_FLAG_COMPLETION_EXPECTED) != 0;
-
-    if (completion_requested && p->dev &&
-        p->dev->desc.shell.raise_interrupt) {
+    if (p->dev && p->dev->desc.shell.raise_interrupt) {
         p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque,
                                            /*vector=*/0);
         p->interrupts_raised += 1;
-        LAGFX_LOG("complete_stamp: stamp=0x%08x flags=0x%02x "
-                  "(fence written + IRQ raised)",
-                  stamp, flags);
+        LAGFX_LOG("complete_stamp: stamp=0x%08x "
+                  "(stamp cell written + IRQ raised)",
+                  stamp);
     } else {
-        LAGFX_LOG("complete_stamp: stamp=0x%08x flags=0x%02x "
-                  "(fence written, no IRQ)",
-                  stamp, flags);
+        LAGFX_LOG("complete_stamp: stamp=0x%08x "
+                  "(stamp cell written, no shell IRQ cb)",
+                  stamp);
     }
 }
 
@@ -157,10 +163,10 @@ int lagfx_protocol_dispatch_one(lagfx_protocol_t *p,
         p->unknown_opcode_count += 1;
     }
 
-    LAGFX_LOG("dispatch: op=0x%02x (%s) stamp=0x%08x flags=0x%02x "
+    LAGFX_LOG("dispatch: op=0x%04x (%s) stamp=0x%08x arg_count_8b=%u "
               "length=%u payload=%u",
               hdr.opcode, lagfx_opcode_name(hdr.opcode),
-              hdr.stamp, hdr.flags,
+              hdr.stamp, (unsigned)hdr.arg_count_8b,
               (unsigned)hdr.length, (unsigned)hdr.payload_size);
 
     /* Payload-size guard. Handlers that want tighter validation do
@@ -171,7 +177,7 @@ int lagfx_protocol_dispatch_one(lagfx_protocol_t *p,
                        desc->name, (unsigned)hdr.payload_size,
                        (unsigned)desc->min_payload);
             /* Still run completion so guest doesn't hang. */
-            lagfx_protocol_complete_stamp(p, hdr.stamp, hdr.flags);
+            lagfx_protocol_complete_stamp(p, hdr.stamp);
             return LAGFX_HANDLER_ERR_SIZE;
         }
         if (desc->max_payload != 0 && hdr.payload_size > desc->max_payload) {
@@ -184,9 +190,10 @@ int lagfx_protocol_dispatch_one(lagfx_protocol_t *p,
 
     lagfx_handler_status_t rc = fn(p, &hdr);
 
-    /* Completion path. Even if the handler returned an error we
-     * write the fence per the fail-open note in §6.3. */
-    lagfx_protocol_complete_stamp(p, hdr.stamp, hdr.flags);
+    /* Completion path runs unconditionally — see note on
+     * lagfx_protocol_complete_stamp. Even if the handler returned
+     * an error we write the stamp per the fail-open note in §6.3. */
+    lagfx_protocol_complete_stamp(p, hdr.stamp);
 
     return (int)rc;
 }
@@ -212,11 +219,6 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
 
     uint32_t value = p->reg[idx];
 
-    /* FIFO_STATE is derived, not stored. */
-    if (offset == LAGFX_REG_FIFO_STATE) {
-        value = (p->read_ptr != p->write_ptr) ? 1u : 0u;
-    }
-
     LAGFX_LOG("mmio_read: off=0x%llx -> 0x%08x",
               (unsigned long long)offset, value);
     return value;
@@ -240,29 +242,34 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
         return;
     }
 
-    /* Shadow first so reads reflect the write even if we short-circuit. */
+    /* Shadow first so reads reflect the write even if we short-circuit
+     * into a setter probe. Note that 0x101c is documented read-only in
+     * the dylib (returns _rootPageNumber); we still shadow the written
+     * value so a subsequent read in the test rig can confirm the path
+     * was taken. The real hardware behavior on write to 0x101c is also
+     * "store to setter-backed ivar" (_PGDevice calls its 1-arg
+     * selector), so shadowing is consistent. */
     p->reg[idx] = value;
 
     LAGFX_LOG("mmio_write: off=0x%llx val=0x%08x",
               (unsigned long long)offset, value);
 
-    /* Doorbell — drive the FIFO drain. */
-    if (offset == LAGFX_REG_DOORBELL) {
-        lagfx_fifo_on_doorbell(p, value);
+    /* STATUS_CONTROL — master FIFO enable/disable bit. */
+    if (offset == LAGFX_REG_STATUS_CONTROL) {
+        p->ring_armed = (value != 0u);
+        LAGFX_LOG("mmio_write: STATUS_CONTROL -> ring_armed=%d",
+                  (int)p->ring_armed);
         return;
     }
 
-    /* Queue-control arm/disarm. */
-    if (offset == LAGFX_REG_QUEUE_CONTROL) {
-        p->ring_armed = (value & 0x1u) != 0u;
-        LAGFX_LOG("mmio_write: ring_armed=%d", (int)p->ring_armed);
-        return;
-    }
-
-    /* INTR_CLEAR write side wipes pending bits (we don't track any
-     * yet in 1.A.2, but preserve the read-side semantics: write_ptr). */
-    if (offset == LAGFX_REG_INTR_CLEAR) {
-        /* TODO(R4): resolve read-vs-write overloading of 0x1008. */
+    /* Any write in the setter-candidate range: log, record for probe,
+     * attempt drain. One of {0x1004, 0x1008, 0x1010, 0x101c, 0x1020,
+     * 0x1024, 0x1028, 0x1030, 0x1034} is the real doorbell
+     * (setFifoWritten:) and three others carry ring-geometry setters;
+     * runtime capture disambiguates. */
+    if (offset >= LAGFX_REG_SETTER_CAND_FIRST &&
+        offset <= LAGFX_REG_SETTER_CAND_LAST) {
+        lagfx_fifo_on_mmio_setter(p, offset, value);
         return;
     }
 }
@@ -288,6 +295,14 @@ uint32_t lagfx_protocol_last_completed_stamp(const lagfx_protocol_t *p) {
     return lagfx_protocol_is_valid(p) ? p->last_completed_stamp : 0u;
 }
 
-uint32_t lagfx_protocol_last_doorbell_stamp(const lagfx_protocol_t *p) {
-    return lagfx_protocol_is_valid(p) ? p->last_doorbell_stamp : 0u;
+uint32_t lagfx_protocol_last_setter_offset(const lagfx_protocol_t *p) {
+    return lagfx_protocol_is_valid(p) ? p->last_setter_offset : 0u;
+}
+
+uint32_t lagfx_protocol_last_setter_value(const lagfx_protocol_t *p) {
+    return lagfx_protocol_is_valid(p) ? p->last_setter_value : 0u;
+}
+
+uint64_t lagfx_protocol_setter_write_count(const lagfx_protocol_t *p) {
+    return lagfx_protocol_is_valid(p) ? p->setter_write_count : 0u;
 }
