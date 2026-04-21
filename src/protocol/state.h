@@ -165,11 +165,12 @@ struct lagfx_protocol {
      * ring_base_gpa is computed as ring_base_pfn << 12 once the page
      * size is known. */
     bool     ring_armed;
-    uint32_t page_size;             /* from 0x1010 write */
+    uint32_t page_size;             /* assumed 4K */
+    uint32_t ring_start_offset;     /* from 0x1010 (setFifoStart); bytes */
     uint32_t ring_shared_page_pfn;  /* from 0x101c write */
-    uint32_t ring_base_pfn;         /* from 0x1030 write */
-    uint64_t ring_base_gpa;         /* ring_base_pfn << 12 once set */
-    uint32_t ring_size;             /* default 64 KiB until the kext says otherwise */
+    uint32_t ring_base_pfn;         /* from 0x1030 (setFifoBasePage) */
+    uint64_t ring_base_gpa;         /* (ring_base_pfn << 12) + ring_start_offset */
+    uint32_t ring_size;             /* from 0x1004 (setFifoLength); default 64 KiB */
     uint32_t read_ptr;              /* decoder drain cursor (high-water mark) */
     uint32_t write_ptr;             /* last-seen guest write ptr (doorbell) */
     uint32_t last_completed_stamp;

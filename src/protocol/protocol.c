@@ -335,8 +335,16 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             return;
         }
         case 0x1010u:
-            p->page_size = value ? value : 0x1000u;
-            LAGFX_LOG("mmio_write: page_size=0x%x", p->page_size);
+            /* setFifoStart — byte offset of ring within its base page.
+             * Observed value 0x1000 on M2 boot: first 4 KiB of the
+             * base page is a control/metadata header; command stream
+             * starts at base_page + 0x1000. */
+            p->ring_start_offset = value;
+            p->page_size = 0x1000u;  /* assumed; not read from MMIO */
+            p->ring_base_gpa =
+                ((uint64_t)p->ring_base_pfn << 12) + p->ring_start_offset;
+            LAGFX_LOG("mmio_write: ring_start_offset=0x%x -> gpa=0x%llx",
+                      value, (unsigned long long)p->ring_base_gpa);
             return;
         case 0x101cu:
             p->ring_shared_page_pfn = value;
@@ -344,8 +352,8 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             return;
         case 0x1030u: {
             p->ring_base_pfn = value;
-            uint32_t ps = p->page_size ? p->page_size : 0x1000u;
-            p->ring_base_gpa = (uint64_t)value * (uint64_t)ps;
+            p->ring_base_gpa =
+                ((uint64_t)value << 12) + p->ring_start_offset;
             if (p->ring_size == 0u) {
                 p->ring_size = 0x10000u;
             }
