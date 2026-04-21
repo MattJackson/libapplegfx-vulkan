@@ -116,3 +116,48 @@ lagfx_sources += files('catalog.c')
 # lagfx_sources makes meson treat it as a build-order dependency
 # of any TU in the library.
 lagfx_sources += [catalog_embedded]
+
+# --- Apple-pipeline stock-shader SPVs (Phase 3.C.2 M5) -------------------
+#
+# src/shaders/spv-apple/ contains the SPIR-V blobs produced by the
+# full Apple-AIR pipeline (MSL -> .air -> metallib -> extract ->
+# retarget -> llc -> signature-transform) via src/shaders/
+# compile_msl.sh. They're shipped alongside the GLSL-sourced
+# src/shaders/spv/ twins so CI can validate BOTH codepaths —
+# the GLSL bypass (already stable) AND the Apple-authored pipeline
+# (proves end-to-end shader translation works for real shaders,
+# not just the triangle fixture).
+#
+# We stage each blob into the build tree via configure_file(copy:true)
+# and export `apple_shader_spv_dir` so tests/apple-stock-shaders.c
+# gets a runtime path that's identical between in-tree and out-of-
+# tree builds. When src/shaders/spv-apple/ is empty (non-Mac clone
+# that hasn't run compile_msl.sh) the export is still a valid dir —
+# the test then exits 77 (meson SKIP).
+apple_spv_stage_pairs = []
+foreach name : shader_names
+  apple_spv_stage_pairs += [
+    [name + '_vertex',   name + '_vertex.spv'  ],
+    [name + '_fragment', name + '_fragment.spv'],
+  ]
+endforeach
+
+apple_spv_files = []
+foreach pair : apple_spv_stage_pairs
+  src_path = 'spv-apple' / pair[1]
+  if fs.is_file(meson.current_source_dir() / src_path)
+    copied = configure_file(
+      input  : src_path,
+      output : 'apple_' + pair[1],
+      copy   : true,
+    )
+    apple_spv_files += [copied]
+  endif
+endforeach
+
+# Build-tree directory that tests/apple-stock-shaders.c points at
+# via LAGFX_APPLE_SPV_DIR. All `apple_<name>.spv` files land here
+# by virtue of the configure_file(copy:true) pattern above — meson
+# writes them next to the local meson.build in the BUILD tree.
+apple_shader_spv_build_dir = meson.current_build_dir()
+apple_shader_spv_count = apple_spv_files.length()

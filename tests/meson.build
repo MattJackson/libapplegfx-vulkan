@@ -190,6 +190,45 @@ if fs.is_file(meson.current_source_dir() / 'stock-shaders.c')
   test('stock shaders', stock_shaders_test)
 endif
 
+# Phase 3.C.2 M5: Apple-pipeline stock-shader lavapipe load smoke.
+# Parallel to stock-shaders above, but exercises the Apple-AIR-sourced
+# SPV blobs shipped at src/shaders/spv-apple/ (produced by src/
+# shaders/compile_msl.sh). Point of the test is to prove the stock
+# shaders ALSO reach lavapipe via the real Apple translation pipeline
+# (MSL -> AIR -> metallib -> llc -> sig-xform -> SPIR-V), not just the
+# GLSL reference bypass — the M5 full-completeness bar.
+#
+# Uses LAGFX_APPLE_SPV_BUILD_DIR (compile-time define, populated from
+# src/shaders/meson.build's apple_shader_spv_build_dir variable) to
+# locate the blobs staged into the build tree via configure_file(
+# copy:true). Runtime env LAGFX_APPLE_SPV_DIR overrides.
+#
+# Declares apple_spv_files as additional sources so meson retriggers
+# the test when any apple_*.spv changes — same pattern as
+# catalog_embedded for the GLSL path.
+if fs.is_file(meson.current_source_dir() / 'apple-stock-shaders.c')
+  apple_stock_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    apple_stock_deps += [vulkan_dep]
+  endif
+  apple_stock_cargs = [
+    '-DLAGFX_APPLE_SPV_BUILD_DIR="' + apple_shader_spv_build_dir + '"',
+  ]
+  apple_stock_test = executable('apple-stock-shaders',
+    'apple-stock-shaders.c',
+    include_directories : [include_dir],
+    dependencies : apple_stock_deps,
+    c_args : apple_stock_cargs,
+    build_by_default : true,
+  )
+  # The apple_spv_files are staged at configure time via configure_file(
+  # copy:true) — they already exist by the time this test runs, so no
+  # explicit test() depends entry is required. A `meson setup
+  # --reconfigure` after running src/shaders/compile_msl.sh is enough
+  # to pick up refreshed blobs.
+  test('apple stock shaders', apple_stock_test)
+endif
+
 # Phase 3.A: Metal-to-Vulkan render encoder smoke. The state-
 # machine pass runs on every host; the real-Vulkan record path
 # self-skips when no loadable ICD is present. When vulkan_dep is
