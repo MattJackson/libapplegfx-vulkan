@@ -1,0 +1,90 @@
+/*
+ * libapplegfx-vulkan — Vulkan init (Phase 1.B)
+ * src/vulkan/instance.h
+ *
+ * Copyright © 2026 Matthew Jackson
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Internal header. Not installed.
+ *
+ * Defines struct lagfx_vk_state and the init/shutdown entry points
+ * consumed by src/device.c. See src/vulkan/instance.c for the
+ * rationale around optional compilation when vulkan_dep is absent.
+ */
+
+#ifndef LIBAPPLEGFX_VULKAN_INSTANCE_H
+#define LIBAPPLEGFX_VULKAN_INSTANCE_H
+
+#include "libapplegfx-vulkan.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifdef LAGFX_HAVE_VULKAN
+#  include <vulkan/vulkan.h>
+#endif
+
+/* Internal Vulkan state. Opaque to callers outside src/vulkan/.
+ *
+ * When the library is built WITHOUT vulkan (LAGFX_HAVE_VULKAN unset),
+ * the struct is still defined but fields are minimal — it exists only
+ * so the device.c lifecycle can hold the pointer uniformly. */
+struct lagfx_vk_state {
+#ifdef LAGFX_HAVE_VULKAN
+    VkInstance       instance;
+    VkPhysicalDevice phys_device;
+    VkDevice         device;
+    VkQueue          graphics_queue;
+    uint32_t         graphics_queue_family;
+
+    /* Selected physical-device properties, cached at init for logging
+     * + later extension decisions. */
+    VkPhysicalDeviceProperties phys_props;
+
+    /* Feature-enable flags — reflect what was actually requested +
+     * accepted at vkCreateDevice time. Used by later phases to decide
+     * whether to take a fast path (shader_object, dynamic_rendering)
+     * or fall back. */
+    bool have_dynamic_rendering;
+    bool have_synchronization2;
+    bool have_timeline_semaphore;
+    bool have_descriptor_indexing;
+    bool have_shader_object;
+    bool have_extended_dynamic_state3;
+
+    /* Phase 1.B.2: command pool bound to the graphics queue family.
+     * Created at lagfx_vk_init completion, destroyed in
+     * lagfx_vk_shutdown BEFORE the VkDevice. Owned by src/vulkan/command.c;
+     * this struct just carries the handle so the init/shutdown plumbing
+     * in instance.c can reach it. */
+    VkCommandPool    cmd_pool;
+#else
+    /* Pad so sizeof(struct) > 0 on no-vulkan builds. */
+    int _placeholder;
+#endif
+    /* Keep this flag in both paths so callers can cheaply ask
+     * "did we actually init Vulkan?" without #ifdefs. */
+    bool initialized;
+};
+
+/* Create VkInstance + select VkPhysicalDevice + create VkDevice +
+ * retrieve VkQueue. Stores the whole lot in *out.
+ *
+ * On success returns LAGFX_OK. On failure returns LAGFX_ERR_VULKAN_INIT
+ * (or LAGFX_ERR_OUT_OF_MEMORY) and *out is left NULL. The desc is used
+ * for:
+ *   - desc->shell_vulkan_instance: if non-NULL, reuse the caller's
+ *     VkInstance rather than creating our own (future work — currently
+ *     logged and ignored in Phase 1.B).
+ *
+ * The caller is responsible for having already applied LP_NUM_THREADS
+ * via setenv before calling this function — Mesa reads that var once
+ * at ICD init triggered by vkCreateInstance. */
+lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
+                             const lagfx_device_descriptor_t *desc);
+
+/* Tear down: vkDestroyDevice + vkDestroyInstance + free state.
+ * Safe on NULL. */
+void lagfx_vk_shutdown(struct lagfx_vk_state *state);
+
+#endif /* LIBAPPLEGFX_VULKAN_INSTANCE_H */
