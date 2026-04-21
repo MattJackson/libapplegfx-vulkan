@@ -89,6 +89,13 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_DISPLAY_SET_ICC_PROFILE,  "CmdDisplaySetGuestICCProfile",
       LAGFX_PRIO_P2, 0, 0, NULL },
 
+    /* --- Display-adjacent extended (0x1e) ------------------
+     * A2 kext disasm (re-followup-spec-gaps.md §13.5):
+     * "unknown display-adjacent". Log+ack until the dispatch
+     * callsite is fully disassembled. */
+    { LAGFX_OP_DISPLAY_EXT_1E,           "Unknown(0x1e)",
+      LAGFX_PRIO_P2, 0, 0, NULL },
+
     /* --- Execution / Sync (0x20-0x26) ----------------------- */
     { LAGFX_OP_EXEC_INDIRECT2,        "CmdExecIndirect2",
       LAGFX_PRIO_P1, 0, 0, lagfx_op_exec_indirect2 },
@@ -105,6 +112,13 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_DELETE_IOSURFACE_BACKING, "CmdDeleteIOSurfaceBacking2",
       LAGFX_PRIO_P2, 0, 0, NULL },
 
+    /* --- Extended exec-adjacent (0x28) ---------------------
+     * A2 kext disasm (§13.5): "spec §3 had no 0x28". New
+     * opcode, purpose unknown — log+ack until more callsite
+     * evidence lands. */
+    { LAGFX_OP_UNKNOWN_28,               "Unknown(0x28)",
+      LAGFX_PRIO_P2, 0, 0, NULL },
+
     /* --- Heap / Resource (0x80-0x82) ------------------------ */
     { LAGFX_OP_HEAP_TEX_SIZE_ALIGN,     "CmdHeapTextureSizeAndAlign",
       LAGFX_PRIO_P2, 0, 0, NULL },
@@ -114,19 +128,45 @@ static const lagfx_op_descriptor_t g_op_table[] = {
       LAGFX_PRIO_P2, 0, 0, NULL },
 
     /* --- M2+ extended range (0x30-0x41) — kext-only opcodes.
-     *     Init-phase P0 — all four must ack for `registerService()`
-     *     to fire (prerequisite for MTLCreateSystemDefaultDevice).
+     *     Init-phase P0 — 0x30/0x33/0x38/0x3a must ack for
+     *     `registerService()` to fire (prerequisite for
+     *     MTLCreateSystemDefaultDevice).
      *     0x30/0x33/0x38 use the default stamp+log path (handler=NULL).
      *     0x3a fills the guest-supplied response page with a minimum
-     *     viable device-info tuple stream. See paravirt-re §13. */
-    { LAGFX_OP_DEFINE_CHILD_CHANNEL,  "CmdDefineChildChannel",
+     *     viable device-info tuple stream. See paravirt-re §13.
+     *
+     *     The additional extended opcodes (0x31, 0x34..0x37, 0x39,
+     *     0x3b, 0x3c, 0x41) are P2: A2's disasm enumerated their
+     *     callsites (re-followup-spec-gaps.md §13.5) but payload
+     *     shapes are unknown, so min/max_payload=0 and handler=NULL
+     *     (default stamp+log path). Names are per §13.5 where
+     *     inferred, Unknown(0xNN) otherwise. */
+    { LAGFX_OP_DEFINE_CHILD_CHANNEL,     "CmdDefineChildChannel",
       LAGFX_PRIO_P0, 4,  4,  NULL },
-    { LAGFX_OP_SET_RESOURCE_HEAP,     "CmdSetResourceHeap",
+    { LAGFX_OP_FREE_VIRTUAL_CHANNEL,     "VirtualChannelFree",
+      LAGFX_PRIO_P2, 0,  0,  NULL },
+    { LAGFX_OP_SET_RESOURCE_HEAP,        "CmdSetResourceHeap",
       LAGFX_PRIO_P0, 12, 12, NULL },
-    { LAGFX_OP_DEFINE_HOST_TASK,      "CmdDefineHostTask",
+    { LAGFX_OP_CHANNEL_EVENT_34,         "ChannelEvent34",
+      LAGFX_PRIO_P2, 0,  0,  NULL },
+    { LAGFX_OP_CHANNEL_EVENT_35,         "ChannelEvent35",
+      LAGFX_PRIO_P2, 0,  0,  NULL },
+    { LAGFX_OP_CHANNEL_EVENT_36,         "ChannelEvent36",
+      LAGFX_PRIO_P2, 0,  0,  NULL },
+    { LAGFX_OP_CHANNEL_EVENT_37,         "ChannelEvent37",
+      LAGFX_PRIO_P2, 0,  0,  NULL },
+    { LAGFX_OP_DEFINE_HOST_TASK,         "CmdDefineHostTask",
       LAGFX_PRIO_P0, 16, 16, NULL },
-    { LAGFX_OP_GET_DEVICE_INFO_2,     "CmdGetDeviceInfo2",
+    { LAGFX_OP_ROOT_CHANNEL_INVALIDATE,  "RootChannelInvalidateTask",
+      LAGFX_PRIO_P2, 0,  0,  NULL },
+    { LAGFX_OP_GET_DEVICE_INFO_2,        "CmdGetDeviceInfo2",
       LAGFX_PRIO_P0, 12, 12, lagfx_op_get_device_info_2 },
+    { LAGFX_OP_UNKNOWN_3B,               "Unknown(0x3b)",
+      LAGFX_PRIO_P2, 0,  0,  NULL },
+    { LAGFX_OP_UNKNOWN_3C,               "Unknown(0x3c)",
+      LAGFX_PRIO_P2, 0,  0,  NULL },
+    { LAGFX_OP_EXEC_INDIRECT_EXT_41,     "ExecIndirectExt41",
+      LAGFX_PRIO_P2, 0,  0,  NULL },
 };
 
 static const size_t g_op_table_count =

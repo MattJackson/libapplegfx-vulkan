@@ -67,6 +67,12 @@ typedef enum {
     LAGFX_OP_DISPLAY_COMPOSITOR_PARAMS= 0x19,
     LAGFX_OP_DISPLAY_SET_ICC_PROFILE  = 0x1a,
 
+    /* --- Display-adjacent extended (0x1e) -----------------------
+     * Observed via A2's kext disasm of AppleParavirtGPU (re-followup-
+     * spec-gaps.md §13.5). Not in command-buffer-format.md §3;
+     * inferred display-adjacent from callsite neighbourhood. */
+    LAGFX_OP_DISPLAY_EXT_1E           = 0x1e,
+
     /* --- Execution / Sync (0x20-0x26) --------------------------- */
     LAGFX_OP_EXEC_INDIRECT2           = 0x20,
     LAGFX_OP_EXEC_INDIRECT3           = 0x21,
@@ -76,13 +82,27 @@ typedef enum {
     LAGFX_OP_SET_OBJECT_PLACEMENT     = 0x25,
     LAGFX_OP_DELETE_IOSURFACE_BACKING = 0x26,
 
+    /* --- Extended exec-adjacent (0x28) --------------------------
+     * Observed via A2 kext disasm (re-followup-spec-gaps.md §13.5).
+     * Not in command-buffer-format.md §3 — "spec §3 had no 0x28". */
+    LAGFX_OP_UNKNOWN_28               = 0x28,
+
     /* --- M2+ extended range (0x30-0x41) -------------------------
      * Kext-only opcodes (never emitted by the dylib). Observed via
-     * live trace + kext disasm. See paravirt-re §13. */
+     * live trace + kext disasm. See paravirt-re §13 / §13.5. */
     LAGFX_OP_DEFINE_CHILD_CHANNEL     = 0x30,
+    LAGFX_OP_FREE_VIRTUAL_CHANNEL     = 0x31, /* VirtualChannel::free, pairs 0x30 */
     LAGFX_OP_SET_RESOURCE_HEAP        = 0x33,
+    LAGFX_OP_CHANNEL_EVENT_34         = 0x34, /* ChannelEventMachine-adjacent */
+    LAGFX_OP_CHANNEL_EVENT_35         = 0x35, /* ChannelEventMachine-adjacent */
+    LAGFX_OP_CHANNEL_EVENT_36         = 0x36, /* ChannelEventMachine-adjacent */
+    LAGFX_OP_CHANNEL_EVENT_37         = 0x37, /* ChannelEventMachine-adjacent */
     LAGFX_OP_DEFINE_HOST_TASK         = 0x38,
+    LAGFX_OP_ROOT_CHANNEL_INVALIDATE  = 0x39, /* RootChannel-adjacent; probably invalidateTask */
     LAGFX_OP_GET_DEVICE_INFO_2        = 0x3a,
+    LAGFX_OP_UNKNOWN_3B               = 0x3b,
+    LAGFX_OP_UNKNOWN_3C               = 0x3c,
+    LAGFX_OP_EXEC_INDIRECT_EXT_41     = 0x41, /* highest; near exec-indirect bucket */
 
     /* --- Heap / Resource (0x80-0x82) ---------------------------- */
     LAGFX_OP_HEAP_TEX_SIZE_ALIGN      = 0x80,
@@ -96,9 +116,12 @@ typedef enum {
 /* Number of opcodes documented. Spec tally (command-buffer-format.md
  * §10) is 36 (14 core + 1 NOP + 11 display + 7 exec/sync + 3 heap).
  * Per re-followup-spec-gaps.md §5.3 the host jump table tolerates
- * 0x00..0x44 (69 entries) with the extras stubbed to "unknown opcode";
- * we only populate the named 36 here. */
-#define LAGFX_OPCODE_COUNT 40
+ * 0x00..0x44 (69 entries) with the extras stubbed to "unknown opcode".
+ * A2's kext disasm (§13.5) enumerated 26 callsites covering extended
+ * opcodes 0x1e, 0x28, 0x30, 0x31, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+ * 0x39, 0x3a, 0x3b, 0x3c, 0x41; we now populate all 15 of those plus
+ * the 36 named §3 opcodes = 51. */
+#define LAGFX_OPCODE_COUNT 51
 
 /* === Priority bands ============================================ */
 
