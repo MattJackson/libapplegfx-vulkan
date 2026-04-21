@@ -1933,42 +1933,39 @@ static void test_m3_get_device_info2_response_and_count(void) {
     CHECK(lagfx_protocol_last_completed_stamp(p) == 0x3a3a3a3au,
           "m3-devinfo2: stamp completed");
 
-    /* 5 (key,value) pairs × 8 bytes = 40 bytes written to resp page. */
-    CHECK(shell.devinfo_last_len == 40u,
-          "m3-devinfo2: response page write was 5 pairs (40 bytes)");
+    /*
+     * Current src/protocol/ops_device.c behavior (per Agent a6f4eb5 §15 RE):
+     * CmdGetDeviceInfo2 intentionally emits ZERO pairs and relies on the
+     * kext parser's post-loop fallback for defaults (feature-level
+     * 0x20002, has[0xb5]=1). See the comment in lagfx_op_get_device_info_2
+     * around the `n_pairs = 0` line. This test reflects that behavior;
+     * when/if the handler is changed to emit pairs again, update the
+     * expected values here (and add per-pair key/value checks).
+     */
+    CHECK(shell.devinfo_last_len == 0u,
+          "m3-devinfo2: response page write was 0 pairs (empty — fallback defaults)");
 
-    /* Verify the 5 expected pairs at resp_page offset 0. Keys per
-     * paravirt-re §13.2.4: 0x00, 0x01, 0x04, 0x08, 0x10. */
-    const uint32_t expected_keys[5]   = { 0x00u, 0x01u, 0x04u, 0x08u, 0x10u };
-    const uint32_t expected_values[5] = { 1u,    0u,    0u,    0u,    0u    };
-    for (int i = 0; i < 5; ++i) {
-        uint32_t k = (uint32_t)resp_page[i * 8 + 0]
-                   | ((uint32_t)resp_page[i * 8 + 1] << 8)
-                   | ((uint32_t)resp_page[i * 8 + 2] << 16)
-                   | ((uint32_t)resp_page[i * 8 + 3] << 24);
-        uint32_t v = (uint32_t)resp_page[i * 8 + 4]
-                   | ((uint32_t)resp_page[i * 8 + 5] << 8)
-                   | ((uint32_t)resp_page[i * 8 + 6] << 16)
-                   | ((uint32_t)resp_page[i * 8 + 7] << 24);
-        char msg[96];
-        snprintf(msg, sizeof(msg),
-                 "m3-devinfo2: pair[%d] key=0x%02x matches", i, k);
-        CHECK(k == expected_keys[i], msg);
-        snprintf(msg, sizeof(msg),
-                 "m3-devinfo2: pair[%d] value=0x%x matches", i, v);
-        CHECK(v == expected_values[i], msg);
+    /* First 40 bytes of resp_page should still be zero (no pairs written). */
+    int resp_zeroed = 1;
+    for (size_t i = 0; i < 40u; ++i) {
+        if (resp_page[i] != 0u) {
+            resp_zeroed = 0;
+            break;
+        }
     }
+    CHECK(resp_zeroed,
+          "m3-devinfo2: resp page untouched in the first 40 bytes (no pairs emitted)");
 
-    /* actual_count writeback: the drain should have written u32=5 to
-     * ring header offset +4 (the `length` slot) AFTER dispatch. Because
-     * the mock_write also captures into ring_backing for overlapping
-     * ranges, ring[4..7] now holds the actual_count LE u32. */
+    /* actual_count writeback: with 0 pairs emitted, the handler writes
+     * u32=0 to ring header offset +4 (the `length` slot) AFTER dispatch.
+     * mock_write captures writes into ring_backing for overlapping ranges,
+     * so ring[4..7] now holds the actual_count LE u32. */
     uint32_t actual_count = (uint32_t)ring[4]
                           | ((uint32_t)ring[5] << 8)
                           | ((uint32_t)ring[6] << 16)
                           | ((uint32_t)ring[7] << 24);
-    CHECK(actual_count == 5u,
-          "m3-devinfo2: drain wrote actual_count=5 to ring header +4");
+    CHECK(actual_count == 0u,
+          "m3-devinfo2: drain wrote actual_count=0 to ring header +4");
 
     lagfx_device_free(dev);
 }
