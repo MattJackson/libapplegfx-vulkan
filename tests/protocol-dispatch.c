@@ -1733,6 +1733,238 @@ static void test_metal_clear_color_sequence(void) {
     lagfx_device_free(dev);
 }
 
+/* === M3 plumbing tests (Phase 0 follow-up) ================
+ *
+ * Covers the freshly-landed command-ring wiring:
+ *   - lagfx_protocol_mmio_write routing for 0x1000/0x1004/0x1008/
+ *     0x1010/0x101c/0x1030 (ring-geometry setters + doorbell).
+ *   - lagfx_fifo_drain ring-buffer read loop with wrap.
+ *   - CmdGetDeviceInfo2 (0x3a) response-page DMA + actual_count
+ *     writeback into the ring header +4.
+ *   - MMIO read extension at 0x100c returning p->read_ptr.
+ */
+
+static void test_m3_mmio_setter_routing(void) {
+    fprintf(stdout, "\n--- test: m3_mmio_setter_routing ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Program ring geometry in the order the real kext does:
+     *   0x1004 → ring_size
+     *   0x1010 → ring_start_offset (byte offset within base page)
+     *   0x1030 → ring_base_pfn  (GPA = (pfn << 12) + start_offset)
+     *   0x101c → mailbox page pfn (tracked separately)
+     *   0x1000 → arm bit
+     */
+    lagfx_mmio_write(dev, 0x1004u, 0x10000u);    /* 64 KiB */
+    CHECK(p->ring_size == 0x10000u,
+          "m3: 0x1004 sets ring_size");
+
+    lagfx_mmio_write(dev, 0x1010u, 0x1000u);     /* byte offset */
+    CHECK(p->ring_start_offset == 0x1000u,
+          "m3: 0x1010 sets ring_start_offset");
+    CHECK(p->page_size == 0x1000u,
+          "m3: 0x1010 defaults page_size to 0x1000");
+
+    lagfx_mmio_write(dev, 0x1030u, 0xabcdeu);    /* pfn */
+    CHECK(p->ring_base_pfn == 0xabcdeu,
+          "m3: 0x1030 sets ring_base_pfn");
+    /* GPA = (pfn << 12) + start_offset = 0xabcde000 + 0x1000 = 0xabcdf000 */
+    CHECK(p->ring_base_gpa == ((uint64_t)0xabcdeu << 12) + 0x1000u,
+          "m3: ring_base_gpa = (pfn << 12) + start_offset");
+
+    lagfx_mmio_write(dev, LAGFX_REG_ROOT_PAGE_NUMBER, 0xfeedu);
+    CHECK(p->ring_shared_page_pfn == 0xfeedu,
+          "m3: 0x101c sets ring_shared_page_pfn (not base pfn)");
+
+    lagfx_mmio_write(dev, LAGFX_REG_STATUS_CONTROL, 1u);
+    CHECK(p->ring_armed == true,
+          "m3: 0x1000 arms the ring");
+
+    /* Re-programming 0x1010 AFTER 0x1030 must also recompute the GPA
+     * so order-independence holds. */
+    lagfx_mmio_write(dev, 0x1010u, 0x2000u);
+    CHECK(p->ring_base_gpa == ((uint64_t)0xabcdeu << 12) + 0x2000u,
+          "m3: re-write 0x1010 recomputes ring_base_gpa");
+
+    /* 0x100c read returns the current read_ptr (live shadow). */
+    p->read_ptr = 0x2048u;
+    CHECK(lagfx_mmio_read(dev, LAGFX_REG_FIFO_FAULT_OFFSET) == 0x2048u,
+          "m3: 0x100c read returns p->read_ptr");
+
+    lagfx_device_free(dev);
+}
+
+static void test_m3_doorbell_advances_write_ptr(void) {
+    fprintf(stdout, "\n--- test: m3_doorbell_advances_write_ptr ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Ring not yet armed — doorbell write still moves write_ptr, drain
+     * just no-ops. */
+    CHECK(p->write_ptr == 0u, "m3: write_ptr starts at 0");
+    lagfx_mmio_write(dev, 0x1008u, 0x40u);
+    CHECK(p->write_ptr == 0x40u,
+          "m3: doorbell write advances p->write_ptr");
+    CHECK(shell.read_memory_count == 0,
+          "m3: doorbell with disarmed ring does not DMA");
+
+    /* Subsequent write — write_ptr tracks last value. */
+    lagfx_mmio_write(dev, 0x1008u, 0xc0u);
+    CHECK(p->write_ptr == 0xc0u,
+          "m3: doorbell write overwrites with latest value");
+
+    lagfx_device_free(dev);
+}
+
+static void test_m3_fifo_drain_dispatches_injected_nop(void) {
+    fprintf(stdout, "\n--- test: m3_fifo_drain_dispatches_injected_nop ---\n");
+
+    /* Wire up a synthetic ring: 4 KiB backing, base GPA 0x200000,
+     * start_offset 0 (ring sits right at the base GPA for simplicity). */
+    const uint64_t ring_gpa = 0x200000ull;
+    const uint32_t ring_size = 0x1000u;
+    uint8_t ring[0x1000];
+    memset(ring, 0, sizeof(ring));
+
+    mock_shell_t shell = {0};
+    shell.ring_gpa      = ring_gpa;
+    shell.ring_capacity = ring_size;
+    shell.ring_backing  = ring;
+
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Inject a single NOP (12-byte header, zero payload) at ring[0]. */
+    build_header(ring, LAGFX_OP_NOP, /*arg_count_8b=*/0,
+                 /*total_length=*/12, /*stamp=*/0xcafec0deu);
+
+    /* Program ring geometry — pfn<<12 == ring_gpa, start_offset == 0. */
+    lagfx_mmio_write(dev, 0x1004u, ring_size);
+    lagfx_mmio_write(dev, 0x1010u, 0u);
+    lagfx_mmio_write(dev, 0x1030u, (uint32_t)(ring_gpa >> 12));
+    lagfx_mmio_write(dev, LAGFX_REG_STATUS_CONTROL, 1u);
+
+    CHECK(p->ring_base_gpa == ring_gpa,
+          "m3: ring_base_gpa matches synthetic GPA");
+
+    /* Doorbell at 12 triggers the drain. */
+    lagfx_mmio_write(dev, 0x1008u, 12u);
+
+    CHECK(p->total_cmds_seen == 1,
+          "m3: drain saw the injected NOP");
+    CHECK(p->total_cmds_completed == 1,
+          "m3: drain completed the injected NOP");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xcafec0deu,
+          "m3: injected NOP stamped");
+    CHECK(shell.raise_irq_count == 1,
+          "m3: drain raised IRQ for completion");
+    CHECK(p->read_ptr == 12u,
+          "m3: read_ptr advanced past the 12-byte header");
+    CHECK(shell.read_memory_count >= 2,
+          "m3: drain DMA'd the header + body (>=2 read_memory calls)");
+
+    /* A second doorbell with no new command does not re-dispatch. */
+    uint64_t seen_before = p->total_cmds_seen;
+    lagfx_mmio_write(dev, 0x1008u, 12u);
+    CHECK(p->total_cmds_seen == seen_before,
+          "m3: idempotent doorbell (rp==wp) drains nothing");
+
+    lagfx_device_free(dev);
+}
+
+static void test_m3_get_device_info2_response_and_count(void) {
+    fprintf(stdout, "\n--- test: m3_get_device_info2_response_and_count ---\n");
+
+    /* Ring backing: 4 KiB at 0x300000. Response page: 4 KiB at 0x400000. */
+    const uint64_t ring_gpa = 0x300000ull;
+    const uint32_t ring_size = 0x1000u;
+    const uint64_t resp_gpa = 0x400000ull;
+    const uint32_t resp_pfn = (uint32_t)(resp_gpa >> 12);
+
+    uint8_t ring[0x1000];
+    uint8_t resp_page[0x1000];
+    memset(ring, 0, sizeof(ring));
+    memset(resp_page, 0, sizeof(resp_page));
+
+    mock_shell_t shell = {0};
+    shell.ring_gpa         = ring_gpa;
+    shell.ring_capacity    = ring_size;
+    shell.ring_backing     = ring;
+    shell.devinfo_gpa      = resp_gpa;
+    shell.devinfo_capacity = sizeof(resp_page);
+    shell.devinfo_buf      = resp_page;
+
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Build a CmdGetDeviceInfo2 in the ring:
+     *   header (12) + payload { kind=0x2a, resp_qwords=0x200, resp_pfn }
+     * Total length = 24.
+     */
+    const uint32_t cmd_len = 24u;
+    build_header(ring, LAGFX_OP_GET_DEVICE_INFO_2, /*arg_count_8b=*/0,
+                 /*total_length=*/cmd_len, /*stamp=*/0x3a3a3a3au);
+    put_le32(ring + 12, 0x2au);        /* kind */
+    put_le32(ring + 16, 0x200u);       /* resp_qwords */
+    put_le32(ring + 20, resp_pfn);     /* resp_pfn */
+
+    /* Program ring + arm + kick. */
+    lagfx_mmio_write(dev, 0x1004u, ring_size);
+    lagfx_mmio_write(dev, 0x1010u, 0u);
+    lagfx_mmio_write(dev, 0x1030u, (uint32_t)(ring_gpa >> 12));
+    lagfx_mmio_write(dev, LAGFX_REG_STATUS_CONTROL, 1u);
+    lagfx_mmio_write(dev, 0x1008u, cmd_len);
+
+    CHECK(p->total_cmds_seen == 1,
+          "m3-devinfo2: drain saw the 0x3a command");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x3a3a3a3au,
+          "m3-devinfo2: stamp completed");
+
+    /* 5 (key,value) pairs × 8 bytes = 40 bytes written to resp page. */
+    CHECK(shell.devinfo_last_len == 40u,
+          "m3-devinfo2: response page write was 5 pairs (40 bytes)");
+
+    /* Verify the 5 expected pairs at resp_page offset 0. Keys per
+     * paravirt-re §13.2.4: 0x00, 0x01, 0x04, 0x08, 0x10. */
+    const uint32_t expected_keys[5]   = { 0x00u, 0x01u, 0x04u, 0x08u, 0x10u };
+    const uint32_t expected_values[5] = { 1u,    0u,    0u,    0u,    0u    };
+    for (int i = 0; i < 5; ++i) {
+        uint32_t k = (uint32_t)resp_page[i * 8 + 0]
+                   | ((uint32_t)resp_page[i * 8 + 1] << 8)
+                   | ((uint32_t)resp_page[i * 8 + 2] << 16)
+                   | ((uint32_t)resp_page[i * 8 + 3] << 24);
+        uint32_t v = (uint32_t)resp_page[i * 8 + 4]
+                   | ((uint32_t)resp_page[i * 8 + 5] << 8)
+                   | ((uint32_t)resp_page[i * 8 + 6] << 16)
+                   | ((uint32_t)resp_page[i * 8 + 7] << 24);
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "m3-devinfo2: pair[%d] key=0x%02x matches", i, k);
+        CHECK(k == expected_keys[i], msg);
+        snprintf(msg, sizeof(msg),
+                 "m3-devinfo2: pair[%d] value=0x%x matches", i, v);
+        CHECK(v == expected_values[i], msg);
+    }
+
+    /* actual_count writeback: the drain should have written u32=5 to
+     * ring header offset +4 (the `length` slot) AFTER dispatch. Because
+     * the mock_write also captures into ring_backing for overlapping
+     * ranges, ring[4..7] now holds the actual_count LE u32. */
+    uint32_t actual_count = (uint32_t)ring[4]
+                          | ((uint32_t)ring[5] << 8)
+                          | ((uint32_t)ring[6] << 16)
+                          | ((uint32_t)ring[7] << 24);
+    CHECK(actual_count == 5u,
+          "m3-devinfo2: drain wrote actual_count=5 to ring header +4");
+
+    lagfx_device_free(dev);
+}
+
 static void test_task_table_full(void) {
     fprintf(stdout, "\n--- test: task_table_full ---\n");
 
@@ -1823,6 +2055,10 @@ int main(void) {
     test_display_swap_mapping_handler();
     test_display_transaction3_handler();
     test_metal_clear_color_sequence();
+    test_m3_mmio_setter_routing();
+    test_m3_doorbell_advances_write_ptr();
+    test_m3_fifo_drain_dispatches_injected_nop();
+    test_m3_get_device_info2_response_and_count();
     test_task_table_full();
     test_reset_clears_state();
 
