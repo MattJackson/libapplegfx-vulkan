@@ -18,6 +18,13 @@
  * library (no libLLVM linkage) and is driven by the companion shell
  * script examples/triangle/build_spirv.sh.
  *
+ * Downstream of this tool (after llc) the sibling binary
+ * triangle-spv-rewrite runs src/air2spirv/spv_entrypoint_rewrite.c
+ * on each .spv to convert LLVM's OpenCL-flavour output (no
+ * OpEntryPoint, CPacked decorations, LinkageAttributes, Linkage
+ * capability) into a Vulkan-shaped variant that vkCreateShaderModule
+ * accepts. Wiring lives in build_spirv.sh's stage 4 (post-llc).
+ *
  * Exit codes:
  *   0  — all functions extracted + retargeted successfully.
  *   1  — usage / I/O error.

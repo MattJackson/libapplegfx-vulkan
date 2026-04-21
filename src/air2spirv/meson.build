@@ -17,4 +17,5 @@
 lagfx_sources += files(
   'metallib_extract.c',
   'bitcode_retarget.c',
+  'spv_entrypoint_rewrite.c',
 )

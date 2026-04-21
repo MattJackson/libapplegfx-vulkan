@@ -120,36 +120,83 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
  * guest stamp cell (readable at MMIO 0x1014) and raises the IRQ.
  * We model that here by writing the stamp to the STAMP_CELL_1 shadow
  * and calling shell.raise_interrupt. */
+/* Internal: push a stamp onto the pending queue. */
+static void lagfx_pending_stamp_push(lagfx_protocol_t *p, uint32_t stamp) {
+    uint32_t cap = (uint32_t)(sizeof(p->pending_stamps) /
+                              sizeof(p->pending_stamps[0]));
+    uint32_t next_head = (p->pending_stamps_head + 1u) % cap;
+    if (next_head == p->pending_stamps_tail) {
+        /* Queue full — drop oldest, keep newest. Should never happen
+         * with the 128-cap and drain batch size of 128. */
+        LAGFX_WARN("pending_stamp: queue full, dropping oldest stamp 0x%x",
+                   p->pending_stamps[p->pending_stamps_tail]);
+        p->pending_stamps_tail =
+            (p->pending_stamps_tail + 1u) % cap;
+    }
+    p->pending_stamps[p->pending_stamps_head] = stamp;
+    p->pending_stamps_head = next_head;
+}
+
+/* Internal: pop the next pending stamp; 0 if queue empty. */
+static uint32_t lagfx_pending_stamp_pop(lagfx_protocol_t *p) {
+    if (p->pending_stamps_head == p->pending_stamps_tail) {
+        return 0u;
+    }
+    uint32_t cap = (uint32_t)(sizeof(p->pending_stamps) /
+                              sizeof(p->pending_stamps[0]));
+    uint32_t stamp = p->pending_stamps[p->pending_stamps_tail];
+    p->pending_stamps_tail = (p->pending_stamps_tail + 1u) % cap;
+    return stamp;
+}
+
+/* Internal: after the guest drains a stamp cell via xchg, check if
+ * another pending stamp is waiting. If so, write it into the cell and
+ * raise IRQ so the guest ISR runs again. */
+static void lagfx_pending_stamp_advance(lagfx_protocol_t *p) {
+    uint32_t next = lagfx_pending_stamp_pop(p);
+    if (next == 0u) {
+        return;
+    }
+    int c1 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_1);
+    int c2 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_2);
+    if (c1 >= 0) p->reg[c1] = next;
+    if (c2 >= 0) p->reg[c2] = next;
+    if (p->dev && p->dev->desc.shell.raise_interrupt) {
+        p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0);
+        p->interrupts_raised += 1;
+    }
+    LAGFX_LOG("pending_stamp: advanced to 0x%x, IRQ re-raised", next);
+}
+
 void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     if (!lagfx_protocol_is_valid(p)) {
         return;
     }
 
-    int cell_idx = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_1);
-    if (cell_idx >= 0) {
-        p->reg[cell_idx] = stamp;
-    }
-    /* Also mirror into STAMP_CELL_2 (interrupt-cause cell) — the real
-     * device uses two distinct u32 slots, read-side is atomic-xchg. */
-    int irq_cell_idx = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_2);
-    if (irq_cell_idx >= 0) {
-        p->reg[irq_cell_idx] = stamp;
-    }
-
     p->last_completed_stamp = stamp;
     p->total_cmds_completed += 1;
 
-    if (p->dev && p->dev->desc.shell.raise_interrupt) {
-        p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque,
-                                           /*vector=*/0);
-        p->interrupts_raised += 1;
-        LAGFX_LOG("complete_stamp: stamp=0x%08x "
-                  "(stamp cell written + IRQ raised)",
-                  stamp);
+    /* If the stamp cell is currently 0 (guest consumed the last one),
+     * write this stamp in directly and raise IRQ. Otherwise queue it —
+     * lagfx_pending_stamp_advance() pops the next one each time the
+     * guest xchgs the cell (in mmio_read). */
+    int c1 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_1);
+    int c2 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_2);
+
+    bool cell_empty = (c1 >= 0 && p->reg[c1] == 0u);
+    if (cell_empty) {
+        if (c1 >= 0) p->reg[c1] = stamp;
+        if (c2 >= 0) p->reg[c2] = stamp;
+        if (p->dev && p->dev->desc.shell.raise_interrupt) {
+            p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0);
+            p->interrupts_raised += 1;
+            LAGFX_LOG("complete_stamp: stamp=0x%08x written + IRQ raised",
+                      stamp);
+        }
     } else {
-        LAGFX_LOG("complete_stamp: stamp=0x%08x "
-                  "(stamp cell written, no shell IRQ cb)",
-                  stamp);
+        lagfx_pending_stamp_push(p, stamp);
+        LAGFX_LOG("complete_stamp: stamp=0x%08x queued (cell has 0x%08x)",
+                  stamp, c1 >= 0 ? p->reg[c1] : 0u);
     }
 }
 
@@ -288,6 +335,14 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
         }
         LAGFX_LOG("mmio_read: stamp_cell 0x%llx xchg -> 0x%x (cleared)",
                   (unsigned long long)offset, prev);
+
+        /* If CELL_1 was read (primary consume), advance to the next
+         * pending stamp if any, raising another IRQ. This guarantees
+         * every stamp the guest submitted gets individually delivered
+         * even when multiple commands complete in one host drain. */
+        if (offset == LAGFX_REG_STAMP_CELL_1) {
+            lagfx_pending_stamp_advance(p);
+        }
         return prev;
     }
 

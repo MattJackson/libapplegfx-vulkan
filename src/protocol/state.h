@@ -175,6 +175,16 @@ struct lagfx_protocol {
     uint32_t write_ptr;             /* last-seen guest write ptr (doorbell) */
     uint32_t last_completed_stamp;
 
+    /* Pending-stamp queue — Apple's PGPendingStampQueue design.
+     * Multiple commands can complete within one drain; each gets a
+     * stamp that the guest must see individually via xchg-and-clear
+     * on 0x1014/0x1018. If we just overwrite the stamp cell, earlier
+     * stamps get lost. Queue here, pop one per guest read.
+     * Sized for the drain-cap of 128 commands. */
+    uint32_t pending_stamps[128];
+    uint32_t pending_stamps_head;  /* write index */
+    uint32_t pending_stamps_tail;  /* read index */
+
     /* GPA of the current in-flight command's header on the ring.
      * Set by the drain immediately before calling dispatch_one so that
      * handlers can DMA-write into the on-ring header (e.g. 0x3a writes

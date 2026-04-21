@@ -103,15 +103,13 @@ ssh "$DOCKER_HOST" "sudo docker run --rm -v ~/$REMOTE_DIR:/work ubuntu:24.04 bas
   cd /work
   for bc in *.bc; do
     name=\${bc%.bc}
-    echo \"-- llc \$bc -> \$name.spv\"
-    /usr/lib/llvm-20/bin/llc -mtriple=spirv-unknown-vulkan1.3 -filetype=obj \"\$bc\" -o \"\$name.spv\" 2>&1
-    echo \"-- header \$name.spv (first 8 bytes):\"
-    od -A n -N 8 -t x1 \"\$name.spv\"
-    # Best-effort disassembly, non-fatal.
-    spirv-dis \"\$name.spv\" > \"\$name.spv.dis\" 2>&1 || true
-    # Validation is expected to be informational — Phase 3.C.2 scaffold
-    # does not yet emit Vulkan-conformant entry-point metadata.
-    spirv-val \"\$name.spv\" 2>&1 | head -5 || true
+    echo \"-- llc \$bc -> \$name.raw.spv\"
+    /usr/lib/llvm-20/bin/llc -mtriple=spirv-unknown-vulkan1.3 -filetype=obj \"\$bc\" -o \"\$name.raw.spv\" 2>&1
+    echo \"-- header \$name.raw.spv (first 8 bytes):\"
+    od -A n -N 8 -t x1 \"\$name.raw.spv\"
+    # Best-effort disassembly of the pre-rewrite SPV, non-fatal.
+    spirv-dis \"\$name.raw.spv\" > \"\$name.raw.spv.dis\" 2>&1 || true
+    spirv-val \"\$name.raw.spv\" 2>&1 | head -5 || true
   done
   # GLSL reference pair (fallback path; see runbook §9 / §12).
   echo \"-- glslang reference.vert/frag -> reference_{vert,frag}.spv\"

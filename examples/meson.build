@@ -13,3 +13,16 @@ if fs.is_file(meson.current_source_dir() / 'triangle' / 'extract_retarget.c')
     build_by_default : true,
   )
 endif
+
+# SPV entry-point rewriter — runs after llc produces SPIR-V from the
+# retargeted .bc files. Fixes up OpCapability/OpEntryPoint/CPacked/
+# LinkageAttributes so vkCreateShaderModule accepts the result. See
+# src/air2spirv/spv_entrypoint_rewrite.c for the full edit list.
+if fs.is_file(meson.current_source_dir() / 'triangle' / 'spv_rewrite.c')
+  executable('triangle-spv-rewrite',
+    'triangle/spv_rewrite.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+endif
