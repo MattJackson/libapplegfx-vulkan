@@ -41,10 +41,13 @@ rsync -a "$REPO/tests/fixtures/" "$DOCKER_HOST:~/$REMOTE/repo/tests/fixtures/"
 rsync -a "$SPV_DIR/" "$DOCKER_HOST:~/$REMOTE/spv/"
 
 # Run the build + test inside ubuntu:24.04.
+set +e
 ssh "$DOCKER_HOST" bash -s <<REMOTE_SH
 set -euo pipefail
 cd ~/$REMOTE
-sudo docker run --rm -v "\$PWD:/work" -w /work/repo ubuntu:24.04 bash -ceu '
+HOST_UID=\$(id -u)
+HOST_GID=\$(id -g)
+sudo docker run --rm -v "\$PWD:/work" -w /work/repo ubuntu:24.04 bash -ceu "
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq >/dev/null
   apt-get install -y --no-install-recommends \
@@ -55,13 +58,20 @@ sudo docker run --rm -v "\$PWD:/work" -w /work/repo ubuntu:24.04 bash -ceu '
   meson compile -C build-linux triangle-lavapipe-e2e 2>&1 | tail -15
   export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
   export LAGFX_TRIANGLE_SPV_DIR=/work/spv
+  set +e
   ./build-linux/tests/triangle-lavapipe-e2e
-'
+  rc=\\\$?
+  # Fix up ownership so the outer cleanup can remove the staged dir.
+  chown -R \$HOST_UID:\$HOST_GID /work
+  exit \\\$rc
+"
 REMOTE_SH
 
 rc=$?
+set -e
 
-# Pull logs back (nothing to pull, but clean up).
-ssh "$DOCKER_HOST" "rm -rf ~/$REMOTE"
+# Cleanup staged dir.
+ssh "$DOCKER_HOST" "rm -rf ~/$REMOTE" 2>/dev/null || \
+  ssh "$DOCKER_HOST" "sudo rm -rf ~/$REMOTE" 2>/dev/null || true
 
 exit "$rc"
