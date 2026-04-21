@@ -223,6 +223,31 @@ const lagfx_op_descriptor_t *lagfx_opcode_table_entry(size_t index) {
     return &g_op_table[index];
 }
 
+/* Render up to `n` bytes of `buf` into `out` as space-separated hex
+ * ("de ad be ef ..."). `out` must hold at least n*3 bytes. Writes a
+ * trailing NUL. If n == 0, `out` becomes an empty string. The caller
+ * is expected to size `out` per the (n*3+1) bound. */
+static void lagfx_hex_dump_bytes(char *out, size_t out_sz,
+                                 const uint8_t *buf, size_t n) {
+    size_t pos = 0;
+    for (size_t i = 0; i < n; ++i) {
+        /* 3 chars per byte ("xx ") plus trailing NUL. */
+        if (pos + 4 > out_sz) {
+            break;
+        }
+        int w = snprintf(out + pos, out_sz - pos,
+                         (i + 1 < n) ? "%02x " : "%02x",
+                         (unsigned)buf[i]);
+        if (w < 0) {
+            break;
+        }
+        pos += (size_t)w;
+    }
+    if (out_sz > 0) {
+        out[pos < out_sz ? pos : out_sz - 1] = '\0';
+    }
+}
+
 lagfx_handler_status_t lagfx_op_default_handler(lagfx_protocol_t *p,
                                                 const lagfx_cmd_header_t *hdr) {
     (void)p;
@@ -238,5 +263,43 @@ lagfx_handler_status_t lagfx_op_default_handler(lagfx_protocol_t *p,
     LAGFX_WARN("dispatch: unrecognized opcode 0x%04x (stamp 0x%08x, "
                "length %u) — log+ack fallback",
                hdr->opcode, hdr->stamp, (unsigned)hdr->length);
+
+    /* Dump the 12 on-wire header bytes + up to 64 payload bytes so RE
+     * work on new WindowServer/Metal opcodes doesn't require a manual
+     * memory dump. Header bytes are reconstructed from the parsed
+     * fields (little-endian, matching the on-wire layout asserted in
+     * opcodes.h §163). */
+    uint8_t hdr_bytes[LAGFX_CMD_HEADER_BYTES];
+    hdr_bytes[0]  = (uint8_t)(hdr->opcode       & 0xff);
+    hdr_bytes[1]  = (uint8_t)((hdr->opcode >> 8) & 0xff);
+    hdr_bytes[2]  = (uint8_t)(hdr->arg_count_8b       & 0xff);
+    hdr_bytes[3]  = (uint8_t)((hdr->arg_count_8b >> 8) & 0xff);
+    hdr_bytes[4]  = (uint8_t)(hdr->length        & 0xff);
+    hdr_bytes[5]  = (uint8_t)((hdr->length >> 8)  & 0xff);
+    hdr_bytes[6]  = (uint8_t)((hdr->length >> 16) & 0xff);
+    hdr_bytes[7]  = (uint8_t)((hdr->length >> 24) & 0xff);
+    hdr_bytes[8]  = (uint8_t)(hdr->stamp        & 0xff);
+    hdr_bytes[9]  = (uint8_t)((hdr->stamp >> 8)  & 0xff);
+    hdr_bytes[10] = (uint8_t)((hdr->stamp >> 16) & 0xff);
+    hdr_bytes[11] = (uint8_t)((hdr->stamp >> 24) & 0xff);
+
+    /* 12 header bytes × 3 chars = 36 + NUL. */
+    char hdr_hex[LAGFX_CMD_HEADER_BYTES * 3 + 1];
+    lagfx_hex_dump_bytes(hdr_hex, sizeof(hdr_hex),
+                         hdr_bytes, LAGFX_CMD_HEADER_BYTES);
+    LAGFX_WARN("  hdr: %s", hdr_hex);
+
+    /* Clamp to min(payload_size, 64). Skip the payload line entirely
+     * when either the payload pointer is NULL (header-only capture,
+     * per opcodes.h §169 "derived" comment) or payload_size is 0. */
+    if (hdr->payload && hdr->payload_size > 0) {
+        size_t dump_n = hdr->payload_size < 64u ? hdr->payload_size : 64u;
+        /* 64 × 3 = 192 + NUL. */
+        char pay_hex[64 * 3 + 1];
+        lagfx_hex_dump_bytes(pay_hex, sizeof(pay_hex),
+                             hdr->payload, dump_n);
+        LAGFX_WARN("  payload: %s", pay_hex);
+    }
+
     return LAGFX_HANDLER_OK;
 }
