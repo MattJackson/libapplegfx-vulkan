@@ -13,7 +13,7 @@ Whenever `metal-clear-color.m` changes:
 ```sh
 clang -arch x86_64 -fobjc-arc \
       -framework Metal -framework Foundation \
-      /Users/mjackson/libapplegfx-vulkan/tests/guest/metal-clear-color.m \
+      /Users/mjackson/Developer/libapplegfx-vulkan/tests/guest/metal-clear-color.m \
       -o /tmp/metal-clear-color
 
 file /tmp/metal-clear-color   # expect: Mach-O 64-bit executable x86_64
@@ -75,7 +75,7 @@ The binary prints a `FAIL:` line and returns a specific exit code. Map:
 
 ## Files
 
-- Source: `/Users/mjackson/libapplegfx-vulkan/tests/guest/metal-clear-color.m`
+- Source: `/Users/mjackson/Developer/libapplegfx-vulkan/tests/guest/metal-clear-color.m`
 - Host build output: `/tmp/metal-clear-color`
 - Local stage (fallback when guest is down): `/Users/mjackson/staging/metal-clear-color`
 - Guest install path: `/tmp/metal-clear-color`

@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-20
 **Auditor:** Phase 1.C coherence audit (Phase 2 gate per
-`/Users/mjackson/mos/paravirt-re/phase-2-first-pixel-plan.md` §8 item 4
+`/Users/mjackson/Developer/mos/paravirt-re/phase-2-first-pixel-plan.md` §8 item 4
 and §R7).
 **File audited:** `src/memory/task.c` — function
 `lagfx_task_map_host_memory` (lines 141–190 as of commit ab1070d).
