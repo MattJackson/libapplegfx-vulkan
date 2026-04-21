@@ -48,21 +48,19 @@
  *     as NUL-terminated sequences padded to 4-byte boundaries; we
  *     compare word-by-word stopping at the first NUL.
  *
- * Not handled (FIXMEs):
+ * Not handled here — done in spv_signature_transform.c instead:
  *   - Signature transform (`%struct fn(%args)` -> `void main(void)`
  *     with Output globals for each returned field, Input globals
- *     for vertex_id / position / etc). Tracked as
- *     FIXME(phase-3c2-signature-transform). Without it, the rewritten
- *     SPV passes vkCreateShaderModule but vkCreateGraphicsPipelines
- *     fails validation on "entry point must have void return type".
- *     The test file triangle-lavapipe-e2e.c documents this as a
- *     non-fatal WARN until the transform lands.
- *   - [[position]] → BuiltIn Position and [[color(n)]] → Location n
- *     rewrites: these targets don't exist in the current LLVM SPIR-V
- *     backend output (returned as struct fields, not decorated
- *     variables), so there is nothing to rewrite in this pass.
- *     When the signature transform lands, decoration emission will
- *     happen in the same pass.
+ *     for vertex_id / position / etc). Landed in phase 3.C.2 M5 as a
+ *     separate transform pass: src/air2spirv/spv_signature_transform.c.
+ *     The triangle-spv-rewrite tool invokes the signature transform
+ *     (which subsumes the metadata edits below) by default; set
+ *     LAGFX_SPV_METADATA_ONLY=1 to fall back to this metadata-only
+ *     pass for diagnostic purposes.
+ *   - [[position]] → BuiltIn Position / [[color(n)]] → Location N
+ *     decoration emission: also handled by the signature transform
+ *     since it controls variable synthesis for each return-struct
+ *     member and each function parameter.
  */
 
 #include "spv_entrypoint_rewrite.h"

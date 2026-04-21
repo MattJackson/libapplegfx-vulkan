@@ -588,11 +588,17 @@ int main(void) {
      * signature transform (FIXME(phase-3c2-signature-transform)) has
      * not, so Mesa's compiler still rejects the pipeline.
      */
-    int use_apple_spv = 0;
+    /* Default flipped ON in phase 3.C.2 M5 (commit that landed
+     * src/air2spirv/spv_signature_transform.c) — the signature
+     * transform rewrites the Apple SPV into a Vulkan-shape void-main
+     * shader, so Mesa's NIR compiler should now ingest it without
+     * crashing and the Apple-sourced pipeline should render the red
+     * triangle. Set USE_APPLE_SPV=0 to revert to the soft-WARN
+     * behaviour that was the default before the transform landed. */
+    int use_apple_spv = 1;
     const char *use_apple_env = getenv("USE_APPLE_SPV");
-    if (use_apple_env && *use_apple_env
-        && use_apple_env[0] != '0') {
-        use_apple_spv = 1;
+    if (use_apple_env && *use_apple_env) {
+        use_apple_spv = (use_apple_env[0] != '0');
     }
 
     if (have_apple_spv) {

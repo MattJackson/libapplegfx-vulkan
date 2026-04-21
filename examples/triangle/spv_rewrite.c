@@ -28,7 +28,9 @@
 
 #include "libapplegfx-vulkan.h"
 #include "air2spirv/spv_entrypoint_rewrite.h"
+#include "air2spirv/spv_signature_transform.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,15 +103,38 @@ int main(int argc, char **argv) {
     }
     fprintf(stdout, "loaded %zu bytes from %s\n", in_len, in_path);
 
+    /* Prefer the full signature transform (phase-3c2 M5) which
+     * subsumes the entry-point metadata rewrite AND rewrites the
+     * function signature so Mesa's NIR compiler can ingest the
+     * Apple-sourced SPV. Fall back to the metadata-only rewrite if
+     * LAGFX_SPV_METADATA_ONLY=1 is set (useful for comparing output
+     * with the older behaviour during triage). */
     uint8_t *out_buf = NULL;
     size_t   out_len = 0;
-    lagfx_status_t st = lagfx_spv_rewrite_entry_point(
-        in_buf, in_len, entry_name, stage, &out_buf, &out_len);
-    if (st != LAGFX_OK) {
-        fprintf(stderr, "lagfx_spv_rewrite_entry_point failed: %d\n",
-                (int)st);
-        free(in_buf);
-        return 2;
+    const char *metadata_only_env = getenv("LAGFX_SPV_METADATA_ONLY");
+    bool metadata_only = metadata_only_env && metadata_only_env[0]
+                         && metadata_only_env[0] != '0';
+    lagfx_status_t st;
+    if (metadata_only) {
+        fprintf(stdout, "LAGFX_SPV_METADATA_ONLY=1 — using metadata-"
+                        "only rewrite (no signature transform)\n");
+        st = lagfx_spv_rewrite_entry_point(
+            in_buf, in_len, entry_name, stage, &out_buf, &out_len);
+        if (st != LAGFX_OK) {
+            fprintf(stderr, "lagfx_spv_rewrite_entry_point failed: %d\n",
+                    (int)st);
+            free(in_buf);
+            return 2;
+        }
+    } else {
+        st = lagfx_spv_signature_transform(
+            in_buf, in_len, entry_name, stage, &out_buf, &out_len);
+        if (st != LAGFX_OK) {
+            fprintf(stderr, "lagfx_spv_signature_transform failed: %d\n",
+                    (int)st);
+            free(in_buf);
+            return 2;
+        }
     }
 
     if (write_all(out_path, out_buf, out_len) != 0) {
