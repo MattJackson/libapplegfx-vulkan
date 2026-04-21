@@ -269,6 +269,28 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
         return p->last_completed_stamp;
     }
 
+    /*
+     * 0x1014 / 0x1018 — stamp cells are ATOMIC XCHG (read-and-clear)
+     * per re-followup-spec-gaps.md §5.2:
+     *   `xorl %eax, %eax; xchgl %eax, 0xf8(%rdi)`  for 0x1014
+     *   `xorl %eax, %eax; xchgl %eax, 0x1c0(%rdi)` for 0x1018
+     * Guest reads the pending-stamp value and simultaneously zeroes
+     * the latch. Plain "return reg[idx]" leaves stamp=7 visible
+     * forever — kext sees "stamp 7 pending" indefinitely, never
+     * advances past setupDeviceInfo even after we serviced the
+     * response. Model the xchg-with-0 behavior here.
+     */
+    if (offset == LAGFX_REG_STAMP_CELL_1 || offset == LAGFX_REG_STAMP_CELL_2) {
+        int idx_xchg = lagfx_protocol_reg_index(offset);
+        uint32_t prev = (idx_xchg >= 0) ? p->reg[idx_xchg] : 0u;
+        if (idx_xchg >= 0) {
+            p->reg[idx_xchg] = 0u;
+        }
+        LAGFX_LOG("mmio_read: stamp_cell 0x%llx xchg -> 0x%x (cleared)",
+                  (unsigned long long)offset, prev);
+        return prev;
+    }
+
     int idx = lagfx_protocol_reg_index(offset);
     if (idx < 0) {
         LAGFX_LOG("mmio_read: unmapped offset 0x%llx -> 0",
