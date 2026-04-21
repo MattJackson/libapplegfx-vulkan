@@ -188,6 +188,24 @@ if fs.is_file(meson.current_source_dir() / 'translate-render.c')
   test('translate render', translate_render_test)
 endif
 
+# Phase 3.C.2 E2E: triangle-lavapipe-e2e. Loads SPIR-V blobs produced by
+# examples/triangle/build_spirv.sh (MSL -> metallib -> extract -> retarget
+# -> llc + GLSL reference pair for the fallback path) and draws a triangle
+# via lavapipe. Gated on vulkan_dep + the test source being present; the
+# test itself SKIPs at runtime (exit 77) when LAGFX_TRIANGLE_SPV_DIR is
+# not populated, which keeps the Mac dev box (no lavapipe ICD, no llc)
+# green.
+if fs.is_file(meson.current_source_dir() / 'triangle-lavapipe-e2e.c') \
+   and vulkan_dep.found()
+  triangle_e2e_test = executable('triangle-lavapipe-e2e',
+    'triangle-lavapipe-e2e.c',
+    include_directories : include_dir,
+    dependencies : [vulkan_dep],
+    build_by_default : true,
+  )
+  test('triangle lavapipe e2e', triangle_e2e_test)
+endif
+
 # Phase 3.C.2: air2spirv (metallib extraction + LLVM Bitcode
 # target-triple retarget) smoke. In-process test — exercises the
 # parser against both synthesised MTLB fixtures AND a real-bytes

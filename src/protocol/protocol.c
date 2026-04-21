@@ -254,6 +254,21 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
         return p->read_ptr;
     }
 
+    /*
+     * 0x102c — "Version/status query" per re-followup-spec-gaps.md §5.2.
+     * Dylib's read dispatch forwards to an ObjC method returning u32.
+     * Empirically the kext polls this after each stamp read (0x1014/
+     * 0x1018). Returning 0 makes the kext wait indefinitely past M3;
+     * trying last_completed_stamp to signal "we have status/work
+     * available" — value doesn't need to be semantically perfect,
+     * just non-zero and consistent.
+     */
+    if (offset == 0x102cu) {
+        LAGFX_LOG("mmio_read: 0x102c -> 0x%x (last_stamp)",
+                  p->last_completed_stamp);
+        return p->last_completed_stamp;
+    }
+
     int idx = lagfx_protocol_reg_index(offset);
     if (idx < 0) {
         LAGFX_LOG("mmio_read: unmapped offset 0x%llx -> 0",

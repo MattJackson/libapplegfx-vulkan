@@ -1,0 +1,24 @@
+; SPIR-V
+; Version: 1.4
+; Generator: LLVM LLVM SPIR-V Backend; 20
+; Bound: 21
+; Schema: 0
+               OpCapability Shader
+               OpCapability Linkage
+               OpMemoryModel Logical GLSL450
+               OpSource Unknown 0
+               OpName %triangle_fragment "triangle_fragment"
+               OpName %reg2mem_alloca_point "reg2mem alloca point"
+               OpDecorate %triangle_fragment LinkageAttributes "triangle_fragment" Export
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+       %uint = OpTypeInt 32 0
+          %4 = OpTypeFunction %v4float
+%reg2mem_alloca_point = OpConstant %uint 0
+    %float_1 = OpConstant %float 1
+    %float_0 = OpConstant %float 0
+          %8 = OpConstantComposite %v4float %float_1 %float_0 %float_0 %float_1
+%triangle_fragment = OpFunction %v4float Pure %4
+         %10 = OpLabel
+               OpReturnValue %8
+               OpFunctionEnd

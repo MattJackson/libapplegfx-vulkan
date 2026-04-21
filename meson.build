@@ -115,3 +115,8 @@ install_headers('include/libapplegfx-vulkan.h')
 
 # --- Tests ---------------------------------------------------------------
 subdir('tests')
+
+# --- Examples (Phase 3.C.2 E2E) ------------------------------------------
+if fs.is_file(meson.current_source_dir() / 'examples' / 'meson.build')
+  subdir('examples')
+endif
