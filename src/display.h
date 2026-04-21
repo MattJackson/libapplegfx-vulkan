@@ -53,8 +53,20 @@ struct lagfx_display {
  * configuration anyway.
  *
  * rgba may be NULL in which case a (0,0,0,1) black clear is used;
- * Phase 2 callers always pass the transaction's last_clear_rgba. */
+ * Phase 2 callers always pass the transaction's last_clear_rgba.
+ *
+ * scanout_gpa / scanout_length are optional. When non-zero (and the
+ * device shell supplied a write_memory callback), the rendered pixels
+ * are DMA'd back to the guest's scanout buffer at that GPA after the
+ * clear fence-waits. This closes M4 GAP #1: CmdDisplayTransaction3's
+ * rendered output previously stopped at the shell's staging buffer;
+ * now it lands in the guest-visible scanout VA captured by the prior
+ * CmdDisplaySwapMapping (ops_display.c:213ff). Pass (0, 0) to skip
+ * the writeback (legacy / unit-test callers that only care about the
+ * flag state). */
 lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
-                                                const float rgba[4]);
+                                                const float rgba[4],
+                                                uint64_t scanout_gpa,
+                                                uint64_t scanout_length);
 
 #endif /* LIBAPPLEGFX_DISPLAY_INTERNAL_H */

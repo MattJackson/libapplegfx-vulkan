@@ -59,6 +59,13 @@ static int g_fail = 0;
 
 /* === Mock shell callbacks ================================= */
 
+/* Test-side scanout capture. When scanout_gpa / scanout_capacity are
+ * set, mock_write routes any write_memory call whose range lies within
+ * [scanout_gpa, scanout_gpa+scanout_capacity) into scanout_buf at the
+ * matching offset. Used by test_metal_clear_color_sequence to observe
+ * the M4 GAP #1 DMA writeback that ops_display.c → display.c issues
+ * against the guest's scanout VA after CmdDisplayTransaction3
+ * fence-waits. */
 typedef struct {
     unsigned raise_irq_count;
     uint32_t last_irq_vector;
@@ -67,6 +74,12 @@ typedef struct {
     unsigned map_memory_count;
     unsigned unmap_memory_count;
     unsigned read_memory_count;
+    unsigned write_memory_count;
+    uint64_t scanout_gpa;       /* 0 = not-capturing */
+    uint64_t scanout_capacity;  /* bytes backing scanout_buf */
+    uint8_t *scanout_buf;       /* owned by test, NULL-ok */
+    uint64_t last_write_gpa;
+    uint64_t last_write_len;
 } mock_shell_t;
 
 static lagfx_task_t *mock_create_task(void *op, uint64_t sz, void **out) {
@@ -100,6 +113,19 @@ static bool mock_read(void *op, uint64_t gpa, uint64_t l, void *d) {
     (void)gpa; (void)l; (void)d;
     return true;
 }
+static bool mock_write(void *op, uint64_t gpa, uint64_t l, const void *s) {
+    mock_shell_t *m = (mock_shell_t *)op;
+    m->write_memory_count++;
+    m->last_write_gpa = gpa;
+    m->last_write_len = l;
+    if (m->scanout_buf && m->scanout_capacity > 0
+        && gpa >= m->scanout_gpa
+        && gpa + l <= m->scanout_gpa + m->scanout_capacity) {
+        uint64_t off = gpa - m->scanout_gpa;
+        memcpy(m->scanout_buf + off, s, (size_t)l);
+    }
+    return true;
+}
 static void mock_raise_irq(void *op, uint32_t vec) {
     mock_shell_t *m = (mock_shell_t *)op;
     m->raise_irq_count++;
@@ -115,6 +141,7 @@ static lagfx_device_t *make_dev(mock_shell_t *shell) {
     d.shell.map_memory      = mock_map;
     d.shell.unmap_memory    = mock_unmap;
     d.shell.read_memory     = mock_read;
+    d.shell.write_memory    = mock_write;
     d.shell.raise_interrupt = mock_raise_irq;
     char *err = NULL;
     lagfx_device_t *dev = lagfx_device_new(&d, &err);
@@ -1432,6 +1459,17 @@ static void test_metal_clear_color_sequence(void) {
      *   - display's transaction_acked=true after the ack
      *   - clear-colour on the display entry matches (1,0,0,1) */
     mock_shell_t shell = {0};
+    /* M4 GAP #1: capture the DMA writeback to the SwapMapping buffer_va
+     * (see build_header for swap[] below — bufferVA = 0x1000000). Back
+     * it with a 16 KiB scanout buffer sized for the 64x64 BGRA8 render
+     * target so we can inspect the pixel that landed at guest GPA. */
+    const uint64_t test_scanout_gpa = 0x1000000ull;
+    const uint64_t test_scanout_cap = 64ull * 64ull * 4ull;
+    uint8_t test_scanout_buf[64u * 64u * 4u];
+    memset(test_scanout_buf, 0, sizeof(test_scanout_buf));
+    shell.scanout_gpa      = test_scanout_gpa;
+    shell.scanout_capacity = test_scanout_cap;
+    shell.scanout_buf      = test_scanout_buf;
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
@@ -1566,6 +1604,45 @@ static void test_metal_clear_color_sequence(void) {
      * flag gets cleared as part of the no-backend path). */
     CHECK(display != NULL && display->new_frame_ready,
           "Phase 2.B: new_frame_ready set after clear transaction");
+
+    /* M4 GAP #1 closure assertion: after CmdDisplayTransaction3
+     * fence-waits on the clear, display_submit_clear_color DMAs the
+     * readback into shell.write_memory at the SwapMapping-captured
+     * scanout GPA. On a non-Vulkan (or no-loadable-ICD) build this
+     * path is skipped — so the callback count is only expected to
+     * bump when LAGFX_HAVE_VULKAN is set AND the device brought up a
+     * live vk instance. We gate the assertion on shell.scanout_buf
+     * being populated (i.e. the mock actually captured a write in the
+     * expected range). */
+#ifdef LAGFX_HAVE_VULKAN
+    if (dev->vk && dev->vk->initialized) {
+        CHECK(shell.write_memory_count >= 1,
+              "M4: DMA writeback fired at least once (scanout VA)");
+        CHECK(shell.last_write_gpa == 0x1000000ull,
+              "M4: DMA writeback targeted SwapMapping buffer_va");
+        /* 64x64 BGRA8 = 16 KiB. */
+        CHECK(shell.last_write_len == 64u * 64u * 4u,
+              "M4: DMA writeback size == rt width*height*4");
+        if (shell.scanout_buf) {
+            size_t off = (size_t)32u * (size_t)(64u * 4u)
+                       + (size_t)32u * 4u;
+            CHECK(shell.scanout_buf[off + 0] == 0u,
+                  "M4: scanout GPA pixel (32,32) B == 0");
+            CHECK(shell.scanout_buf[off + 1] == 0u,
+                  "M4: scanout GPA pixel (32,32) G == 0");
+            CHECK(shell.scanout_buf[off + 2] == 255u,
+                  "M4: scanout GPA pixel (32,32) R == 255");
+            CHECK(shell.scanout_buf[off + 3] == 255u,
+                  "M4: scanout GPA pixel (32,32) A == 255");
+        }
+    } else {
+        CHECK(shell.write_memory_count == 0,
+              "M4: DMA writeback skipped when no Vulkan ICD");
+    }
+#else
+    CHECK(shell.write_memory_count == 0,
+          "M4: DMA writeback skipped on no-Vulkan build");
+#endif
 
     size_t stride_out = 0;
     bool   new_frame  = false;

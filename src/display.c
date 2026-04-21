@@ -255,7 +255,9 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
  * rt_ready=false.
  * ============================================================= */
 lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
-                                                const float rgba[4]) {
+                                                const float rgba[4],
+                                                uint64_t scanout_gpa,
+                                                uint64_t scanout_length) {
     if (!display || display->magic != LAGFX_DISPLAY_MAGIC) {
         return LAGFX_ERR_INVALID_ARG;
     }
@@ -267,6 +269,8 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
          * the absence of a backend — read_frame will clear it with
          * NO_FRAME and the shell sees the signal. */
         display->new_frame_ready = true;
+        (void)scanout_gpa;
+        (void)scanout_length;
         return LAGFX_OK;
     }
 
@@ -356,9 +360,71 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
               display->rt_width, display->rt_height,
               (double)rgba_local[0], (double)rgba_local[1],
               (double)rgba_local[2], (double)rgba_local[3]);
+
+    /* M4 GAP #1: DMA the rendered pixels into the guest's scanout
+     * buffer at the GPA captured by the last CmdDisplaySwapMapping.
+     * Without this, the clear lands in host staging only and noVNC /
+     * guest VM both see an unchanged framebuffer. The readback path
+     * here is a second round-trip (staging buffer → host memcpy →
+     * shell.write_memory → guest RAM); a future optimisation could
+     * fold the copy into the same fence-waited cmdbuf. For Phase 2
+     * first-pixel correctness, the extra hop is acceptable.
+     *
+     * Skipped when:
+     *   - caller didn't carry a scanout GPA (scanout_gpa == 0),
+     *   - shell didn't register a write_memory callback (older shells
+     *     predating libapplegfx-vulkan@d3d7c79), or
+     *   - length is zero / not large enough for one row.
+     * Failure here is non-fatal — new_frame_ready already set, the
+     * shell's read_frame path still works for local noVNC. */
+    if (scanout_gpa != 0ull && scanout_length > 0ull
+        && display->device->desc.shell.write_memory != NULL) {
+        const uint32_t stride_expected = display->rt_width * 4u;
+        const size_t rt_bytes = (size_t)display->rt_height
+                              * (size_t)stride_expected;
+        if (scanout_length < rt_bytes) {
+            LAGFX_WARN("display_submit_clear: scanout length %llu < "
+                       "render target bytes %zu — skipping DMA writeback "
+                       "(gpa=0x%llx)",
+                       (unsigned long long)scanout_length, rt_bytes,
+                       (unsigned long long)scanout_gpa);
+        } else {
+            uint8_t *pixels = (uint8_t *)malloc(rt_bytes);
+            if (!pixels) {
+                LAGFX_ERR("display_submit_clear: OOM allocating %zu-byte "
+                          "readback buffer", rt_bytes);
+            } else {
+                size_t stride_actual = 0;
+                lagfx_status_t rb_st = lagfx_vk_render_target_readback(
+                    vk, &display->rt, pixels, rt_bytes, &stride_actual);
+                if (rb_st != LAGFX_OK) {
+                    LAGFX_ERR("display_submit_clear: readback for DMA "
+                              "writeback failed (%d)", (int)rb_st);
+                } else {
+                    if (!display->device->desc.shell.write_memory(
+                            display->device->desc.shell.opaque,
+                            scanout_gpa, (uint64_t)rt_bytes, pixels)) {
+                        LAGFX_WARN("display_submit_clear: DMA writeback to "
+                                   "gpa=0x%llx (%zu bytes) failed",
+                                   (unsigned long long)scanout_gpa,
+                                   rt_bytes);
+                    } else {
+                        LAGFX_LOG("display_submit_clear: DMA writeback "
+                                  "gpa=0x%llx bytes=%zu OK",
+                                  (unsigned long long)scanout_gpa,
+                                  rt_bytes);
+                    }
+                }
+                free(pixels);
+            }
+        }
+    }
+
     return LAGFX_OK;
 #else
     (void)rgba;
+    (void)scanout_gpa;
+    (void)scanout_length;
     /* No backend — just flip the flag so semantics stay uniform from
      * the protocol decoder's perspective. read_frame will clear it. */
     display->new_frame_ready = true;

@@ -188,10 +188,13 @@ lagfx_handler_status_t lagfx_op_display_ack(lagfx_protocol_t *p,
 /* === CmdDisplaySwapMapping (0x12) — Phase 2.A =========================
  *
  * Establishes the mapping of a guest-visible display to a host-side
- * scanout buffer (guest VA into task-mapped RAM). In Phase 2 the shell
- * will later vkCmdCopyImageToBuffer the rendered clear into a
- * HOST_VISIBLE staging buffer and memcpy into this region for noVNC to
- * pick up — see phase-2-first-pixel-plan.md §2.B.4.
+ * scanout buffer (guest VA into task-mapped RAM). The
+ * vkCmdCopyImageToBuffer + memcpy pair that writes into this region
+ * now lives in src/display.c (M4 GAP #1 closure —
+ * lagfx_display_submit_clear_color receives scanout_gpa +
+ * scanout_length from CmdDisplayTransaction3 below and DMAs the
+ * rendered pixels into guest RAM via shell.write_memory). See
+ * phase-2-first-pixel-plan.md §2.B.4.
  *
  * The handler records {bufferVA, length, width, height, stride,
  * format} on the display entry. If the display isn't known yet it is
@@ -383,8 +386,16 @@ lagfx_handler_status_t lagfx_op_display_transaction3(
             }
         }
         if (disp != NULL) {
+            /* M4 GAP #1 closure: forward the SwapMapping-captured
+             * scanout GPA + length so lagfx_display_submit_clear_color
+             * can DMA the rendered pixels back to guest RAM once the
+             * clear fence-waits. d->buffer_va is the guest VA recorded
+             * at ops_display.c:215 (CmdDisplaySwapMapping payload+8);
+             * we pass it through as a GPA matching the shell callback
+             * contract (same treatment as CmdGetDeviceInfo's
+             * out_offset writeback in ops_device.c). */
             lagfx_status_t st = lagfx_display_submit_clear_color(
-                disp, d->last_clear_rgba);
+                disp, d->last_clear_rgba, d->buffer_va, d->length);
             if (st != LAGFX_OK) {
                 LAGFX_WARN("CmdDisplayTransaction3: submit_clear_color "
                            "failed (%d) — continuing without frame",
