@@ -175,6 +175,14 @@ struct lagfx_protocol {
     uint32_t write_ptr;             /* last-seen guest write ptr (doorbell) */
     uint32_t last_completed_stamp;
 
+    /* CmdGetDeviceInfo2 (opcode 0x3a) count-writeback.
+     * The 0x3a handler sets this to the number of (key,value) pairs
+     * it emitted. The drain loop, after dispatch, DMA-writes this
+     * value back into the ring header's length slot (+4) — the kext's
+     * setupDeviceInfo reads actual_count from there. See paravirt-re
+     * §13.2.4. 0xffffffff = no pending writeback. */
+    uint32_t device_info_actual_count;
+
     /* Setter-candidate probe state — see protocol.h:
      * the true doorbell offset in 0x1004..0x1034 is unknown, so we
      * log each write to the range and expose it for runtime capture. */

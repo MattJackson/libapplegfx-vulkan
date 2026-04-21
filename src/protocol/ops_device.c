@@ -221,6 +221,10 @@ lagfx_op_get_device_info_2(lagfx_protocol_t *p,
     }
 
     LAGFX_LOG("CmdGetDeviceInfo2: wrote %zu pairs to resp page", emit_pairs);
+
+    /* Stash the pair count for the drain to DMA back into the ring
+     * header's length slot (kext reads this as actual_count). */
+    p->device_info_actual_count = (uint32_t)emit_pairs;
     return LAGFX_HANDLER_OK;
 }
 
