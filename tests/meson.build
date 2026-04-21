@@ -229,6 +229,27 @@ if fs.is_file(meson.current_source_dir() / 'triangle-lavapipe-e2e.c') \
   test('triangle lavapipe e2e', triangle_e2e_test)
 endif
 
+# Trace replay harness. Reads a simple text trace (W/R events captured
+# from live guest boots) and replays it through the decoder's MMIO
+# entry points against a mock device. Regression gate: catches drift
+# in mmio_{read,write} behaviour as we iterate on src/protocol/. The
+# shipped trace (traces/m2-m3-init-2026-04-21.trace) covers the M2->M3
+# init-phase stamps 1-7 pattern. Reaches into src/ for protocol/state.h
+# so needs internal_include_dir.
+if fs.is_file(meson.current_source_dir() / 'trace-replay.c') \
+   and fs.is_file(meson.current_source_dir() / 'traces' / 'm2-m3-init-2026-04-21.trace')
+  trace_replay_default = meson.current_source_dir() / 'traces' / 'm2-m3-init-2026-04-21.trace'
+  trace_replay_test = executable('trace-replay',
+    'trace-replay.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    c_args : [ '-DLAGFX_TRACE_REPLAY_DEFAULT="' + trace_replay_default + '"' ],
+    build_by_default : true,
+  )
+  test('trace replay', trace_replay_test,
+    args : [ trace_replay_default ])
+endif
+
 # Phase 3.C.2: air2spirv (metallib extraction + LLVM Bitcode
 # target-triple retarget) smoke. In-process test — exercises the
 # parser against both synthesised MTLB fixtures AND a real-bytes
