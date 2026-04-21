@@ -76,6 +76,14 @@ typedef enum {
     LAGFX_OP_SET_OBJECT_PLACEMENT     = 0x25,
     LAGFX_OP_DELETE_IOSURFACE_BACKING = 0x26,
 
+    /* --- M2+ extended range (0x30-0x41) -------------------------
+     * Kext-only opcodes (never emitted by the dylib). Observed via
+     * live trace + kext disasm. See paravirt-re §13. */
+    LAGFX_OP_DEFINE_CHILD_CHANNEL     = 0x30,
+    LAGFX_OP_SET_RESOURCE_HEAP        = 0x33,
+    LAGFX_OP_DEFINE_HOST_TASK         = 0x38,
+    LAGFX_OP_GET_DEVICE_INFO_2        = 0x3a,
+
     /* --- Heap / Resource (0x80-0x82) ---------------------------- */
     LAGFX_OP_HEAP_TEX_SIZE_ALIGN      = 0x80,
     LAGFX_OP_RESET_RASTERIZATION_RATE = 0x81,
@@ -90,7 +98,7 @@ typedef enum {
  * Per re-followup-spec-gaps.md §5.3 the host jump table tolerates
  * 0x00..0x44 (69 entries) with the extras stubbed to "unknown opcode";
  * we only populate the named 36 here. */
-#define LAGFX_OPCODE_COUNT 36
+#define LAGFX_OPCODE_COUNT 40
 
 /* === Priority bands ============================================ */
 
@@ -207,6 +215,8 @@ lagfx_handler_status_t lagfx_op_debug(lagfx_protocol_t *p,
 /* ops_device.c — stubs (P0/P1 TODO). */
 lagfx_handler_status_t lagfx_op_get_device_info(lagfx_protocol_t *p,
                                                 const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_get_device_info_2(lagfx_protocol_t *p,
+                                                  const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_define_task2(lagfx_protocol_t *p,
                                              const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_delete_task(lagfx_protocol_t *p,

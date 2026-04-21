@@ -139,6 +139,92 @@ lagfx_handler_status_t lagfx_op_get_device_info(lagfx_protocol_t *p,
 }
 
 /* ===========================================================================
+ * CmdGetDeviceInfo2 (0x3a) — M2+ extended opcode — M3 GATE
+ *
+ * Emitted by `AppleParavirtAccelerator::setupDeviceInfo()` at kext
+ * vmaddr 0x14557806. Must complete before `registerService()` fires
+ * and thus before `MTLCreateSystemDefaultDevice()` returns non-null.
+ * See paravirt-re/re-followup-spec-gaps.md §13.2.4.
+ *
+ * Request payload (12 bytes):
+ *   +0  u32 kind          observed 0x2a
+ *   +4  u32 resp_qwords   response buffer size in 8-byte units (observed 0x200)
+ *   +8  u32 resp_pfn      GPA of response buffer >> 12
+ *
+ * Response: fill resp_pfn << 12 with key-tagged tuples
+ *   struct { u32 key; u32 value; } pairs[<=resp_qwords]
+ *
+ * Keys 0..0x29 — parser at kext vmaddr 0x1455d41d. Minimum viable:
+ * emit keys {0, 1, 4, 8, 0x10} with plausible defaults; kext tolerates
+ * missing keys (unlisted fields stay at their memset-zero defaults).
+ * =========================================================================== */
+lagfx_handler_status_t
+lagfx_op_get_device_info_2(lagfx_protocol_t *p,
+                           const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 12u) {
+        LAGFX_WARN("CmdGetDeviceInfo2: payload too small (%u)",
+                   (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint32_t kind        = lagfx_le32(hdr->payload + 0);
+    uint32_t resp_qwords = lagfx_le32(hdr->payload + 4);
+    uint32_t resp_pfn    = lagfx_le32(hdr->payload + 8);
+    uint64_t resp_gpa    = (uint64_t)resp_pfn << 12;
+
+    LAGFX_LOG("CmdGetDeviceInfo2: kind=0x%x resp_qwords=0x%x resp_pfn=0x%x "
+              "-> gpa=0x%llx",
+              kind, resp_qwords, resp_pfn, (unsigned long long)resp_gpa);
+
+    if (!p->dev || !p->dev->desc.shell.write_memory || resp_pfn == 0u) {
+        LAGFX_WARN("CmdGetDeviceInfo2: no write_memory or resp_pfn=0; "
+                   "stamping with empty response");
+        (void)kind;
+        (void)resp_qwords;
+        return LAGFX_HANDLER_OK;
+    }
+
+    /*
+     * Minimum viable response tuple stream. Each (key, value) is 8 bytes.
+     * Keys per paravirt-re §13.2.4 (parser at 0x1455d41d, 42-case jump):
+     *   0x00  protocol version   -> 1
+     *   0x01  baseline feature   -> 0
+     *   0x04  cap bits           -> 0 (no optional features)
+     *   0x08  resource-ID limit  -> 0
+     *   0x10  max tasks          -> 0
+     * Missing keys leave their host-side struct field at memset-zero.
+     * 5 pairs = 40 bytes, well within the observed 4 KiB response page.
+     */
+    struct { uint32_t key; uint32_t value; } pairs[] = {
+        { 0x00, 1u },
+        { 0x01, 0u },
+        { 0x04, 0u },
+        { 0x08, 0u },
+        { 0x10, 0u },
+    };
+    const size_t n_pairs = sizeof(pairs) / sizeof(pairs[0]);
+
+    /* Clamp to guest-provided capacity (should always be ample). */
+    size_t emit_pairs =
+        (n_pairs * 8u <= resp_qwords * 8u) ? n_pairs : resp_qwords;
+
+    if (!p->dev->desc.shell.write_memory(p->dev->desc.shell.opaque,
+                                          resp_gpa,
+                                          emit_pairs * sizeof(pairs[0]),
+                                          pairs)) {
+        LAGFX_WARN("CmdGetDeviceInfo2: DMA writeback failed to gpa=0x%llx",
+                   (unsigned long long)resp_gpa);
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+
+    LAGFX_LOG("CmdGetDeviceInfo2: wrote %zu pairs to resp page", emit_pairs);
+    return LAGFX_HANDLER_OK;
+}
+
+/* ===========================================================================
  * CmdDefineTask2 (0x00) — P0
  *
  * Request layout (phase-1a2-decoder-plan.md §4.1, HIGH confidence):

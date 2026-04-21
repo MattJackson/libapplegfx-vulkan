@@ -112,6 +112,21 @@ static const lagfx_op_descriptor_t g_op_table[] = {
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_DELETE_SHARED_TEX_BACK,  "CmdDeleteSharedTextureBacking",
       LAGFX_PRIO_P2, 0, 0, NULL },
+
+    /* --- M2+ extended range (0x30-0x41) — kext-only opcodes.
+     *     Init-phase P0 — all four must ack for `registerService()`
+     *     to fire (prerequisite for MTLCreateSystemDefaultDevice).
+     *     0x30/0x33/0x38 use the default stamp+log path (handler=NULL).
+     *     0x3a fills the guest-supplied response page with a minimum
+     *     viable device-info tuple stream. See paravirt-re §13. */
+    { LAGFX_OP_DEFINE_CHILD_CHANNEL,  "CmdDefineChildChannel",
+      LAGFX_PRIO_P0, 4,  4,  NULL },
+    { LAGFX_OP_SET_RESOURCE_HEAP,     "CmdSetResourceHeap",
+      LAGFX_PRIO_P0, 12, 12, NULL },
+    { LAGFX_OP_DEFINE_HOST_TASK,      "CmdDefineHostTask",
+      LAGFX_PRIO_P0, 16, 16, NULL },
+    { LAGFX_OP_GET_DEVICE_INFO_2,     "CmdGetDeviceInfo2",
+      LAGFX_PRIO_P0, 12, 12, lagfx_op_get_device_info_2 },
 };
 
 static const size_t g_op_table_count =
