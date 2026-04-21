@@ -225,6 +225,27 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
         return 0;
     }
 
+    /*
+     * Secondary capability table (BAR0+0x1200..0x122c).
+     *
+     * AppleParavirtGPUControl::start()+0x7c reads a u32 at BAR0+0x122c
+     * and branches on its value:
+     *   0       -> "no-caps" bail (silent no-op; M2 invisible)
+     *   1..8    -> legacy / pre-v9 shape
+     *   >=9     -> modern capability path (what we want)
+     * Disasm: paravirt-re/baselines/phase-1d4-disasm.txt:42-48.
+     *
+     * Return 9 to select the modern path. Rest of the 0x1200..0x1228
+     * block returns 0 (no optional features advertised); those aren't
+     * consumed by start() before +0x7c, so safe default for now.
+     */
+    if (offset == 0x122c) {
+        return 9;
+    }
+    if (offset >= 0x1200 && offset < 0x122c) {
+        return 0;
+    }
+
     int idx = lagfx_protocol_reg_index(offset);
     if (idx < 0) {
         LAGFX_LOG("mmio_read: unmapped offset 0x%llx -> 0",
