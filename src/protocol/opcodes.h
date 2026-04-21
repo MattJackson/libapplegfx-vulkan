@@ -82,10 +82,15 @@ typedef enum {
     LAGFX_OP_SET_OBJECT_PLACEMENT     = 0x25,
     LAGFX_OP_DELETE_IOSURFACE_BACKING = 0x26,
 
-    /* --- Extended exec-adjacent (0x28) --------------------------
-     * Observed via A2 kext disasm (re-followup-spec-gaps.md §13.5).
-     * Not in command-buffer-format.md §3 — "spec §3 had no 0x28". */
-    LAGFX_OP_UNKNOWN_28               = 0x28,
+    /* --- IOSurface family (0x27-0x29) ---------------------------
+     * Conjectured opcode numbers + payload layouts per
+     * re-followup-spec-gaps.md §14.5 and phase-4-iosurface-
+     * videotoolbox-plan.md §3.3/§3.4. WindowServer emits these
+     * during M6 startup for its back-buffer pool; log+ack stubs for
+     * bring-up, real VkImage-backed lifecycle lands in Phase 4. */
+    LAGFX_OP_DELETE_IOSURFACE         = 0x27,
+    LAGFX_OP_IOSURFACE_CREATE         = 0x28,
+    LAGFX_OP_IOSURFACE_UPDATE         = 0x29,
 
     /* --- M2+ extended range (0x30-0x41) -------------------------
      * Kext-only opcodes (never emitted by the dylib). Observed via
@@ -119,9 +124,11 @@ typedef enum {
  * 0x00..0x44 (69 entries) with the extras stubbed to "unknown opcode".
  * A2's kext disasm (§13.5) enumerated 26 callsites covering extended
  * opcodes 0x1e, 0x28, 0x30, 0x31, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
- * 0x39, 0x3a, 0x3b, 0x3c, 0x41; we now populate all 15 of those plus
- * the 36 named §3 opcodes = 51. */
-#define LAGFX_OPCODE_COUNT 51
+ * 0x39, 0x3a, 0x3b, 0x3c, 0x41; we populate 14 of those (0x28 is now
+ * claimed by CmdIOSurfaceCreate per §14.5) plus the 36 named §3
+ * opcodes + 3 conjectured IOSurface ops (0x27/0x28/0x29 per §14.5) =
+ * 14 + 36 + 3 = 53. */
+#define LAGFX_OPCODE_COUNT 53
 
 /* === Priority bands ============================================ */
 

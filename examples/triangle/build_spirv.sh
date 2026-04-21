@@ -120,12 +120,35 @@ ssh "$DOCKER_HOST" "sudo docker run --rm -v ~/$REMOTE_DIR:/work ubuntu:24.04 bas
   chmod -R a+rw /work
 '"
 
-for f in triangle_vertex.spv triangle_fragment.spv \
+for f in triangle_vertex.raw.spv triangle_fragment.raw.spv \
          reference_vert.spv reference_frag.spv \
-         triangle_vertex.spv.dis triangle_fragment.spv.dis; do
+         triangle_vertex.raw.spv.dis triangle_fragment.raw.spv.dis; do
   scp "$DOCKER_HOST:~/$REMOTE_DIR/$f" "$OUT_DIR/$f" 2>/dev/null || true
 done
 ssh "$DOCKER_HOST" "rm -rf ~/$REMOTE_DIR"
+
+# --- Stage 4b: SPV entry-point rewrite (our library, local) ---------------
+#
+# LLVM's SPIR-V backend emits OpenCL/Kernel-calling-convention SPIR-V:
+# no OpEntryPoint, CPacked decorations, OpCapability Linkage. The
+# triangle-spv-rewrite tool runs src/air2spirv/spv_entrypoint_rewrite.c
+# to produce a Vulkan-shaped variant. We run it on whichever side
+# has a built binary: the local Mac meson build is simplest, so we
+# run it here.
+
+SPV_REWRITE_BIN="$BUILD_DIR/examples/triangle-spv-rewrite"
+if [[ ! -x "$SPV_REWRITE_BIN" ]]; then
+  log "Building triangle-spv-rewrite via meson..."
+  meson compile -C "$BUILD_DIR" triangle-spv-rewrite
+fi
+
+log "Stage 4b: SPV entry-point rewrite (Apple-sourced .raw.spv -> .spv)"
+if [[ -f "$OUT_DIR/triangle_vertex.raw.spv" ]]; then
+  "$SPV_REWRITE_BIN" "$OUT_DIR/triangle_vertex.raw.spv"   "$OUT_DIR/triangle_vertex.spv"   "triangle_vertex"   "vertex"
+fi
+if [[ -f "$OUT_DIR/triangle_fragment.raw.spv" ]]; then
+  "$SPV_REWRITE_BIN" "$OUT_DIR/triangle_fragment.raw.spv" "$OUT_DIR/triangle_fragment.spv" "triangle_fragment" "fragment"
+fi
 
 log "Stage 4 complete. Outputs:"
 ls -la "$OUT_DIR"/*.spv 2>/dev/null || true

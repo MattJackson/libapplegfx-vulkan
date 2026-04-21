@@ -40,8 +40,13 @@
  *
  *   (D) Once (B) succeeds structurally (= Apple-sourced SPIR-V
  *       accepted by vkCreateShaderModule), we additionally attempt
- *       to build a graphics pipeline with it. This may or may not
- *       succeed per (B)'s caveats. Result logged; non-fatal.
+ *       to build a graphics pipeline with it AND run the full
+ *       draw + readback against the Apple-sourced pipeline. The
+ *       asserts are soft (WARN) by default and hard (CHECK) when
+ *       the caller sets USE_APPLE_SPV=1 — intended to be flipped
+ *       on by CI once src/air2spirv/spv_entrypoint_rewrite.c's
+ *       signature transform lands (see that file's header for the
+ *       tracking FIXMEs).
  *
  * Skip policy
  * -----------
@@ -567,11 +572,34 @@ int main(void) {
           "lavapipe readback: corner pixel is clear-colour blue (outside triangle)");
     vkUnmapMemory(dev, bmem);
 
-    /* (D) Try building a pipeline with Apple-sourced SPIR-V too. */
+    /* (D) Try building a pipeline with Apple-sourced SPIR-V too.
+     *
+     * With USE_APPLE_SPV=1 we additionally submit a draw and read back
+     * the centre pixel, asserting the Apple-sourced shaders actually
+     * render the triangle. This is the M5 closure assertion — once the
+     * spv_entrypoint_rewrite pass + its follow-on signature transform
+     * both land, setting USE_APPLE_SPV=1 in CI should keep the test
+     * green.
+     *
+     * When USE_APPLE_SPV is unset/zero, pipeline-creation and readback
+     * are still exercised but any failure is logged as a WARN rather
+     * than CHECK — the rewriter has landed (OpEntryPoint +
+     * OpExecutionMode + CPacked/Linkage strip) but the function-
+     * signature transform (FIXME(phase-3c2-signature-transform)) has
+     * not, so Mesa's compiler still rejects the pipeline.
+     */
+    int use_apple_spv = 0;
+    const char *use_apple_env = getenv("USE_APPLE_SPV");
+    if (use_apple_env && *use_apple_env
+        && use_apple_env[0] != '0') {
+        use_apple_spv = 1;
+    }
+
     if (have_apple_spv) {
         VkShaderModule sm_v = maybe_make_module(dev, tri_v, tri_v_len);
         VkShaderModule sm_f = maybe_make_module(dev, tri_f, tri_f_len);
         int apple_pipe_ok = 0;
+        VkPipeline apple_pipe = VK_NULL_HANDLE;
         if (sm_v && sm_f) {
             VkPipelineShaderStageCreateInfo apple_stages[2] = {
                 { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -585,20 +613,102 @@ int main(void) {
             };
             VkGraphicsPipelineCreateInfo apple_gpci = gpci;
             apple_gpci.pStages = apple_stages;
-            VkPipeline apple_pipe = VK_NULL_HANDLE;
             VkResult ar = vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1,
                                                     &apple_gpci, NULL,
                                                     &apple_pipe);
             apple_pipe_ok = (ar == VK_SUCCESS);
-            if (apple_pipe != VK_NULL_HANDLE) {
-                vkDestroyPipeline(dev, apple_pipe, NULL);
+            if (!apple_pipe_ok) {
+                fprintf(stderr,
+                        "  vkCreateGraphicsPipelines(Apple) "
+                        "returned VkResult=%d\n", (int)ar);
             }
         }
-        WARN(apple_pipe_ok,
-             "vkCreateGraphicsPipelines(Apple-sourced) succeeded "
-             "(scaffold gap: Apple metadata not yet rewritten)");
+
+        if (use_apple_spv) {
+            CHECK(apple_pipe_ok,
+                  "vkCreateGraphicsPipelines(Apple-sourced) succeeded "
+                  "[USE_APPLE_SPV=1]");
+        } else {
+            WARN(apple_pipe_ok,
+                 "vkCreateGraphicsPipelines(Apple-sourced) succeeded "
+                 "(signature-transform FIXME still open; "
+                 "set USE_APPLE_SPV=1 to fail-hard)");
+        }
+
+        /* If the pipeline built, run the full draw+readback and
+         * assert the centre pixel is red. */
+        if (apple_pipe_ok && apple_pipe != VK_NULL_HANDLE) {
+            VkCommandBuffer apple_cmd = VK_NULL_HANDLE;
+            vkAllocateCommandBuffers(dev, &cbai, &apple_cmd);
+            vkBeginCommandBuffer(apple_cmd, &cbbi);
+
+            /* Reclear the image blue so we can tell the Apple path
+             * actually wrote pixels (rather than inheriting the
+             * previous render's readback). */
+            VkClearValue apple_clear = { .color = { .float32 = { 0, 0, 1, 1 } } };
+            VkRenderPassBeginInfo apple_rpbi = rpbi;
+            apple_rpbi.pClearValues = &apple_clear;
+            vkCmdBeginRenderPass(apple_cmd, &apple_rpbi,
+                                 VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(apple_cmd,
+                              VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              apple_pipe);
+            vkCmdDraw(apple_cmd, 3, 1, 0, 0);
+            vkCmdEndRenderPass(apple_cmd);
+            vkEndCommandBuffer(apple_cmd);
+
+            VkSubmitInfo apple_si = {
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .commandBufferCount = 1,
+                .pCommandBuffers = &apple_cmd,
+            };
+            vkQueueSubmit(queue, 1, &apple_si, VK_NULL_HANDLE);
+            vkQueueWaitIdle(queue);
+
+            VkCommandBuffer cmd3;
+            vkAllocateCommandBuffers(dev, &cbai, &cmd3);
+            vkBeginCommandBuffer(cmd3, &cbbi);
+            vkCmdCopyImageToBuffer(cmd3, image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   staging, 1, &copy);
+            vkEndCommandBuffer(cmd3);
+            apple_si.pCommandBuffers = &cmd3;
+            vkQueueSubmit(queue, 1, &apple_si, VK_NULL_HANDLE);
+            vkQueueWaitIdle(queue);
+
+            void *mapped2 = NULL;
+            vkMapMemory(dev, bmem, 0, VK_WHOLE_SIZE, 0, &mapped2);
+            RGBA *px2 = (RGBA *)mapped2;
+            RGBA centre2 = px2[(H/2) * W + (W/2)];
+            fprintf(stdout,
+                    "  Apple-pipe centre pixel R=%02x G=%02x "
+                    "B=%02x A=%02x\n",
+                    centre2.r, centre2.g, centre2.b, centre2.a);
+            int red = (centre2.r == 0xff && centre2.g == 0x00
+                       && centre2.b == 0x00 && centre2.a == 0xff);
+            if (use_apple_spv) {
+                CHECK(red,
+                      "Apple-sourced pipeline: centre pixel is red "
+                      "[USE_APPLE_SPV=1]");
+            } else {
+                WARN(red,
+                     "Apple-sourced pipeline: centre pixel is red "
+                     "(signature-transform FIXME; set USE_APPLE_SPV=1 "
+                     "to fail-hard)");
+            }
+            vkUnmapMemory(dev, bmem);
+        }
+
+        if (apple_pipe != VK_NULL_HANDLE) {
+            vkDestroyPipeline(dev, apple_pipe, NULL);
+        }
         if (sm_v) vkDestroyShaderModule(dev, sm_v, NULL);
         if (sm_f) vkDestroyShaderModule(dev, sm_f, NULL);
+    } else if (use_apple_spv) {
+        /* USE_APPLE_SPV=1 but no Apple blobs at all — that's a hard
+         * skip-or-fail at the caller's discretion. Treat as fail. */
+        CHECK(0,
+              "USE_APPLE_SPV=1 but Apple-sourced .spv blobs absent");
     }
 
     /* Cleanup */

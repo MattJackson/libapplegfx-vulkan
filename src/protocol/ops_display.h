@@ -75,11 +75,48 @@ typedef struct {
     uint32_t vblank_counter; /* monotonic; mirrors what we wrote      */
 } lagfx_shared_state_t;
 
+/* ----------------------------------------------------------------
+ * 0x19 `CmdDisplayCompositorParameters` (§14 M6 readiness):
+ * WindowServer passes layer-blend + gamma-related settings. Log-only
+ * stub — §14.10 classifies colour-correctness as "cosmetic only"
+ * through M6, so we capture the raw payload for later analysis and
+ * ack the stamp. */
+#define LAGFX_COMPOSITOR_PARAMS_CAPTURE_MAX 256u
+typedef struct {
+    bool     valid;
+    uint32_t dispatch_count;
+    uint32_t last_stamp;
+    uint32_t display_id;
+    uint32_t payload_size;
+    uint32_t captured_len;
+    uint8_t  bytes[LAGFX_COMPOSITOR_PARAMS_CAPTURE_MAX];
+} lagfx_compositor_params_state_t;
+
+/* ----------------------------------------------------------------
+ * 0x1a `CmdDisplaySetGuestICCProfile` (§14 M6 readiness):
+ * color-management ICC profile upload. Log-only stub for M6 —
+ * §14.10 classifies as "cosmetic only". We capture a prefix of the
+ * raw profile bytes for the §14.8 instrumentation pass. */
+#define LAGFX_ICC_PROFILE_CAPTURE_MAX 512u
+typedef struct {
+    bool     valid;
+    uint32_t dispatch_count;
+    uint32_t last_stamp;
+    uint32_t display_id;
+    uint64_t profile_va;     /* task-mapped GPA of the ICC profile blob */
+    uint32_t profile_size;   /* bytes, as declared by the guest         */
+    uint32_t payload_size;
+    uint32_t captured_len;
+    uint8_t  bytes[LAGFX_ICC_PROFILE_CAPTURE_MAX];
+} lagfx_icc_profile_state_t;
+
 /* Accessors — declared here so tests can introspect. Pointers are
  * valid for the life of the process; do NOT free. */
-const lagfx_cursor_show_state_t  *lagfx_ops_display_last_cursor_show(void);
-const lagfx_cursor_glyph_state_t *lagfx_ops_display_last_cursor_glyph(void);
-const lagfx_shared_state_t       *lagfx_ops_display_shared_state(void);
+const lagfx_cursor_show_state_t       *lagfx_ops_display_last_cursor_show(void);
+const lagfx_cursor_glyph_state_t      *lagfx_ops_display_last_cursor_glyph(void);
+const lagfx_shared_state_t            *lagfx_ops_display_shared_state(void);
+const lagfx_compositor_params_state_t *lagfx_ops_display_last_compositor_params(void);
+const lagfx_icc_profile_state_t       *lagfx_ops_display_last_icc_profile(void);
 
 /* Reset all display-handler static state (tests call between cases).
  * Idempotent; safe to call before any command arrives. */
@@ -104,6 +141,10 @@ lagfx_handler_status_t lagfx_op_display_cursor_show(
 lagfx_handler_status_t lagfx_op_display_cursor_glyph(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_display_set_shared_page(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_display_compositor_params(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_display_set_icc_profile(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
 #endif /* LIBAPPLEGFX_PROTOCOL_OPS_DISPLAY_H */

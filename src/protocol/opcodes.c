@@ -21,6 +21,8 @@
  */
 
 #include "opcodes.h"
+#include "ops_display.h"
+#include "ops_iosurface.h"
 #include "protocol.h"
 #include "state.h"
 #include "../common/log.h"
@@ -85,9 +87,9 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_DISPLAY_SLEEP_STATE,      "CmdDisplaySleepState",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_DISPLAY_COMPOSITOR_PARAMS,"CmdDisplayCompositorParameters",
-      LAGFX_PRIO_P2, 0, 0, NULL },
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_display_compositor_params },
     { LAGFX_OP_DISPLAY_SET_ICC_PROFILE,  "CmdDisplaySetGuestICCProfile",
-      LAGFX_PRIO_P2, 0, 0, NULL },
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_display_set_icc_profile },
 
     /* --- Display-adjacent extended (0x1e) ------------------
      * A2 kext disasm (re-followup-spec-gaps.md §13.5):
@@ -112,12 +114,24 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_DELETE_IOSURFACE_BACKING, "CmdDeleteIOSurfaceBacking2",
       LAGFX_PRIO_P2, 0, 0, NULL },
 
-    /* --- Extended exec-adjacent (0x28) ---------------------
-     * A2 kext disasm (§13.5): "spec §3 had no 0x28". New
-     * opcode, purpose unknown — log+ack until more callsite
-     * evidence lands. */
-    { LAGFX_OP_UNKNOWN_28,               "Unknown(0x28)",
-      LAGFX_PRIO_P2, 0, 0, NULL },
+    /* --- IOSurface family (0x27-0x29) ----------------------
+     * Conjectured opcode numbers + payload layouts (§14.5 /
+     * phase-4-iosurface-videotoolbox-plan §3.3). Log+ack only
+     * at M6; Phase 4 promotes to real VkImage-backed
+     * lifecycle. Min/max payloads are left at 0 so short
+     * captures still hit the handlers (the handlers
+     * opportunistically decode whatever bytes arrive — fail-
+     * open is the right answer during the §14.8 instrumentation
+     * pass; we prefer "log whatever arrived" over refusing the
+     * command). Note: 0x28 previously carried the unused
+     * Unknown(0x28) entry (A2 kext disasm §13.5); §14.5
+     * reclaims it for CmdIOSurfaceCreate. */
+    { LAGFX_OP_DELETE_IOSURFACE,         "CmdDeleteIOSurface",
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_delete },
+    { LAGFX_OP_IOSURFACE_CREATE,         "CmdIOSurfaceCreate",
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_create },
+    { LAGFX_OP_IOSURFACE_UPDATE,         "CmdIOSurfaceUpdate",
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_update },
 
     /* --- Heap / Resource (0x80-0x82) ------------------------ */
     { LAGFX_OP_HEAP_TEX_SIZE_ALIGN,     "CmdHeapTextureSizeAndAlign",
