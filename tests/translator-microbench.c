@@ -58,6 +58,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 /* === Mock shell (minimal) ================================ */
 
@@ -203,8 +205,13 @@ static double now_sec(void) {
 
 int main(int argc, char **argv) {
     size_t N = 10000;
-    if (argc >= 2) {
-        long v = strtol(argv[1], NULL, 10);
+    bool attach_display = true;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--no-display") == 0) {
+            attach_display = false;
+            continue;
+        }
+        long v = strtol(argv[i], NULL, 10);
         if (v > 0) N = (size_t)v;
     }
 
@@ -213,26 +220,28 @@ int main(int argc, char **argv) {
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
     /* Attach a display so the tx3 clear-color path triggers the full
-     * vulkan submit (when LAGFX_HAVE_VULKAN is on). On non-vulkan
-     * builds the library short-circuits to a state-flag update;
-     * either way this is an apples-to-apples measurement of the
-     * translator-plus-submit path the caller gets at M8. */
-    static const lagfx_display_mode_t modes[] = {
-        { 1920u, 1080u, 60u },
-    };
-    lagfx_display_descriptor_t disp_desc;
-    memset(&disp_desc, 0, sizeof(disp_desc));
-    disp_desc.name       = "microbench 1080p";
-    disp_desc.modes      = modes;
-    disp_desc.mode_count = 1u;
-    char *derr = NULL;
-    lagfx_display_t *display =
-        lagfx_display_new(dev, &disp_desc, 1u, 1u, &derr);
-    if (!display) {
-        fprintf(stderr, "WARN: display_new failed (%s); continuing "
-                "without render side-effect — will still measure the "
-                "decoder hot path.\n", derr ? derr : "(no err)");
-        free(derr);
+     * vulkan submit (when LAGFX_HAVE_VULKAN is on). --no-display
+     * skips this so we measure just the decoder (MMIO + dispatch +
+     * header parse + state updates), without the per-frame vulkan
+     * VkClear + readback that the display path triggers. */
+    lagfx_display_t *display = NULL;
+    if (attach_display) {
+        static const lagfx_display_mode_t modes[] = {
+            { 1920u, 1080u, 60u },
+        };
+        lagfx_display_descriptor_t disp_desc;
+        memset(&disp_desc, 0, sizeof(disp_desc));
+        disp_desc.name       = "microbench 1080p";
+        disp_desc.modes      = modes;
+        disp_desc.mode_count = 1u;
+        char *derr = NULL;
+        display = lagfx_display_new(dev, &disp_desc, 1u, 1u, &derr);
+        if (!display) {
+            fprintf(stderr, "WARN: display_new failed (%s); continuing "
+                    "without render side-effect.\n",
+                    derr ? derr : "(no err)");
+            free(derr);
+        }
     }
 
     /* One-time SwapMapping so display entry exists. */
@@ -246,14 +255,33 @@ int main(int argc, char **argv) {
     uint8_t tx[56];
     size_t tx_len = build_tx3_1080p(tx, 1u, 0u, 0x0u);
 
+    /* Silence LAGFX_WARN/LAGFX_LOG fprintf-to-stderr calls during the
+     * timed loop — the library is chatty about pending-stamp queue
+     * fullness (the decoder's stamp queue drains on MMIO 0x1014 reads,
+     * which a real guest would do but this synthetic driver does not),
+     * and the fprintf formatting cost would otherwise dominate the
+     * measurement. We re-open stderr after the loop for the report
+     * block below. */
+    fflush(stderr);
+    int saved_stderr = dup(STDERR_FILENO);
+    int devnull = open("/dev/null", O_WRONLY);
+    if (devnull >= 0) {
+        dup2(devnull, STDERR_FILENO);
+        close(devnull);
+    }
+
     /* Warmup: run a short burst so instruction caches are hot, branch
      * predictors have trained on the dispatch switch, and any lazy
-     * one-shot init inside the display/vulkan backend has completed. */
+     * one-shot init inside the display/vulkan backend has completed.
+     * We also drain the pending-stamp queue via an MMIO 0x1014 read
+     * each iteration so the library's "queue full" warn path doesn't
+     * fire — a real guest performs this read on every IRQ. */
     const size_t warmup = N / 10 > 256 ? N / 10 : 256;
     for (size_t i = 0; i < warmup; ++i) {
         put_le32(tx + 16, (uint32_t)i);           /* transactionID */
         put_le32(tx + 8,  (uint32_t)(0x77000000u + i));  /* stamp */
         (void)lagfx_protocol_dispatch_one(p, tx, tx_len);
+        (void)lagfx_protocol_mmio_read(p, LAGFX_REG_STAMP_CELL_1);
     }
 
     /* Timed loop. */
@@ -263,8 +291,19 @@ int main(int argc, char **argv) {
         put_le32(tx + 16, (uint32_t)(i + 1));
         put_le32(tx + 8,  (uint32_t)(0xB0000000u + i));
         (void)lagfx_protocol_dispatch_one(p, tx, tx_len);
+        /* Guest-side stamp consumption: advances the pending-stamp
+         * queue, mirroring what a real IRQ handler would do. Included
+         * in the timing so "cost per command" reflects the full
+         * guest<->host round trip the decoder participates in. */
+        (void)lagfx_protocol_mmio_read(p, LAGFX_REG_STAMP_CELL_1);
     }
     double t1 = now_sec();
+
+    /* Restore stderr for the report. */
+    if (saved_stderr >= 0) {
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
+    }
     uint64_t irq_delta = shell.raise_irq_count - t0_irq;
 
     double elapsed = t1 - t0;
@@ -273,6 +312,8 @@ int main(int argc, char **argv) {
 
     /* Report. */
     printf("translator-microbench\n");
+    printf("  mode          : %s\n",
+           attach_display ? "decoder+vulkan" : "decoder-only");
     printf("  N             : %zu\n", N);
     printf("  elapsed       : %.6f s\n", elapsed);
     printf("  throughput    : %.0f cmds/sec\n", cps);
