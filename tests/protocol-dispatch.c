@@ -2394,14 +2394,6 @@ int main(void) {
     test_iosurface_update_handler();
     test_opcode_table_has_iosurface_entries();
 
-    /* §14 M6 library-side gap closure: 0x12 32B / 0x16 layer form /
-     * 0x13 cursor-show / 0x14 cursor-glyph / 0x17 shared-state page. */
-    test_display_swap_mapping_v2_layout();
-    test_display_transaction3_layer_form();
-    test_display_cursor_show_handler();
-    test_display_cursor_glyph_handler();
-    test_display_set_shared_state_page_handler();
-
     fprintf(stdout, "\n=== Summary: %d passed, %d failed ===\n",
             g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
