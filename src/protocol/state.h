@@ -156,13 +156,21 @@ struct lagfx_protocol {
      * (offset - LAGFX_REG_BASE) / 4. Covers 0x1000..0x1038. */
     uint32_t reg[LAGFX_REG_COUNT];
 
-    /* Ring geometry (stubbed per R1 — ring_base_gpa is derived from
-     * the three setter MMIO writes once the offset↔setter mapping is
-     * nailed down by runtime capture). */
+    /* Ring geometry (populated via MMIO setter writes in the
+     * 0x1000..0x1034 bank, per paravirt-re/mmio-survival-recipe-v2.md):
+     *   0x1010 W → page_size (expected 0x1000)
+     *   0x101c W → ring_shared_page_pfn (shared/mailbox page)
+     *   0x1030 W → ring_base_pfn (64 KiB command ring PFN)
+     *   0x1000 W → kick / master enable (triggers drain)
+     * ring_base_gpa is computed as ring_base_pfn << 12 once the page
+     * size is known. */
     bool     ring_armed;
-    uint64_t ring_base_gpa;         /* TODO(R1): not populated yet */
-    uint32_t ring_size;
-    uint32_t read_ptr;              /* decoder drain cursor */
+    uint32_t page_size;             /* from 0x1010 write */
+    uint32_t ring_shared_page_pfn;  /* from 0x101c write */
+    uint32_t ring_base_pfn;         /* from 0x1030 write */
+    uint64_t ring_base_gpa;         /* ring_base_pfn << 12 once set */
+    uint32_t ring_size;             /* default 64 KiB until the kext says otherwise */
+    uint32_t read_ptr;              /* decoder drain cursor (high-water mark) */
     uint32_t write_ptr;             /* last-seen guest write ptr (doorbell) */
     uint32_t last_completed_stamp;
 

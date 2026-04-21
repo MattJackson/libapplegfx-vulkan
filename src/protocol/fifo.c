@@ -25,8 +25,16 @@
 #include "state.h"
 #include "opcodes.h"
 #include "../common/log.h"
+#include "../device.h"
 
 #include <string.h>
+
+/* Sanity cap: one ring has hundreds of bytes of commands at most during
+ * any single drain; 128 commands × 4 KiB is an absurd ceiling that
+ * still protects against a runaway guest writing garbage. Raise later
+ * if real workloads need more. */
+#define LAGFX_FIFO_DRAIN_MAX_CMDS 128u
+#define LAGFX_FIFO_MAX_CMD_BYTES  4096u
 
 /* Little-endian u16 / u32 readers. Guest protocol is x86-64 LE per
  * command-buffer-format.md §2. We do a per-byte read so this compiles
@@ -111,39 +119,95 @@ size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
         return 0;
     }
 
-    /* TODO(R1): The ring-buffer GPA is not yet discovered. Per
-     * re-followup-spec-gaps.md §1, the kext writes the ring geometry
-     * via three MMIO setters (basePage, length, start) and then arms
-     * the ring with a non-zero write to 0x1000. The doorbell is a
-     * fourth setter (setFifoWritten) carrying a byte-offset write
-     * pointer. Once runtime capture identifies which MMIO offsets
-     * invoke which setters, this function should:
-     *
-     *   while (p->read_ptr != p->write_ptr) {
-     *       uint8_t hdr_buf[LAGFX_CMD_HEADER_BYTES];
-     *       p->dev->desc.shell.read_memory(
-     *           p->dev->desc.shell.opaque,
-     *           p->ring_base_gpa + p->read_ptr,
-     *           LAGFX_CMD_HEADER_BYTES, hdr_buf);
-     *       lagfx_cmd_header_t hdr;
-     *       if (!lagfx_fifo_parse_header(hdr_buf,
-     *                                    LAGFX_CMD_HEADER_BYTES,
-     *                                    &hdr)) break;
-     *       uint8_t cmd_buf[MAX_CMD_SIZE];
-     *       p->dev->desc.shell.read_memory(
-     *           p->dev->desc.shell.opaque,
-     *           p->ring_base_gpa + p->read_ptr,
-     *           hdr.length, cmd_buf);
-     *       lagfx_protocol_dispatch_one(p, cmd_buf, hdr.length);
-     *       p->read_ptr = (p->read_ptr + hdr.length) % p->ring_size;
-     *   }
-     */
-
-    if (!p->ring_armed || p->ring_size == 0) {
-        LAGFX_LOG("fifo_drain: ring not armed / no size — no-op (R1)");
+    if (!p->ring_armed || p->ring_size == 0u || p->ring_base_gpa == 0u) {
+        LAGFX_LOG("fifo_drain: ring not armed (armed=%d size=0x%x gpa=0x%llx)",
+                  (int)p->ring_armed, p->ring_size,
+                  (unsigned long long)p->ring_base_gpa);
         return 0;
     }
 
-    LAGFX_LOG("fifo_drain: stub — ring GPA unresolved (R1 TODO)");
-    return 0;
+    if (!p->dev || !p->dev->desc.shell.read_memory) {
+        LAGFX_WARN("fifo_drain: no shell.read_memory callback");
+        return 0;
+    }
+
+    /* Standard ring-buffer drain: advance read_ptr toward write_ptr,
+     * parsing each 12-byte header + payload in place, dispatching via
+     * the opcode handler table. Stop when read_ptr catches write_ptr
+     * or on malformed data (defensive). Handles ring wrap naturally
+     * via modulo arithmetic on read_ptr.
+     */
+    size_t drained = 0;
+    for (unsigned i = 0; i < LAGFX_FIFO_DRAIN_MAX_CMDS; ++i) {
+        if (p->read_ptr == p->write_ptr) {
+            break;  /* caught up */
+        }
+
+        /* Wrap at the ring boundary. */
+        uint32_t rp = p->read_ptr % p->ring_size;
+        uint64_t hdr_gpa = p->ring_base_gpa + (uint64_t)rp;
+
+        uint8_t hdr_buf[LAGFX_CMD_HEADER_BYTES];
+        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                            hdr_gpa,
+                                            LAGFX_CMD_HEADER_BYTES,
+                                            hdr_buf)) {
+            LAGFX_WARN("fifo_drain: DMA read of header at gpa=0x%llx failed",
+                       (unsigned long long)hdr_gpa);
+            break;
+        }
+
+        lagfx_cmd_header_t hdr;
+        if (!lagfx_fifo_parse_header(hdr_buf, LAGFX_CMD_HEADER_BYTES,
+                                     &hdr)) {
+            LAGFX_LOG("fifo_drain: malformed header at rp=0x%x — stop", rp);
+            break;
+        }
+
+        if (hdr.length < LAGFX_CMD_HEADER_BYTES ||
+            hdr.length > LAGFX_FIFO_MAX_CMD_BYTES ||
+            hdr.length > p->ring_size) {
+            LAGFX_WARN("fifo_drain: bad length at rp=0x%x (len=0x%x) — stop",
+                       rp, hdr.length);
+            break;
+        }
+
+        /* Read the whole command (header + payload) into a local buf.
+         * Handles ring wrap by a second DMA for the tail when needed. */
+        uint8_t cmd_buf[LAGFX_FIFO_MAX_CMD_BYTES];
+        uint32_t head = p->ring_size - rp;
+        if (head >= hdr.length) {
+            if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                hdr_gpa, hdr.length,
+                                                cmd_buf)) {
+                LAGFX_WARN("fifo_drain: DMA read of cmd body failed");
+                break;
+            }
+        } else {
+            if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                hdr_gpa, head, cmd_buf)) {
+                LAGFX_WARN("fifo_drain: DMA read of wrapped head failed");
+                break;
+            }
+            if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                p->ring_base_gpa,
+                                                hdr.length - head,
+                                                cmd_buf + head)) {
+                LAGFX_WARN("fifo_drain: DMA read of wrapped tail failed");
+                break;
+            }
+        }
+
+        LAGFX_LOG("fifo_drain: dispatch rp=0x%x opcode=0x%x len=0x%x stamp=0x%x",
+                  rp, hdr.opcode, hdr.length, hdr.stamp);
+
+        (void)lagfx_protocol_dispatch_one(p, cmd_buf, hdr.length);
+
+        p->read_ptr = (rp + hdr.length) % p->ring_size;
+        drained += 1;
+    }
+
+    LAGFX_LOG("fifo_drain: drained=%zu, new read_ptr=0x%x",
+              drained, p->read_ptr);
+    return drained;
 }

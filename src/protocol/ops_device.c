@@ -115,18 +115,25 @@ lagfx_handler_status_t lagfx_op_get_device_info(lagfx_protocol_t *p,
     uint32_t value      = lagfx_device_info_for_key(key);
 
     LAGFX_LOG("CmdGetDeviceInfo: stamp=0x%08x key=0x%x out_off=0x%x "
-              "flags=0x%x -> value=0x%x (response writeback deferred)",
+              "flags=0x%x -> value=0x%x",
               hdr->stamp, key, out_offset, flags, value);
 
-    /* TODO(Phase-1.A.3): once the response writeback target is closed
-     * by runtime capture (re-followup §2.5), emit the 64-byte
-     * zero-filled response or single-u32 writeback via a new
-     * shell.write_memory callback. For now the stamp alone signals
-     * completion, which is sufficient for the metal-no-op control-plane
-     * round-trip; kext paths that read the response value will see the
-     * original payload bytes unchanged. */
-    (void)value;
-    (void)out_offset;
+    /* DMA the single-u32 value to the caller's out_offset GPA. The
+     * exact response shape at this opcode (0x0a) was inferred from
+     * the dylib side. The KEXT consumer (AppleParavirtAccelerator)
+     * uses opcode 0x2a with a different response shape — see
+     * paravirt-re/re-followup-spec-gaps.md §12. Handled separately
+     * in lagfx_op_accelerator_device_info (TODO). */
+    if (p->dev && p->dev->desc.shell.write_memory && out_offset != 0u) {
+        if (!p->dev->desc.shell.write_memory(p->dev->desc.shell.opaque,
+                                             (uint64_t)out_offset,
+                                             sizeof(value), &value)) {
+            LAGFX_WARN("CmdGetDeviceInfo: DMA writeback failed "
+                       "(gpa=0x%x value=0x%x)", out_offset, value);
+            return LAGFX_HANDLER_ERR_INTERNAL;
+        }
+    }
+
     (void)flags;
     return LAGFX_HANDLER_OK;
 }

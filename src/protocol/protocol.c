@@ -246,6 +246,14 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
         return 0;
     }
 
+    /* 0x100c is the guest-observable read pointer; return a live
+     * value so the kext can poll our drain progress. */
+    if (offset == LAGFX_REG_FIFO_FAULT_OFFSET) {
+        LAGFX_LOG("mmio_read: FIFO_FAULT_OFFSET -> 0x%x (read_ptr)",
+                  p->read_ptr);
+        return p->read_ptr;
+    }
+
     int idx = lagfx_protocol_reg_index(offset);
     if (idx < 0) {
         LAGFX_LOG("mmio_read: unmapped offset 0x%llx -> 0",
@@ -290,19 +298,68 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
     LAGFX_LOG("mmio_write: off=0x%llx val=0x%08x",
               (unsigned long long)offset, value);
 
-    /* STATUS_CONTROL — master FIFO enable/disable bit. */
-    if (offset == LAGFX_REG_STATUS_CONTROL) {
-        p->ring_armed = (value != 0u);
-        LAGFX_LOG("mmio_write: STATUS_CONTROL -> ring_armed=%d",
-                  (int)p->ring_armed);
-        return;
+    /* Primary-ring MMIO write map (resolved 2026-04-21 from live M2
+     * MMIO trace + Agent I disasm of Accelerator::setupCommandRing).
+     *
+     *   0x1000 W → ring_armed (1=enable). Kick only; doorbell advances
+     *              happen via 0x1008.
+     *   0x1004 W → ring_size (bytes; observed 0x10000 = 64 KiB).
+     *   0x1008 W → write_ptr update. Each write advances write_ptr;
+     *              we drain everything in [read_ptr, write_ptr).
+     *   0x100c R → read_ptr (guest polls to confirm our progress).
+     *              Read handler is elsewhere; we don't write 0x100c.
+     *   0x1010 W → page_size (observed 0x1000).
+     *   0x101c W → ring_shared_page_pfn (mailbox page; NOT the
+     *              command ring). Previously mistagged read-only.
+     *   0x1030 W → ring_base_pfn → ring_base_gpa = pfn << 12.
+     */
+    switch (offset) {
+        case LAGFX_REG_STATUS_CONTROL:
+            p->ring_armed = (value != 0u);
+            LAGFX_LOG("mmio_write: STATUS_CONTROL ring_armed=%d",
+                      (int)p->ring_armed);
+            return;
+        case 0x1004u:
+            p->ring_size = value ? value : 0x10000u;
+            LAGFX_LOG("mmio_write: ring_size=0x%x", p->ring_size);
+            return;
+        case 0x1008u: {
+            uint32_t old_wp = p->write_ptr;
+            p->write_ptr = value;
+            LAGFX_LOG("mmio_write: doorbell wp=0x%x (was 0x%x)",
+                      value, old_wp);
+            if (p->ring_armed && p->write_ptr != p->read_ptr) {
+                size_t drained = lagfx_fifo_drain(p);
+                LAGFX_LOG("mmio_write: doorbell drained %zu cmds", drained);
+            }
+            return;
+        }
+        case 0x1010u:
+            p->page_size = value ? value : 0x1000u;
+            LAGFX_LOG("mmio_write: page_size=0x%x", p->page_size);
+            return;
+        case 0x101cu:
+            p->ring_shared_page_pfn = value;
+            LAGFX_LOG("mmio_write: ring_shared_page_pfn=0x%x", value);
+            return;
+        case 0x1030u: {
+            p->ring_base_pfn = value;
+            uint32_t ps = p->page_size ? p->page_size : 0x1000u;
+            p->ring_base_gpa = (uint64_t)value * (uint64_t)ps;
+            if (p->ring_size == 0u) {
+                p->ring_size = 0x10000u;
+            }
+            LAGFX_LOG("mmio_write: ring_base_pfn=0x%x -> gpa=0x%llx size=0x%x",
+                      value, (unsigned long long)p->ring_base_gpa,
+                      p->ring_size);
+            return;
+        }
+        default: break;
     }
 
-    /* Any write in the setter-candidate range: log, record for probe,
-     * attempt drain. One of {0x1004, 0x1008, 0x1010, 0x101c, 0x1020,
-     * 0x1024, 0x1028, 0x1030, 0x1034} is the real doorbell
-     * (setFifoWritten:) and three others carry ring-geometry setters;
-     * runtime capture disambiguates. */
+    /* Any remaining write in the setter-candidate range: log for probe
+     * observability (0x1020, 0x1024, 0x1028, 0x1034 — still-unresolved
+     * slots per Agent I's recipe). */
     if (offset >= LAGFX_REG_SETTER_CAND_FIRST &&
         offset <= LAGFX_REG_SETTER_CAND_LAST) {
         lagfx_fifo_on_mmio_setter(p, offset, value);

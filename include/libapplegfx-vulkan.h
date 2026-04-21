@@ -122,6 +122,12 @@ typedef struct {
     bool (*read_memory)(void *opaque, uint64_t guest_physical_address,
                         uint64_t length, void *dst);
 
+    /* One-shot DMA write from host buffer `src` into guest RAM at GPA.
+     * Used for control-plane response writebacks (e.g. CmdGetDeviceInfo's
+     * single-u32 answer) that don't justify a full task/map cycle. */
+    bool (*write_memory)(void *opaque, uint64_t guest_physical_address,
+                         uint64_t length, const void *src);
+
     /* Raise an MSI-X interrupt on `vector` back to the guest. */
     void (*raise_interrupt)(void *opaque, uint32_t vector);
 } lagfx_shell_callbacks_t;
