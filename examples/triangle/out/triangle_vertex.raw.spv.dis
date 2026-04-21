@@ -6,11 +6,13 @@
                OpCapability Shader
                OpCapability Int64
                OpCapability Int8
+               OpCapability Linkage
                OpMemoryModel Logical GLSL450
-               OpEntryPoint Vertex %triangle_vertex "triangle_vertex"
                OpSource Unknown 0
                OpName %triangle_vertex "triangle_vertex"
                OpName %reg2mem_alloca_point "reg2mem alloca point"
+               OpDecorate %_struct_3 CPacked
+               OpDecorate %triangle_vertex LinkageAttributes "triangle_vertex" Export
       %float = OpTypeFloat 32
     %v4float = OpTypeVector %float 4
   %_struct_3 = OpTypeStruct %v4float

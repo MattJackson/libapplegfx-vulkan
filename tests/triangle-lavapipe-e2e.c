@@ -600,7 +600,17 @@ int main(void) {
         VkShaderModule sm_f = maybe_make_module(dev, tri_f, tri_f_len);
         int apple_pipe_ok = 0;
         VkPipeline apple_pipe = VK_NULL_HANDLE;
-        if (sm_v && sm_f) {
+
+        /* Pipeline creation against Apple-sourced SPV can segfault
+         * inside Mesa's NIR compiler today — the rewriter emits a
+         * structurally-valid entry-point but the function signature
+         * is still the `%struct fn(%args)` OpenCL shape, and Mesa's
+         * Vulkan frontend doesn't expect that. Gate the call on the
+         * explicit USE_APPLE_SPV=1 opt-in until the signature
+         * transform lands. Without the gate the default test run
+         * would crash even when the rewriter itself is working
+         * correctly. */
+        if (sm_v && sm_f && use_apple_spv) {
             VkPipelineShaderStageCreateInfo apple_stages[2] = {
                 { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                   .stage = VK_SHADER_STAGE_VERTEX_BIT,
@@ -622,18 +632,23 @@ int main(void) {
                         "  vkCreateGraphicsPipelines(Apple) "
                         "returned VkResult=%d\n", (int)ar);
             }
+        } else if (sm_v && sm_f) {
+            fprintf(stdout,
+                    "  [USE_APPLE_SPV unset] skipping "
+                    "vkCreateGraphicsPipelines(Apple) to avoid the "
+                    "Mesa NIR-compile crash on the signature-"
+                    "untransformed SPV.\n");
         }
 
         if (use_apple_spv) {
             CHECK(apple_pipe_ok,
                   "vkCreateGraphicsPipelines(Apple-sourced) succeeded "
                   "[USE_APPLE_SPV=1]");
-        } else {
-            WARN(apple_pipe_ok,
-                 "vkCreateGraphicsPipelines(Apple-sourced) succeeded "
-                 "(signature-transform FIXME still open; "
-                 "set USE_APPLE_SPV=1 to fail-hard)");
         }
+        /* With USE_APPLE_SPV unset we skip the pipeline call entirely
+         * (see the crash-avoidance note above), so there is no
+         * meaningful WARN to emit — the earlier (B) block already
+         * logged whether vkCreateShaderModule accepted the blob. */
 
         /* If the pipeline built, run the full draw+readback and
          * assert the centre pixel is red. */

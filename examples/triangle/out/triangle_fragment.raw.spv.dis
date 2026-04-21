@@ -4,12 +4,12 @@
 ; Bound: 21
 ; Schema: 0
                OpCapability Shader
+               OpCapability Linkage
                OpMemoryModel Logical GLSL450
-               OpEntryPoint Fragment %triangle_fragment "triangle_fragment"
-               OpExecutionMode %triangle_fragment OriginUpperLeft
                OpSource Unknown 0
                OpName %triangle_fragment "triangle_fragment"
                OpName %reg2mem_alloca_point "reg2mem alloca point"
+               OpDecorate %triangle_fragment LinkageAttributes "triangle_fragment" Export
       %float = OpTypeFloat 32
     %v4float = OpTypeVector %float 4
        %uint = OpTypeInt 32 0
