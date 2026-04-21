@@ -167,6 +167,29 @@ if fs.is_file(meson.current_source_dir() / 'shader-catalog.c')
   test('shader catalog', shader_catalog_test)
 endif
 
+# Phase 3.C: Stock-shader VkShaderModule round-trip smoke. Complements
+# tests/shader-catalog.c — that test only asserts SPIR-V magic on the
+# embedded blobs; this one actually feeds each blob through
+# vkCreateShaderModule on a live Vulkan device and asserts the loader
+# accepts it. Same gating + runtime-SKIP policy as vulkan-render:
+# registered only when vulkan_dep was present at configure time, and
+# the test itself emits SKIP (exit 0) when no loadable ICD is present.
+# Reaches into src/ for vulkan/instance.h + shaders/catalog.h, so
+# internal_include_dir is needed.
+if fs.is_file(meson.current_source_dir() / 'stock-shaders.c')
+  stock_shaders_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    stock_shaders_deps += [vulkan_dep]
+  endif
+  stock_shaders_test = executable('stock-shaders',
+    'stock-shaders.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : stock_shaders_deps,
+    build_by_default : true,
+  )
+  test('stock shaders', stock_shaders_test)
+endif
+
 # Phase 3.A: Metal-to-Vulkan render encoder smoke. The state-
 # machine pass runs on every host; the real-Vulkan record path
 # self-skips when no loadable ICD is present. When vulkan_dep is
