@@ -1,0 +1,63 @@
+# M2->M3 init phase captured 2026-04-21 (docker logs mos-docker-macos-1 | grep apple_gfx_)
+# Covers: secondary-capability probe, ring geometry setup, kick, then
+# stamps 1-7 as the kext walks through the initial command burst
+# (CmdGetDeviceInfo2 response page + CmdNOP latency probes).
+
+# --- Phase A: secondary capability probe (BAR0+0x1200..0x122c)
+# Decoder returns 9 at 0x122c to select the modern cap path; the guest
+# pokes the scratch slots before that final u32 read. Test that nothing
+# in 0x1200..0x1228 crashes on write, and that 0x122c-adjacent reads
+# don't throw.
+W 0x1200 0x1
+R 0x1204
+W 0x1210 0x7e00f
+W 0x1214 0x8ca000
+W 0x1218 0x20
+W 0x121c 0x4380780
+W 0x1200 0x0
+
+# --- Phase B: pre-arm register pokes
+# 0x1034 is BINARY_VERSION (R-only semantically, but kext sometimes
+# writes a probe sentinel first). 0x101c is ring_shared_page_pfn.
+W 0x1034 0x6
+R 0x1034
+W 0x101c 0x22ff8
+
+# --- Phase C: ring geometry + kick
+# 0x1030 -> ring_base_pfn  (gpa = pfn<<12)
+# 0x1004 -> ring_size (0x10000 = 64 KiB)
+# 0x1010 -> ring_start_offset (0x1000; first 4 KiB is metadata)
+# 0x1000 -> STATUS_CONTROL kick (bit 0 = arm)
+W 0x1030 0x23eb6
+W 0x1004 0x10000
+W 0x1010 0x1000
+W 0x1000 0x1
+
+# --- Phase D: stamps 1-7 doorbell walk
+# read_ptr poll between each doorbell so the kext can confirm our drain
+# caught up. read_ptr starts at 0 and only advances on successful drain;
+# the mock shell's read_memory returns zero-filled bytes so the decoder
+# parses NOP-shaped headers and advances stamps.
+R 0x100c
+W 0x1008 0x1c
+R 0x100c
+W 0x1008 0x34
+R 0x100c
+W 0x1008 0x44
+R 0x100c
+W 0x1008 0x54
+R 0x100c
+W 0x1008 0x64
+R 0x100c
+W 0x1008 0x74
+R 0x100c
+W 0x1008 0x8c
+
+# --- Phase E: IRQ service loop reads
+# After the kick, guest polls the xchg stamp cells + the "work available"
+# register at 0x102c. 0x1018 is STAMP_CELL_2 (interrupt stamp); reading
+# it atomically clears the latch. 0x1014 is STAMP_CELL_1 (primary). 0x102c
+# is the version/status query.
+R 0x1018
+R 0x1014
+R 0x102c

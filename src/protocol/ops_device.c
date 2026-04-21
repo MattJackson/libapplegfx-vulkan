@@ -198,14 +198,19 @@ lagfx_op_get_device_info_2(lagfx_protocol_t *p,
      * Missing keys leave their host-side struct field at memset-zero.
      * 5 pairs = 40 bytes, well within the observed 4 KiB response page.
      */
+    /*
+     * Per Agent a6f4eb5's §15 RE: response-key content does NOT gate
+     * registerService. Emitting zero pairs lets the kext parser's
+     * post-loop fallback set defaults (feature-level 0x20002,
+     * has[0xb5]=1). Reducing variables while debugging the root cause
+     * (which is probably child-FIFO drainage, not response content).
+     */
     struct { uint32_t key; uint32_t value; } pairs[] = {
-        { 0x00, 1u },
-        { 0x01, 0u },
-        { 0x04, 0u },
-        { 0x08, 0u },
-        { 0x10, 0u },
+        /* empty — rely on kext fallback defaults */
+        { 0, 0 }  /* placeholder; n_pairs=0 below emits nothing */
     };
-    const size_t n_pairs = sizeof(pairs) / sizeof(pairs[0]);
+    const size_t n_pairs = 0;  /* zero actual pairs emitted */
+    (void)pairs;
 
     /* Clamp to guest-provided capacity (should always be ample). */
     size_t emit_pairs =
