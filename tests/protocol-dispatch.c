@@ -38,6 +38,8 @@
 #include "../src/protocol/opcodes.h"
 #include "../src/protocol/fifo.h"
 #include "../src/protocol/state.h"
+#include "../src/protocol/ops_display.h"
+#include "../src/protocol/ops_iosurface.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -1460,16 +1462,22 @@ static void test_display_transaction3_handler(void) {
     CHECK(rc == LAGFX_HANDLER_OK,
           "CmdDisplayTransaction3(count=0) returns OK");
 
-    /* 3. Overflow: attachmentCount=5 but no room in payload. */
-    uint8_t tx_bad[24];
+    /* 3. Size-mismatch: payload_size doesn't match either shape.
+     *    Post-§14.3.3 update the decoder derives the entry count from
+     *    payload size (12 + 32*n for legacy, 16 + 44*n for layer
+     *    form). A payload of 30 bytes fits neither — decoder errors
+     *    rather than risk a ring-pointer desync. */
+    uint8_t tx_bad[30];
     build_header(tx_bad, LAGFX_OP_DISPLAY_TRANSACTION3, 0,
-                 /*total_length=*/24, /*stamp=*/0xd3030003u);
+                 /*total_length=*/30, /*stamp=*/0xd3030003u);
     put_le32(tx_bad + 12, 3u);
     put_le32(tx_bad + 16, 103u);
-    put_le32(tx_bad + 20, 5u);  /* count=5 demands 160 more bytes */
+    put_le32(tx_bad + 20, 0u);  /* declared count ignored — size rules */
+    /* pad bytes 24..29 with garbage so size != 12+0*32 = 12 */
+    memset(tx_bad + 24, 0xaa, 6);
     rc = lagfx_protocol_dispatch_one(p, tx_bad, sizeof(tx_bad));
     CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
-          "CmdDisplayTransaction3(count > payload) rejected");
+          "CmdDisplayTransaction3(ambiguous size) rejected");
     CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd3030003u,
           "CmdDisplayTransaction3 size-mismatch still signals stamp");
 
@@ -2029,6 +2037,321 @@ static void test_reset_clears_state(void) {
     lagfx_device_free(dev);
 }
 
+/* === §14 M6 gap-closure tests: 0x19/0x1a/0x27/0x28/0x29 =========
+ *
+ * Covers the log-only stubs added for WindowServer startup (see
+ * re-followup-spec-gaps.md §14 punch list items 7 and 10). Each test
+ * asserts: (a) dispatch returns OK, (b) stamp propagates to the cell,
+ * (c) IRQ raised, (d) the handler-local capture reflects the latest
+ * command. The exact payload decoding is best-effort — §14.10 marks
+ * 0x19/0x1a as cosmetic for M6, and §14.5 marks 0x27/0x28/0x29 as
+ * conjectured — so we assert only fields the decoder advertises.
+ * ============================================================== */
+
+static void test_display_compositor_params_handler(void) {
+    fprintf(stdout, "\n--- test: display_compositor_params_handler ---\n");
+
+    lagfx_ops_display_reset();
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Arbitrary 20-byte payload: u32 displayID + opaque 16 bytes. */
+    uint8_t cmd[12 + 20];
+    build_header(cmd, LAGFX_OP_DISPLAY_COMPOSITOR_PARAMS, /*arg_count_8b=*/0,
+                 /*total_length=*/sizeof(cmd), /*stamp=*/0x19190001u);
+    put_le32(cmd + 12, 7u);  /* displayID */
+    for (int i = 0; i < 16; ++i) cmd[16 + i] = (uint8_t)(0xa0 + i);
+
+    int rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplayCompositorParameters dispatch returns OK");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x19190001u,
+          "CmdDisplayCompositorParameters stamp propagated");
+    CHECK(shell.raise_irq_count >= 1,
+          "CmdDisplayCompositorParameters raised IRQ");
+
+    const lagfx_compositor_params_state_t *st =
+        lagfx_ops_display_last_compositor_params();
+    CHECK(st != NULL && st->valid,
+          "compositor-params capture valid after dispatch");
+    CHECK(st != NULL && st->dispatch_count == 1u,
+          "compositor-params dispatch_count == 1");
+    CHECK(st != NULL && st->display_id == 7u,
+          "compositor-params display_id decoded");
+    CHECK(st != NULL && st->payload_size == 20u,
+          "compositor-params payload_size captured");
+    CHECK(st != NULL && st->last_stamp == 0x19190001u,
+          "compositor-params last_stamp captured");
+
+    lagfx_device_free(dev);
+}
+
+static void test_display_set_icc_profile_handler(void) {
+    fprintf(stdout, "\n--- test: display_set_icc_profile_handler ---\n");
+
+    lagfx_ops_display_reset();
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* 16-byte payload: u32 displayID + u32 profile_size + u64 profile_va. */
+    uint8_t cmd[12 + 16];
+    build_header(cmd, LAGFX_OP_DISPLAY_SET_ICC_PROFILE, 0,
+                 /*total_length=*/sizeof(cmd), /*stamp=*/0x1a1a0001u);
+    put_le32(cmd + 12, 3u);             /* displayID */
+    put_le32(cmd + 16, 0x1000u);        /* profile_size = 4 KiB */
+    put_le64(cmd + 20, 0xdeadbeef0000ull); /* profile_va */
+
+    int rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplaySetGuestICCProfile dispatch returns OK");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x1a1a0001u,
+          "CmdDisplaySetGuestICCProfile stamp propagated");
+    CHECK(shell.raise_irq_count >= 1,
+          "CmdDisplaySetGuestICCProfile raised IRQ");
+
+    const lagfx_icc_profile_state_t *st =
+        lagfx_ops_display_last_icc_profile();
+    CHECK(st != NULL && st->valid,
+          "icc-profile capture valid after dispatch");
+    CHECK(st != NULL && st->dispatch_count == 1u,
+          "icc-profile dispatch_count == 1");
+    CHECK(st != NULL && st->display_id == 3u,
+          "icc-profile display_id decoded");
+    CHECK(st != NULL && st->profile_size == 0x1000u,
+          "icc-profile profile_size decoded");
+    CHECK(st != NULL && st->profile_va == 0xdeadbeef0000ull,
+          "icc-profile profile_va decoded");
+    CHECK(st != NULL && st->payload_size == 16u,
+          "icc-profile payload_size captured");
+    CHECK(st != NULL && st->last_stamp == 0x1a1a0001u,
+          "icc-profile last_stamp captured");
+
+    lagfx_device_free(dev);
+}
+
+static void test_iosurface_delete_handler(void) {
+    fprintf(stdout, "\n--- test: iosurface_delete_handler ---\n");
+
+    lagfx_ops_iosurface_reset();
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* 4-byte payload per §14.5: u32 surface_id. */
+    uint8_t cmd[12 + 4];
+    build_header(cmd, LAGFX_OP_DELETE_IOSURFACE, 0,
+                 /*total_length=*/sizeof(cmd), /*stamp=*/0x27270001u);
+    put_le32(cmd + 12, 0xabcd1234u);  /* surface_id */
+
+    int rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDeleteIOSurface dispatch returns OK");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x27270001u,
+          "CmdDeleteIOSurface stamp propagated");
+    CHECK(shell.raise_irq_count >= 1,
+          "CmdDeleteIOSurface raised IRQ");
+
+    /* Opcode routed to the table entry (not the unknown fallback). */
+    const lagfx_op_descriptor_t *d =
+        lagfx_opcode_lookup(LAGFX_OP_DELETE_IOSURFACE);
+    CHECK(d != NULL && d->handler != NULL,
+          "0x27 has a registered handler (not default-fallback)");
+    CHECK(d != NULL && strcmp(d->name, "CmdDeleteIOSurface") == 0,
+          "0x27 registered as CmdDeleteIOSurface");
+
+    const lagfx_iosurface_capture_t *cap =
+        lagfx_ops_iosurface_last_delete();
+    CHECK(cap != NULL && cap->valid,
+          "iosurface-delete capture valid");
+    CHECK(cap != NULL && cap->dispatch_count == 1u,
+          "iosurface-delete dispatch_count == 1");
+    CHECK(cap != NULL && cap->surface_id == 0xabcd1234u,
+          "iosurface-delete surface_id decoded");
+    CHECK(cap != NULL && cap->last_stamp == 0x27270001u,
+          "iosurface-delete last_stamp captured");
+
+    /* Second dispatch bumps the counter. */
+    build_header(cmd, LAGFX_OP_DELETE_IOSURFACE, 0,
+                 sizeof(cmd), /*stamp=*/0x27270002u);
+    put_le32(cmd + 12, 0xfeedface);
+    rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
+    CHECK(rc == LAGFX_HANDLER_OK, "CmdDeleteIOSurface second dispatch OK");
+    cap = lagfx_ops_iosurface_last_delete();
+    CHECK(cap != NULL && cap->dispatch_count == 2u,
+          "iosurface-delete dispatch_count == 2 after second");
+    CHECK(cap != NULL && cap->surface_id == 0xfeedfaceu,
+          "iosurface-delete surface_id updated on second dispatch");
+
+    /* Unknown-opcode counter stays at zero — handler is registered. */
+    uint64_t seen, completed, unknown;
+    lagfx_protocol_stats(p, &seen, &completed, &unknown);
+    CHECK(unknown == 0,
+          "CmdDeleteIOSurface does NOT fall through to default handler");
+
+    lagfx_device_free(dev);
+}
+
+static void test_iosurface_create_handler(void) {
+    fprintf(stdout, "\n--- test: iosurface_create_handler ---\n");
+
+    lagfx_ops_iosurface_reset();
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* 28-byte conjectured payload per §14.5 / Phase 4 §3.3:
+     *   u32 surface_id, u32 w, u32 h, u32 pixel_format,
+     *   u32 bytes_per_row, u64 size. */
+    uint8_t cmd[12 + 28];
+    build_header(cmd, LAGFX_OP_IOSURFACE_CREATE, 0,
+                 /*total_length=*/sizeof(cmd), /*stamp=*/0x28280001u);
+    put_le32(cmd + 12, 0x1000u);   /* surface_id */
+    put_le32(cmd + 16, 1920u);     /* width */
+    put_le32(cmd + 20, 1080u);     /* height */
+    put_le32(cmd + 24, 80u);       /* pixel_format = BGRA8Unorm */
+    put_le32(cmd + 28, 7680u);     /* bytes_per_row (1920*4) */
+    put_le64(cmd + 32, 0x7e9000ull); /* size */
+
+    int rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdIOSurfaceCreate dispatch returns OK");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x28280001u,
+          "CmdIOSurfaceCreate stamp propagated");
+    CHECK(shell.raise_irq_count >= 1,
+          "CmdIOSurfaceCreate raised IRQ");
+
+    const lagfx_op_descriptor_t *d =
+        lagfx_opcode_lookup(LAGFX_OP_IOSURFACE_CREATE);
+    CHECK(d != NULL && d->handler != NULL,
+          "0x28 has a registered handler");
+    CHECK(d != NULL && strcmp(d->name, "CmdIOSurfaceCreate") == 0,
+          "0x28 registered as CmdIOSurfaceCreate");
+
+    const lagfx_iosurface_capture_t *cap =
+        lagfx_ops_iosurface_last_create();
+    CHECK(cap != NULL && cap->valid,
+          "iosurface-create capture valid");
+    CHECK(cap != NULL && cap->dispatch_count == 1u,
+          "iosurface-create dispatch_count == 1");
+    CHECK(cap != NULL && cap->surface_id == 0x1000u,
+          "iosurface-create surface_id decoded");
+    CHECK(cap != NULL && cap->width == 1920u,
+          "iosurface-create width decoded");
+    CHECK(cap != NULL && cap->height == 1080u,
+          "iosurface-create height decoded");
+    CHECK(cap != NULL && cap->pixel_format == 80u,
+          "iosurface-create pixel_format decoded");
+    CHECK(cap != NULL && cap->bytes_per_row == 7680u,
+          "iosurface-create bytes_per_row decoded");
+    CHECK(cap != NULL && cap->size == 0x7e9000ull,
+          "iosurface-create size decoded");
+    CHECK(cap != NULL && cap->last_stamp == 0x28280001u,
+          "iosurface-create last_stamp captured");
+
+    /* Short payload — fail-open: still OK, still stamps, captured for
+     * the §14.8 instrumentation pass. */
+    uint8_t short_cmd[12 + 4];
+    build_header(short_cmd, LAGFX_OP_IOSURFACE_CREATE, 0,
+                 sizeof(short_cmd), /*stamp=*/0x28280002u);
+    put_le32(short_cmd + 12, 0x2000u);
+    rc = lagfx_protocol_dispatch_one(p, short_cmd, sizeof(short_cmd));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdIOSurfaceCreate short payload still OK (fail-open)");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x28280002u,
+          "CmdIOSurfaceCreate short payload still stamps");
+    cap = lagfx_ops_iosurface_last_create();
+    CHECK(cap != NULL && cap->dispatch_count == 2u,
+          "iosurface-create dispatch_count incremented on short payload");
+    CHECK(cap != NULL && cap->surface_id == 0x2000u,
+          "iosurface-create short payload decoded surface_id");
+
+    lagfx_device_free(dev);
+}
+
+static void test_iosurface_update_handler(void) {
+    fprintf(stdout, "\n--- test: iosurface_update_handler ---\n");
+
+    lagfx_ops_iosurface_reset();
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* 16-byte conjectured payload: u32 surface_id, u32 flags, u64 size. */
+    uint8_t cmd[12 + 16];
+    build_header(cmd, LAGFX_OP_IOSURFACE_UPDATE, 0,
+                 /*total_length=*/sizeof(cmd), /*stamp=*/0x29290001u);
+    put_le32(cmd + 12, 0x3000u);     /* surface_id */
+    put_le32(cmd + 16, 0x5a5au);     /* flags */
+    put_le64(cmd + 20, 0x123456ull); /* size */
+
+    int rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdIOSurfaceUpdate dispatch returns OK");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x29290001u,
+          "CmdIOSurfaceUpdate stamp propagated");
+    CHECK(shell.raise_irq_count >= 1,
+          "CmdIOSurfaceUpdate raised IRQ");
+
+    const lagfx_op_descriptor_t *d =
+        lagfx_opcode_lookup(LAGFX_OP_IOSURFACE_UPDATE);
+    CHECK(d != NULL && d->handler != NULL,
+          "0x29 has a registered handler");
+    CHECK(d != NULL && strcmp(d->name, "CmdIOSurfaceUpdate") == 0,
+          "0x29 registered as CmdIOSurfaceUpdate");
+
+    const lagfx_iosurface_capture_t *cap =
+        lagfx_ops_iosurface_last_update();
+    CHECK(cap != NULL && cap->valid,
+          "iosurface-update capture valid");
+    CHECK(cap != NULL && cap->dispatch_count == 1u,
+          "iosurface-update dispatch_count == 1");
+    CHECK(cap != NULL && cap->surface_id == 0x3000u,
+          "iosurface-update surface_id decoded");
+    CHECK(cap != NULL && cap->flags == 0x5a5au,
+          "iosurface-update flags decoded");
+    CHECK(cap != NULL && cap->size == 0x123456ull,
+          "iosurface-update size decoded");
+    CHECK(cap != NULL && cap->last_stamp == 0x29290001u,
+          "iosurface-update last_stamp captured");
+
+    lagfx_device_free(dev);
+}
+
+static void test_opcode_table_has_iosurface_entries(void) {
+    fprintf(stdout, "\n--- test: opcode_table_has_iosurface_entries ---\n");
+
+    /* Spec §14.5 + phase-4 §3.3 punch list: all three IOSurface opcodes
+     * and both cosmetic display opcodes (0x19/0x1a) must be registered
+     * with non-NULL handlers so the default fallback (which bumps
+     * unknown_opcode_count) is bypassed. */
+    static const uint16_t ops[] = {
+        LAGFX_OP_DISPLAY_COMPOSITOR_PARAMS,
+        LAGFX_OP_DISPLAY_SET_ICC_PROFILE,
+        LAGFX_OP_DELETE_IOSURFACE,
+        LAGFX_OP_IOSURFACE_CREATE,
+        LAGFX_OP_IOSURFACE_UPDATE,
+    };
+    for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); ++i) {
+        const lagfx_op_descriptor_t *d = lagfx_opcode_lookup(ops[i]);
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "opcode 0x%02x present in table", ops[i]);
+        CHECK(d != NULL, msg);
+        if (d) {
+            snprintf(msg, sizeof(msg),
+                     "opcode 0x%02x has non-NULL handler", ops[i]);
+            CHECK(d->handler != NULL, msg);
+        }
+    }
+
+    /* Count must reflect the +2 net additions for 0x27/0x29 relative
+     * to the pre-§14 table (0x28 was renamed, not added). */
+    CHECK(lagfx_opcode_table_size() == LAGFX_OPCODE_COUNT,
+          "opcode table size matches LAGFX_OPCODE_COUNT");
+}
+
 int main(void) {
     fprintf(stdout, "=== libapplegfx-vulkan protocol dispatch tests ===\n");
 
@@ -2061,6 +2384,23 @@ int main(void) {
     test_m3_get_device_info2_response_and_count();
     test_task_table_full();
     test_reset_clears_state();
+
+    /* §14 M6 gap-closure coverage (0x19/0x1a cosmetic + 0x27/0x28/0x29
+     * conjectured IOSurface family). */
+    test_display_compositor_params_handler();
+    test_display_set_icc_profile_handler();
+    test_iosurface_delete_handler();
+    test_iosurface_create_handler();
+    test_iosurface_update_handler();
+    test_opcode_table_has_iosurface_entries();
+
+    /* §14 M6 library-side gap closure: 0x12 32B / 0x16 layer form /
+     * 0x13 cursor-show / 0x14 cursor-glyph / 0x17 shared-state page. */
+    test_display_swap_mapping_v2_layout();
+    test_display_transaction3_layer_form();
+    test_display_cursor_show_handler();
+    test_display_cursor_glyph_handler();
+    test_display_set_shared_state_page_handler();
 
     fprintf(stdout, "\n=== Summary: %d passed, %d failed ===\n",
             g_pass, g_fail);
