@@ -176,39 +176,33 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     p->last_completed_stamp = stamp;
     p->total_cmds_completed += 1;
 
-    /*
-     * Apple's real design uses a PGPendingStampQueue feeding one stamp
-     * at a time into the cell + IRQ-on-drain. Our simpler model:
-     * - Write stamp to both cells (they mirror for the primary IRQ path).
-     * - If queue already has pending stamps, push this one to the END;
-     *   the xchg-read path pops the next one after the guest consumes
-     *   the current cell value.
-     * - Always raise IRQ so the guest ISR fires for each stamp.
-     *
-     * This is simpler than the earlier "cell_empty check" approach,
-     * which caused lost IRQs when the guest didn't read fast enough.
-     */
+    /* Simple design matching iter 7 (which got guest reads):
+     * - Write stamp to both cells unconditionally (last-writer-wins).
+     * - Push into queue for reference but don't gate IRQ on cell state.
+     * - Always raise IRQ.
+     * The queue IS still useful for the xchg-read advance path: when
+     * the guest consumes the cell via xchg, advance pops the next
+     * queued stamp and re-writes the cell. This retains iter 7's
+     * observable behavior (guest sees some stamp) while giving the
+     * guest the option to drain the queue by repeatedly reading
+     * 0x1014 (each read advances to the next pending). */
     int c1 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_1);
     int c2 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_2);
 
-    /* If cell already has a pending stamp, stash the new one in queue
-     * (don't overwrite — we'd lose it). Otherwise publish directly. */
-    if (c1 >= 0 && p->reg[c1] != 0u) {
-        lagfx_pending_stamp_push(p, stamp);
-        LAGFX_LOG("complete_stamp: stamp=0x%08x queued (cell has 0x%08x)",
-                  stamp, p->reg[c1]);
-    } else {
-        if (c1 >= 0) p->reg[c1] = stamp;
-        if (c2 >= 0) p->reg[c2] = stamp;
-        LAGFX_LOG("complete_stamp: stamp=0x%08x written to cells",
-                  stamp);
-    }
+    if (c1 >= 0) p->reg[c1] = stamp;
+    if (c2 >= 0) p->reg[c2] = stamp;
 
-    /* Always raise IRQ — guest may be polling or waiting, but a
-     * missed IRQ is worse than a duplicate one. */
+    /* Track older stamps so the xchg-advance path can replay them. */
+    lagfx_pending_stamp_push(p, stamp);
+
     if (p->dev && p->dev->desc.shell.raise_interrupt) {
         p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0);
         p->interrupts_raised += 1;
+        LAGFX_LOG("complete_stamp: stamp=0x%08x written + IRQ raised",
+                  stamp);
+    } else {
+        LAGFX_LOG("complete_stamp: stamp=0x%08x written (no IRQ cb)",
+                  stamp);
     }
 }
 

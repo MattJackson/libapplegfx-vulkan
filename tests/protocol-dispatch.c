@@ -2352,6 +2352,341 @@ static void test_opcode_table_has_iosurface_entries(void) {
           "opcode table size matches LAGFX_OPCODE_COUNT");
 }
 
+/* === §14 M6 library-side gap closure tests ======================
+ *
+ * Coverage for the handlers added/revised per
+ * re-followup-spec-gaps.md §14 (SwapMapping 32B form, Transaction3
+ * layer list, CursorShow, CursorGlyph, SetSharedStatePage).
+ * 0x13/0x14/0x17 are invoked directly via their lagfx_op_display_*
+ * entry points because the opcode descriptor table still has
+ * handler=NULL for those opcodes pending the §14.7 punch-list
+ * wire-up.
+ * ============================================================== */
+
+static void test_display_swap_mapping_v2_layout(void) {
+    fprintf(stdout, "\n--- test: display_swap_mapping_v2_layout ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    uint8_t cmd[LAGFX_CMD_HEADER_BYTES + 32];
+    build_header(cmd, LAGFX_OP_DISPLAY_SWAP_MAPPING, 0,
+                 sizeof(cmd), 0x12c0de01u);
+    put_le32(cmd + 12 + 0x00, 5u);
+    put_le64(cmd + 12 + 0x04, 0xdeadbeef00ull);
+    put_le32(cmd + 12 + 0x0c, 1920u * 4u);
+    put_le32(cmd + 12 + 0x10, 1920u);
+    put_le32(cmd + 12 + 0x14, 1080u);
+    put_le32(cmd + 12 + 0x18, 80u);
+    put_le32(cmd + 12 + 0x1c, 0u);
+
+    /* Dispatcher still gates 0x12 at min_payload=40; call the handler
+     * directly to exercise the 32 B §14.3.2 shape. */
+    lagfx_cmd_header_t hdr = {
+        .opcode       = LAGFX_OP_DISPLAY_SWAP_MAPPING,
+        .arg_count_8b = 0,
+        .length       = (uint32_t)sizeof(cmd),
+        .stamp        = 0x12c0de01u,
+        .payload_size = 32,
+        .payload      = cmd + LAGFX_CMD_HEADER_BYTES,
+    };
+    lagfx_handler_status_t rc = lagfx_op_display_swap_mapping(p, &hdr);
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "SwapMapping 32B §14.3.2 form parses OK");
+
+    lagfx_display_entry_t *d = lagfx_protocol_find_display(p, 5u);
+    CHECK(d != NULL && d->live, "32B form: display entry live");
+    CHECK(d != NULL && d->buffer_va == 0xdeadbeef00ull,
+          "32B form: bufferVA captured");
+    CHECK(d != NULL && d->stride == 1920u * 4u,
+          "32B form: stride captured");
+    CHECK(d != NULL && d->width == 1920u && d->height == 1080u,
+          "32B form: geometry captured");
+    CHECK(d != NULL && d->format == 80u,
+          "32B form: pixel_format captured (BGRA8Unorm=80)");
+    CHECK(d != NULL && d->length == 1920ull * 1080ull * 4ull,
+          "32B form: length derived as stride*height");
+
+    lagfx_device_free(dev);
+}
+
+static void test_display_transaction3_layer_form(void) {
+    fprintf(stdout, "\n--- test: display_transaction3_layer_form ---\n");
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    uint8_t cmd[LAGFX_CMD_HEADER_BYTES + 16 + 0x2c];
+    memset(cmd, 0, sizeof(cmd));
+    build_header(cmd, LAGFX_OP_DISPLAY_TRANSACTION3, 0,
+                 sizeof(cmd), 0x14c0de02u);
+    uint8_t *pld = cmd + LAGFX_CMD_HEADER_BYTES;
+    put_le32(pld + 0x00, 0xcafe0001u);
+    put_le32(pld + 0x04, 7u);
+    put_le32(pld + 0x08, 1u);
+    put_le32(pld + 0x0c, 0x3u);
+    put_le32(pld + 0x10, 0xb10c0001u);
+    put_le32(pld + 0x14, 0u);
+    put_le32(pld + 0x18, 0u);
+    put_le32(pld + 0x1c, 1920u);
+    put_le32(pld + 0x20, 1080u);
+    put_le32(pld + 0x24, 0u);
+    put_le32(pld + 0x28, 0u);
+    put_le32(pld + 0x2c, 1920u);
+    put_le32(pld + 0x30, 1080u);
+    put_le32(pld + 0x34, 0x50u);
+    put_le32(pld + 0x38, 0u);
+
+    int rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "Transaction3 layer-form parses OK");
+
+    lagfx_display_entry_t *d = lagfx_protocol_find_display(p, 7u);
+    CHECK(d != NULL && d->live,
+          "layer-form: display 7 auto-registered");
+    CHECK(d != NULL && d->pending_transaction_id == 0xcafe0001u,
+          "layer-form: transactionID captured");
+    CHECK(d != NULL && d->transaction_pending,
+          "layer-form: transaction_pending set");
+    CHECK(d != NULL && d->last_attachment_count == 1u,
+          "layer-form: entry count reused on last_attachment_count");
+    CHECK(d != NULL && d->last_load_action == 0u,
+          "layer-form: no clear action (composite-only)");
+
+    uint8_t cmd2[LAGFX_CMD_HEADER_BYTES + 16 + 2 * 0x2c];
+    memset(cmd2, 0, sizeof(cmd2));
+    build_header(cmd2, LAGFX_OP_DISPLAY_TRANSACTION3, 0,
+                 sizeof(cmd2), 0x14c0de03u);
+    uint8_t *p2 = cmd2 + LAGFX_CMD_HEADER_BYTES;
+    put_le32(p2 + 0x00, 0xcafe0002u);
+    put_le32(p2 + 0x04, 7u);
+    put_le32(p2 + 0x08, 2u);
+    put_le32(p2 + 0x0c, 0u);
+    put_le32(p2 + 0x10, 0xaaaa0001u);
+    put_le32(p2 + 0x10 + 0x2c, 0xbbbb0002u);
+    rc = lagfx_protocol_dispatch_one(p, cmd2, sizeof(cmd2));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "Transaction3 2-layer parses OK");
+    d = lagfx_protocol_find_display(p, 7u);
+    CHECK(d != NULL && d->last_attachment_count == 2u,
+          "layer-form: 2-layer count recorded");
+
+    lagfx_device_free(dev);
+}
+
+static void test_display_cursor_show_handler(void) {
+    fprintf(stdout, "\n--- test: display_cursor_show_handler ---\n");
+    lagfx_ops_display_reset();
+
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    uint8_t pld[16];
+    put_le32(pld + 0, 1u);
+    pld[4] = 0x40; pld[5] = 0x01;
+    pld[6] = 0xf0; pld[7] = 0x00;
+    put_le32(pld + 8,  1u);
+    put_le32(pld + 12, ((uint32_t)3u << 16) | 5u);
+
+    lagfx_cmd_header_t hdr = {
+        .opcode       = LAGFX_OP_DISPLAY_CURSOR_SHOW,
+        .arg_count_8b = 0,
+        .length       = LAGFX_CMD_HEADER_BYTES + (uint32_t)sizeof(pld),
+        .stamp        = 0x13000001u,
+        .payload_size = (uint16_t)sizeof(pld),
+        .payload      = pld,
+    };
+    lagfx_handler_status_t rc = lagfx_op_display_cursor_show(p, &hdr);
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplayCursorShow returns OK on well-formed payload");
+
+    const lagfx_cursor_show_state_t *cs =
+        lagfx_ops_display_last_cursor_show();
+    CHECK(cs->valid, "cursor-show state marked valid");
+    CHECK(cs->display_id == 1u, "cursor-show: displayID captured");
+    CHECK(cs->x == 320, "cursor-show: x decoded as i16");
+    CHECK(cs->y == 240, "cursor-show: y decoded as i16");
+    CHECK(cs->visible == 1u, "cursor-show: visible captured");
+    CHECK(cs->hot_x == 3u, "cursor-show: hot_x high16 captured");
+    CHECK(cs->hot_y == 5u, "cursor-show: hot_y low16 captured");
+
+    pld[4] = 0xf0; pld[5] = 0xff;
+    pld[6] = 0x00; pld[7] = 0x00;
+    hdr.stamp = 0x13000002u;
+    rc = lagfx_op_display_cursor_show(p, &hdr);
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplayCursorShow with negative x returns OK");
+    cs = lagfx_ops_display_last_cursor_show();
+    CHECK(cs->x == -16, "cursor-show: negative x decoded (sign-extended i16)");
+
+    hdr.payload_size = 8;
+    rc = lagfx_op_display_cursor_show(p, &hdr);
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "CmdDisplayCursorShow short payload rejected");
+
+    lagfx_device_free(dev);
+}
+
+static void test_display_cursor_glyph_handler(void) {
+    fprintf(stdout, "\n--- test: display_cursor_glyph_handler ---\n");
+    lagfx_ops_display_reset();
+
+    const uint64_t glyph_gpa = 0x200000ull;
+    const uint32_t glyph_w = 32u, glyph_h = 32u;
+    const uint32_t glyph_bpr = glyph_w * 4u;
+    const size_t   glyph_bytes = glyph_bpr * glyph_h;
+    uint8_t glyph_backing[32u * 32u * 4u];
+    for (size_t i = 0; i < sizeof(glyph_backing); ++i) {
+        glyph_backing[i] = (uint8_t)(i & 0xffu);
+    }
+
+    mock_shell_t shell = {0};
+    shell.ring_gpa      = glyph_gpa;
+    shell.ring_capacity = sizeof(glyph_backing);
+    shell.ring_backing  = glyph_backing;
+
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    uint8_t pld[32];
+    put_le32(pld + 0x00, 1u);
+    put_le64(pld + 0x04, glyph_gpa);
+    put_le32(pld + 0x0c, glyph_w);
+    put_le32(pld + 0x10, glyph_h);
+    put_le32(pld + 0x14, glyph_bpr);
+    put_le32(pld + 0x18, 4u);
+    put_le32(pld + 0x1c, 7u);
+
+    lagfx_cmd_header_t hdr = {
+        .opcode       = LAGFX_OP_DISPLAY_CURSOR_GLYPH,
+        .arg_count_8b = 0,
+        .length       = LAGFX_CMD_HEADER_BYTES + (uint32_t)sizeof(pld),
+        .stamp        = 0x14000001u,
+        .payload_size = (uint16_t)sizeof(pld),
+        .payload      = pld,
+    };
+    lagfx_handler_status_t rc = lagfx_op_display_cursor_glyph(p, &hdr);
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplayCursorGlyph returns OK");
+
+    const lagfx_cursor_glyph_state_t *cg =
+        lagfx_ops_display_last_cursor_glyph();
+    CHECK(cg->valid, "cursor-glyph state marked valid");
+    CHECK(cg->display_id == 1u, "cursor-glyph: displayID captured");
+    CHECK(cg->glyph_va == glyph_gpa, "cursor-glyph: glyphVA captured");
+    CHECK(cg->width == glyph_w, "cursor-glyph: width captured");
+    CHECK(cg->height == glyph_h, "cursor-glyph: height captured");
+    CHECK(cg->bytes_per_row == glyph_bpr, "cursor-glyph: bpr captured");
+    CHECK(cg->hot_x == 4u, "cursor-glyph: hot_x captured");
+    CHECK(cg->hot_y == 7u, "cursor-glyph: hot_y captured");
+    CHECK(cg->captured_len == glyph_bytes,
+          "cursor-glyph: all pixels captured via shell.read_memory");
+    CHECK(memcmp(cg->bytes, glyph_backing, glyph_bytes) == 0,
+          "cursor-glyph: captured bytes match guest backing exactly");
+
+    lagfx_ops_display_reset();
+    put_le32(pld + 0x0c, 200u);
+    put_le32(pld + 0x10, 200u);
+    put_le32(pld + 0x14, 200u * 4u);
+    hdr.stamp = 0x14000002u;
+    rc = lagfx_op_display_cursor_glyph(p, &hdr);
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplayCursorGlyph oversized glyph still returns OK");
+    cg = lagfx_ops_display_last_cursor_glyph();
+    CHECK(cg->valid, "oversized glyph: state captured");
+    CHECK(cg->captured_len == 0,
+          "oversized glyph: pixel DMA skipped (size > cap)");
+
+    hdr.payload_size = 24;
+    rc = lagfx_op_display_cursor_glyph(p, &hdr);
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "CmdDisplayCursorGlyph short payload rejected");
+
+    lagfx_device_free(dev);
+}
+
+static void test_display_set_shared_state_page_handler(void) {
+    fprintf(stdout, "\n--- test: display_set_shared_state_page_handler ---\n");
+    lagfx_ops_display_reset();
+
+    const uint64_t page_gpa = 0x300000ull;
+    uint8_t page[0x1000];
+    memset(page, 0xaa, sizeof(page));
+
+    mock_shell_t shell = {0};
+    shell.scanout_gpa      = page_gpa;
+    shell.scanout_capacity = sizeof(page);
+    shell.scanout_buf      = page;
+
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    uint8_t pld[8];
+    put_le64(pld + 0, page_gpa);
+
+    lagfx_cmd_header_t hdr = {
+        .opcode       = LAGFX_OP_DISPLAY_SET_SHARED_PAGE,
+        .arg_count_8b = 0,
+        .length       = LAGFX_CMD_HEADER_BYTES + (uint32_t)sizeof(pld),
+        .stamp        = 0x17000001u,
+        .payload_size = (uint16_t)sizeof(pld),
+        .payload      = pld,
+    };
+    lagfx_handler_status_t rc = lagfx_op_display_set_shared_page(p, &hdr);
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdDisplaySetSharedStatePage returns OK");
+
+    const lagfx_shared_state_t *ss = lagfx_ops_display_shared_state();
+    CHECK(ss->installed, "shared-state: installed flag set");
+    CHECK(ss->page_va == page_gpa, "shared-state: pageVA recorded");
+    CHECK(ss->vblank_counter == 1u,
+          "shared-state: first tick fired (counter = 1)");
+
+    uint32_t first_u32 = (uint32_t)page[0]
+                       | ((uint32_t)page[1] << 8)
+                       | ((uint32_t)page[2] << 16)
+                       | ((uint32_t)page[3] << 24);
+    CHECK(first_u32 == 1u,
+          "mailbox: u32@+0 holds counter=1 after install");
+    bool cleared = true;
+    for (size_t i = 4; i < 64; ++i) {
+        if (page[i] != 0u) { cleared = false; break; }
+    }
+    CHECK(cleared, "mailbox: first 64 B zeroed");
+    CHECK(page[64] == 0xaau,
+          "mailbox: bytes past first 64 left untouched");
+
+    CHECK(lagfx_ops_display_tick_vblank(&shell, mock_write),
+          "tick_vblank returns true (installed + write_memory)");
+    CHECK(lagfx_ops_display_tick_vblank(&shell, mock_write),
+          "tick_vblank second call returns true");
+    ss = lagfx_ops_display_shared_state();
+    CHECK(ss->vblank_counter == 3u,
+          "shared-state: counter monotonically advanced to 3");
+    first_u32 = (uint32_t)page[0]
+              | ((uint32_t)page[1] << 8)
+              | ((uint32_t)page[2] << 16)
+              | ((uint32_t)page[3] << 24);
+    CHECK(first_u32 == 3u,
+          "mailbox: DMA-written counter matches shadow (3)");
+
+    CHECK(!lagfx_ops_display_tick_vblank(&shell, NULL),
+          "tick_vblank returns false when no write_memory provided");
+    ss = lagfx_ops_display_shared_state();
+    CHECK(ss->vblank_counter == 4u,
+          "shared-state: shadow counter advances even w/o DMA path");
+
+    hdr.payload_size = 4;
+    rc = lagfx_op_display_set_shared_page(p, &hdr);
+    CHECK(rc == LAGFX_HANDLER_ERR_SIZE,
+          "CmdDisplaySetSharedStatePage short payload rejected");
+
+    lagfx_device_free(dev);
+}
+
 int main(void) {
     fprintf(stdout, "=== libapplegfx-vulkan protocol dispatch tests ===\n");
 
@@ -2393,6 +2728,14 @@ int main(void) {
     test_iosurface_create_handler();
     test_iosurface_update_handler();
     test_opcode_table_has_iosurface_entries();
+
+    /* §14 M6 library-side gap closure: 0x12 32B / 0x16 layer form /
+     * 0x13 cursor-show / 0x14 cursor-glyph / 0x17 shared-state page. */
+    test_display_swap_mapping_v2_layout();
+    test_display_transaction3_layer_form();
+    test_display_cursor_show_handler();
+    test_display_cursor_glyph_handler();
+    test_display_set_shared_state_page_handler();
 
     fprintf(stdout, "\n=== Summary: %d passed, %d failed ===\n",
             g_pass, g_fail);
