@@ -80,6 +80,24 @@ typedef struct {
     uint8_t *scanout_buf;       /* owned by test, NULL-ok */
     uint64_t last_write_gpa;
     uint64_t last_write_len;
+
+    /* Phase M3 plumbing tests: synthetic guest-memory mirror. When
+     * `ring_backing` is non-NULL, mock_read routes any read_memory call
+     * whose [gpa, gpa+len) fits within [ring_gpa, ring_gpa+ring_capacity)
+     * into that buffer. Lets the fifo drain see a real command stream
+     * without needing real guest DMA. Likewise mock_write captures all
+     * writes into the same region when they overlap it. */
+    uint64_t ring_gpa;
+    uint64_t ring_capacity;
+    uint8_t *ring_backing;
+
+    /* Capture of CmdGetDeviceInfo2 response-page writes: when
+     * `devinfo_gpa` is non-zero, mock_write stashes up to
+     * `devinfo_capacity` bytes at the matching offset in devinfo_buf. */
+    uint64_t devinfo_gpa;
+    uint64_t devinfo_capacity;
+    uint8_t *devinfo_buf;
+    uint64_t devinfo_last_len;
 } mock_shell_t;
 
 static lagfx_task_t *mock_create_task(void *op, uint64_t sz, void **out) {
@@ -110,6 +128,16 @@ static bool mock_unmap(void *op, lagfx_task_t *t, uint64_t o, uint64_t l) {
 static bool mock_read(void *op, uint64_t gpa, uint64_t l, void *d) {
     mock_shell_t *m = (mock_shell_t *)op;
     m->read_memory_count++;
+    /* Serve guest-ring reads from the test-owned backing buffer when
+     * configured. */
+    if (m->ring_backing && m->ring_capacity > 0
+        && gpa >= m->ring_gpa
+        && gpa + l <= m->ring_gpa + m->ring_capacity
+        && d) {
+        uint64_t off = gpa - m->ring_gpa;
+        memcpy(d, m->ring_backing + off, (size_t)l);
+        return true;
+    }
     (void)gpa; (void)l; (void)d;
     return true;
 }
@@ -123,6 +151,19 @@ static bool mock_write(void *op, uint64_t gpa, uint64_t l, const void *s) {
         && gpa + l <= m->scanout_gpa + m->scanout_capacity) {
         uint64_t off = gpa - m->scanout_gpa;
         memcpy(m->scanout_buf + off, s, (size_t)l);
+    }
+    if (m->ring_backing && m->ring_capacity > 0
+        && gpa >= m->ring_gpa
+        && gpa + l <= m->ring_gpa + m->ring_capacity) {
+        uint64_t off = gpa - m->ring_gpa;
+        memcpy(m->ring_backing + off, s, (size_t)l);
+    }
+    if (m->devinfo_buf && m->devinfo_capacity > 0
+        && gpa >= m->devinfo_gpa
+        && gpa + l <= m->devinfo_gpa + m->devinfo_capacity) {
+        uint64_t off = gpa - m->devinfo_gpa;
+        memcpy(m->devinfo_buf + off, s, (size_t)l);
+        m->devinfo_last_len = l;
     }
     return true;
 }
@@ -437,12 +478,14 @@ static void test_mmio_setter_candidate_probe(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    /* The real doorbell offset in 0x1004..0x1034 is unknown. For now,
-     * writes to any offset in that range land in the setter-candidate
-     * probe, which records (offset, value) and bumps a counter. Tests
-     * exercise four representative candidates. */
+    /* Post-M3-plumbing: 0x1004/0x1008/0x1010/0x101c/0x1030 now have
+     * dedicated switch cases in lagfx_protocol_mmio_write and no longer
+     * fall through to the setter-candidate probe. The remaining
+     * unresolved candidate slots per Agent I's recipe are 0x1020, 0x1024,
+     * 0x1028, 0x1034 — those still route to lagfx_fifo_on_mmio_setter
+     * for observability. */
     static const uint64_t candidates[] = {
-        0x1004u, 0x1010u, 0x1020u, 0x1034u,
+        0x1020u, 0x1024u, 0x1028u, 0x1034u,
     };
     uint64_t expected_count = 0;
     for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
@@ -458,12 +501,15 @@ static void test_mmio_setter_candidate_probe(void) {
               "setter probe records last value");
     }
 
-    /* 0x101c is inside the candidate range per the spec — it's a
-     * setter on the write side (and _rootPageNumber on the read side).
-     * Confirm the probe fires on a write there too. */
+    /* Resolved slots must NOT bump the setter probe — they have
+     * dedicated handlers. */
+    uint64_t saved = lagfx_protocol_setter_write_count(p);
+    lagfx_mmio_write(dev, 0x1004u, 0x10000u);
+    lagfx_mmio_write(dev, 0x1010u, 0x1000u);
     lagfx_mmio_write(dev, LAGFX_REG_ROOT_PAGE_NUMBER, 0x12345678u);
-    CHECK(lagfx_protocol_last_setter_offset(p) == LAGFX_REG_ROOT_PAGE_NUMBER,
-          "write to 0x101c hits the setter probe");
+    lagfx_mmio_write(dev, 0x1030u, 0xabcu);
+    CHECK(lagfx_protocol_setter_write_count(p) == saved,
+          "resolved MMIO setters bypass the setter-candidate probe");
 
     lagfx_device_free(dev);
 }

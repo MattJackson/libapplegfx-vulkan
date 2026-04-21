@@ -222,9 +222,35 @@ lagfx_op_get_device_info_2(lagfx_protocol_t *p,
 
     LAGFX_LOG("CmdGetDeviceInfo2: wrote %zu pairs to resp page", emit_pairs);
 
-    /* Stash the pair count for the drain to DMA back into the ring
-     * header's length slot (kext reads this as actual_count). */
-    p->device_info_actual_count = (uint32_t)emit_pairs;
+    /*
+     * The kext's setupDeviceInfo reloads actual_count from the on-ring
+     * header's length slot (+4) via `mov esi, [r13+4]` AFTER the stamp
+     * completion fires. We must DMA that value back BEFORE the stamp
+     * path runs — complete_stamp() is called by the dispatcher
+     * immediately after this handler returns, so we cannot rely on the
+     * drain to do the writeback. Inline it here.
+     */
+    uint32_t actual_count = (uint32_t)emit_pairs;
+    p->device_info_actual_count = actual_count;
+    if (p->current_cmd_header_gpa != 0) {
+        uint64_t len_slot_gpa = p->current_cmd_header_gpa + 4u;
+        if (!p->dev->desc.shell.write_memory(p->dev->desc.shell.opaque,
+                                              len_slot_gpa,
+                                              sizeof(actual_count),
+                                              &actual_count)) {
+            LAGFX_WARN("CmdGetDeviceInfo2: failed to write actual_count=%u "
+                       "to ring header +4 (gpa=0x%llx)",
+                       actual_count, (unsigned long long)len_slot_gpa);
+        } else {
+            LAGFX_LOG("CmdGetDeviceInfo2: wrote actual_count=%u to ring +4 "
+                      "(gpa=0x%llx)",
+                      actual_count, (unsigned long long)len_slot_gpa);
+        }
+    } else {
+        LAGFX_WARN("CmdGetDeviceInfo2: no current_cmd_header_gpa "
+                   "— actual_count writeback skipped");
+    }
+
     return LAGFX_HANDLER_OK;
 }
 

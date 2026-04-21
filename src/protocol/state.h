@@ -175,12 +175,16 @@ struct lagfx_protocol {
     uint32_t write_ptr;             /* last-seen guest write ptr (doorbell) */
     uint32_t last_completed_stamp;
 
-    /* CmdGetDeviceInfo2 (opcode 0x3a) count-writeback.
-     * The 0x3a handler sets this to the number of (key,value) pairs
-     * it emitted. The drain loop, after dispatch, DMA-writes this
-     * value back into the ring header's length slot (+4) — the kext's
-     * setupDeviceInfo reads actual_count from there. See paravirt-re
-     * §13.2.4. 0xffffffff = no pending writeback. */
+    /* GPA of the current in-flight command's header on the ring.
+     * Set by the drain immediately before calling dispatch_one so that
+     * handlers can DMA-write into the on-ring header (e.g. 0x3a writes
+     * actual_count to ring header +4 BEFORE stamp/IRQ fires — otherwise
+     * the guest services the IRQ and reads the stale length). */
+    uint64_t current_cmd_header_gpa;
+
+    /* CmdGetDeviceInfo2 (opcode 0x3a) count-writeback state.
+     * Used internally by the handler; see note above on the ordering
+     * requirement. */
     uint32_t device_info_actual_count;
 
     /* Setter-candidate probe state — see protocol.h:

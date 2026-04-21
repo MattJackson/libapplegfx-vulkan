@@ -201,33 +201,15 @@ size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
         LAGFX_LOG("fifo_drain: dispatch rp=0x%x opcode=0x%x len=0x%x stamp=0x%x",
                   rp, hdr.opcode, hdr.length, hdr.stamp);
 
-        /* Sentinel: handler will set this for any opcode that needs
-         * a count written back to the ring header's length slot. */
-        p->device_info_actual_count = 0xffffffffu;
+        /* Expose ring-header GPA to handlers so they can DMA-write
+         * header slots (e.g. 0x3a's actual_count) BEFORE dispatch_one
+         * fires the stamp + IRQ — otherwise the guest services the
+         * IRQ and reads stale bytes. */
+        p->current_cmd_header_gpa = hdr_gpa;
 
         (void)lagfx_protocol_dispatch_one(p, cmd_buf, hdr.length);
 
-        /* Per paravirt-re §13.2.4: for opcode 0x3a (CmdGetDeviceInfo2),
-         * the kext reloads actual pair-count from the ring header's
-         * length slot (+4) after stamp completion. Write it back. */
-        if (hdr.opcode == 0x3au &&
-            p->device_info_actual_count != 0xffffffffu &&
-            p->dev->desc.shell.write_memory) {
-            uint64_t len_slot_gpa = hdr_gpa + 4u;
-            if (!p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque,
-                    len_slot_gpa,
-                    sizeof(uint32_t),
-                    &p->device_info_actual_count)) {
-                LAGFX_WARN("fifo_drain: failed to write actual_count=%u "
-                           "to ring header +4 (gpa=0x%llx)",
-                           p->device_info_actual_count,
-                           (unsigned long long)len_slot_gpa);
-            } else {
-                LAGFX_LOG("fifo_drain: wrote actual_count=%u to ring +4",
-                          p->device_info_actual_count);
-            }
-        }
+        p->current_cmd_header_gpa = 0;
 
         p->read_ptr = (rp + hdr.length) % p->ring_size;
         drained += 1;
