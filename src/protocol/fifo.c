@@ -201,6 +201,24 @@ size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
         LAGFX_LOG("fifo_drain: dispatch rp=0x%x opcode=0x%x len=0x%x stamp=0x%x",
                   rp, hdr.opcode, hdr.length, hdr.stamp);
 
+        /* Hex dump of the full command (up to 32 bytes) for stamp-field
+         * and payload cross-referencing during M3 bring-up. Resolves the
+         * contradiction between spec-gaps §13 (stamps in trace 1..7) and
+         * the static RE claim that `[stream+8..11]` is always zero. */
+        if (lagfx_log_enabled()) {
+            uint32_t dump_len = hdr.length < 32u ? hdr.length : 32u;
+            char hexline[128];
+            size_t pos = 0;
+            for (uint32_t i = 0; i < dump_len && pos + 4 < sizeof(hexline); ++i) {
+                int n = snprintf(hexline + pos, sizeof(hexline) - pos,
+                                 "%02x ", cmd_buf[i]);
+                if (n < 0 || (size_t)n >= sizeof(hexline) - pos) break;
+                pos += (size_t)n;
+            }
+            hexline[pos] = '\0';
+            LAGFX_LOG("fifo_drain: bytes[%u] %s", dump_len, hexline);
+        }
+
         /* Expose ring-header GPA to handlers so they can DMA-write
          * header slots (e.g. 0x3a's actual_count) BEFORE dispatch_one
          * fires the stamp + IRQ — otherwise the guest services the

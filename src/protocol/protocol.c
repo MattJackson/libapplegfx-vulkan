@@ -94,6 +94,7 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->setter_write_count   = 0;
     p->read_ptr             = 0;
     p->write_ptr            = 0;
+    p->root_stamp_counter   = 0;
 
     p->display_swaps_applied          = 0;
     p->display_transactions_submitted = 0;
@@ -176,32 +177,52 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     p->last_completed_stamp = stamp;
     p->total_cmds_completed += 1;
 
-    /* Simple design matching iter 7 (which got guest reads):
-     * - Write stamp to both cells unconditionally (last-writer-wins).
-     * - Push into queue for reference but don't gate IRQ on cell state.
-     * - Always raise IRQ.
-     * The queue IS still useful for the xchg-read advance path: when
-     * the guest consumes the cell via xchg, advance pops the next
-     * queued stamp and re-writes the cell. This retains iter 7's
-     * observable behavior (guest sees some stamp) while giving the
-     * guest the option to drain the queue by repeatedly reading
-     * 0x1014 (each read advances to the next pending). */
+    /* NEW (2026-04-23) — Stamp-page writeback for IOGPUFamily wait loops.
+     *
+     * Per A2.A RE of IOGraphicsAccelerator2's `[this+0x380][vtbl+0x188]`
+     * wait primitive: the kext blocks until `stamp_page[stamp_id*4]`
+     * reaches a monotonically-allocated target. The targets for the 7
+     * M3 init-phase commands on the root ring (stamp_id=0) are 1..7.
+     * Incrementing a counter per root-ring completion and DMA-writing
+     * it to stamp_page[0] satisfies all 7 waits. Order matters: write
+     * memory BEFORE raising MSI-X so the ISR sees the new value on the
+     * first read. */
+    if (p->ring_shared_page_pfn != 0u
+        && p->dev && p->dev->desc.shell.write_memory) {
+        p->root_stamp_counter += 1u;
+        uint64_t stamp_gpa = ((uint64_t)p->ring_shared_page_pfn << 12);
+        if (p->dev->desc.shell.write_memory(
+                p->dev->desc.shell.opaque,
+                stamp_gpa,
+                sizeof(p->root_stamp_counter),
+                &p->root_stamp_counter)) {
+            LAGFX_LOG("stamp_page[0] := %u (gpa=0x%llx, cmd_stamp=0x%08x)",
+                      p->root_stamp_counter,
+                      (unsigned long long)stamp_gpa, stamp);
+        } else {
+            LAGFX_WARN("stamp_page[0] write FAILED (gpa=0x%llx)",
+                       (unsigned long long)stamp_gpa);
+        }
+    }
+
+    /* Legacy path — keep MMIO stamp cells updated too.
+     * These may be a secondary channel or unused; left in place for
+     * safety while we validate the stamp-page path. */
     int c1 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_1);
     int c2 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_2);
 
     if (c1 >= 0) p->reg[c1] = stamp;
     if (c2 >= 0) p->reg[c2] = stamp;
 
-    /* Track older stamps so the xchg-advance path can replay them. */
     lagfx_pending_stamp_push(p, stamp);
 
     if (p->dev && p->dev->desc.shell.raise_interrupt) {
         p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0);
         p->interrupts_raised += 1;
-        LAGFX_LOG("complete_stamp: stamp=0x%08x written + IRQ raised",
-                  stamp);
+        LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x written + IRQ raised "
+                  "(root_counter=%u)", stamp, p->root_stamp_counter);
     } else {
-        LAGFX_LOG("complete_stamp: stamp=0x%08x written (no IRQ cb)",
+        LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x written (no IRQ cb)",
                   stamp);
     }
 }

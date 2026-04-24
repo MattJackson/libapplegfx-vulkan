@@ -185,6 +185,26 @@ struct lagfx_protocol {
     uint32_t pending_stamps_head;  /* write index */
     uint32_t pending_stamps_tail;  /* read index */
 
+    /* Stamp-page write counter — root-ring completion monotonic.
+     *
+     * Per paravirt-re/re-followup-spec-gaps.md §15/§16 + agent A2.A RE of
+     * IOGraphicsAccelerator2's `[this+0x380]` object (the wait target):
+     * `[vtbl+0x188]` is a per-stamp count-up wait (NOT MMIO stamp-cell poll).
+     * It reads `stamp_page[stamp_id*4]` and waits for the value to reach a
+     * monotonically-allocated target assigned at begin-batch time.
+     *
+     * The stamp page's guest-physical base is `ring_shared_page_pfn << 12`
+     * (captured from BAR0+0x101c at setupRoot time). For the 7 M3 init-phase
+     * commands on the root ring, stamp_id=0; targets go 1..7. Our host must
+     * increment root_stamp_counter per root-ring completion and DMA-write
+     * the new value into `stamp_page[0]`, THEN raise MSI-X so the kext's
+     * handleFaultInterrupt → IOGPUFamily::signalStamp → commandWakeup path
+     * releases the wait.
+     *
+     * MMIO stamp cells at 0x1014/0x1018 are kept as-is for compatibility
+     * with earlier iter behavior; they may be a legacy/secondary channel. */
+    uint32_t root_stamp_counter;
+
     /* GPA of the current in-flight command's header on the ring.
      * Set by the drain immediately before calling dispatch_one so that
      * handlers can DMA-write into the on-ring header (e.g. 0x3a writes
