@@ -482,7 +482,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
      *   4. Set bit N in pending_stamps_bitmask.
      *   5. Raise MSI-X vec 0 so the kext ISR reads the bitmask.
      */
-    if (offset == 0x1028u) {
+    if (offset == 0x1020u || offset == 0x1028u) {
         if (value < 1u || value > 31u) {
             lagfx_fifo_on_mmio_setter(p, offset, value);
             return;
