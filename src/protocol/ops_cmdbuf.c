@@ -403,6 +403,98 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                    "(continuing fail-open)", task_id);
     }
 
+    /* -----------------------------------------------------------------
+     * TEMPORARY RE INSTRUMENTATION — hex dump of the inner-opcode stream.
+     *
+     * Rationale: per mos/memory/project_m4_m5_punchlist_2026_04_24.md,
+     * the CmdExecIndirect2 inner-opcode numeric IDs + per-entry header
+     * layout are the single pacing blocker for both M4 (first red pixel)
+     * and M5 (first triangle). Phase-2-first-pixel-plan.md §2.B.1 and
+     * phase-3-metal-vulkan-plan.md §7 R3.6 both call out that we need
+     * runtime bytes-on-wire to decode the format. Once M3 unblocks, a
+     * single `metal-clear-screen` run under `LAGFX_LOG=1` captures the
+     * stream so we can pattern-match 0x3f800000 (float 1.0), 0x00000000
+     * (float 0.0) for the clear RGBA and vertex_count=3 for the triangle.
+     *
+     * This dump is a ONE-TIME decode aid; REMOVE it once the inner
+     * opcode IDs + header layout are confirmed and the stub handlers
+     * above get their real semantics. Tracking: Phase 3.A RE spike.
+     * ----------------------------------------------------------------- */
+    if (lagfx_log_enabled()) {
+        size_t plen = (size_t)hdr->payload_size;
+        LAGFX_LOG("CmdExecIndirect2[RE]: payload_size=%zu taskID=%u count=%u "
+                  "stamp=0x%08x",
+                  plen, task_id, count, hdr->stamp);
+
+        /* Region 1: first 16 u32 words of the outer payload, hex side-
+         * by-side with signed decimal for float/count pattern-matching.
+         * Single log line to respect the 8-line-per-invocation budget. */
+        size_t words = plen / 4u;
+        if (words > 16u) {
+            words = 16u;
+        }
+        {
+            /* 16 words × "0x%08x(%+d) " worst-case ~21 chars = 336. */
+            char line[16 * 24 + 1];
+            size_t off = 0;
+            for (size_t i = 0; i < words; ++i) {
+                uint32_t w = lagfx_le32(hdr->payload + i * 4u);
+                int n = snprintf(line + off, sizeof(line) - off,
+                                 "0x%08x(%d) ", w, (int32_t)w);
+                if (n <= 0 || (size_t)n >= sizeof(line) - off) {
+                    break;
+                }
+                off += (size_t)n;
+            }
+            LAGFX_LOG("CmdExecIndirect2[RE]: outer-u32[0..%zu]: %s",
+                      words, line);
+        }
+
+        /* Region 2: opportunistic nested-buffer dump. The inner stream
+         * is reputed to begin with a guest GPA pointer to a task-mapped
+         * indirect buffer; treat (word[2]|word[3]<<32) as a u64 LE GPA
+         * candidate and dump up to 256 bytes via shell.read_memory.
+         * Defensive: NULL / out-of-range / missing callback all short-
+         * circuit silently — we're logging, not enforcing. */
+        if (words >= 4u &&
+            p->dev != NULL &&
+            p->dev->desc.shell.read_memory != NULL) {
+            uint64_t nested_gpa =
+                (uint64_t)lagfx_le32(hdr->payload + 8u) |
+                ((uint64_t)lagfx_le32(hdr->payload + 12u) << 32);
+            if (nested_gpa != 0ULL && nested_gpa < (1ULL << 48)) {
+                uint8_t nested[256];
+                size_t nread = sizeof(nested);
+                if (p->dev->desc.shell.read_memory(
+                        p->dev->desc.shell.opaque,
+                        nested_gpa, nread, nested)) {
+                    /* Stringify up to 64 u32 words as a single blob. */
+                    char line[64 * 10 + 1];
+                    size_t off = 0;
+                    size_t nwords = nread / 4u;
+                    if (nwords > 64u) { nwords = 64u; }
+                    for (size_t i = 0; i < nwords; ++i) {
+                        uint32_t w = lagfx_le32(nested + i * 4u);
+                        int n = snprintf(line + off, sizeof(line) - off,
+                                         "%08x ", w);
+                        if (n <= 0 ||
+                            (size_t)n >= sizeof(line) - off) {
+                            break;
+                        }
+                        off += (size_t)n;
+                    }
+                    LAGFX_LOG("CmdExecIndirect2[RE]: nested@0x%llx (%zuB) "
+                              "u32-LE: %s",
+                              (unsigned long long)nested_gpa, nread, line);
+                } else {
+                    LAGFX_LOG("CmdExecIndirect2[RE]: nested@0x%llx "
+                              "read_memory failed — skipping dump",
+                              (unsigned long long)nested_gpa);
+                }
+            }
+        }
+    }
+
     /* Walk the inner stream. PARTIAL layout guess — each inner entry is
      * assumed to carry an 8-byte header {u32 inner_opcode, u32
      * inner_length} followed by inner_length - 8 payload bytes. The
