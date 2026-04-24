@@ -190,7 +190,15 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     if (p->ring_shared_page_pfn != 0u
         && p->dev && p->dev->desc.shell.write_memory) {
         p->root_stamp_counter += 1u;
-        uint64_t stamp_gpa = ((uint64_t)p->ring_shared_page_pfn << 12);
+        /* Page layout per A2.A RE: kernel VA of page at this+0xdf0,
+         * kernel VA of stamp array at this+0xdf8 — so stamp_array
+         * starts at page+0x8, not page+0. The first 8 bytes of the
+         * page are some header (magic / version cookie / whatever
+         * setupRoot writes at alloc time). Writing stamps at +0
+         * corrupted GPUControl's matching predicate — M2-green had
+         * Accelerator hung, today we see GPUControl hung with !matched
+         * and a 14-minute busy. Shift writes by +8. */
+        uint64_t stamp_gpa = ((uint64_t)p->ring_shared_page_pfn << 12) + 0x8u;
         if (p->dev->desc.shell.write_memory(
                 p->dev->desc.shell.opaque,
                 stamp_gpa,
