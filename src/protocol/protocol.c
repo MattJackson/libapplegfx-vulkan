@@ -187,25 +187,31 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
      * it to stamp_page[0] satisfies all 7 waits. Order matters: write
      * memory BEFORE raising MSI-X so the ISR sees the new value on the
      * first read. */
-    if (p->ring_shared_page_pfn != 0u
+    if (p->ring_base_pfn != 0u
         && p->dev && p->dev->desc.shell.write_memory) {
         p->root_stamp_counter += 1u;
-        /* Page layout per A2.A RE: stamp_array starts at page+0x8.
-         * Write to slot 0 (GPUControl was matching with this variant);
-         * 8-slot fan-out trial did not unblock Accelerator and may
-         * have corrupted adjacent data. Back to single-slot; separate
-         * instrumentation will identify Accelerator's actual offset. */
-        uint64_t stamp_gpa = ((uint64_t)p->ring_shared_page_pfn << 12) + 0x8u;
+        /* Stamp cells per A3b's RE of IOAccelEventMachineFast2:
+         *   base = [accel+0xe10] = FIFO IOBMD kva, first page
+         *   cells at base + stamp_id*4 (u32 stride, 8 slots max)
+         * The FIFO buffer is the SAME 64 KiB allocation whose PFN
+         * arrives at BAR0+0x1030 (ring_base_pfn). Layout inside it:
+         *   page 0 (0..0xfff)     = stamp region — what we write here
+         *   pages 1..15 (0x1000+) = command ring — handled by ring_base_gpa
+         * For root-channel setupDeviceInfo wait, stamp_id=0 (the r12
+         * sid array is zeroed + submitter bumps slot 0's target).
+         * Writing monotonic counter to FIFO[0] satisfies target>=1,2,..,N
+         * as commands complete. */
+        uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12) + 0u;
         if (p->dev->desc.shell.write_memory(
                 p->dev->desc.shell.opaque,
                 stamp_gpa,
                 sizeof(p->root_stamp_counter),
                 &p->root_stamp_counter)) {
-            LAGFX_LOG("stamp_page[0] := %u (gpa=0x%llx, cmd_stamp=0x%08x)",
+            LAGFX_LOG("fifo_stamp[0] := %u (gpa=0x%llx, cmd_stamp=0x%08x)",
                       p->root_stamp_counter,
                       (unsigned long long)stamp_gpa, stamp);
         } else {
-            LAGFX_WARN("stamp_page[0] write FAILED (gpa=0x%llx)",
+            LAGFX_WARN("fifo_stamp[0] write FAILED (gpa=0x%llx)",
                        (unsigned long long)stamp_gpa);
         }
     }
