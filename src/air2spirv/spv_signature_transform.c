@@ -106,7 +106,33 @@ enum {
     SPV_DEC_LOCATION            = 30,
     SPV_DEC_CPACKED             = 10,
     SPV_DEC_LINKAGE_ATTRIBUTES  = 41,
+    /* Kernel-dialect residuals emitted by LLVM's SPIR-V backend that
+     * strict Vulkan validators reject even when Mesa/lavapipe tolerates
+     * them. Stripped unconditionally from the Shader-profile output. */
+    SPV_DEC_FUNC_PARAM_ATTR     = 38,
+    SPV_DEC_FP_FAST_MATH_MODE   = 40,
+    SPV_DEC_MAX_BYTE_OFFSET     = 45,
 };
+
+/* FunctionParameterAttribute values. Zext/Sext/ByVal/Sret/NoAlias are
+ * usable under the Shader capability; NoCapture/NoWrite/NoReadWrite
+ * require Kernel per SPIR-V spec §3.22. */
+enum {
+    SPV_FPA_ZEXT          = 0,
+    SPV_FPA_SEXT          = 1,
+    SPV_FPA_BY_VAL        = 2,
+    SPV_FPA_SRET          = 3,
+    SPV_FPA_NO_ALIAS      = 4,
+    SPV_FPA_NO_CAPTURE    = 5,
+    SPV_FPA_NO_WRITE      = 6,
+    SPV_FPA_NO_READ_WRITE = 7,
+};
+
+static bool func_param_attr_is_kernel_only(uint32_t v) {
+    return v == SPV_FPA_NO_CAPTURE
+        || v == SPV_FPA_NO_WRITE
+        || v == SPV_FPA_NO_READ_WRITE;
+}
 
 enum {
     SPV_BUILTIN_POSITION    = 0,
@@ -838,9 +864,25 @@ lagfx_status_t lagfx_spv_signature_transform(
             uint32_t dec = in_words[i + 2u];
             if (dec == SPV_DEC_CPACKED || dec == SPV_DEC_LINKAGE_ATTRIBUTES)
                 drop = true;
+            /* Strip Kernel-dialect decorations that LLVM's SPIR-V
+             * backend emits from inferred IR attributes. Mesa/lavapipe
+             * tolerates them but strict spirv-val rejects them under
+             * the Shader capability. */
+            else if (dec == SPV_DEC_FP_FAST_MATH_MODE
+                  || dec == SPV_DEC_MAX_BYTE_OFFSET)
+                drop = true;
+            else if (dec == SPV_DEC_FUNC_PARAM_ATTR && wc >= 4u
+                  && func_param_attr_is_kernel_only(in_words[i + 3u]))
+                drop = true;
         } else if (op == SPV_OP_MEMBER_DECORATE && wc >= 4u) {
             uint32_t dec = in_words[i + 3u];
             if (dec == SPV_DEC_CPACKED || dec == SPV_DEC_LINKAGE_ATTRIBUTES)
+                drop = true;
+            else if (dec == SPV_DEC_FP_FAST_MATH_MODE
+                  || dec == SPV_DEC_MAX_BYTE_OFFSET)
+                drop = true;
+            else if (dec == SPV_DEC_FUNC_PARAM_ATTR && wc >= 5u
+                  && func_param_attr_is_kernel_only(in_words[i + 4u]))
                 drop = true;
         } else if (op == SPV_OP_FUNCTION_PARAMETER
                    && in_target_fn) {
