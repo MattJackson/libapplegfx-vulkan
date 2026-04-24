@@ -478,6 +478,44 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
         default: break;
     }
 
+    /* BAR0+0x1020 / 0x1028 — child-channel doorbell (per A8a + A10a +
+     * A11a/b convergence 2026-04-24). Value = channel_id of channel
+     * with pending work. For channels 5+ (DisplayPipes), the stamp
+     * slot equals the channel_id (per A10a:
+     * AppleParavirtDisplayPipe::init at 0x145602ac sets [channel+0x20] =
+     * display_index + 5). For channels 1-4 (init child channels), the
+     * stamp slot is 0 (already covered by complete_stamp).
+     *
+     * Write a monotonic value to FIFO+slot*4 to satisfy the wrangler's
+     * waitForStamp predicate. DO NOT raise MSI-X — let the kext's
+     * existing 1-second msleep_deadline cycle re-check naturally. This
+     * avoids spurious wake events that could trip checkGPUProgress
+     * watchdogs on other channels (which was the failure mode of
+     * commits e9c45ac/023e4f1).
+     *
+     * The 1-second wakeup latency is acceptable: 8 displays × 1s
+     * sequential = ~8s extra during accelerator enrollment, well
+     * within the kext's 10-second restart-channel deadline. */
+    if ((offset == 0x1020u || offset == 0x1028u)
+        && value >= 5u && value < 32u
+        && p->ring_base_pfn != 0u
+        && p->dev && p->dev->desc.shell.write_memory) {
+        unsigned slot = (unsigned)value;
+        p->per_channel_stamp[slot] += 1u;
+        uint32_t stamp_value = p->per_channel_stamp[slot];
+        uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12)
+                             + (uint64_t)slot * 4u;
+        if (p->dev->desc.shell.write_memory(
+                p->dev->desc.shell.opaque,
+                stamp_gpa, sizeof(stamp_value), &stamp_value)) {
+            LAGFX_LOG("doorbell ch=%u: stamp_cell[%u] := 0x%08x "
+                      "(gpa=0x%llx, no-IRQ)",
+                      slot, slot, stamp_value,
+                      (unsigned long long)stamp_gpa);
+        }
+        return;
+    }
+
     /* Any remaining write in the setter-candidate range: log for probe
      * observability (0x1020, 0x1024, 0x1028, 0x1034 — still-unresolved
      * slots per Agent I's recipe). */
