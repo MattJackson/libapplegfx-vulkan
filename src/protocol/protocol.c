@@ -154,25 +154,42 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
      * write there. Writing the command's stamp value (from the 12-
      * byte header) to FIFO + stamp_id*4 satisfies the predicate.
      *
-     * Write target value + raise bitmask bit + MSI-X. */
-    p->pending_stamps_bitmask |= (1u << 0);
+     * Write target value + raise bitmask bit + MSI-X.
+     *
+     * SHOTGUN UPDATE 2026-04-24 (post A9): The wrangler enrollment
+     * thread parks in IOAccelEventMachine2::waitForStamp on a slot
+     * we don't know in advance (likely 5 or 6 for Display0/1, but
+     * could be other channels). Per A9a, msleep_deadline only wakes
+     * on explicit wakeup. Per A9b, the wedge is in setupSharedState.
+     *
+     * Since signalStamps walks the bitmask and dispatches commandWakeup
+     * per set bit, setting ALL bits 0..31 ensures EVERY pending stamp
+     * wait gets a wakeup. And writing the stamp value to ALL slots
+     * ensures any waitForStamp predicate sees a non-zero current >=
+     * any reasonable target.
+     *
+     * Risk: if checkGPUProgress on inactive slots finds non-zero
+     * stamps unexpectedly, it might log warnings — but should not
+     * trigger restart since "stamp moved forward" is exactly what
+     * checkGPUProgress wants to see.
+     */
+    p->pending_stamps_bitmask = 0xFFFFFFFFu;  /* all 32 bits */
 
     if (p->ring_base_pfn != 0u
         && p->dev && p->dev->desc.shell.write_memory) {
-        /* stamp_id=0 for all RootChannel commands (confirmed A6e:
-         * every init-phase command emits `xor esi, esi` before
-         * writeStamp to pick slot 0). */
-        unsigned stamp_id = 0u;
-        uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12)
-                             + (uint64_t)stamp_id * 4u;
+        uint64_t base_gpa = (uint64_t)p->ring_base_pfn << 12;
+        /* Write stamp to all 32 slots [0..31] = 128 bytes. Each slot
+         * at base + i*4 (per A3f's allocStampTable analysis with
+         * num_sids=32). */
+        uint32_t buf[32];
+        for (unsigned i = 0; i < 32u; ++i) buf[i] = stamp;
         if (p->dev->desc.shell.write_memory(
                 p->dev->desc.shell.opaque,
-                stamp_gpa,
-                sizeof(stamp),
-                &stamp)) {
-            LAGFX_LOG("stamp_cell[%u] := 0x%08x (gpa=0x%llx)",
-                      stamp_id, stamp,
-                      (unsigned long long)stamp_gpa);
+                base_gpa,
+                sizeof(buf),
+                buf)) {
+            LAGFX_LOG("stamp_cells[0..31] := 0x%08x (gpa=0x%llx)",
+                      stamp, (unsigned long long)base_gpa);
         }
     }
 
