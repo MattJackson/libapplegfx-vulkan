@@ -206,14 +206,21 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
          * no EM); does NOT unblock Accelerator (its stamp_id > 0)
          * but doesn't cause panic. Need narrower RE on which specific
          * stamp_id RootChannel submitter uses. */
-        uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12) + 0u;
+        /* Bisection probe: try stamp_id=1 (FIFO+4).
+         * Slot 0 (FIFO+0) confirmed not-Accelerator's (writes land, wait
+         * doesn't release). The actual stamp_id for RootChannel is set by
+         * IOAccel2CommandQueue::init outside our disasm reach. Walk
+         * candidate slots 1..7 one at a time. */
+        unsigned slot = 1u;
+        uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12)
+                             + (uint64_t)slot * 4u;
         if (p->dev->desc.shell.write_memory(
                 p->dev->desc.shell.opaque,
                 stamp_gpa,
                 sizeof(p->root_stamp_counter),
                 &p->root_stamp_counter)) {
-            LAGFX_LOG("fifo_stamp[0] := %u (gpa=0x%llx, cmd_stamp=0x%08x)",
-                      p->root_stamp_counter,
+            LAGFX_LOG("fifo_stamp[%u] := %u (gpa=0x%llx, cmd_stamp=0x%08x)",
+                      slot, p->root_stamp_counter,
                       (unsigned long long)stamp_gpa, stamp);
         }
     }
