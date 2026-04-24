@@ -130,27 +130,51 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     p->last_completed_stamp = stamp;
     p->total_cmds_completed += 1;
 
-    /* A3f (2026-04-24) overturned the earlier stamp-page writeback
-     * model. For the RootChannel single-sid EventMachine, stampBases[0]
-     * resolves to [EM+0x20] in kernel heap, not FIFO page 0. The prior
-     * DMA write to (ring_base_pfn << 12) + stamp_id*4 targeted a page
-     * the kext never reads. Removed.
+    /* Per RE session 2026-04-24 (post A6d+A6e+A6f + runtime dmesg):
+     * for the RootChannel EventMachineFast2 with num_sids=32, the
+     * allocStampTable non-short-path (at 0x14855c36) allocates a
+     * 256-byte table of u32 pointers, each pointing at
+     * `baseAddr + i*4` where baseAddr = [accel+0xe10] = FIFO IOBMD
+     * first-page kernel VA. So stampBases[stamp_id] IS at
+     * `(ring_base_pfn<<12) + stamp_id*4` in DMA-visible memory.
      *
-     * LAGFX_STAMP_SLOT / LAGFX_STAMP_VALUE env vars were probes for
-     * that model; they are now no-ops and have been dropped.
+     * A3f's earlier claim that num_sids==1 short-path stored baseAddr
+     * at [EM+0x20] was technically correct for num_sids==1 but does
+     * not apply to our runtime: dmesg confirms numStamps=32, not 1.
      *
-     * Set bit for this command's stamp_id in the pending bitmask.
-     * Per A4d: the kext ISR on MSI-X vec 0 reads BAR0+0x1018 as a
-     * bitmask and calls signalStamps(mask). For RootChannel's single-sid
-     * EventMachine (the init path) stamp_id=0. If later channels submit
-     * commands with different stamp_ids we'll need to plumb that through
-     * the command header; for now bit 0 covers all observed traffic.
+     * The kext's checkGPUProgress / waitForStamp predicate reads:
+     *   stamp = *stampBases[stamp_id] = u32 at FIFO_base + stamp_id*4
+     * and compares to the target. With num_sids=32 the stamp cell
+     * IS DMA-writable from the host.
      *
-     * The MMIO stamp-cell writes at reg[STAMP_CELL_1/2] that used to
-     * live here were based on a misread of the BAR0 layout — those
-     * offsets carry interrupt bitmasks, not stamp values. Do NOT write
-     * per-stamp values into those regs. */
+     * Empirical evidence: guest dmesg shows
+     *   waitForStamp: timeout waiting for Apple Paravirt Accelerator
+     *   stamp 7 (gpu_stamp=0)
+     * i.e. the kext sees gpu_stamp=0 at FIFO+0 because we never
+     * write there. Writing the command's stamp value (from the 12-
+     * byte header) to FIFO + stamp_id*4 satisfies the predicate.
+     *
+     * Write target value + raise bitmask bit + MSI-X. */
     p->pending_stamps_bitmask |= (1u << 0);
+
+    if (p->ring_base_pfn != 0u
+        && p->dev && p->dev->desc.shell.write_memory) {
+        /* stamp_id=0 for all RootChannel commands (confirmed A6e:
+         * every init-phase command emits `xor esi, esi` before
+         * writeStamp to pick slot 0). */
+        unsigned stamp_id = 0u;
+        uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12)
+                             + (uint64_t)stamp_id * 4u;
+        if (p->dev->desc.shell.write_memory(
+                p->dev->desc.shell.opaque,
+                stamp_gpa,
+                sizeof(stamp),
+                &stamp)) {
+            LAGFX_LOG("stamp_cell[%u] := 0x%08x (gpa=0x%llx)",
+                      stamp_id, stamp,
+                      (unsigned long long)stamp_gpa);
+        }
+    }
 
     if (p->dev && p->dev->desc.shell.raise_interrupt) {
         /* Per A4d (2026-04-24): the accelerator kext registers exactly
