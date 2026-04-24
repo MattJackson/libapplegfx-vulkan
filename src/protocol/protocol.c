@@ -95,7 +95,6 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->read_ptr             = 0;
     p->write_ptr            = 0;
     p->pending_stamps_bitmask = 0;
-    memset(p->per_channel_stamp, 0, sizeof(p->per_channel_stamp));
 
     p->display_swaps_applied          = 0;
     p->display_transactions_submitted = 0;
@@ -456,67 +455,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
         default: break;
     }
 
-    /* BAR0+0x1028 — child-channel doorbell (per A8a 2026-04-24 RE).
-     *
-     * The kext writes the channel_id (1..31) when there's pending work
-     * on that channel. Each channel has its own stamp slot at
-     * (ring_base_pfn<<12) + channel_id*4 (per the num_sids=32 path of
-     * IOAccelEventMachineFast2::allocStampTable at 0x14855c36).
-     *
-     * MINIMUM ADVANCE strategy (A8a recommendation): we don't need to
-     * drain the channel's ring buffer or update descriptor read_head.
-     * We just need to bump the stamp at the slot the kext's
-     * waitForStamp predicate is polling, so the wait releases and the
-     * kext's restart-cycle thread drops accel[0x158] (the lock that's
-     * blocking every IOServiceOpen on the user-client).
-     *
-     * This is deliberately less than the morning's regression attempt
-     * (which tried to drain rings + update read_head and broke the
-     * VM). A8a confirmed those operations aren't required for the
-     * unblock — only the stamp advance is.
-     *
-     * Per-doorbell action:
-     *   1. Validate channel_id in [1, 31].
-     *   2. Increment per_channel_stamp[N] (monotonic counter).
-     *   3. DMA-write that value to (ring_base_pfn<<12) + N*4.
-     *   4. Set bit N in pending_stamps_bitmask.
-     *   5. Raise MSI-X vec 0 so the kext ISR reads the bitmask.
-     */
-    if (offset == 0x1028u) {
-        if (value < 1u || value > 31u) {
-            lagfx_fifo_on_mmio_setter(p, offset, value);
-            return;
-        }
-        unsigned ch = (unsigned)value;
-
-        if (p->ring_base_pfn != 0u
-            && p->dev && p->dev->desc.shell.write_memory) {
-            p->per_channel_stamp[ch] += 1u;
-            uint32_t stamp_value = p->per_channel_stamp[ch];
-            uint64_t stamp_gpa =
-                ((uint64_t)p->ring_base_pfn << 12) + (uint64_t)ch * 4u;
-            if (p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque,
-                    stamp_gpa, sizeof(stamp_value), &stamp_value)) {
-                LAGFX_LOG("doorbell ch=%u: stamp_cell[%u] := 0x%08x "
-                          "(gpa=0x%llx)",
-                          ch, ch, stamp_value,
-                          (unsigned long long)stamp_gpa);
-            }
-        }
-
-        p->pending_stamps_bitmask |= (1u << ch);
-        if (p->dev && p->dev->desc.shell.raise_interrupt) {
-            p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0u);
-            p->interrupts_raised += 1;
-        }
-        return;
-    }
-
     /* Any remaining write in the setter-candidate range: log for probe
-     * observability (0x1020, 0x1024, 0x1034 — still-unresolved
-     * slots per Agent I's recipe). 0x1020 routing was tried and
-     * regressed in commit 34d8078; left as log+ack for now. */
+     * observability (0x1020, 0x1024, 0x1028, 0x1034 — still-unresolved
+     * slots per Agent I's recipe). */
     if (offset >= LAGFX_REG_SETTER_CAND_FIRST &&
         offset <= LAGFX_REG_SETTER_CAND_LAST) {
         lagfx_fifo_on_mmio_setter(p, offset, value);
