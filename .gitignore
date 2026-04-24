@@ -36,3 +36,6 @@ __pycache__/
 
 # clang/ccache caches written under the source tree by some tooling
 .cache/
+
+# Private working notes — live in private gitea (pq/mos)
+.claude/
