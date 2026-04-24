@@ -192,27 +192,30 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
         p->root_stamp_counter += 1u;
         /* Stamp cells per A3b's RE of IOAccelEventMachineFast2:
          *   base = [accel+0xe10] = FIFO IOBMD kva, first page
-         *   cells at base + stamp_id*4 (u32 stride, 8 slots max)
-         * The FIFO first page is a DEDICATED stamp region (zeroed at
-         * setup via bzero(0x1000) — so offsets 0..0xFFF hold nothing
-         * but stamp cells). Fan out the counter to all 8 slots so the
-         * wait matches whichever stamp_id RootChannel's submitter is
-         * actually using; unused slots stay at zero+counter, harmless. */
-        uint64_t base_gpa = ((uint64_t)p->ring_base_pfn << 12);
-        for (unsigned slot = 0; slot < 8u; ++slot) {
-            uint64_t stamp_gpa = base_gpa + (uint64_t)slot * 4u;
-            if (!p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque,
-                    stamp_gpa,
-                    sizeof(p->root_stamp_counter),
-                    &p->root_stamp_counter)) {
-                LAGFX_WARN("fifo_stamp[%u] write FAILED (gpa=0x%llx)",
-                           slot, (unsigned long long)stamp_gpa);
-            }
+         *   cells at base + stamp_id*4 (u32 stride)
+         *
+         * 8-slot fan-out at FIFO base triggered kernel panic in
+         * AppleParavirtDisplayPipe.cpp:240 "hitting assertion" (7
+         * reboots observed). DisplayPipe has its own EventMachine
+         * whose stamps share the FIFO page; writing to slots beyond
+         * the Accelerator's actual stamp_id prematurely completes
+         * DisplayPipe waits and trips its assertion.
+         *
+         * Safe baseline: write single cell at FIFO+0. This matched
+         * GPUControl reads previously (coincidence — GPUControl has
+         * no EM); does NOT unblock Accelerator (its stamp_id > 0)
+         * but doesn't cause panic. Need narrower RE on which specific
+         * stamp_id RootChannel submitter uses. */
+        uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12) + 0u;
+        if (p->dev->desc.shell.write_memory(
+                p->dev->desc.shell.opaque,
+                stamp_gpa,
+                sizeof(p->root_stamp_counter),
+                &p->root_stamp_counter)) {
+            LAGFX_LOG("fifo_stamp[0] := %u (gpa=0x%llx, cmd_stamp=0x%08x)",
+                      p->root_stamp_counter,
+                      (unsigned long long)stamp_gpa, stamp);
         }
-        LAGFX_LOG("fifo_stamp[0..7] := %u (base=0x%llx, cmd_stamp=0x%08x)",
-                  p->root_stamp_counter,
-                  (unsigned long long)base_gpa, stamp);
     }
 
     /* Legacy path — keep MMIO stamp cells updated too.
