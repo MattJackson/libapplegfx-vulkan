@@ -191,28 +191,23 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
         && p->dev && p->dev->desc.shell.write_memory) {
         p->root_stamp_counter += 1u;
         /* Page layout per A2.A RE: stamp_array starts at page+0x8.
-         * The wait primitive [vtbl+0x188] iterates EIGHT slots, each
-         * a {stamp_id, target_value} pair. Different IOGraphicsAccelerator2
-         * subclasses (GPUControl, Accelerator, ...) may get allocated
-         * different stamp_ids at begin-batch time. Without a way to
-         * know which stamp_id this particular batch is watching,
-         * write the counter to ALL 8 slots. Every batch finds its
-         * slot satisfied; the unused ones are harmless. */
-        uint64_t base_gpa = ((uint64_t)p->ring_shared_page_pfn << 12) + 0x8u;
-        for (unsigned slot = 0; slot < 8u; ++slot) {
-            uint64_t stamp_gpa = base_gpa + (uint64_t)slot * 4u;
-            if (!p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque,
-                    stamp_gpa,
-                    sizeof(p->root_stamp_counter),
-                    &p->root_stamp_counter)) {
-                LAGFX_WARN("stamp_page[%u] write FAILED (gpa=0x%llx)",
-                           slot, (unsigned long long)stamp_gpa);
-            }
+         * Write to slot 0 (GPUControl was matching with this variant);
+         * 8-slot fan-out trial did not unblock Accelerator and may
+         * have corrupted adjacent data. Back to single-slot; separate
+         * instrumentation will identify Accelerator's actual offset. */
+        uint64_t stamp_gpa = ((uint64_t)p->ring_shared_page_pfn << 12) + 0x8u;
+        if (p->dev->desc.shell.write_memory(
+                p->dev->desc.shell.opaque,
+                stamp_gpa,
+                sizeof(p->root_stamp_counter),
+                &p->root_stamp_counter)) {
+            LAGFX_LOG("stamp_page[0] := %u (gpa=0x%llx, cmd_stamp=0x%08x)",
+                      p->root_stamp_counter,
+                      (unsigned long long)stamp_gpa, stamp);
+        } else {
+            LAGFX_WARN("stamp_page[0] write FAILED (gpa=0x%llx)",
+                       (unsigned long long)stamp_gpa);
         }
-        LAGFX_LOG("stamp_page[0..7] := %u (base_gpa=0x%llx, cmd_stamp=0x%08x)",
-                  p->root_stamp_counter,
-                  (unsigned long long)base_gpa, stamp);
     }
 
     /* Legacy path — keep MMIO stamp cells updated too.
