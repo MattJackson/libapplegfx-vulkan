@@ -458,11 +458,15 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
         default: break;
     }
 
-    /* BAR0+0x1028 — child-channel doorbell (A7a RE 2026-04-24).
-     * Value = channel_id of a child channel with pending work. Walk
-     * the channel's descriptor in the shared page, drain its ring,
-     * dispatch commands, update read_head. */
-    if (offset == 0x1028u) {
+    /* BAR0+0x1020 and 0x1028 — child-channel doorbells (A7a RE
+     * 2026-04-24 + runtime observation 2026-04-24 shows BOTH registers
+     * used). Value = channel_id of a child channel with pending work.
+     * Walk the channel's descriptor in the shared page, drain its ring,
+     * dispatch commands, update read_head. The two registers likely
+     * correspond to different channel classes (compute vs display);
+     * value carries the channel_id in both cases so the same handler
+     * is safe. */
+    if (offset == 0x1020u || offset == 0x1028u) {
         if (value == 0u) {
             /* channel_id==0 is the RootChannel; the root doorbell is
              * at 0x1008. A zero here would be malformed — log + ack. */

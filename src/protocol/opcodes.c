@@ -35,7 +35,14 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_DEFINE_TASK2,         "CmdDefineTask2",
       LAGFX_PRIO_P0, 24, 24, lagfx_op_define_task2 },
     { LAGFX_OP_DELETE_TASK,          "CmdDeleteTask",
-      LAGFX_PRIO_P0, 4,  4,  lagfx_op_delete_task },
+      /* Opcode 0x01 is OVERLOADED per A7b RE (2026-04-24):
+       *   - RootChannel: CmdDeleteTask (4-byte payload = taskID)
+       *   - DisplayPipe child channel: CmdDisplayBindSharedStatePage
+       *     (8-byte payload = display_index + shared_state_pfn)
+       * Relax max to 8 so both variants pass dispatcher validation.
+       * Handler short-circuits on unknown taskID with a warn, which is
+       * correct behaviour for the display-bind variant (state-only). */
+      LAGFX_PRIO_P0, 4,  8,  lagfx_op_delete_task },
     { LAGFX_OP_MAP_MEMORY2,          "CmdMapMemory2",
       LAGFX_PRIO_P1, 20, 0,  lagfx_op_map_memory2 },
     { LAGFX_OP_UNMAP_MEMORY,         "CmdUnmapMemory",

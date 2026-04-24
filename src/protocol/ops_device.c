@@ -411,6 +411,23 @@ lagfx_handler_status_t lagfx_op_delete_task(lagfx_protocol_t *p,
 
     uint32_t task_id = lagfx_le32(hdr->payload + 0);
 
+    /* Opcode 0x01 on DisplayPipe child channels is
+     * CmdDisplayBindSharedStatePage (A7b), not CmdDeleteTask: 8-byte
+     * payload is {u32 display_index, u32 shared_state_pfn}. There is
+     * no task to delete — just acknowledge. We keep the RootChannel
+     * CmdDeleteTask path intact for taskIDs we do know about. */
+    if (hdr->payload_size == 8u) {
+        uint32_t shared_state_pfn = lagfx_le32(hdr->payload + 4);
+        LAGFX_LOG("CmdDisplayBindSharedStatePage: display_index=%u "
+                  "shared_state_pfn=0x%x stamp=0x%08x",
+                  task_id /* =display_index */, shared_state_pfn,
+                  hdr->stamp);
+        /* Host-side bookkeeping could record (display_index, pfn) here
+         * for later WindowServer vblank polling; deferred until we have
+         * a concrete consumer. */
+        return LAGFX_HANDLER_OK;
+    }
+
     lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
     if (!entry) {
         LAGFX_WARN("CmdDeleteTask: taskID=%u not found", task_id);
