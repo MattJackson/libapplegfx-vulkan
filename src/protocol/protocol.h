@@ -43,16 +43,22 @@ typedef struct lagfx_protocol lagfx_protocol_t;
  * a doorbell. Evidence: re-followup-spec-gaps.md §5.2 (mmioReadAtOffset
  * dispatch lines 40785+, mmioWriteAtOffset dispatch lines 42340+).
  *
- * KNOWN:
+ * KNOWN (corrected by A4d, 2026-04-24 — prior scaffold called these
+ * "stamp cells" based on a misread of the ISR; they are actually
+ * interrupt-pending bitmasks):
  *   0x1000  STATUS_CONTROL (master FIFO enable; R: _fifo state u32)
- *   0x1014  STAMP_CELL_1 read-side is an atomic xchg of the
- *           host-to-guest stamp latch at _PGDevice+0xf8; guests poll
- *           this to learn of completions without taking an IRQ.
- *   0x1018  STAMP_CELL_2 (aka _interruptStamp) read-side is an atomic
- *           xchg of _PGDevice+0x1c0; paired with IRQ delivery.
+ *   0x1014  DISPLAY_IRQ_MASK — xchg-and-clear bitmask fed to
+ *           AppleParavirtDisplayMachine::signalDisplays. Bit N = display N
+ *           has a completed transaction. (Older name: STAMP_CELL_1.)
+ *   0x1018  STAMP_IRQ_MASK — xchg-and-clear bitmask fed to
+ *           AppleParavirtEventMachine::signalStamps. Bit N = stamp_id N
+ *           completed since the last ISR read. (Older name: STAMP_CELL_2.)
  *   0x101c  ROOT_PAGE_NUMBER — read-only getter for _rootPageNumber
  *           (u32 at _PGDevice+0x210). This is NOT a doorbell; the
  *           prior scaffold was wrong.
+ *   0x102c  FAULT_STATUS — non-zero signals pending faults and causes
+ *           the kext ISR to walk the fault queue via handleFaultInterrupt.
+ *           Return 0 unless a fault is actually queued.
  *   0x1034  BINARY_VERSION — read-only _binaryVersion u32.
  *
  * OPEN (runtime capture needed):
@@ -73,8 +79,8 @@ typedef struct lagfx_protocol lagfx_protocol_t;
 
 #define LAGFX_REG_STATUS_CONTROL      0x1000u  /* RW — FIFO enable / state       */
 #define LAGFX_REG_FIFO_FAULT_OFFSET   0x100cu  /* R  — _rootFIFO.fifoFaultOffset */
-#define LAGFX_REG_STAMP_CELL_1        0x1014u  /* R  — atomic-xchg stamp latch   */
-#define LAGFX_REG_STAMP_CELL_2        0x1018u  /* R  — atomic-xchg _interruptStamp */
+#define LAGFX_REG_STAMP_CELL_1        0x1014u  /* R  — display IRQ bitmask (was "stamp latch") */
+#define LAGFX_REG_STAMP_CELL_2        0x1018u  /* R  — stamp IRQ bitmask (was "_interruptStamp") */
 #define LAGFX_REG_ROOT_PAGE_NUMBER    0x101cu  /* R  — _rootPageNumber (NOT doorbell) */
 #define LAGFX_REG_BINARY_VERSION      0x1034u  /* R  — _binaryVersion            */
 

@@ -175,35 +175,32 @@ struct lagfx_protocol {
     uint32_t write_ptr;             /* last-seen guest write ptr (doorbell) */
     uint32_t last_completed_stamp;
 
-    /* Pending-stamp queue — Apple's PGPendingStampQueue design.
-     * Multiple commands can complete within one drain; each gets a
-     * stamp that the guest must see individually via xchg-and-clear
-     * on 0x1014/0x1018. If we just overwrite the stamp cell, earlier
-     * stamps get lost. Queue here, pop one per guest read.
-     * Sized for the drain-cap of 128 commands. */
+    /* Legacy queue (unused after the A4d bitmask fix; retained for
+     * binary-compat with callers that still reference the fields). */
     uint32_t pending_stamps[128];
     uint32_t pending_stamps_head;  /* write index */
     uint32_t pending_stamps_tail;  /* read index */
 
-    /* Stamp-page write counter — root-ring completion monotonic.
+    /* Pending stamp-completion bitmask, per A4d (2026-04-24).
      *
-     * Per paravirt-re/re-followup-spec-gaps.md §15/§16 + agent A2.A RE of
-     * IOGraphicsAccelerator2's `[this+0x380]` object (the wait target):
-     * `[vtbl+0x188]` is a per-stamp count-up wait (NOT MMIO stamp-cell poll).
-     * It reads `stamp_page[stamp_id*4]` and waits for the value to reach a
-     * monotonically-allocated target assigned at begin-batch time.
+     * The kext's unified ISR at vector 0 reads three BAR0 status regs:
+     *   0x1018 — stamp bitmask fed to AppleParavirtEventMachine::signalStamps
+     *   0x1014 — display bitmask fed to AppleParavirtDisplayMachine::signalDisplays
+     *   0x102c — fault-pending status (0 means no fault queued)
      *
-     * The stamp page's guest-physical base is `ring_shared_page_pfn << 12`
-     * (captured from BAR0+0x101c at setupRoot time). For the 7 M3 init-phase
-     * commands on the root ring, stamp_id=0; targets go 1..7. Our host must
-     * increment root_stamp_counter per root-ring completion and DMA-write
-     * the new value into `stamp_page[0]`, THEN raise MSI-X so the kext's
-     * handleFaultInterrupt → IOGPUFamily::signalStamp → commandWakeup path
-     * releases the wait.
+     * Bit N of the 0x1018 mask indicates stamp_id N completed since the
+     * last ISR. signalStamps loops set bits via `bsf`, calls commandWakeup
+     * per stamp_id, which reads the actual stamp value from [EM+0x20]
+     * in kernel heap (NOT from a DMA page). Our job is simply to signal
+     * "which stamp IDs completed" via the bitmask and raise MSI-X.
      *
-     * MMIO stamp cells at 0x1014/0x1018 are kept as-is for compatibility
-     * with earlier iter behavior; they may be a legacy/secondary channel. */
-    uint32_t root_stamp_counter;
+     * For the RootChannel single-sid case (the init path), stamp_id=0.
+     * So completing a root-ring command sets bit 0.
+     *
+     * Xchg-and-clear semantics: guest ISR reads 0x1018 and atomically
+     * clears the mask. We mirror that by returning the mask then zeroing
+     * the field. */
+    uint32_t pending_stamps_bitmask;
 
     /* GPA of the current in-flight command's header on the ring.
      * Set by the drain immediately before calling dispatch_one so that

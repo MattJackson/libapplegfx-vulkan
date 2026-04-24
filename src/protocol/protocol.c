@@ -94,7 +94,7 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->setter_write_count   = 0;
     p->read_ptr             = 0;
     p->write_ptr            = 0;
-    p->root_stamp_counter   = 0;
+    p->pending_stamps_bitmask = 0;
 
     p->display_swaps_applied          = 0;
     p->display_transactions_submitted = 0;
@@ -114,60 +114,13 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
 /* === Completion path ========================================
  *
  * Every command unconditionally signals its stamp when done. Per
- * re-followup-spec-gaps.md §5.1, the 12-byte header has no flags
- * field; the dylib's Cmd* handler tails always invoke the "signal
- * stamp" selector, which pushes the stamp into PGPendingStampQueue,
- * and the dequeue thread later writes the stamp into the host-to-
- * guest stamp cell (readable at MMIO 0x1014) and raises the IRQ.
- * We model that here by writing the stamp to the STAMP_CELL_1 shadow
- * and calling shell.raise_interrupt. */
-/* Internal: push a stamp onto the pending queue. */
-static void lagfx_pending_stamp_push(lagfx_protocol_t *p, uint32_t stamp) {
-    uint32_t cap = (uint32_t)(sizeof(p->pending_stamps) /
-                              sizeof(p->pending_stamps[0]));
-    uint32_t next_head = (p->pending_stamps_head + 1u) % cap;
-    if (next_head == p->pending_stamps_tail) {
-        /* Queue full — drop oldest, keep newest. Should never happen
-         * with the 128-cap and drain batch size of 128. */
-        LAGFX_WARN("pending_stamp: queue full, dropping oldest stamp 0x%x",
-                   p->pending_stamps[p->pending_stamps_tail]);
-        p->pending_stamps_tail =
-            (p->pending_stamps_tail + 1u) % cap;
-    }
-    p->pending_stamps[p->pending_stamps_head] = stamp;
-    p->pending_stamps_head = next_head;
-}
-
-/* Internal: pop the next pending stamp; 0 if queue empty. */
-static uint32_t lagfx_pending_stamp_pop(lagfx_protocol_t *p) {
-    if (p->pending_stamps_head == p->pending_stamps_tail) {
-        return 0u;
-    }
-    uint32_t cap = (uint32_t)(sizeof(p->pending_stamps) /
-                              sizeof(p->pending_stamps[0]));
-    uint32_t stamp = p->pending_stamps[p->pending_stamps_tail];
-    p->pending_stamps_tail = (p->pending_stamps_tail + 1u) % cap;
-    return stamp;
-}
-
-/* Internal: after the guest drains a stamp cell via xchg, check if
- * another pending stamp is waiting. If so, write it into the cell and
- * raise IRQ so the guest ISR runs again. */
-static void lagfx_pending_stamp_advance(lagfx_protocol_t *p) {
-    uint32_t next = lagfx_pending_stamp_pop(p);
-    if (next == 0u) {
-        return;
-    }
-    int c1 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_1);
-    int c2 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_2);
-    if (c1 >= 0) p->reg[c1] = next;
-    if (c2 >= 0) p->reg[c2] = next;
-    if (p->dev && p->dev->desc.shell.raise_interrupt) {
-        p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0);
-        p->interrupts_raised += 1;
-    }
-    LAGFX_LOG("pending_stamp: advanced to 0x%x, IRQ re-raised", next);
-}
+ * Per A4d (2026-04-24): the kext's unified ISR on MSI-X vec 0 reads
+ * BAR0+0x1018 as a stamp-completion bitmask and feeds it to
+ * AppleParavirtEventMachine::signalStamps. So our per-completion work
+ * is to OR bit `stamp_id` into pending_stamps_bitmask and raise MSI-X.
+ * The ISR loops set bits, calls commandWakeup per stamp, which reads
+ * the actual stamp value from [EM+0x20] in kernel heap. No DMA of
+ * stamp values by us is required. */
 
 void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     if (!lagfx_protocol_is_valid(p)) {
@@ -177,101 +130,41 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     p->last_completed_stamp = stamp;
     p->total_cmds_completed += 1;
 
-    /* NEW (2026-04-23) — Stamp-page writeback for IOGPUFamily wait loops.
+    /* A3f (2026-04-24) overturned the earlier stamp-page writeback
+     * model. For the RootChannel single-sid EventMachine, stampBases[0]
+     * resolves to [EM+0x20] in kernel heap, not FIFO page 0. The prior
+     * DMA write to (ring_base_pfn << 12) + stamp_id*4 targeted a page
+     * the kext never reads. Removed.
      *
-     * Per A2.A RE of IOGraphicsAccelerator2's `[this+0x380][vtbl+0x188]`
-     * wait primitive: the kext blocks until `stamp_page[stamp_id*4]`
-     * reaches a monotonically-allocated target. The targets for the 7
-     * M3 init-phase commands on the root ring (stamp_id=0) are 1..7.
-     * Incrementing a counter per root-ring completion and DMA-writing
-     * it to stamp_page[0] satisfies all 7 waits. Order matters: write
-     * memory BEFORE raising MSI-X so the ISR sees the new value on the
-     * first read. */
-    if (p->ring_base_pfn != 0u
-        && p->dev && p->dev->desc.shell.write_memory) {
-        p->root_stamp_counter += 1u;
-        /* Stamp cells per A3b's RE of IOAccelEventMachineFast2:
-         *   base = [accel+0xe10] = FIFO IOBMD kva, first page
-         *   cells at base + stamp_id*4 (u32 stride)
-         *
-         * 8-slot fan-out at FIFO base triggered kernel panic in
-         * AppleParavirtDisplayPipe.cpp:240 "hitting assertion" (7
-         * reboots observed). DisplayPipe has its own EventMachine
-         * whose stamps share the FIFO page; writing to slots beyond
-         * the Accelerator's actual stamp_id prematurely completes
-         * DisplayPipe waits and trips its assertion.
-         *
-         * Safe baseline: write single cell at FIFO+0. This matched
-         * GPUControl reads previously (coincidence — GPUControl has
-         * no EM); does NOT unblock Accelerator (its stamp_id > 0)
-         * but doesn't cause panic. Need narrower RE on which specific
-         * stamp_id RootChannel submitter uses. */
-        /* Bisection probe: stamp_id is runtime-configurable via env var
-         * LAGFX_STAMP_SLOT (0..7). Default 0. IOAccel2CommandQueue::init
-         * sets [chan+0x20] with Accelerator's actual stamp_id, outside
-         * our disasm reach — so iterate by env-var without rebuilds.
-         *
-         * A3e hypothesis (2026-04-24): wait target may be a much larger
-         * value than our monotonic 1..7 counter — e.g. a generation
-         * counter maintained inside IOAccel2CommandQueue. LAGFX_STAMP_VALUE
-         * overrides the write value with a constant (e.g. 0xFFFFFFFF) to
-         * satisfy any wait target up to that value. */
-        unsigned slot = 0u;
-        {
-            const char *s = getenv("LAGFX_STAMP_SLOT");
-            if (s && s[0]) {
-                int v = atoi(s);
-                if (v >= 0 && v < 8) slot = (unsigned)v;
-            }
-        }
-        uint32_t stamp_value = p->root_stamp_counter;
-        {
-            const char *s = getenv("LAGFX_STAMP_VALUE");
-            if (s && s[0]) {
-                /* strtoul supports "0xFFFFFFFF" / "4294967295" / etc. */
-                stamp_value = (uint32_t)strtoul(s, NULL, 0);
-            }
-        }
-        uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12)
-                             + (uint64_t)slot * 4u;
-        if (p->dev->desc.shell.write_memory(
-                p->dev->desc.shell.opaque,
-                stamp_gpa,
-                sizeof(stamp_value),
-                &stamp_value)) {
-            LAGFX_LOG("fifo_stamp[%u] := 0x%08x (gpa=0x%llx, cmd_stamp=0x%08x)",
-                      slot, stamp_value,
-                      (unsigned long long)stamp_gpa, stamp);
-        }
-    }
-
-    /* Legacy path — keep MMIO stamp cells updated too.
-     * These may be a secondary channel or unused; left in place for
-     * safety while we validate the stamp-page path. */
-    int c1 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_1);
-    int c2 = lagfx_protocol_reg_index(LAGFX_REG_STAMP_CELL_2);
-
-    if (c1 >= 0) p->reg[c1] = stamp;
-    if (c2 >= 0) p->reg[c2] = stamp;
-
-    lagfx_pending_stamp_push(p, stamp);
+     * LAGFX_STAMP_SLOT / LAGFX_STAMP_VALUE env vars were probes for
+     * that model; they are now no-ops and have been dropped.
+     *
+     * Set bit for this command's stamp_id in the pending bitmask.
+     * Per A4d: the kext ISR on MSI-X vec 0 reads BAR0+0x1018 as a
+     * bitmask and calls signalStamps(mask). For RootChannel's single-sid
+     * EventMachine (the init path) stamp_id=0. If later channels submit
+     * commands with different stamp_ids we'll need to plumb that through
+     * the command header; for now bit 0 covers all observed traffic.
+     *
+     * The MMIO stamp-cell writes at reg[STAMP_CELL_1/2] that used to
+     * live here were based on a misread of the BAR0 layout — those
+     * offsets carry interrupt bitmasks, not stamp values. Do NOT write
+     * per-stamp values into those regs. */
+    p->pending_stamps_bitmask |= (1u << 0);
 
     if (p->dev && p->dev->desc.shell.raise_interrupt) {
-        /* MSI-X vector is env-configurable via LAGFX_IRQ_VECTOR
-         * (default 0). A3d hypothesized the "stamp interrupt" may be
-         * a distinct vector from the fault interrupt; probe via env. */
-        unsigned vec = 0u;
-        const char *v = getenv("LAGFX_IRQ_VECTOR");
-        if (v && v[0]) {
-            int n = atoi(v);
-            if (n >= 0 && n < 32) vec = (unsigned)n;
-        }
-        p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, vec);
+        /* Per A4d (2026-04-24): the accelerator kext registers exactly
+         * one interrupt source at MSI-X vector 0. A single unified ISR
+         * demuxes stamps / displays / faults off BAR0 status regs. No
+         * separate "stamp-interrupt" vector exists; vec 1 hits another
+         * kext's ISR and breaks guest networking. Pin to vec 0. */
+        p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0u);
         p->interrupts_raised += 1;
-        LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x written + IRQ vec=%u "
-                  "(root_counter=%u)", stamp, vec, p->root_stamp_counter);
+        LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x + IRQ vec=0 "
+                  "(pending_mask=0x%08x)",
+                  stamp, p->pending_stamps_bitmask);
     } else {
-        LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x written (no IRQ cb)",
+        LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x (no IRQ cb)",
                   stamp);
     }
 }
@@ -378,48 +271,53 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
     }
 
     /*
-     * 0x102c — "Version/status query" per re-followup-spec-gaps.md §5.2.
-     * Dylib's read dispatch forwards to an ObjC method returning u32.
-     * Empirically the kext polls this after each stamp read (0x1014/
-     * 0x1018). Returning 0 makes the kext wait indefinitely past M3;
-     * trying last_completed_stamp to signal "we have status/work
-     * available" — value doesn't need to be semantically perfect,
-     * just non-zero and consistent.
+     * 0x102c — fault-pending status.
+     *
+     * A4d (2026-04-24): the kext's unified ISR at MSI-X vec 0 reads
+     * this register to decide whether to walk the fault queue via
+     * handleFaultInterrupt. Non-zero = faults pending. Returning
+     * `last_completed_stamp` (our previous behavior) caused every ISR
+     * to spuriously drain the fault queue, which in turn would IOLog
+     * each entry and eventually escalate to terminate. Return 0
+     * unconditionally unless we actually have a fault to report;
+     * no fault path is wired yet.
      */
     if (offset == 0x102cu) {
-        LAGFX_LOG("mmio_read: 0x102c -> 0x%x (last_stamp)",
-                  p->last_completed_stamp);
-        return p->last_completed_stamp;
+        LAGFX_LOG("mmio_read: 0x102c (fault_status) -> 0");
+        return 0u;
     }
 
     /*
-     * 0x1014 / 0x1018 — stamp cells are ATOMIC XCHG (read-and-clear)
-     * per re-followup-spec-gaps.md §5.2:
-     *   `xorl %eax, %eax; xchgl %eax, 0xf8(%rdi)`  for 0x1014
-     *   `xorl %eax, %eax; xchgl %eax, 0x1c0(%rdi)` for 0x1018
-     * Guest reads the pending-stamp value and simultaneously zeroes
-     * the latch. Plain "return reg[idx]" leaves stamp=7 visible
-     * forever — kext sees "stamp 7 pending" indefinitely, never
-     * advances past setupDeviceInfo even after we serviced the
-     * response. Model the xchg-with-0 behavior here.
+     * 0x1018 — stamp-completion bitmask fed to signalStamps.
+     *
+     * A4d (2026-04-24): bit N = stamp_id N completed since the last
+     * ISR read. Kext does xchg-with-0 on this register and passes the
+     * prior value to AppleParavirtEventMachine::signalStamps, which
+     * iterates set bits via bsf and calls commandWakeup(stamp_id) per
+     * bit. commandWakeup reads the actual stamp value from [EM+0x20]
+     * in kernel heap — we don't have to provide stamp values via DMA.
+     *
+     * Return our pending-stamps bitmask and atomically clear it.
      */
-    if (offset == LAGFX_REG_STAMP_CELL_1 || offset == LAGFX_REG_STAMP_CELL_2) {
-        int idx_xchg = lagfx_protocol_reg_index(offset);
-        uint32_t prev = (idx_xchg >= 0) ? p->reg[idx_xchg] : 0u;
-        if (idx_xchg >= 0) {
-            p->reg[idx_xchg] = 0u;
-        }
-        LAGFX_LOG("mmio_read: stamp_cell 0x%llx xchg -> 0x%x (cleared)",
-                  (unsigned long long)offset, prev);
+    if (offset == LAGFX_REG_STAMP_CELL_2) {
+        uint32_t mask = p->pending_stamps_bitmask;
+        p->pending_stamps_bitmask = 0u;
+        LAGFX_LOG("mmio_read: 0x1018 (stamp_bitmask) xchg -> 0x%x", mask);
+        return mask;
+    }
 
-        /* If CELL_1 was read (primary consume), advance to the next
-         * pending stamp if any, raising another IRQ. This guarantees
-         * every stamp the guest submitted gets individually delivered
-         * even when multiple commands complete in one host drain. */
-        if (offset == LAGFX_REG_STAMP_CELL_1) {
-            lagfx_pending_stamp_advance(p);
-        }
-        return prev;
+    /*
+     * 0x1014 — display-interrupt bitmask fed to signalDisplays.
+     *
+     * A4d (2026-04-24): same pattern as 0x1018, but the mask here
+     * targets AppleParavirtDisplayMachine. Bit N = display_id N has
+     * a completed transaction. No displays complete during the M3
+     * init path, so returning 0 is the correct behaviour until we
+     * wire display-transaction completions through a second bitmask.
+     */
+    if (offset == LAGFX_REG_STAMP_CELL_1) {
+        LAGFX_LOG("mmio_read: 0x1014 (display_bitmask) -> 0");
+        return 0u;
     }
 
     int idx = lagfx_protocol_reg_index(offset);
