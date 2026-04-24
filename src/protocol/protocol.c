@@ -209,7 +209,13 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
         /* Bisection probe: stamp_id is runtime-configurable via env var
          * LAGFX_STAMP_SLOT (0..7). Default 0. IOAccel2CommandQueue::init
          * sets [chan+0x20] with Accelerator's actual stamp_id, outside
-         * our disasm reach — so iterate by env-var without rebuilds. */
+         * our disasm reach — so iterate by env-var without rebuilds.
+         *
+         * A3e hypothesis (2026-04-24): wait target may be a much larger
+         * value than our monotonic 1..7 counter — e.g. a generation
+         * counter maintained inside IOAccel2CommandQueue. LAGFX_STAMP_VALUE
+         * overrides the write value with a constant (e.g. 0xFFFFFFFF) to
+         * satisfy any wait target up to that value. */
         unsigned slot = 0u;
         {
             const char *s = getenv("LAGFX_STAMP_SLOT");
@@ -218,15 +224,23 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
                 if (v >= 0 && v < 8) slot = (unsigned)v;
             }
         }
+        uint32_t stamp_value = p->root_stamp_counter;
+        {
+            const char *s = getenv("LAGFX_STAMP_VALUE");
+            if (s && s[0]) {
+                /* strtoul supports "0xFFFFFFFF" / "4294967295" / etc. */
+                stamp_value = (uint32_t)strtoul(s, NULL, 0);
+            }
+        }
         uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12)
                              + (uint64_t)slot * 4u;
         if (p->dev->desc.shell.write_memory(
                 p->dev->desc.shell.opaque,
                 stamp_gpa,
-                sizeof(p->root_stamp_counter),
-                &p->root_stamp_counter)) {
-            LAGFX_LOG("fifo_stamp[%u] := %u (gpa=0x%llx, cmd_stamp=0x%08x)",
-                      slot, p->root_stamp_counter,
+                sizeof(stamp_value),
+                &stamp_value)) {
+            LAGFX_LOG("fifo_stamp[%u] := 0x%08x (gpa=0x%llx, cmd_stamp=0x%08x)",
+                      slot, stamp_value,
                       (unsigned long long)stamp_gpa, stamp);
         }
     }
