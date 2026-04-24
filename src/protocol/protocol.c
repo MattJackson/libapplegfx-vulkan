@@ -154,25 +154,48 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
      * write there. Writing the command's stamp value (from the 12-
      * byte header) to FIFO + stamp_id*4 satisfies the predicate.
      *
-     * Write target value + raise bitmask bit + MSI-X. */
-    p->pending_stamps_bitmask |= (1u << 0);
+     * Write target value + raise bitmask bit + MSI-X.
+     *
+     * SURGICAL FIX 2026-04-24 (post A10a + A11b + 0x1488dfae verify):
+     * The wrangler enrollment thread parks in waitForStamp on
+     * [accel+0x380] (Fast2 EM) at slot `display_index + 5` per
+     * AppleParavirtDisplayPipe::init at 0x145602ac. For Display0
+     * that's slot 5. Our prior writes only updated slot 0 (RootChannel),
+     * leaving slot 5 at 0 forever — wrangler's predicate
+     * `*stampBases[5] >= target` never satisfied.
+     *
+     * Earlier shotgun (commit e9c45ac, reverted) wrote to all 32 slots
+     * which woke the wrangler but tripped per-channel checkGPUProgress
+     * watchdogs on inactive slots, causing device_reset.
+     *
+     * Surgical alternative: write the cmd_stamp value to BOTH slot 0
+     * (RootChannel, original semantics) AND slot 5 (Display0/wrangler's
+     * slot). Set both bits. This wakes the wrangler without disturbing
+     * slots that have other checkGPUProgress watchers.
+     *
+     * If Display1/2/3 are also being probed, slot 6/7/8 may need
+     * similar treatment. For now: target Display0 only — that's the
+     * most common single-display setup and matches what we observed
+     * in the spindump (the wedged thread was processing Display0). */
+    p->pending_stamps_bitmask |= (1u << 0);  /* RootChannel */
+    p->pending_stamps_bitmask |= (1u << 5);  /* Display0 wrangler slot */
 
     if (p->ring_base_pfn != 0u
         && p->dev && p->dev->desc.shell.write_memory) {
-        /* stamp_id=0 for all RootChannel commands (confirmed A6e:
-         * every init-phase command emits `xor esi, esi` before
-         * writeStamp to pick slot 0). */
-        unsigned stamp_id = 0u;
-        uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12)
-                             + (uint64_t)stamp_id * 4u;
+        uint64_t base_gpa = (uint64_t)p->ring_base_pfn << 12;
+        /* Slot 0: RootChannel (original semantics). */
         if (p->dev->desc.shell.write_memory(
                 p->dev->desc.shell.opaque,
-                stamp_gpa,
-                sizeof(stamp),
-                &stamp)) {
-            LAGFX_LOG("stamp_cell[%u] := 0x%08x (gpa=0x%llx)",
-                      stamp_id, stamp,
-                      (unsigned long long)stamp_gpa);
+                base_gpa, sizeof(stamp), &stamp)) {
+            LAGFX_LOG("stamp_cell[0] := 0x%08x (gpa=0x%llx)",
+                      stamp, (unsigned long long)base_gpa);
+        }
+        /* Slot 5: Display0's wrangler-enrollment stamp per A10a. */
+        if (p->dev->desc.shell.write_memory(
+                p->dev->desc.shell.opaque,
+                base_gpa + 5u * 4u, sizeof(stamp), &stamp)) {
+            LAGFX_LOG("stamp_cell[5] := 0x%08x (gpa=0x%llx)",
+                      stamp, (unsigned long long)(base_gpa + 5u * 4u));
         }
     }
 
