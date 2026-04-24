@@ -13,7 +13,7 @@ Whenever `metal-clear-color.m` changes:
 ```sh
 clang -arch x86_64 -fobjc-arc \
       -framework Metal -framework Foundation \
-      /Users/mjackson/Developer/libapplegfx-vulkan/tests/guest/metal-clear-color.m \
+      <repo>/tests/guest/metal-clear-color.m \
       -o /tmp/metal-clear-color
 
 file /tmp/metal-clear-color   # expect: Mach-O 64-bit executable x86_64
@@ -24,7 +24,7 @@ Ship to the guest (or stage locally if guest is down):
 ```sh
 scp /tmp/metal-clear-color guest:/tmp/             # preferred
 # or, if guest unreachable (M3 not green yet):
-cp /tmp/metal-clear-color /Users/mjackson/staging/
+cp /tmp/metal-clear-color <host-staging>/
 ```
 
 Note: `-arch x86_64` is mandatory — the host is Apple Silicon; the guest
@@ -75,7 +75,7 @@ The binary prints a `FAIL:` line and returns a specific exit code. Map:
 
 ## Files
 
-- Source: `/Users/mjackson/Developer/libapplegfx-vulkan/tests/guest/metal-clear-color.m`
+- Source: `<repo>/tests/guest/metal-clear-color.m`
 - Host build output: `/tmp/metal-clear-color`
-- Local stage (fallback when guest is down): `/Users/mjackson/staging/metal-clear-color`
+- Local stage (fallback when guest is down): `<host-staging>/metal-clear-color`
 - Guest install path: `/tmp/metal-clear-color`
