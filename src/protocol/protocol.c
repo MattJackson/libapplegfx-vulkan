@@ -95,7 +95,6 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->read_ptr             = 0;
     p->write_ptr            = 0;
     p->pending_stamps_bitmask = 0;
-    memset(p->per_channel_stamp, 0, sizeof(p->per_channel_stamp));
 
     p->display_swaps_applied          = 0;
     p->display_transactions_submitted = 0;

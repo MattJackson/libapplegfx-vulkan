@@ -202,12 +202,6 @@ struct lagfx_protocol {
      * the field. */
     uint32_t pending_stamps_bitmask;
 
-    /* Per-channel monotonic stamp counters for doorbell-driven advance.
-     * When BAR0+0x1020/0x1028 is written with channel_id N (N>=5,
-     * display channels), increment per_channel_stamp[N] and write the
-     * value to FIFO+N*4 (the slot the kext's waitForStamp polls). */
-    uint32_t per_channel_stamp[32];
-
     /* GPA of the current in-flight command's header on the ring.
      * Set by the drain immediately before calling dispatch_one so that
      * handlers can DMA-write into the on-ring header (e.g. 0x3a writes
