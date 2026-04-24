@@ -209,14 +209,6 @@ struct lagfx_protocol {
      * the guest services the IRQ and reads the stale length). */
     uint64_t current_cmd_header_gpa;
 
-    /* stamp_id (slot index) for the command currently being dispatched.
-     * Set by the drain path before invoking dispatch_one so that
-     * complete_stamp can route the stamp writeback to the right slot:
-     *   RootChannel drain: stamp_id = 0
-     *   Child-channel drain: stamp_id = channel_id (per dmesg evidence
-     *   that Display0 at channel 5 waits on stamp_idx=5). */
-    uint32_t current_stamp_id;
-
     /* CmdGetDeviceInfo2 (opcode 0x3a) count-writeback state.
      * Used internally by the handler; see note above on the ordering
      * requirement. */

@@ -224,7 +224,6 @@ size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
          * fires the stamp + IRQ — otherwise the guest services the
          * IRQ and reads stale bytes. */
         p->current_cmd_header_gpa = hdr_gpa;
-        p->current_stamp_id = 0u;  /* RootChannel always uses slot 0 */
 
         (void)lagfx_protocol_dispatch_one(p, cmd_buf, hdr.length);
 
@@ -367,10 +366,6 @@ size_t lagfx_fifo_drain_child_channel(lagfx_protocol_t *p,
                   channel_id, hdr.opcode, hdr.length, hdr.stamp);
 
         p->current_cmd_header_gpa = hdr_gpa;
-        /* Per-channel: stamp_idx maps 1:1 to channel_id per dmesg
-         * evidence (Display0 at channel 5 waits on stamp_idx=5). */
-        p->current_stamp_id = channel_id;
-
         (void)lagfx_protocol_dispatch_one(p, cmd_buf, hdr.length);
         p->current_cmd_header_gpa = 0;
 

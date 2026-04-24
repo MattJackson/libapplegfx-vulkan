@@ -155,17 +155,14 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
      * byte header) to FIFO + stamp_id*4 satisfies the predicate.
      *
      * Write target value + raise bitmask bit + MSI-X. */
-    /* stamp_id is populated by the drain path:
-     *   - RootChannel drain: stamp_id = 0 (A6e: every root command uses slot 0)
-     *   - Child-channel drain: stamp_id = channel_id (dmesg confirms
-     *     Display0 at channel 5 waits on stamp_idx 5; channel_id maps
-     *     1:1 to stamp_idx for the shared 32-sid EventMachine). */
-    unsigned stamp_id = p->current_stamp_id;
-    if (stamp_id > 31u) stamp_id = 0u;  /* safety clamp */
-    p->pending_stamps_bitmask |= (1u << stamp_id);
+    p->pending_stamps_bitmask |= (1u << 0);
 
     if (p->ring_base_pfn != 0u
         && p->dev && p->dev->desc.shell.write_memory) {
+        /* stamp_id=0 for all RootChannel commands (confirmed A6e:
+         * every init-phase command emits `xor esi, esi` before
+         * writeStamp to pick slot 0). */
+        unsigned stamp_id = 0u;
         uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12)
                              + (uint64_t)stamp_id * 4u;
         if (p->dev->desc.shell.write_memory(
