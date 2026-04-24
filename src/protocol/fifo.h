@@ -55,6 +55,28 @@ void lagfx_fifo_on_mmio_setter(lagfx_protocol_t *p,
  */
 size_t lagfx_fifo_drain(lagfx_protocol_t *p);
 
+/* Drain a child-channel ring.
+ *
+ * Child channels are allocated by the kext in response to
+ * CmdDefineChildChannel (opcode 0x30). Each child channel has its own
+ * ring buffer (not the RootChannel's FIFO). The per-channel descriptors
+ * live in the shared control page at GPA:
+ *   (ring_shared_page_pfn << 12) + 0x400 + (channel_id - 1) * 20
+ *
+ * Layout per descriptor (20 bytes):
+ *   +0x00 u32 write_head         (kext writes here; bytes written)
+ *   +0x04 u32 read_head          (HOST writes here after drain)
+ *   +0x08 u32 flags
+ *   +0x0c u32 channel_id
+ *   +0x10 u32 ring_pfn_table_pfn (page holding u32[] of ring page PFNs)
+ *
+ * The kext rings BAR0+0x1028 with value = channel_id to notify the
+ * device that new commands are pending. The host drains the ring,
+ * dispatches each command, then writes read_head = write_head back
+ * to the descriptor. */
+size_t lagfx_fifo_drain_child_channel(lagfx_protocol_t *p,
+                                      uint32_t channel_id);
+
 /* Parse a 12-byte command header from a raw byte stream. Returns
  * true on success (input len >= 12 AND header.length >= 12).
  *

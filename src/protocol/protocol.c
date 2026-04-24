@@ -455,8 +455,23 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
         default: break;
     }
 
+    /* BAR0+0x1028 — child-channel doorbell (A7a RE 2026-04-24).
+     * Value = channel_id of a child channel with pending work. Walk
+     * the channel's descriptor in the shared page, drain its ring,
+     * dispatch commands, update read_head. */
+    if (offset == 0x1028u) {
+        if (value == 0u) {
+            /* channel_id==0 is the RootChannel; the root doorbell is
+             * at 0x1008. A zero here would be malformed — log + ack. */
+            lagfx_fifo_on_mmio_setter(p, offset, value);
+            return;
+        }
+        (void)lagfx_fifo_drain_child_channel(p, value);
+        return;
+    }
+
     /* Any remaining write in the setter-candidate range: log for probe
-     * observability (0x1020, 0x1024, 0x1028, 0x1034 — still-unresolved
+     * observability (0x1020, 0x1024, 0x1034 — still-unresolved
      * slots per Agent I's recipe). */
     if (offset >= LAGFX_REG_SETTER_CAND_FIRST &&
         offset <= LAGFX_REG_SETTER_CAND_LAST) {

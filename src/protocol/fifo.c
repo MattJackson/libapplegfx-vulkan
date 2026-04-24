@@ -237,3 +237,156 @@ size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
               drained, p->read_ptr);
     return drained;
 }
+
+/* === Child-channel ring drain (RE_SESSION_2026_04_24.md §9) ======= */
+
+#define LAGFX_CHDESC_OFFSET_BASE 0x400u
+#define LAGFX_CHDESC_STRIDE      20u
+#define LAGFX_CHDESC_WRITE_HEAD  0u
+#define LAGFX_CHDESC_READ_HEAD   4u
+#define LAGFX_CHDESC_CHAN_ID     0x0cu
+#define LAGFX_CHDESC_RING_PFN    0x10u
+#define LAGFX_CHILD_RING_SIZE    0x10000u  /* 64 KiB per A7a RE */
+
+size_t lagfx_fifo_drain_child_channel(lagfx_protocol_t *p,
+                                      uint32_t channel_id) {
+    if (!lagfx_protocol_is_valid(p)) return 0;
+
+    if (p->ring_shared_page_pfn == 0u) {
+        LAGFX_WARN("child_drain: shared page PFN not set");
+        return 0;
+    }
+    if (!p->dev || !p->dev->desc.shell.read_memory ||
+        !p->dev->desc.shell.write_memory) {
+        LAGFX_WARN("child_drain: no shell read/write callbacks");
+        return 0;
+    }
+    if (channel_id == 0u) {
+        LAGFX_WARN("child_drain: channel_id=0 is RootChannel; use lagfx_fifo_drain");
+        return 0;
+    }
+
+    uint64_t shared_gpa = (uint64_t)p->ring_shared_page_pfn << 12;
+    uint64_t desc_gpa = shared_gpa + LAGFX_CHDESC_OFFSET_BASE
+                        + (uint64_t)(channel_id - 1u) * LAGFX_CHDESC_STRIDE;
+
+    uint8_t desc_buf[LAGFX_CHDESC_STRIDE];
+    if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                        desc_gpa, sizeof(desc_buf),
+                                        desc_buf)) {
+        LAGFX_WARN("child_drain: DMA read of descriptor at gpa=0x%llx failed",
+                   (unsigned long long)desc_gpa);
+        return 0;
+    }
+
+    uint32_t write_head   = read_le32(desc_buf + LAGFX_CHDESC_WRITE_HEAD);
+    uint32_t read_head    = read_le32(desc_buf + LAGFX_CHDESC_READ_HEAD);
+    uint32_t desc_chan_id = read_le32(desc_buf + LAGFX_CHDESC_CHAN_ID);
+    uint32_t ring_tbl_pfn = read_le32(desc_buf + LAGFX_CHDESC_RING_PFN);
+
+    LAGFX_LOG("child_drain[ch=%u]: write_head=0x%x read_head=0x%x "
+              "desc_chan_id=%u ring_tbl_pfn=0x%x",
+              channel_id, write_head, read_head, desc_chan_id, ring_tbl_pfn);
+
+    if (desc_chan_id != channel_id) {
+        /* The descriptor slot doesn't match — likely the descriptor
+         * table isn't populated at the expected offset. Log and bail. */
+        LAGFX_WARN("child_drain[ch=%u]: descriptor chan_id=%u mismatch",
+                   channel_id, desc_chan_id);
+        return 0;
+    }
+
+    if (write_head == read_head) {
+        LAGFX_LOG("child_drain[ch=%u]: nothing to do (w==r)", channel_id);
+        return 0;
+    }
+
+    if (ring_tbl_pfn == 0u) {
+        LAGFX_WARN("child_drain[ch=%u]: ring_tbl_pfn=0", channel_id);
+        return 0;
+    }
+
+    /* The ring_pfn_table page holds u32[] of ring page PFNs. Read the
+     * first entry — that's the ring's first data page. For M3 we assume
+     * the ring fits in a single page initially; span multi-page rings
+     * later via iteration over the PFN table. */
+    uint64_t ring_tbl_gpa = (uint64_t)ring_tbl_pfn << 12;
+    uint8_t tbl_buf[4];
+    if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                        ring_tbl_gpa, sizeof(tbl_buf),
+                                        tbl_buf)) {
+        LAGFX_WARN("child_drain[ch=%u]: read of ring_tbl failed", channel_id);
+        return 0;
+    }
+    uint32_t ring_page_pfn = read_le32(tbl_buf);
+    uint64_t ring_gpa = (uint64_t)ring_page_pfn << 12;
+    LAGFX_LOG("child_drain[ch=%u]: ring_gpa=0x%llx (pfn=0x%x)",
+              channel_id, (unsigned long long)ring_gpa, ring_page_pfn);
+
+    /* Drain commands from [read_head..write_head) in the ring page. */
+    size_t drained = 0;
+    uint32_t rp = read_head;
+    for (unsigned i = 0; i < LAGFX_FIFO_DRAIN_MAX_CMDS; ++i) {
+        if (rp == write_head) break;
+
+        uint32_t cursor = rp % LAGFX_CHILD_RING_SIZE;
+        uint64_t hdr_gpa = ring_gpa + (uint64_t)cursor;
+        uint8_t hdr_buf[LAGFX_CMD_HEADER_BYTES];
+        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                            hdr_gpa,
+                                            LAGFX_CMD_HEADER_BYTES,
+                                            hdr_buf)) {
+            LAGFX_WARN("child_drain[ch=%u]: DMA read of hdr failed", channel_id);
+            break;
+        }
+
+        lagfx_cmd_header_t hdr;
+        if (!lagfx_fifo_parse_header(hdr_buf, LAGFX_CMD_HEADER_BYTES, &hdr)) {
+            LAGFX_WARN("child_drain[ch=%u]: header parse failed at rp=0x%x",
+                       channel_id, cursor);
+            break;
+        }
+
+        if (hdr.length < LAGFX_CMD_HEADER_BYTES ||
+            hdr.length > LAGFX_FIFO_MAX_CMD_BYTES) {
+            LAGFX_WARN("child_drain[ch=%u]: bad length 0x%x at rp=0x%x",
+                       channel_id, hdr.length, cursor);
+            break;
+        }
+
+        uint8_t cmd_buf[LAGFX_FIFO_MAX_CMD_BYTES];
+        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                            hdr_gpa, hdr.length, cmd_buf)) {
+            LAGFX_WARN("child_drain[ch=%u]: DMA read of body failed",
+                       channel_id);
+            break;
+        }
+
+        LAGFX_LOG("child_drain[ch=%u]: dispatch opcode=0x%x len=0x%x stamp=0x%x",
+                  channel_id, hdr.opcode, hdr.length, hdr.stamp);
+
+        p->current_cmd_header_gpa = hdr_gpa;
+        (void)lagfx_protocol_dispatch_one(p, cmd_buf, hdr.length);
+        p->current_cmd_header_gpa = 0;
+
+        rp += hdr.length;
+        drained += 1;
+    }
+
+    /* Update read_head = write_head in the descriptor so the kext sees
+     * the ring as drained and can submit more work. */
+    uint32_t new_read_head = write_head;
+    if (!p->dev->desc.shell.write_memory(
+            p->dev->desc.shell.opaque,
+            desc_gpa + LAGFX_CHDESC_READ_HEAD,
+            sizeof(new_read_head),
+            &new_read_head)) {
+        LAGFX_WARN("child_drain[ch=%u]: failed to write read_head back",
+                   channel_id);
+    } else {
+        LAGFX_LOG("child_drain[ch=%u]: read_head := 0x%x (drained=%zu)",
+                  channel_id, new_read_head, drained);
+    }
+
+    return drained;
+}
