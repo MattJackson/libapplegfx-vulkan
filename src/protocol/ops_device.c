@@ -188,31 +188,70 @@ lagfx_op_get_device_info_2(lagfx_protocol_t *p,
     }
 
     /*
-     * Minimum viable response tuple stream. Each (key, value) is 8 bytes.
-     * Keys per paravirt-re §13.2.4 (parser at 0x1455d41d, 42-case jump):
-     *   0x00  protocol version   -> 1
-     *   0x01  baseline feature   -> 0
-     *   0x04  cap bits           -> 0 (no optional features)
-     *   0x08  resource-ID limit  -> 0
-     *   0x10  max tasks          -> 0
-     * Missing keys leave their host-side struct field at memset-zero.
-     * 5 pairs = 40 bytes, well within the observed 4 KiB response page.
-     */
-    /*
-     * Per Agent a6f4eb5's §15 RE: response-key content does NOT gate
-     * registerService. Emitting zero pairs lets the kext parser's
-     * post-loop fallback set defaults (feature-level 0x20002,
-     * has[0xb5]=1). Reducing variables while debugging the root cause
-     * (which is probably child-FIFO drainage, not response content).
+     * Full TLV superset (A4a, 2026-04-24). The parser at 0x1455d41d
+     * dispatches tag in [0, 0x29] via a jump table; every handler is
+     * a pure u32 store to [accel+0xe68 + (tag-1)*4] plus a presence
+     * flag at [accel+0xe68 + 0xa4 + (tag-1)]. Missing tags leave
+     * their destination field as zero (harmless); invalid values
+     * pass through unchanged.
+     *
+     * Tag 0x12 is the only field with post-parse defaulting: the
+     * parser forces 0x20002 if the tag is missing, 0x20007 if the
+     * supplied value is < 0x20008. Emit 0x20008 so populateAccelConfig
+     * and similar downstream consumers see a "modern" version.
+     *
+     * All other tags currently emit as 0 — semantically a no-op vs
+     * missing, but makes the tag list explicit in the request stream.
+     * If/when future RE assigns meaning to specific tags we'll fill
+     * them in. Host cost: 41 u32-pair writes = 328 bytes of DMA.
      */
     struct { uint32_t key; uint32_t value; } pairs[] = {
-        /* empty — rely on kext fallback defaults */
-        { 0, 0 }  /* placeholder; n_pairs=0 below emits nothing */
+        { 0x01, 0          },
+        { 0x02, 0          },
+        { 0x03, 0          },
+        { 0x04, 0          },
+        { 0x05, 0          },
+        { 0x06, 0          },
+        { 0x07, 0          },
+        { 0x08, 0          },
+        { 0x09, 0          },
+        { 0x0a, 0          },
+        { 0x0b, 0          },
+        { 0x0c, 0          },
+        { 0x0d, 0          },
+        { 0x0e, 0          },
+        { 0x0f, 0          },
+        { 0x10, 0          },
+        { 0x11, 0          },
+        { 0x12, 0x00020008 }, /* version — avoid parser's fallback */
+        { 0x13, 0          },
+        { 0x14, 0          },
+        { 0x15, 0          },
+        { 0x16, 0          },
+        { 0x17, 0          },
+        { 0x18, 0          },
+        { 0x19, 0          },
+        { 0x1a, 0          },
+        { 0x1b, 0          },
+        { 0x1c, 0          },
+        { 0x1d, 0          },
+        { 0x1e, 0          },
+        { 0x1f, 0          },
+        { 0x20, 0          },
+        { 0x21, 0          },
+        { 0x22, 0          },
+        { 0x23, 0          },
+        { 0x24, 0          },
+        { 0x25, 0          },
+        { 0x26, 0          },
+        { 0x27, 0          },
+        { 0x28, 0          },
+        { 0x29, 0          },
     };
-    const size_t n_pairs = 0;  /* zero actual pairs emitted */
-    (void)pairs;
+    const size_t n_pairs = sizeof(pairs) / sizeof(pairs[0]);
 
-    /* Clamp to guest-provided capacity (should always be ample). */
+    /* Clamp to guest-provided capacity (should always be ample — 41
+     * pairs = 328 bytes vs observed 0x200 qwords = 4 KiB). */
     size_t emit_pairs =
         (n_pairs * 8u <= resp_qwords * 8u) ? n_pairs : resp_qwords;
 
