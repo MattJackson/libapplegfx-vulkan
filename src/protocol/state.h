@@ -181,6 +181,29 @@ struct lagfx_protocol {
     uint32_t pending_stamps_head;  /* write index */
     uint32_t pending_stamps_tail;  /* read index */
 
+    /* Per-channel monotonic stamp counter (A8a 2026-04-24).
+     *
+     * The accelerator's IOAccelEventMachineFast2 has 32 stamp slots
+     * (numStamps=32 per dmesg). Slot N's gpu_stamp lives at
+     * (ring_base_pfn<<12) + N*4 (per A3f's allocStampTable analysis,
+     * non-short-path with num_sids=32). The kext's `waitForStamp`
+     * predicate reads u32 at that slot and waits for it to reach a
+     * monotonically-allocated target.
+     *
+     * When the kext rings BAR0+0x1028 with value=N, it's signalling
+     * "channel N has pending work." We respond with the minimal
+     * advance: bump per-channel stamp counter, write to slot N's
+     * stamp cell, set bit N in the IRQ bitmask, raise MSI-X.
+     *
+     * NO ring drain. NO descriptor read_head writeback. Just advance
+     * the stamp the kext's wait predicate is polling. Per A8a 2026-04-24:
+     * "implement DMA-visible gpu_stamp writes so the kext's
+     *  IOAccelEventMachine2::waitForStamp predicate releases."
+     *
+     * 32 slots match the kext's numStamps. Slot 0 reserved for
+     * RootChannel (the existing complete_stamp path uses it). */
+    uint32_t per_channel_stamp[32];
+
     /* Pending stamp-completion bitmask, per A4d (2026-04-24).
      *
      * The kext's unified ISR at vector 0 reads three BAR0 status regs:
