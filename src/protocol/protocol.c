@@ -243,10 +243,19 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     lagfx_pending_stamp_push(p, stamp);
 
     if (p->dev && p->dev->desc.shell.raise_interrupt) {
-        p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0);
+        /* MSI-X vector is env-configurable via LAGFX_IRQ_VECTOR
+         * (default 0). A3d hypothesized the "stamp interrupt" may be
+         * a distinct vector from the fault interrupt; probe via env. */
+        unsigned vec = 0u;
+        const char *v = getenv("LAGFX_IRQ_VECTOR");
+        if (v && v[0]) {
+            int n = atoi(v);
+            if (n >= 0 && n < 32) vec = (unsigned)n;
+        }
+        p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, vec);
         p->interrupts_raised += 1;
-        LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x written + IRQ raised "
-                  "(root_counter=%u)", stamp, p->root_stamp_counter);
+        LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x written + IRQ vec=%u "
+                  "(root_counter=%u)", stamp, vec, p->root_stamp_counter);
     } else {
         LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x written (no IRQ cb)",
                   stamp);
