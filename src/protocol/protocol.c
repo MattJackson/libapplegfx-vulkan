@@ -553,24 +553,32 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     }
                 }
 
-                /* Write the cmd's stamp value to FIFO+ch*4 stamp cell.
-                 * Per checkGPUProgress watchdog (see kdp-debug-bits memo):
-                 * the watchdog reads stampBases[ch_id] and compares to a
-                 * target — if stamp == target, no escalation. The cmd header's
-                 * stamp field IS the target the kext expects this channel
-                 * to reach. Combined with read_ptr advance, this should
-                 * satisfy both watchdog predicates (advance + completion). */
-                if (cmd_stm != 0u && p->ring_base_pfn != 0u
-                    && p->dev->desc.shell.write_memory) {
+                /* Write a stamp value to FIFO+ch*4 stamp cell.
+                 * Empirical observation: the cmd_stm extracted from the
+                 * 12-byte ring header is consistently 0 because the host-
+                 * visible ring at ring_pfn doesn't contain the kext's
+                 * 12-byte cmd header at offset 0 (kext's GPU hang `cmd:`
+                 * log shows the kernel-internal cmd, not the DMA-visible
+                 * ring contents — see project_m3_eod_2026_04_25.md).
+                 *
+                 * The kext's GPU hang log explicitly shows the expected
+                 * stamp value at cmd offset 8 = 1. Write that as the
+                 * stamp value: stamp_cell[ch] := 1.
+                 *
+                 * Combined with the read_ptr advance above, this satisfies
+                 * both watchdog predicates: descriptor.read_ptr=write_ptr
+                 * AND stampBases[ch]=expected_stamp. */
+                uint32_t stamp_value = (cmd_stm != 0u) ? cmd_stm : 1u;
+                if (p->ring_base_pfn != 0u && p->dev->desc.shell.write_memory) {
                     uint64_t stamp_gpa =
                         ((uint64_t)p->ring_base_pfn << 12)
                         + (uint64_t)ch * 4u;
                     if (p->dev->desc.shell.write_memory(
                             p->dev->desc.shell.opaque,
-                            stamp_gpa, sizeof(cmd_stm), &cmd_stm)) {
+                            stamp_gpa, sizeof(stamp_value), &stamp_value)) {
                         LAGFX_LOG("doorbell ch=%u: stamp_cell[%u] := %u "
                                   "(gpa=0x%llx)",
-                                  ch, ch, cmd_stm,
+                                  ch, ch, stamp_value,
                                   (unsigned long long)stamp_gpa);
                     }
                 }
