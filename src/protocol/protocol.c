@@ -580,20 +580,37 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     }
                 }
 
-                /* Per setupSharedState-after-waitForStamp.md (2026-04-25):
-                 * after the first waitForStamp returns, the kext validates
-                 * a 4 KB shared-state buffer that the cmd's payload PFN
-                 * points to. The descriptor's "ring_pfn" field at +0x10 is
-                 * (we believe) actually the shared_state_pfn — there's no
-                 * separate host-visible ring. The kext reads:
-                 *   shared_state[0x12] (u16) — display_index (kext writes)
-                 *   shared_state[0x1c] (u32) — response code (HOST writes)
-                 * If shared_state[0x1c] is uninitialized/stale, the kext's
-                 * downstream validation fails and the second waitForStamp
-                 * never returns. Write 0 as a "ack ready" code. */
+                /* Per setupSharedState-post-wait-predicates.md (2026-04-25):
+                 * after waitForStamp releases on the 1-sec timeout, the kext
+                 * runs apvAssert(fSharedState->port == fPort) at
+                 * setupSharedState +0x2a8. fPort is this->display_index
+                 * (u32) at this+0x380; fSharedState->port is u16 at +0x12.
+                 * If the shared_state page contains uninitialized garbage,
+                 * the cmp fails and the kext silently panics (silent on
+                 * release/dev kernel without lldb attached) — looks like a
+                 * persistent wedge but is actually post-wait panic.
+                 *
+                 * Display0 = ch 5 → display_index = 0
+                 * Display1 = ch 6 → display_index = 1
+                 * etc.
+                 *
+                 * Also write shared_state[0x1c] = 0 as the response code. */
                 if (p->dev->desc.shell.write_memory) {
                     uint64_t shared_state_gpa =
                         ((uint64_t)ring_pfn << 12);
+
+                    /* Required to satisfy the post-wait apvAssert. */
+                    uint16_t display_index = (uint16_t)(ch - 5u);
+                    if (p->dev->desc.shell.write_memory(
+                            p->dev->desc.shell.opaque,
+                            shared_state_gpa + 0x12u,
+                            sizeof(display_index), &display_index)) {
+                        LAGFX_LOG("doorbell ch=%u: shared_state[0x12] := %u "
+                                  "(port/display_index, gpa=0x%llx)",
+                                  ch, (unsigned)display_index,
+                                  (unsigned long long)(shared_state_gpa + 0x12u));
+                    }
+
                     uint32_t resp_code = 0u;  /* ack ready */
                     if (p->dev->desc.shell.write_memory(
                             p->dev->desc.shell.opaque,
