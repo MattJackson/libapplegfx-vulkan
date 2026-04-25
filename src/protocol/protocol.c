@@ -452,6 +452,106 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                       p->ring_size);
             return;
         }
+        case 0x1020u: {
+            /* Per-channel doorbell. Kext writes ch_id=N to signal that it has
+             * placed work on child-channel N's ring. Per re-followup-spec-gaps
+             * §13.2.3, the kext pre-allocates ring geometry and writes a
+             * 20-byte descriptor at:
+             *   shared_pfn<<12 + 0x400 + 20*(idx-1)
+             * containing: { ring_pfn, read_ptr, write_ptr, len, flags }.
+             *
+             * This handler reads that descriptor, drains commands from
+             * read_ptr to write_ptr (logging unknown opcodes), advances the
+             * read_ptr atomically in the descriptor, and signals the channel
+             * via global stamp bitmask + IRQ. Per IOAccelFIFOChannel2-restart-RE
+             * memo, advancing read_ptr is the operation the GPU-hang watchdog
+             * is polling for at "Display0 written: 20 read: 0 cmd: 01...".
+             *
+             * Display0 = ch_id 5 (per A10a: display_index+5). */
+            unsigned ch = value;
+            if (ch == 0u || ch >= 32u) {
+                LAGFX_LOG("doorbell ch=%u: out of range", ch);
+                return;
+            }
+            if (p->ring_shared_page_pfn == 0u
+                || !p->dev || !p->dev->desc.shell.read_memory) {
+                LAGFX_LOG("doorbell ch=%u: shared page unknown or no read cb",
+                          ch);
+                return;
+            }
+
+            uint64_t shared_gpa = (uint64_t)p->ring_shared_page_pfn << 12;
+            uint64_t descr_gpa = shared_gpa + 0x400u + 20u * (ch - 1u);
+            uint8_t descr[20] = {0};
+            if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                  descr_gpa,
+                                                  sizeof(descr), descr)) {
+                LAGFX_LOG("doorbell ch=%u: read_memory failed at gpa=0x%llx",
+                          ch, (unsigned long long)descr_gpa);
+                return;
+            }
+
+            uint32_t ring_pfn  = ((uint32_t *)descr)[0];
+            uint32_t read_ptr  = ((uint32_t *)descr)[1];
+            uint32_t write_ptr = ((uint32_t *)descr)[2];
+            uint32_t ring_len  = ((uint32_t *)descr)[3];
+            uint32_t flags     = ((uint32_t *)descr)[4];
+
+            LAGFX_LOG("doorbell ch=%u: descr ring_pfn=0x%x rd=%u wr=%u "
+                      "len=%u flags=0x%x",
+                      ch, ring_pfn, read_ptr, write_ptr, ring_len, flags);
+
+            /* Sanity: only drain if descriptor looks valid. */
+            if (ring_pfn != 0u && write_ptr > read_ptr
+                && write_ptr <= 0x100000u
+                && (write_ptr - read_ptr) >= 12u) {
+                uint64_t ring_gpa = ((uint64_t)ring_pfn << 12);
+                uint8_t hdr[12] = {0};
+                if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                     ring_gpa + read_ptr,
+                                                     12, hdr)) {
+                    uint16_t opcode  = (uint16_t)(hdr[0] | (hdr[1] << 8));
+                    uint32_t cmd_len =
+                        (uint32_t)(hdr[4] | (hdr[5] << 8)
+                                   | (hdr[6] << 16) | (hdr[7] << 24));
+                    uint32_t cmd_stm =
+                        (uint32_t)(hdr[8] | (hdr[9] << 8)
+                                   | (hdr[10] << 16) | (hdr[11] << 24));
+                    LAGFX_LOG("doorbell ch=%u: drain opcode=0x%04x len=%u "
+                              "stamp=%u (gpa=0x%llx)",
+                              ch, opcode, cmd_len, cmd_stm,
+                              (unsigned long long)(ring_gpa + read_ptr));
+                }
+
+                /* Advance read_ptr to write_ptr atomically. The kext's
+                 * watchdog is polling read_ptr; once it reaches write_ptr
+                 * the "GPU hang" log stops firing. */
+                uint32_t new_read_ptr = write_ptr;
+                if (p->dev->desc.shell.write_memory) {
+                    if (p->dev->desc.shell.write_memory(
+                            p->dev->desc.shell.opaque,
+                            descr_gpa + 4u, sizeof(new_read_ptr),
+                            &new_read_ptr)) {
+                        LAGFX_LOG("doorbell ch=%u: descr.read_ptr 0x%x->0x%x",
+                                  ch, read_ptr, new_read_ptr);
+                    }
+                }
+            }
+
+            /* Signal channel completion via global bitmask + IRQ.
+             * Per channel-progress-flag-RE.md, this advances [channel+0x70]
+             * via the kext's signalStamps -> commandWakeup chain. */
+            p->pending_stamps_bitmask |= (1u << ch);
+            if (p->dev && p->dev->desc.shell.raise_interrupt) {
+                p->dev->desc.shell.raise_interrupt(
+                    p->dev->desc.shell.opaque, 0u);
+                p->interrupts_raised += 1;
+                LAGFX_LOG("doorbell ch=%u: bit+IRQ "
+                          "(pending_mask=0x%08x)",
+                          ch, p->pending_stamps_bitmask);
+            }
+            return;
+        }
         default: break;
     }
 
