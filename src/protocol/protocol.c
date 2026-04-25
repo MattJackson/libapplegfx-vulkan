@@ -452,37 +452,6 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                       p->ring_size);
             return;
         }
-        case 0x1020u: {
-            /* Per-channel doorbell. Kext writes ch_id=N here after putting
-             * a command on channel N's ring (or, for child channels, after
-             * CmdDefineChildChannel ack to wake any waiter on slot N).
-             * Baseline log shows kext writes 0x1020=5 then busy-waits on
-             * 0x1018 bitmask bit 5 — never advancing if we ignore.
-             * Experiment (M3 last 8%): set bit N in pending_stamps_bitmask
-             * + raise IRQ. Do NOT write stamp_cell[N] — prior experiments
-             * (commits 023e4f1/8e6d0a1/07345f8/e9c45ac) showed that writing
-             * a stamp value to slot 5 deterministically triggers
-             * device_reset, presumably via checkGPUProgress detecting
-             * "stamp moved on a channel with no expected target". A bit
-             * signal alone wakes the wrangler (signalStamps → kernel
-             * signalStamp → wakeup_one(stampBases[N])); the wrangler then
-             * reads its own target and either proceeds or sleeps again. */
-            unsigned ch = value;
-            if (ch < 32u) {
-                p->pending_stamps_bitmask |= (1u << ch);
-                LAGFX_LOG("doorbell ch=%u: bit-signal only "
-                          "(pending_mask=0x%08x, no stamp value write)",
-                          ch, p->pending_stamps_bitmask);
-                if (p->dev && p->dev->desc.shell.raise_interrupt) {
-                    p->dev->desc.shell.raise_interrupt(
-                        p->dev->desc.shell.opaque, 0u);
-                    p->interrupts_raised += 1;
-                }
-            } else {
-                LAGFX_LOG("doorbell ch=%u: out of range (ignored)", ch);
-            }
-            return;
-        }
         default: break;
     }
 
