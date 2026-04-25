@@ -518,6 +518,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             }
 
             /* Drain if there's pending work and ring is mapped. */
+            uint32_t cmd_stm = 0u;  /* Captured for stamp-cell write below. */
             if (ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
                 uint64_t ring_gpa = ((uint64_t)ring_pfn << 12);
@@ -529,7 +530,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     uint32_t cmd_len =
                         (uint32_t)(hdr[4] | (hdr[5] << 8)
                                    | (hdr[6] << 16) | (hdr[7] << 24));
-                    uint32_t cmd_stm =
+                    cmd_stm =
                         (uint32_t)(hdr[8] | (hdr[9] << 8)
                                    | (hdr[10] << 16) | (hdr[11] << 24));
                     LAGFX_LOG("doorbell ch=%u: drain opcode=0x%04x len=%u "
@@ -540,7 +541,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
                 /* Advance read_ptr to write_ptr atomically. The kext's
                  * watchdog is polling read_ptr; once it reaches write_ptr
-                 * the "GPU hang" log stops firing. */
+                 * the "GPU hang written:N read:0" log changes to read:N. */
                 uint32_t new_read_ptr = write_ptr;
                 if (p->dev->desc.shell.write_memory) {
                     if (p->dev->desc.shell.write_memory(
@@ -549,6 +550,28 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             &new_read_ptr)) {
                         LAGFX_LOG("doorbell ch=%u: descr.read_ptr 0x%x->0x%x",
                                   ch, read_ptr, new_read_ptr);
+                    }
+                }
+
+                /* Write the cmd's stamp value to FIFO+ch*4 stamp cell.
+                 * Per checkGPUProgress watchdog (see kdp-debug-bits memo):
+                 * the watchdog reads stampBases[ch_id] and compares to a
+                 * target — if stamp == target, no escalation. The cmd header's
+                 * stamp field IS the target the kext expects this channel
+                 * to reach. Combined with read_ptr advance, this should
+                 * satisfy both watchdog predicates (advance + completion). */
+                if (cmd_stm != 0u && p->ring_base_pfn != 0u
+                    && p->dev->desc.shell.write_memory) {
+                    uint64_t stamp_gpa =
+                        ((uint64_t)p->ring_base_pfn << 12)
+                        + (uint64_t)ch * 4u;
+                    if (p->dev->desc.shell.write_memory(
+                            p->dev->desc.shell.opaque,
+                            stamp_gpa, sizeof(cmd_stm), &cmd_stm)) {
+                        LAGFX_LOG("doorbell ch=%u: stamp_cell[%u] := %u "
+                                  "(gpa=0x%llx)",
+                                  ch, ch, cmd_stm,
+                                  (unsigned long long)stamp_gpa);
                     }
                 }
             }
