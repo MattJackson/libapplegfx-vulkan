@@ -491,20 +491,35 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 return;
             }
 
-            uint32_t ring_pfn  = ((uint32_t *)descr)[0];
+            /* Field order verified via QEMU monitor xp dump 2026-04-25 of
+             * Display0 (idx=5) descriptor at shared+0x450:
+             *   { write_ptr=0x14, read_ptr=0, ?=0, chan_id=5, ring_pfn=0x3d61a8 }
+             * Differs from agent's RE memo (which guessed
+             * {ring_pfn, read_ptr, write_ptr, len, flags}). The "GPU hang:
+             * Name DisplayN written: %u read: %u" log values match exactly:
+             * write_ptr is u32[0], read_ptr is u32[1]. */
+            uint32_t write_ptr = ((uint32_t *)descr)[0];
             uint32_t read_ptr  = ((uint32_t *)descr)[1];
-            uint32_t write_ptr = ((uint32_t *)descr)[2];
-            uint32_t ring_len  = ((uint32_t *)descr)[3];
-            uint32_t flags     = ((uint32_t *)descr)[4];
+            uint32_t mid       = ((uint32_t *)descr)[2];
+            uint32_t chan_id   = ((uint32_t *)descr)[3];
+            uint32_t ring_pfn  = ((uint32_t *)descr)[4];
 
-            LAGFX_LOG("doorbell ch=%u: descr ring_pfn=0x%x rd=%u wr=%u "
-                      "len=%u flags=0x%x",
-                      ch, ring_pfn, read_ptr, write_ptr, ring_len, flags);
+            LAGFX_LOG("doorbell ch=%u: descr wr=%u rd=%u mid=0x%x "
+                      "chan_id=%u ring_pfn=0x%x",
+                      ch, write_ptr, read_ptr, mid, chan_id, ring_pfn);
 
-            /* Sanity: only drain if descriptor looks valid. */
+            /* Sanity: descriptor's chan_id should match the value the kext
+             * wrote to 0x1020. If not, descriptor format isn't what we expect
+             * for this channel — bail rather than write to wrong location. */
+            if (chan_id != ch) {
+                LAGFX_LOG("doorbell ch=%u: chan_id mismatch "
+                          "(descr says %u), aborting", ch, chan_id);
+                return;
+            }
+
+            /* Drain if there's pending work and ring is mapped. */
             if (ring_pfn != 0u && write_ptr > read_ptr
-                && write_ptr <= 0x100000u
-                && (write_ptr - read_ptr) >= 12u) {
+                && write_ptr <= 0x100000u) {
                 uint64_t ring_gpa = ((uint64_t)ring_pfn << 12);
                 uint8_t hdr[12] = {0};
                 if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
