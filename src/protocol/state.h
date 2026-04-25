@@ -202,6 +202,17 @@ struct lagfx_protocol {
      * the field. */
     uint32_t pending_stamps_bitmask;
 
+    /* Pending display-completion bitmask, read at BAR0+0x1014.
+     *
+     * Per display0-cmd-actual-location.md (2026-04-25): display channels
+     * (Display0 = ch 5, Display1 = ch 6) signal completion via the
+     * display bitmask, NOT the stamp bitmask. Setting bit ch in this
+     * field tells the kext's display ISR (signalDisplays) to wake the
+     * wrangler thread.
+     *
+     * Same xchg-and-clear semantics as 0x1018. */
+    uint32_t pending_displays_bitmask;
+
     /* GPA of the current in-flight command's header on the ring.
      * Set by the drain immediately before calling dispatch_one so that
      * handlers can DMA-write into the on-ring header (e.g. 0x3a writes

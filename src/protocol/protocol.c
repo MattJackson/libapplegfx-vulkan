@@ -340,8 +340,15 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
      * wire display-transaction completions through a second bitmask.
      */
     if (offset == LAGFX_REG_STAMP_CELL_1) {
-        LAGFX_LOG("mmio_read: 0x1014 (display_bitmask) -> 0");
-        return 0u;
+        /* xchg-and-clear, mirrors 0x1018 semantics (per A4d).
+         * Bit N = display channel N has a completed transaction. Set by
+         * the per-channel doorbell handler for display channels (ch>=5).
+         * Per display0-cmd-actual-location.md, the display bitmask is
+         * what signalDisplays consumes — separate from the stamp bitmask. */
+        uint32_t mask = p->pending_displays_bitmask;
+        p->pending_displays_bitmask = 0u;
+        LAGFX_LOG("mmio_read: 0x1014 (display_bitmask) xchg -> 0x%x", mask);
+        return mask;
     }
 
     int idx = lagfx_protocol_reg_index(offset);
@@ -554,20 +561,10 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 }
 
                 /* Write a stamp value to FIFO+ch*4 stamp cell.
-                 * Empirical observation: the cmd_stm extracted from the
-                 * 12-byte ring header is consistently 0 because the host-
-                 * visible ring at ring_pfn doesn't contain the kext's
-                 * 12-byte cmd header at offset 0 (kext's GPU hang `cmd:`
-                 * log shows the kernel-internal cmd, not the DMA-visible
-                 * ring contents — see project_m3_eod_2026_04_25.md).
-                 *
-                 * The kext's GPU hang log explicitly shows the expected
-                 * stamp value at cmd offset 8 = 1. Write that as the
-                 * stamp value: stamp_cell[ch] := 1.
-                 *
-                 * Combined with the read_ptr advance above, this satisfies
-                 * both watchdog predicates: descriptor.read_ptr=write_ptr
-                 * AND stampBases[ch]=expected_stamp. */
+                 * cmd_stm read from host-visible ring is consistently 0 because
+                 * the actual kext cmd lives in kernel heap (see
+                 * display0-cmd-actual-location.md). Default to 1 (the value
+                 * the kext's GPU hang log shows as the expected target). */
                 uint32_t stamp_value = (cmd_stm != 0u) ? cmd_stm : 1u;
                 if (p->ring_base_pfn != 0u && p->dev->desc.shell.write_memory) {
                     uint64_t stamp_gpa =
@@ -582,11 +579,49 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                                   (unsigned long long)stamp_gpa);
                     }
                 }
+
+                /* Per setupSharedState-after-waitForStamp.md (2026-04-25):
+                 * after the first waitForStamp returns, the kext validates
+                 * a 4 KB shared-state buffer that the cmd's payload PFN
+                 * points to. The descriptor's "ring_pfn" field at +0x10 is
+                 * (we believe) actually the shared_state_pfn — there's no
+                 * separate host-visible ring. The kext reads:
+                 *   shared_state[0x12] (u16) — display_index (kext writes)
+                 *   shared_state[0x1c] (u32) — response code (HOST writes)
+                 * If shared_state[0x1c] is uninitialized/stale, the kext's
+                 * downstream validation fails and the second waitForStamp
+                 * never returns. Write 0 as a "ack ready" code. */
+                if (p->dev->desc.shell.write_memory) {
+                    uint64_t shared_state_gpa =
+                        ((uint64_t)ring_pfn << 12);
+                    uint32_t resp_code = 0u;  /* ack ready */
+                    if (p->dev->desc.shell.write_memory(
+                            p->dev->desc.shell.opaque,
+                            shared_state_gpa + 0x1cu,
+                            sizeof(resp_code), &resp_code)) {
+                        LAGFX_LOG("doorbell ch=%u: shared_state[0x1c] := %u "
+                                  "(gpa=0x%llx)",
+                                  ch, resp_code,
+                                  (unsigned long long)(shared_state_gpa + 0x1cu));
+                    }
+                }
             }
 
-            /* Signal channel completion via global bitmask + IRQ.
-             * Per channel-progress-flag-RE.md, this advances [channel+0x70]
-             * via the kext's signalStamps -> commandWakeup chain. */
+            /* Signal channel completion via the appropriate bitmask + IRQ.
+             *
+             * Per display0-cmd-actual-location.md (2026-04-25): display
+             * channels (ch>=5) are routed through AppleParavirtDisplayMachine
+             * (display bitmask at 0x1014, signalDisplays). Non-display child
+             * channels (ch=1..4 = VirtualChannels) go through the stamp
+             * bitmask at 0x1018 (signalStamps).
+             *
+             * Set the bit in BOTH bitmasks for display channels — the kext
+             * reads each in its ISR demultiplexer, and the cost is only one
+             * extra u32 OR. Either route may be the one the wrangler is
+             * actually waiting on. */
+            if (ch >= 5u) {
+                p->pending_displays_bitmask |= (1u << ch);
+            }
             p->pending_stamps_bitmask |= (1u << ch);
             if (p->dev && p->dev->desc.shell.raise_interrupt) {
                 p->dev->desc.shell.raise_interrupt(
