@@ -452,58 +452,44 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                       p->ring_size);
             return;
         }
-        case 0x1020u: {
-            /* Per-channel doorbell. Kext writes ch_id=N once after putting
-             * a command on channel N's ring (or after CmdDefineChildChannel).
+        case 0x1020u:
+        case 0x1028u: {
+            /* Per-channel signal. Kext writes ch_id=N to:
+             *   0x1020 — once, "doorbell" / "kick channel N"
+             *   0x1028 — repeatedly while busy-waiting for channel N
              *
-             * Exp 3 (M3 last 8%): write stamp_cell[ch] := 1 + bit-signal
-             * + IRQ. Per Agent A's checkGPUProgress RE: device_reset fires
-             * when target > current_stamp AND device-alive. Per Agent B's
-             * setupSharedState trace: the target arg to waitForStamp at
-             * vtable+0x188 (0x14560aa1) is implicit — best static-RE guess
-             * is target=1 (first stamp on the channel). If that's right,
-             * stampBases[ch]=1 satisfies the predicate without tripping the
-             * watchdog. If reset still fires, target is dynamic and we
-             * need lldb to read it. Prior failed experiments
-             * (023e4f1/8e6d0a1/07345f8) wrote stamp value but stamped on
-             * different paths or no-IRQ — revisiting the simplest possible
-             * combination: write+bit+IRQ on per-channel doorbell only. */
+             * Experiment 1 (handler on 0x1020 only) showed: the bit-signal
+             * does fire signalStamps → wakeup of the wrangler thread on
+             * slot N, but the wrangler comes back to sleep because
+             * stampBases[N] is still 0. Kext then resumes 0x1028=N
+             * busy-wait. So 0x1020 alone isn't sufficient.
+             *
+             * Experiment 2: also handle 0x1028=N as bit-signal. Hypothesis:
+             * 0x1028 is the "I'm waiting on channel N — kick me when ready"
+             * register, and the kext expects each write to be acknowledged
+             * by setting bit N + IRQ. Setting both display (0x1014) and
+             * stamp (0x1018) bitmask bits to cover either signal path.
+             *
+             * Still NO write to stamp_cell[N] — prior experiments
+             * (023e4f1/8e6d0a1/07345f8/e9c45ac) all triggered device_reset
+             * the moment a stamp value was written. checkGPUProgress
+             * watchdog reads stampBases[N] directly. */
             unsigned ch = value;
             if (ch < 32u) {
-                if (p->ring_base_pfn != 0u
-                    && p->dev && p->dev->desc.shell.write_memory) {
-                    uint32_t stamp_v = 1u;
-                    uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12)
-                                         + (uint64_t)ch * 4u;
-                    p->dev->desc.shell.write_memory(
-                        p->dev->desc.shell.opaque,
-                        stamp_gpa, sizeof(stamp_v), &stamp_v);
-                    LAGFX_LOG("doorbell ch=%u: stamp_cell[%u] := %u "
-                              "(gpa=0x%llx)",
-                              ch, ch, stamp_v,
-                              (unsigned long long)stamp_gpa);
-                }
                 p->pending_stamps_bitmask |= (1u << ch);
-                LAGFX_LOG("doorbell ch=%u: bit+stamp+IRQ "
+                LAGFX_LOG("ch_signal off=0x%llx ch=%u: bit-signal "
                           "(pending_mask=0x%08x)",
-                          ch, p->pending_stamps_bitmask);
+                          (unsigned long long)offset, ch,
+                          p->pending_stamps_bitmask);
                 if (p->dev && p->dev->desc.shell.raise_interrupt) {
                     p->dev->desc.shell.raise_interrupt(
                         p->dev->desc.shell.opaque, 0u);
                     p->interrupts_raised += 1;
                 }
             } else {
-                LAGFX_LOG("doorbell ch=%u: out of range (ignored)", ch);
+                LAGFX_LOG("ch_signal off=0x%llx ch=%u: out of range",
+                          (unsigned long long)offset, ch);
             }
-            return;
-        }
-        case 0x1028u: {
-            /* Per Agent C's RE of Apple PVG dylib: 0x1028 is a pure ObjC
-             * ivar setter with no observable downstream effect. The kext
-             * writes it repeatedly while waiting on stampBases[N]; Apple's
-             * dylib doesn't ack it. Treat as no-op (just log). */
-            LAGFX_LOG("ring-config setter 0x1028 val=%u (ignored, no-op)",
-                      value);
             return;
         }
         default: break;
