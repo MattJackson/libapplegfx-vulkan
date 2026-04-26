@@ -526,6 +526,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
             /* Drain if there's pending work and ring is mapped. */
             uint32_t cmd_stm = 0u;  /* Captured for stamp-cell write below. */
+            uint32_t cmd_display_index = 0u;  /* From cmd payload, used for SS port. */
+            uint32_t cmd_ss_pfn = 0u;          /* From cmd payload, BMD shared-state PFN. */
+            int have_payload = 0;
             if (ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
                 uint64_t ring_gpa = ((uint64_t)ring_pfn << 12);
@@ -544,6 +547,39 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                               "stamp=%u (gpa=0x%llx)",
                               ch, opcode, cmd_len, cmd_stm,
                               (unsigned long long)(ring_gpa + read_ptr));
+                }
+
+                /* Per AppleParavirtDisplayPipe-setupSharedState.annotated.asm
+                 * +0x217..+0x230: setupSharedState appends an 8-byte cmd
+                 * payload after the 12-byte header containing
+                 *   { u32 display_index, u32 ss_pfn }
+                 * where ss_pfn is the per-display BMD shared-state physical
+                 * PFN (this is DIFFERENT from ring_pfn — the ring_pfn is the
+                 * channel's command ring; the ss_pfn is the 4 KiB shared-
+                 * state page allocated by setupSharedState's
+                 * IOBufferMemoryDescriptor at this+0x368). The host needs
+                 * ss_pfn to address the BMD page where the post-wait
+                 * predicate lives (ss[0x12] = port). Total Display0 cmd is
+                 * 20 bytes (write_ptr=0x14 in descriptor), matching this
+                 * layout.
+                 *
+                 * Read the 8-byte payload at ring_gpa + read_ptr + 12. */
+                if (write_ptr - read_ptr >= 20u) {
+                    uint8_t pl[8] = {0};
+                    if (p->dev->desc.shell.read_memory(
+                            p->dev->desc.shell.opaque,
+                            ring_gpa + read_ptr + 12u, 8, pl)) {
+                        cmd_display_index =
+                            (uint32_t)(pl[0] | (pl[1] << 8)
+                                       | (pl[2] << 16) | (pl[3] << 24));
+                        cmd_ss_pfn =
+                            (uint32_t)(pl[4] | (pl[5] << 8)
+                                       | (pl[6] << 16) | (pl[7] << 24));
+                        have_payload = 1;
+                        LAGFX_LOG("doorbell ch=%u: cmd payload "
+                                  "display_index=%u ss_pfn=0x%x",
+                                  ch, cmd_display_index, cmd_ss_pfn);
+                    }
                 }
 
                 /* Advance read_ptr to write_ptr atomically. The kext's
@@ -581,46 +617,59 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 }
 
                 /* Per setupSharedState-post-wait-predicates.md (2026-04-25):
-                 * after waitForStamp releases on the 1-sec timeout, the kext
-                 * runs apvAssert(fSharedState->port == fPort) at
-                 * setupSharedState +0x2a8. fPort is this->display_index
-                 * (u32) at this+0x380; fSharedState->port is u16 at +0x12.
-                 * If the shared_state page contains uninitialized garbage,
-                 * the cmp fails and the kext silently panics (silent on
-                 * release/dev kernel without lldb attached) — looks like a
-                 * persistent wedge but is actually post-wait panic.
+                 * after waitForStamp releases, the kext runs
+                 *   apvAssert(fSharedState->port == fPort)
+                 * at setupSharedState +0x2a8 where fPort = this->display_index
+                 * (u32 at this+0x380) and fSharedState->port = u16 at the
+                 * BMD shared-state page +0x12.
                  *
-                 * Display0 = ch 5 → display_index = 0
-                 * Display1 = ch 6 → display_index = 1
-                 * etc.
+                 * CRITICAL: the BMD shared-state page is at
+                 *   (cmd.ss_pfn << 12)
+                 * NOT (ring_pfn << 12). ring_pfn is the per-channel command
+                 * ring; ss_pfn is the per-display 4 KiB IOBufferMemoryDescriptor
+                 * page allocated inside setupSharedState and sent to host via
+                 * the 8-byte cmd payload. Writing to the wrong page is silent —
+                 * the kext just sees a zero page and panics on the predicate
+                 * (or, for Display0, accidentally passes because both pages
+                 * happen to be zero, but the response code at +0x1c is also
+                 * never seen).
                  *
-                 * Also write shared_state[0x1c] = 0 as the response code. */
-                if (p->dev->desc.shell.write_memory) {
-                    uint64_t shared_state_gpa =
-                        ((uint64_t)ring_pfn << 12);
+                 * cmd_display_index from the payload is authoritative for the
+                 * port value; ch-5 derivation is a fallback if the payload was
+                 * not readable.
+                 *
+                 * Also write shared_state[0x1c] = 0 as the response code/host
+                 * caps token (kext stashes it at this+0x384, no validation). */
+                if (have_payload && cmd_ss_pfn != 0u
+                    && p->dev->desc.shell.write_memory) {
+                    uint64_t ss_gpa = ((uint64_t)cmd_ss_pfn << 12);
 
                     /* Required to satisfy the post-wait apvAssert. */
-                    uint16_t display_index = (uint16_t)(ch - 5u);
+                    uint16_t port = (uint16_t)cmd_display_index;
                     if (p->dev->desc.shell.write_memory(
                             p->dev->desc.shell.opaque,
-                            shared_state_gpa + 0x12u,
-                            sizeof(display_index), &display_index)) {
-                        LAGFX_LOG("doorbell ch=%u: shared_state[0x12] := %u "
-                                  "(port/display_index, gpa=0x%llx)",
-                                  ch, (unsigned)display_index,
-                                  (unsigned long long)(shared_state_gpa + 0x12u));
+                            ss_gpa + 0x12u,
+                            sizeof(port), &port)) {
+                        LAGFX_LOG("doorbell ch=%u: ss[0x12] := %u "
+                                  "(port, ss_gpa=0x%llx)",
+                                  ch, (unsigned)port,
+                                  (unsigned long long)(ss_gpa + 0x12u));
                     }
 
-                    uint32_t resp_code = 0u;  /* ack ready */
+                    uint32_t resp_code = 0u;  /* ack ready / host caps token */
                     if (p->dev->desc.shell.write_memory(
                             p->dev->desc.shell.opaque,
-                            shared_state_gpa + 0x1cu,
+                            ss_gpa + 0x1cu,
                             sizeof(resp_code), &resp_code)) {
-                        LAGFX_LOG("doorbell ch=%u: shared_state[0x1c] := %u "
-                                  "(gpa=0x%llx)",
+                        LAGFX_LOG("doorbell ch=%u: ss[0x1c] := %u "
+                                  "(ss_gpa=0x%llx)",
                                   ch, resp_code,
-                                  (unsigned long long)(shared_state_gpa + 0x1cu));
+                                  (unsigned long long)(ss_gpa + 0x1cu));
                     }
+                } else if (!have_payload) {
+                    LAGFX_LOG("doorbell ch=%u: no cmd payload — skipping "
+                              "ss[0x12]/ss[0x1c] write (would target wrong "
+                              "page)", ch);
                 }
             }
 
