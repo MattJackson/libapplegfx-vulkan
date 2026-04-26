@@ -1,0 +1,7 @@
+# libapplegfx-vulkan — meson options
+
+option('fuzz',
+  type        : 'feature',
+  value       : 'disabled',
+  description : 'Build libFuzzer harness for tests/fuzz-protocol-dispatch.c. Requires a compiler with -fsanitize=fuzzer (clang). Combine with -Db_sanitize=address,undefined for the standard fuzzing build.',
+)

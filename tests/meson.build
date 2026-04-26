@@ -373,3 +373,27 @@ if fs.is_file(meson.current_source_dir() / 'air2spirv.c')
   )
   test('air2spirv', air2spirv_test)
 endif
+
+# fuzz-protocol-dispatch — libFuzzer harness for the protocol dispatcher.
+# Built only when -Dfuzz=enabled (default disabled). Combine with
+# -Db_sanitize=address,undefined for the standard fuzzing build.
+#
+# Run: ./tests/fuzz-protocol-dispatch -max_total_time=300 path/to/corpus
+fuzz_opt = get_option('fuzz')
+if fuzz_opt.enabled() and fs.is_file(meson.current_source_dir() / 'fuzz-protocol-dispatch.c')
+  cc = meson.get_compiler('c')
+  fuzz_link_args = ['-fsanitize=fuzzer']
+  fuzz_c_args    = ['-fsanitize=fuzzer-no-link']
+  if cc.has_argument('-fsanitize=fuzzer')
+    fuzz_target = executable('fuzz-protocol-dispatch',
+      'fuzz-protocol-dispatch.c',
+      include_directories : [include_dir, internal_include_dir],
+      dependencies : libapplegfx_vulkan_dep,
+      c_args : fuzz_c_args,
+      link_args : fuzz_link_args,
+      build_by_default : true,
+    )
+  else
+    warning('fuzz=enabled but compiler does not support -fsanitize=fuzzer; skipping')
+  endif
+endif
