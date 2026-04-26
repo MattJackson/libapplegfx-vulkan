@@ -29,6 +29,9 @@
 #include "../device.h"
 #include "../vulkan/command.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 static inline uint32_t lagfx_le32(const uint8_t *b) {
     return (uint32_t)b[0]
          | ((uint32_t)b[1] << 8)
@@ -453,8 +456,9 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
     }
 
     /* Walk resource_table — each {host_gpu_addr, length} points at a
-     * per-resource cmdBuf in IOAccelResource2 backing memory. Inner-
-     * opcode walk against these addresses is the next M4 step. */
+     * per-resource cmdBuf in IOAccelResource2 backing memory. For
+     * each, read the cmdBuf via shell.read_memory and walk the
+     * segment headers within. */
     for (uint32_t i = 0; i < resource_count; ++i) {
         const uint8_t *rec = hdr->payload + off_resources + (size_t)i * 16u;
         uint64_t host_gpu_addr =
@@ -464,15 +468,103 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         uint32_t pad    = lagfx_le32(rec + 12);
         LAGFX_LOG("  resource[%u]: host_gpu_addr=0x%llx length=%u pad=0x%08x",
                   i, (unsigned long long)host_gpu_addr, length, pad);
+
+        if (host_gpu_addr == 0u || length == 0u || length > (1u << 22) /* 4 MiB cap */
+            || p->dev == NULL || p->dev->desc.shell.read_memory == NULL) {
+            continue;
+        }
+
+        /* Read the entire cmdBuf into a per-iteration buffer. 4 MiB
+         * cap keeps stack pressure bounded; for larger buffers we'd
+         * need streaming. Init-phase Metal queries fit in a single
+         * page. */
+        uint8_t *cmdbuf = malloc(length);
+        if (!cmdbuf) {
+            LAGFX_WARN("  resource[%u]: malloc(%u) failed — skipping",
+                       i, length);
+            continue;
+        }
+        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                            host_gpu_addr,
+                                            length, cmdbuf)) {
+            LAGFX_LOG("  resource[%u]: read_memory failed at 0x%llx — skipping",
+                      i, (unsigned long long)host_gpu_addr);
+            free(cmdbuf);
+            continue;
+        }
+
+        /* Walk PGSerializerCommandSegmentHeader (16 B) records. Per
+         * library/state-machines/inner-opcode-format.md. */
+        size_t soff = 0;
+        unsigned segment_idx = 0;
+        while (soff + 16u <= (size_t)length) {
+            uint32_t segment_size =
+                lagfx_le32(cmdbuf + soff + 0);
+            uint32_t prot_options =
+                lagfx_le32(cmdbuf + soff + 4);
+            uint8_t  encoder_type = cmdbuf[soff + 8];
+            uint8_t  final_flag   = cmdbuf[soff + 9];
+            uint8_t  reuse_flag   = cmdbuf[soff + 10];
+            /* +0x0b padding, +0x0c reserved u32. */
+
+            LAGFX_LOG("    segment[%u]: size=%u prot=0x%x encoderType=%u "
+                      "final=%u reuse=%u (offset=%zu)",
+                      segment_idx, segment_size, prot_options,
+                      (unsigned)encoder_type, (unsigned)final_flag,
+                      (unsigned)reuse_flag, soff);
+
+            if (segment_size == 0u
+                || segment_size > (uint32_t)((size_t)length - soff - 16u)) {
+                LAGFX_WARN("    segment[%u]: bad size — bailing out", segment_idx);
+                break;
+            }
+
+            /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
+             * then totalLength-8 bytes payload. */
+            size_t ioff = soff + 16u;
+            size_t iend = ioff + segment_size;
+            unsigned inner_idx = 0;
+            while (ioff + 8u <= iend) {
+                uint32_t inner_opcode = lagfx_le32(cmdbuf + ioff + 0);
+                uint32_t inner_total  = lagfx_le32(cmdbuf + ioff + 4);
+                if (inner_total < 8u || ioff + inner_total > iend) {
+                    LAGFX_WARN("      inner[%u]: bad totalLength=%u — bailing",
+                               inner_idx, inner_total);
+                    break;
+                }
+                size_t ipl_len = (size_t)inner_total - 8u;
+                LAGFX_LOG("      inner[%u]: op=0x%04x totalLen=%u (encType=%u)",
+                          inner_idx, inner_opcode, inner_total,
+                          (unsigned)encoder_type);
+
+                /* TODO M4: dispatch to encoder/inner-opcode handlers.
+                 * Currently logging only. The encoderType=4 (Info)
+                 * + inner opcode 0x1cc (decodeRenderPipelineStateInfo)
+                 * is the load-bearing path for unblocking
+                 * WindowServer's MetalShader::CopyPipelineState —
+                 * pipeline-state-creation.md documents the reply
+                 * struct that must be written back. */
+                (void)ipl_len;
+
+                ioff += inner_total;
+                inner_idx += 1;
+            }
+
+            if (final_flag == 0u && reuse_flag == 0u) {
+                /* End of encoder — drop and look for next encoder
+                 * segment. */
+            }
+
+            soff += 16u + segment_size;
+            segment_idx += 1;
+        }
+
+        free(cmdbuf);
     }
 
-    /* Inner stream walk against each host_gpu_addr is a future step.
-     * For now we ack the stamp so the guest doesn't park, mirroring
-     * the empty-list path. The previous implementation walked an
-     * imaginary inline inner stream — that's been deleted; the real
-     * inner stream lives behind the resource_table[] addrs and needs
-     * the shell.read_memory / object-delegate path to be wired up
-     * (see M4 guide §1.2 + §3). */
+    /* Ack the stamp regardless. Inner-opcode handlers will do their
+     * actual work (when implemented) before this point — for now the
+     * walk is observation-only. */
     lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
                                         hdr->stamp);
     return LAGFX_HANDLER_OK;
