@@ -382,158 +382,98 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         return LAGFX_HANDLER_OK;
     }
 
-    uint32_t task_id = lagfx_le32(hdr->payload + 0);
-    uint32_t count   = lagfx_le32(hdr->payload + 4);
+    /* Outer payload layout per
+     * paravirt-re/library/M4-inner-opcode-implementation-guide.md §1.1
+     * (CONFIRMED by RE of AppleParavirtCommandQueue::processExecIndirect):
+     *
+     *   +0x00  u32 task_id
+     *   +0x04  u32 invalidate_count        (NOT inner-entry count)
+     *   +0x08  u32 resource_count
+     *   +0x0c  invalidate_record[]         (8 B each: {u32 rid, u32 flags})
+     *   +0x0c+ic*8  resource_table[]       (16 B each: {u64 host_gpu_addr, u32 length, u32 _pad})
+     *
+     * Each resource_table entry's host_gpu_addr points at a per-resource
+     * cmdBuf containing PGSerializerCommandSegmentHeader records + inner
+     * opcode streams. Inner walk is a separate step (not done here yet —
+     * scaffold prints + acks). */
+    uint32_t task_id          = lagfx_le32(hdr->payload + 0);
+    uint32_t invalidate_count = lagfx_le32(hdr->payload + 4);
+    uint32_t resource_count   = lagfx_le32(hdr->payload + 8);
 
-    /* count=0: explicit empty list. Complete cleanly + drive the Vulkan
-     * queue round-trip (same rationale as the 0x22 count=0 path). */
-    if (count == 0) {
-        LAGFX_LOG("CmdExecIndirect2: taskID=%u count=0 "
-                  "(empty-list completion) stamp=0x%08x",
+    size_t off_invalidates = 12u;
+    size_t off_resources   = off_invalidates + (size_t)invalidate_count * 8u;
+    size_t end_resources   = off_resources + (size_t)resource_count * 16u;
+
+    if (end_resources > (size_t)hdr->payload_size) {
+        LAGFX_WARN("CmdExecIndirect2: outer payload too small "
+                   "(taskID=%u invalidate_count=%u resource_count=%u "
+                   "need=%zu have=%u)",
+                   task_id, invalidate_count, resource_count,
+                   end_resources, (unsigned)hdr->payload_size);
+        /* Fail-open: ack the stamp so the guest doesn't park. */
+        lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
+                                            hdr->stamp);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    /* Both counts zero: still a valid no-op submit (guest may flush
+     * a task with no work, just to advance the stamp). */
+    if (invalidate_count == 0 && resource_count == 0) {
+        LAGFX_LOG("CmdExecIndirect2: taskID=%u empty (no invalidates, "
+                  "no resources) stamp=0x%08x",
                   task_id, hdr->stamp);
         lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
                                             hdr->stamp);
         return LAGFX_HANDLER_OK;
     }
 
-    /* Non-empty: fail-open on unknown task. */
+    /* Fail-open on unknown task — completing the stamp is more
+     * important than rejecting based on table-not-yet-populated. */
     lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
     if (!task) {
         LAGFX_WARN("CmdExecIndirect2: taskID=%u not found "
                    "(continuing fail-open)", task_id);
     }
 
-    /* -----------------------------------------------------------------
-     * TEMPORARY RE INSTRUMENTATION — hex dump of the inner-opcode stream.
-     *
-     * Rationale: per mos/memory/project_m4_m5_punchlist_2026_04_24.md,
-     * the CmdExecIndirect2 inner-opcode numeric IDs + per-entry header
-     * layout are the single pacing blocker for both M4 (first red pixel)
-     * and M5 (first triangle). Phase-2-first-pixel-plan.md §2.B.1 and
-     * phase-3-metal-vulkan-plan.md §7 R3.6 both call out that we need
-     * runtime bytes-on-wire to decode the format. Once M3 unblocks, a
-     * single `metal-clear-screen` run under `LAGFX_LOG=1` captures the
-     * stream so we can pattern-match 0x3f800000 (float 1.0), 0x00000000
-     * (float 0.0) for the clear RGBA and vertex_count=3 for the triangle.
-     *
-     * This dump is a ONE-TIME decode aid; REMOVE it once the inner
-     * opcode IDs + header layout are confirmed and the stub handlers
-     * above get their real semantics. Tracking: Phase 3.A RE spike.
-     * ----------------------------------------------------------------- */
-    if (lagfx_log_enabled()) {
-        size_t plen = (size_t)hdr->payload_size;
-        LAGFX_LOG("CmdExecIndirect2[RE]: payload_size=%zu taskID=%u count=%u "
-                  "stamp=0x%08x",
-                  plen, task_id, count, hdr->stamp);
+    LAGFX_LOG("CmdExecIndirect2: taskID=%u invalidate_count=%u "
+              "resource_count=%u payload_size=%u stamp=0x%08x",
+              task_id, invalidate_count, resource_count,
+              (unsigned)hdr->payload_size, hdr->stamp);
 
-        /* Region 1: first 16 u32 words of the outer payload, hex side-
-         * by-side with signed decimal for float/count pattern-matching.
-         * Single log line to respect the 8-line-per-invocation budget. */
-        size_t words = plen / 4u;
-        if (words > 16u) {
-            words = 16u;
-        }
-        {
-            /* 16 words × "0x%08x(%+d) " worst-case ~21 chars = 336. */
-            char line[16 * 24 + 1];
-            size_t off = 0;
-            for (size_t i = 0; i < words; ++i) {
-                uint32_t w = lagfx_le32(hdr->payload + i * 4u);
-                int n = snprintf(line + off, sizeof(line) - off,
-                                 "0x%08x(%d) ", w, (int32_t)w);
-                if (n <= 0 || (size_t)n >= sizeof(line) - off) {
-                    break;
-                }
-                off += (size_t)n;
-            }
-            LAGFX_LOG("CmdExecIndirect2[RE]: outer-u32[0..%zu]: %s",
-                      words, line);
-        }
-
-        /* Region 2: opportunistic nested-buffer dump. The inner stream
-         * is reputed to begin with a guest GPA pointer to a task-mapped
-         * indirect buffer; treat (word[2]|word[3]<<32) as a u64 LE GPA
-         * candidate and dump up to 256 bytes via shell.read_memory.
-         * Defensive: NULL / out-of-range / missing callback all short-
-         * circuit silently — we're logging, not enforcing. */
-        if (words >= 4u &&
-            p->dev != NULL &&
-            p->dev->desc.shell.read_memory != NULL) {
-            uint64_t nested_gpa =
-                (uint64_t)lagfx_le32(hdr->payload + 8u) |
-                ((uint64_t)lagfx_le32(hdr->payload + 12u) << 32);
-            if (nested_gpa != 0ULL && nested_gpa < (1ULL << 48)) {
-                uint8_t nested[256];
-                size_t nread = sizeof(nested);
-                if (p->dev->desc.shell.read_memory(
-                        p->dev->desc.shell.opaque,
-                        nested_gpa, nread, nested)) {
-                    /* Stringify up to 64 u32 words as a single blob. */
-                    char line[64 * 10 + 1];
-                    size_t off = 0;
-                    size_t nwords = nread / 4u;
-                    if (nwords > 64u) { nwords = 64u; }
-                    for (size_t i = 0; i < nwords; ++i) {
-                        uint32_t w = lagfx_le32(nested + i * 4u);
-                        int n = snprintf(line + off, sizeof(line) - off,
-                                         "%08x ", w);
-                        if (n <= 0 ||
-                            (size_t)n >= sizeof(line) - off) {
-                            break;
-                        }
-                        off += (size_t)n;
-                    }
-                    LAGFX_LOG("CmdExecIndirect2[RE]: nested@0x%llx (%zuB) "
-                              "u32-LE: %s",
-                              (unsigned long long)nested_gpa, nread, line);
-                } else {
-                    LAGFX_LOG("CmdExecIndirect2[RE]: nested@0x%llx "
-                              "read_memory failed — skipping dump",
-                              (unsigned long long)nested_gpa);
-                }
-            }
-        }
+    /* Walk invalidate records — currently log-only; full meaning per
+     * processExecIndirect.writeInvalidates is "rid was modified by
+     * a prior segment, surface to subsequent segments". Map to a
+     * Vulkan barrier when the inner walk lands. */
+    for (uint32_t i = 0; i < invalidate_count; ++i) {
+        const uint8_t *rec = hdr->payload + off_invalidates + (size_t)i * 8u;
+        uint32_t rid   = lagfx_le32(rec + 0);
+        uint32_t flags = lagfx_le32(rec + 4);
+        LAGFX_LOG("  invalidate[%u]: rid=0x%08x flags=0x%08x",
+                  i, rid, flags);
     }
 
-    /* Walk the inner stream. PARTIAL layout guess — each inner entry is
-     * assumed to carry an 8-byte header {u32 inner_opcode, u32
-     * inner_length} followed by inner_length - 8 payload bytes. The
-     * inner_length field is inclusive of the 8-byte header. A single
-     * malformed entry stops the walk; the outer stamp still signals
-     * unconditionally through the dispatcher. */
-    size_t cursor = 8u;  /* skip outer {taskID, count} */
-    uint32_t processed = 0;
-    while (processed < count) {
-        if (cursor + 8u > hdr->payload_size) {
-            LAGFX_WARN("CmdExecIndirect2: inner entry #%u header "
-                       "overflow (cursor=%zu payload_size=%u)",
-                       processed, cursor,
-                       (unsigned)hdr->payload_size);
-            return LAGFX_HANDLER_ERR_SIZE;
-        }
-        uint32_t inner_opcode = lagfx_le32(hdr->payload + cursor);
-        uint32_t inner_length = lagfx_le32(hdr->payload + cursor + 4);
-        if (inner_length < 8u ||
-            (size_t)inner_length > (size_t)hdr->payload_size - cursor) {
-            LAGFX_WARN("CmdExecIndirect2: inner entry #%u bad length "
-                       "(inner_length=%u remaining=%zu)",
-                       processed, inner_length,
-                       (size_t)hdr->payload_size - cursor);
-            return LAGFX_HANDLER_ERR_SIZE;
-        }
-        const uint8_t *inner_payload =
-            hdr->payload + cursor + 8u;
-        size_t inner_payload_len = (size_t)inner_length - 8u;
-
-        (void)lagfx_process_inner(p, inner_opcode,
-                                  inner_payload, inner_payload_len);
-
-        cursor    += inner_length;
-        processed += 1u;
+    /* Walk resource_table — each {host_gpu_addr, length} points at a
+     * per-resource cmdBuf in IOAccelResource2 backing memory. Inner-
+     * opcode walk against these addresses is the next M4 step. */
+    for (uint32_t i = 0; i < resource_count; ++i) {
+        const uint8_t *rec = hdr->payload + off_resources + (size_t)i * 16u;
+        uint64_t host_gpu_addr =
+            (uint64_t)lagfx_le32(rec + 0) |
+            ((uint64_t)lagfx_le32(rec + 4) << 32);
+        uint32_t length = lagfx_le32(rec + 8);
+        uint32_t pad    = lagfx_le32(rec + 12);
+        LAGFX_LOG("  resource[%u]: host_gpu_addr=0x%llx length=%u pad=0x%08x",
+                  i, (unsigned long long)host_gpu_addr, length, pad);
     }
 
-    LAGFX_LOG("CmdExecIndirect2: taskID=%u count=%u processed=%u "
-              "stamp=0x%08x (Phase 3.A scaffold — inner-opcode dispatch)",
-              task_id, count, processed, hdr->stamp);
+    /* Inner stream walk against each host_gpu_addr is a future step.
+     * For now we ack the stamp so the guest doesn't park, mirroring
+     * the empty-list path. The previous implementation walked an
+     * imaginary inline inner stream — that's been deleted; the real
+     * inner stream lives behind the resource_table[] addrs and needs
+     * the shell.read_memory / object-delegate path to be wired up
+     * (see M4 guide §1.2 + §3). */
+    lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
+                                        hdr->stamp);
     return LAGFX_HANDLER_OK;
 }
