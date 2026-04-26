@@ -16,11 +16,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- (nothing yet — see `[0.1.0-preview]` below for current progress.)
+- **M4 closure (2026-04-26):** WindowServer no longer crashes in
+  `MetalShader::CopyPipelineState`. Crash signature shifted to
+  user-space `CA::OGL::MetalContext::create_pipeline_state` with
+  `"rasterSampleCount (1) is not supported by device"` — that's M5
+  territory (Metal feature reply correctness), not M4 regression.
+- `scripts/smoke-test.sh` — VM boot + WindowServer crash-report
+  regression gate. Classifies crashes as M4-regression / M5-tolerated /
+  unexpected. Filters by the report's own `captureTime` field
+  (file mtime is unreliable — ReportCrash flushes batched reports
+  later).
+- `scripts/m5-progress.sh` — automated harness for the 10-level M5
+  progress scale (`mos/memory/project_m5_progress_scale_2026_04_26.md`).
+  Levels 10–70 fully automated; 80 (perf), 90 (1hr stability),
+  100 (visual diff) are SKIP-manual. Captures via QEMU monitor
+  `screendump` (works regardless of guest login state).
+- `tests/fuzz-protocol-dispatch.c` — libFuzzer harness for the
+  protocol dispatcher; gated `-Dfuzz=enabled`. Verified on Alpine
+  clang-19: 2.1M iterations/6s green.
+- `src/protocol/translate.c` — `lagfx_task_translate` extracted from
+  `protocol.c` into its own TU.
+- Three log levels (`LAGFX_LOG_LEVEL=warn|info|trace`) plus the
+  `LAGFX_TRACE` macro. Default level = `warn` (prod-safe). Per-cmd /
+  per-translate / per-MMIO call sites converted to TRACE.
 
 ### Changed
+- `LAGFX_OP_ROOT_CHANNEL_INVALIDATE` → `LAGFX_OP_MAP_MEMORY_IMMEDIATE`
+  (the old name was wrong on two counts: not on root channel, doesn't
+  invalidate). Per `paravirt-re/library/journey/opcodes-0x35-0x36-0x39.md`.
+- Per-channel ring drain now walks `page0[off>>12]` per chunk and
+  stitches the result, instead of using `page0[0]` as a single base
+  GPA + adding `cur_rp`. The latter only worked when the kernel
+  allocator gave physically-contiguous pages; on a fragmented heap
+  cmds past offset 0xfff read garbage. Drop the `+0x1000` fallback.
 
 ### Fixed
+- Per-channel ring `cmd_len` bounds check no longer overflows when
+  the kext writes a sentinel `0xFFFFFFFF` length (e.g. ch=1 idle
+  doorbell with empty data). Compare against available span instead
+  of `cur_rp + cmd_len`.
+- Segment walker no longer rejects `host_gpu_addr == 0u` — VA=0 is
+  a legitimate task-VA; the radix-walker fallback already handles
+  unmapped cases.
+- `lagfx_op_define_host_task` overwrites `root_page_pfn` cleanly
+  on slot reuse. Documented that the kext recycles taskIDs across
+  many task instances; the simple overwrite is correct because the
+  kext has freed the prior radix pages.
+
+### Removed
+- `lagfx_task_mapping_t` / `LAGFX_MAX_TASK_MAPPINGS` /
+  `lagfx_task_entry_t::mappings[]`. Was populated from 0x39
+  CmdMapMemoryImmediate trailers, scanned in `lagfx_task_translate`,
+  but never authoritative — translation always fell through to the
+  radix walk. Pure ballast; can be re-added if multi-PA scatter
+  prefix RE produces per-segment GPAs to store.
 
 ---
 
