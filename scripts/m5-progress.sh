@@ -13,10 +13,10 @@
 #   ./scripts/m5-progress.sh --no-rebuild ...   # skip docker compose build
 #
 # Env (matches scripts/smoke-test.sh):
-#   SMOKE_DOCKER_HOST=docker
-#   SMOKE_GUEST=matthew@10.1.7.20
-#   SMOKE_MOS_DIR=/home/matthew/mos-docker
-#   SMOKE_CONTAINER=mos-docker-macos-1
+#   SMOKE_DOCKER_HOST   ssh alias of docker host (default: 'docker')
+#   SMOKE_GUEST         <user>@<guest-ip> — REQUIRED
+#   SMOKE_MOS_DIR       mos-docker checkout on docker host
+#   SMOKE_CONTAINER     compose container name (default: 'mos-docker-macos-1')
 #
 # Exits 0 if all run levels pass, non-zero on first FAIL or unexpected
 # state. SKIP doesn't fail.
@@ -34,8 +34,8 @@
 set -uo pipefail
 
 DOCKER_HOST="${SMOKE_DOCKER_HOST:-docker}"
-GUEST="${SMOKE_GUEST:-matthew@10.1.7.20}"
-MOS_DIR="${SMOKE_MOS_DIR:-/home/matthew/mos-docker}"
+GUEST="${SMOKE_GUEST:?SMOKE_GUEST must be set, e.g. \"export SMOKE_GUEST=user@10.1.7.20\"}"
+MOS_DIR="${SMOKE_MOS_DIR:-\$HOME/mos-docker}"
 CONTAINER="${SMOKE_CONTAINER:-mos-docker-macos-1}"
 SSH_TIMEOUT="${SMOKE_SSH_TIMEOUT:-180}"
 DIAG_DIR="${SMOKE_DIAG_DIR:-/Library/Logs/DiagnosticReports}"

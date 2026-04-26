@@ -19,20 +19,26 @@
 #                                                 # already rebuilt and
 #                                                 # just want re-test)
 #
-# Env defaults match docker-macos's standard layout:
-#   SMOKE_DOCKER_HOST   = docker          (ssh alias of the docker host)
-#   SMOKE_CONTAINER     = mos-docker-macos-1
-#   SMOKE_GUEST         = matthew@10.1.7.20
-#   SMOKE_MOS_DIR       = /home/matthew/mos-docker
-#   SMOKE_SSH_TIMEOUT   = 180             (seconds to wait for guest SSH)
-#   SMOKE_DIAG_DIR      = /Library/Logs/DiagnosticReports
+# Configuration via env vars. Set in your shell or via a wrapper script.
+# All defaults match the standard mos-docker layout (docker host with the
+# mos-docker compose project at $HOME/mos-docker, guest SSH-reachable at
+# the IP your DHCP/macvtap config gives it).
+#
+#   SMOKE_DOCKER_HOST   ssh alias of the docker host (default: 'docker')
+#   SMOKE_CONTAINER     compose container name (default: 'mos-docker-macos-1')
+#   SMOKE_GUEST         <user>@<guest-ip> — REQUIRED, no sane default
+#   SMOKE_MOS_DIR       mos-docker checkout on docker host
+#                       (default: $HOME/mos-docker)
+#   SMOKE_SSH_TIMEOUT   seconds to wait for guest SSH (default: 180)
+#   SMOKE_DIAG_DIR      crash-report dir on guest
+#                       (default: /Library/Logs/DiagnosticReports)
 
 set -euo pipefail
 
 DOCKER_HOST="${SMOKE_DOCKER_HOST:-docker}"
 CONTAINER="${SMOKE_CONTAINER:-mos-docker-macos-1}"
-GUEST="${SMOKE_GUEST:-matthew@10.1.7.20}"
-MOS_DIR="${SMOKE_MOS_DIR:-/home/matthew/mos-docker}"
+GUEST="${SMOKE_GUEST:?SMOKE_GUEST must be set, e.g. \"export SMOKE_GUEST=user@10.1.7.20\"}"
+MOS_DIR="${SMOKE_MOS_DIR:-\$HOME/mos-docker}"
 SSH_TIMEOUT="${SMOKE_SSH_TIMEOUT:-180}"
 DIAG_DIR="${SMOKE_DIAG_DIR:-/Library/Logs/DiagnosticReports}"
 
