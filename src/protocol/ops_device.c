@@ -430,6 +430,68 @@ lagfx_handler_status_t lagfx_op_delete_task(lagfx_protocol_t *p,
 }
 
 /* ===========================================================================
+ * CmdDefineHostTask (0x38) — P0
+ *
+ * Wire format CONFIRMED via live capture of kext-side traffic
+ * 2026-04-26 (RE captured from `dispatch: op=0x0038` hex-dumps):
+ *
+ *   payload[0..3]   u32 task_id
+ *   payload[4..7]   u32 reserved (zero in observed traffic)
+ *   payload[8..11]  u32 flags     (=4 in observed traffic)
+ *   payload[12..15] u32 root_page_pfn   (PFN of first-level PFN-array
+ *                                        page; index by task-VA / 0x1000)
+ *
+ * Semantics: register/refresh a task's host-side page-table root. The
+ * PFN-array at (root_page_pfn << 12) maps task-virtual page numbers to
+ * guest-physical PFNs. Used by the CmdExecIndirect2 segment walker to
+ * translate `host_gpu_addr` (which is a task-VA, not a literal GPA)
+ * to a real GPA before reading the cmdBuf.
+ *
+ * The kext re-emits this opcode periodically (~320 fires per boot
+ * observed); we treat each as authoritative — overwrite any prior
+ * root_page_pfn for the same task_id. Allocate a task slot if the
+ * task_id wasn't already registered (CmdDefineTask2 may not have
+ * fired for vchan/exec-channel tasks).
+ * =========================================================================== */
+
+lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
+                                                 const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 16) {
+        LAGFX_WARN("CmdDefineHostTask: payload missing or too small "
+                   "(size=%u, need >= 16)", (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint32_t task_id        = lagfx_le32(hdr->payload + 0);
+    uint32_t reserved       = lagfx_le32(hdr->payload + 4);
+    uint32_t flags          = lagfx_le32(hdr->payload + 8);
+    uint32_t root_page_pfn  = lagfx_le32(hdr->payload + 12);
+    (void)reserved;
+    (void)flags;
+
+    lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
+    if (!entry) {
+        entry = lagfx_protocol_alloc_task_slot(p);
+        if (!entry) {
+            LAGFX_WARN("CmdDefineHostTask: task table full (max=%u)",
+                       LAGFX_MAX_TASKS);
+            return LAGFX_HANDLER_ERR_STATE;
+        }
+        entry->id = task_id;
+        entry->live = true;
+    }
+    entry->root_page_pfn = root_page_pfn;
+
+    LAGFX_LOG("CmdDefineHostTask: taskID=%u root_page_pfn=0x%x "
+              "flags=0x%x stamp=0x%08x",
+              task_id, root_page_pfn, flags, hdr->stamp);
+    return LAGFX_HANDLER_OK;
+}
+
+/* ===========================================================================
  * CmdMapMemory2 (0x02) — P1 (Phase 1.A.2)
  *
  * Request layout (command-buffer-format.md §4 "Variable-Length Arrays",

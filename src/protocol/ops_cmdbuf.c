@@ -169,202 +169,35 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
 }
 
 /* ===========================================================================
- * CmdExecIndirect2 (0x20) — P1 partial (Phase 3.A scaffold)
+ * CmdExecIndirect2 (0x20 / kext-side 0x37) — M4 segment walker.
  *
- * PARTIAL confidence. Per command-buffer-format.md §12 ("hardest opcode
- * encountered") and phase-3-metal-vulkan-plan.md §R3.6, the inner
- * command-stream layout inside this opcode's nested buffer is the
- * single biggest unknown in Phase 3. A 2-day runtime-capture RE spike
- * at Phase 3.A day 1–2 is required to confirm the inner-opcode numeric
- * IDs, the per-entry header layout, and the payload encodings.
+ * Outer payload layout (CONFIRMED from kext-side 0x37 ch=1 capture
+ * 2026-04-26; see body comment below for details):
  *
- * Outer request layout (guess, aligned with command-buffer-format.md
- * §3 MED-HIGH for the 0x20 wrapper):
+ *     payload[0..3]   u32 task_id
+ *     payload[4..7]   u32 invalidate_count          (16B records)
+ *     payload[8..11]  u32 resource_count
+ *     payload[12..]   invalidate_record[]           (16B each)
+ *     ...             16B reserved/middle block
+ *     ...             resource_table[]              (16B each:
+ *                                                    {u64 host_gpu_addr,
+ *                                                     u32 length, u32 _pad})
  *
- *     payload[0..3]             u32 taskID
- *     payload[4..7]             u32 count            (# of inner entries)
- *     payload[8..]              inner entries (see below)
+ * Each resource_table entry's host_gpu_addr is a TASK-VIRTUAL address
+ * (translated through the per-task PFN-array from CmdDefineHostTask 0x38)
+ * pointing at a per-resource cmdBuf containing
+ * PGSerializerCommandSegmentHeader records + nested PGCmdHeader streams.
  *
- * Inner-entry layout (PARTIAL guess — per phase-3-metal-vulkan-plan.md
- * §3.A + common Apple PVG conventions, each inner entry is assumed to
- * carry an 8-byte header of {u32 inner_opcode, u32 inner_length}
- * followed by inner_length - 8 bytes of inner payload). Runtime RE
- * capture required to confirm. If the real wire uses a different
- * header (e.g., packed u16 opcode + u16 length, or 4-byte headers),
- * only this decode block needs to change — the lagfx_process_inner()
- * dispatch is stable.
+ * The handler walks each cmdBuf, decodes segment + inner-cmd headers,
+ * and currently only emits a 12B PGReplyRenderPipelineStateInfo for
+ * InfoDecoder opcode 0x1cc (decodeRenderPipelineStateInfo) so the dylib
+ * can finish MetalShader::CopyPipelineState. All other inner opcodes
+ * are observation-only (logged for RE follow-up).
  *
- * Semantics:
- *   - count=0 (or payload < 8 bytes): instant completion — the
- *     metal-no-op alternate empty-cmdbuf path (pre-Phase-3 behaviour
- *     preserved).
- *   - count>0: walk each inner entry, decode its 8-byte inner header,
- *     invoke lagfx_process_inner() which dispatches to per-inner-opcode
- *     stub handlers. Each stub logs + bumps counters; Phase 3.A.2 will
- *     replace the log-only stubs with real Vulkan record operations
- *     (vkCmdBindShadersEXT, vkCmdDraw, etc.) against a VkCommandBuffer.
- *
- * The outer stamp is signalled unconditionally by the dispatcher.
+ * Empty-list / short-payload cases fall through to the metal-no-op
+ * empty-cmdbuf completion path. The outer stamp is signalled
+ * unconditionally by the dispatcher.
  * =========================================================================== */
-
-/* Inner-opcode stub handlers — minimal work + counter bumps + log.
- * All take (p, payload, payload_len) where payload is past the 8-byte
- * inner header. Return LAGFX_HANDLER_OK on success or
- * LAGFX_HANDLER_ERR_SIZE on underflow. None abort the outer dispatch
- * — the caller continues walking the inner stream on any single-entry
- * failure (fail-open per command-buffer-format.md §6). */
-
-static lagfx_handler_status_t lagfx_inner_bind_pipeline(
-    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
-    if (payload_len < 4) {
-        LAGFX_WARN("inner BIND_PIPELINE: payload too small (%zu < 4)",
-                   payload_len);
-        return LAGFX_HANDLER_ERR_SIZE;
-    }
-    uint32_t pipeline_handle = lagfx_le32(payload);
-    p->inner_opcodes_bind_pipeline++;
-
-    /* Update every live display's last_pipeline. Phase 3.A.2 will bind
-     * against an actual display-scoped VkCommandBuffer; for now we just
-     * observe the handle so tests can see the dispatch landed. */
-    for (unsigned i = 0; i < LAGFX_PROTO_MAX_DISPLAYS; ++i) {
-        if (p->displays[i].live) {
-            p->displays[i].last_pipeline = pipeline_handle;
-        }
-    }
-
-    LAGFX_LOG("inner BIND_PIPELINE: handle=0x%08x", pipeline_handle);
-    return LAGFX_HANDLER_OK;
-}
-
-static lagfx_handler_status_t lagfx_inner_bind_vertex_buffer(
-    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
-    if (payload_len < 12) {
-        LAGFX_WARN("inner BIND_VERTEX_BUFFER: payload too small (%zu < 12)",
-                   payload_len);
-        return LAGFX_HANDLER_ERR_SIZE;
-    }
-    uint32_t buffer_handle = lagfx_le32(payload);
-    /* offset occupies the next 8 bytes (u64 LE). */
-    uint64_t offset =
-        (uint64_t)lagfx_le32(payload + 4) |
-        ((uint64_t)lagfx_le32(payload + 8) << 32);
-    p->inner_opcodes_bind_vertex_buffer++;
-    LAGFX_LOG("inner BIND_VERTEX_BUFFER: handle=0x%08x offset=0x%llx",
-              buffer_handle, (unsigned long long)offset);
-    return LAGFX_HANDLER_OK;
-}
-
-static lagfx_handler_status_t lagfx_inner_bind_fragment_resource(
-    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
-    if (payload_len < 4) {
-        LAGFX_WARN("inner BIND_FRAGMENT_RESOURCE: payload too small "
-                   "(%zu < 4)", payload_len);
-        return LAGFX_HANDLER_ERR_SIZE;
-    }
-    uint32_t resource_handle = lagfx_le32(payload);
-    p->inner_opcodes_bind_fragment_resource++;
-    LAGFX_LOG("inner BIND_FRAGMENT_RESOURCE: handle=0x%08x",
-              resource_handle);
-    return LAGFX_HANDLER_OK;
-}
-
-static lagfx_handler_status_t lagfx_inner_set_render_target(
-    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
-    if (payload_len < 4) {
-        LAGFX_WARN("inner SET_RENDER_TARGET: payload too small (%zu < 4)",
-                   payload_len);
-        return LAGFX_HANDLER_ERR_SIZE;
-    }
-    uint32_t target_handle = lagfx_le32(payload);
-    p->inner_opcodes_set_render_target++;
-    LAGFX_LOG("inner SET_RENDER_TARGET: handle=0x%08x",
-              target_handle);
-    return LAGFX_HANDLER_OK;
-}
-
-static lagfx_handler_status_t lagfx_inner_draw(
-    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
-    if (payload_len < 8) {
-        LAGFX_WARN("inner DRAW: payload too small (%zu < 8)",
-                   payload_len);
-        return LAGFX_HANDLER_ERR_SIZE;
-    }
-    uint32_t vertex_count   = lagfx_le32(payload);
-    uint32_t instance_count = lagfx_le32(payload + 4);
-    p->inner_opcodes_draw++;
-
-    /* TODO(Phase 3.A.2): Record vkCmdBindPipeline + vkCmdDraw against
-     * the display-scoped VkCommandBuffer here. Need pipeline-state
-     * plumbing from last_pipeline + descriptor sets accumulated from
-     * BIND_VERTEX_BUFFER / BIND_FRAGMENT_RESOURCE. For now, log-only —
-     * per phase-3-metal-vulkan-plan.md §3.A this is the Phase 3.A.2
-     * entry point once the RE spike confirms inner-opcode semantics. */
-    LAGFX_LOG("inner DRAW: vertex_count=%u instance_count=%u "
-              "(Phase 3.A.2 will record vkCmdDraw here)",
-              vertex_count, instance_count);
-    return LAGFX_HANDLER_OK;
-}
-
-static lagfx_handler_status_t lagfx_inner_set_viewport(
-    lagfx_protocol_t *p, const uint8_t *payload, size_t payload_len) {
-    if (payload_len < 16) {
-        LAGFX_WARN("inner SET_VIEWPORT: payload too small (%zu < 16)",
-                   payload_len);
-        return LAGFX_HANDLER_ERR_SIZE;
-    }
-    uint32_t x = lagfx_le32(payload);
-    uint32_t y = lagfx_le32(payload + 4);
-    uint32_t w = lagfx_le32(payload + 8);
-    uint32_t h = lagfx_le32(payload + 12);
-    p->inner_opcodes_set_viewport++;
-    LAGFX_LOG("inner SET_VIEWPORT: rect=(%u,%u,%u,%u)", x, y, w, h);
-    return LAGFX_HANDLER_OK;
-}
-
-static lagfx_handler_status_t lagfx_inner_unknown(
-    lagfx_protocol_t *p, uint32_t inner_opcode,
-    const uint8_t *payload, size_t payload_len) {
-    p->inner_opcodes_unknown++;
-
-    /* Log a short hex dump of up to the first 16 bytes so runtime RE
-     * capture has something to match against. */
-    char hex[3 * 16 + 1];
-    size_t dump = payload_len < 16 ? payload_len : 16;
-    for (size_t i = 0; i < dump; ++i) {
-        snprintf(hex + i * 3, 4, "%02x ", payload[i]);
-    }
-    hex[dump ? dump * 3 - 1 : 0] = '\0';
-    LAGFX_LOG("inner UNKNOWN: opcode=0x%08x payload_len=%zu hex=[%s%s]",
-              inner_opcode, payload_len, hex,
-              payload_len > 16 ? " ..." : "");
-    return LAGFX_HANDLER_OK;
-}
-
-/* Dispatch one inner-opcode entry. payload points past the 8-byte
- * inner header; payload_len is inner_length - 8. */
-static lagfx_handler_status_t lagfx_process_inner(
-    lagfx_protocol_t *p, uint32_t inner_opcode,
-    const uint8_t *payload, size_t payload_len) {
-    p->inner_opcodes_processed++;
-    switch ((lagfx_inner_opcode_t)inner_opcode) {
-    case LAGFX_INNER_BIND_PIPELINE:
-        return lagfx_inner_bind_pipeline(p, payload, payload_len);
-    case LAGFX_INNER_BIND_VERTEX_BUFFER:
-        return lagfx_inner_bind_vertex_buffer(p, payload, payload_len);
-    case LAGFX_INNER_BIND_FRAGMENT_RESOURCE:
-        return lagfx_inner_bind_fragment_resource(p, payload, payload_len);
-    case LAGFX_INNER_SET_RENDER_TARGET:
-        return lagfx_inner_set_render_target(p, payload, payload_len);
-    case LAGFX_INNER_DRAW:
-        return lagfx_inner_draw(p, payload, payload_len);
-    case LAGFX_INNER_SET_VIEWPORT:
-        return lagfx_inner_set_viewport(p, payload, payload_len);
-    case LAGFX_INNER_UNKNOWN:
-    default:
-        return lagfx_inner_unknown(p, inner_opcode, payload, payload_len);
-    }
-}
 
 lagfx_handler_status_t lagfx_op_exec_indirect2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
@@ -502,21 +335,54 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             continue;
         }
 
-        /* Read the entire cmdBuf into a per-iteration buffer. 4 MiB
-         * cap keeps stack pressure bounded; for larger buffers we'd
-         * need streaming. Init-phase Metal queries fit in a single
-         * page. */
+        /* Read the entire cmdBuf into a per-iteration buffer. host_gpu_addr
+         * is a TASK-VIRTUAL address (not a literal GPA) — we translate
+         * each page through the task's root_page_pfn PFN-array (published
+         * by CmdDefineHostTask 0x38). Same pattern as the per-channel
+         * ring's PFN-array indirection. Reads page-by-page so that a
+         * cmdBuf spanning multiple non-contiguous physical pages still
+         * works.
+         *
+         * Falls back to treating host_gpu_addr as a literal GPA if no
+         * host-task is registered (defensive — covers the dylib-emitted
+         * 0x20 path on the RootChannel where host_gpu_addr might be a
+         * direct GPA). */
         uint8_t *cmdbuf = malloc(length);
         if (!cmdbuf) {
             LAGFX_WARN("  resource[%u]: malloc(%u) failed — skipping",
                        i, length);
             continue;
         }
-        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                            host_gpu_addr,
-                                            length, cmdbuf)) {
-            LAGFX_LOG("  resource[%u]: read_memory failed at 0x%llx — skipping",
-                      i, (unsigned long long)host_gpu_addr);
+
+        bool read_ok = true;
+        uint32_t bytes_read = 0;
+        while (bytes_read < length) {
+            uint64_t cur_dev_addr = host_gpu_addr + bytes_read;
+            uint64_t gpa = 0;
+            uint64_t run = 0;
+            bool translated = lagfx_task_translate(p, task_id, cur_dev_addr,
+                                                   &gpa, &run);
+            if (!translated) {
+                /* Fallback: literal GPA. */
+                gpa = cur_dev_addr;
+                run = 0x1000u - (cur_dev_addr & 0xfffu);
+            }
+            uint32_t this_chunk = (uint32_t)((run < (uint64_t)(length - bytes_read))
+                                             ? run : (length - bytes_read));
+            if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                gpa, this_chunk,
+                                                cmdbuf + bytes_read)) {
+                LAGFX_LOG("  resource[%u]: read_memory failed at gpa=0x%llx "
+                          "(dev=0x%llx, %u bytes, translated=%d) — skipping",
+                          i, (unsigned long long)gpa,
+                          (unsigned long long)cur_dev_addr, this_chunk,
+                          translated ? 1 : 0);
+                read_ok = false;
+                break;
+            }
+            bytes_read += this_chunk;
+        }
+        if (!read_ok) {
             free(cmdbuf);
             continue;
         }
@@ -597,13 +463,34 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                     if (buffer_id < resource_count) {
                         const uint8_t *brec = hdr->payload + off_resources
                                               + (size_t)buffer_id * 16u;
-                        uint64_t buffer_gpa =
+                        uint64_t buffer_dev_addr =
                             (uint64_t)lagfx_le32(brec + 0) |
                             ((uint64_t)lagfx_le32(brec + 4) << 32);
                         uint32_t buffer_len = lagfx_le32(brec + 8);
-                        uint64_t target_gpa = buffer_gpa + reply_offset;
 
-                        if (reply_offset + 12u <= (uint64_t)buffer_len) {
+                        if (reply_offset + 12u > (uint64_t)buffer_len) {
+                            LAGFX_WARN("        0x1cc reply: offset=0x%llx + "
+                                       "12 > buffer_len=%u — out of bounds",
+                                       (unsigned long long)reply_offset,
+                                       buffer_len);
+                        } else {
+                            /* Translate buffer_dev_addr + reply_offset
+                             * through the task's PFN-array. The 12-byte
+                             * reply fits in a single page per the layout
+                             * (4-byte aligned, no boundary cross). */
+                            uint64_t target_dev_addr =
+                                buffer_dev_addr + reply_offset;
+                            uint64_t target_gpa = 0;
+                            uint64_t target_run = 0;
+                            bool translated = lagfx_task_translate(
+                                p, task_id, target_dev_addr,
+                                &target_gpa, &target_run);
+                            if (!translated) {
+                                /* Fallback: literal GPA. */
+                                target_gpa = target_dev_addr;
+                                target_run = 0x1000u - (target_dev_addr & 0xfffu);
+                            }
+
                             uint8_t reply[12];
                             /* maxTotalThreadsPerThreadgroup = 1024
                              * (Apple-class minimum non-zero default). */
@@ -618,27 +505,28 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                             reply[8] = 0; reply[9] = 0;
                             reply[10] = 0; reply[11] = 0;
 
-                            if (p->dev->desc.shell.write_memory(
-                                    p->dev->desc.shell.opaque,
-                                    target_gpa, sizeof(reply), reply)) {
+                            if (target_run < 12u) {
+                                LAGFX_WARN("        0x1cc reply: target run=%llu "
+                                           "< 12 — would cross page (skip)",
+                                           (unsigned long long)target_run);
+                            } else if (p->dev->desc.shell.write_memory(
+                                           p->dev->desc.shell.opaque,
+                                           target_gpa, sizeof(reply), reply)) {
                                 LAGFX_LOG("        0x1cc reply: ref=0x%x "
-                                          "buffer_id=%u (gpa=0x%llx len=%u) "
-                                          "+offset=0x%llx -> 12B with "
-                                          "maxTPT=1024",
+                                          "buffer_id=%u (dev=0x%llx len=%u) "
+                                          "+offset=0x%llx -> gpa=0x%llx 12B "
+                                          "(translated=%d) maxTPT=1024",
                                           ref, buffer_id,
-                                          (unsigned long long)buffer_gpa,
+                                          (unsigned long long)buffer_dev_addr,
                                           buffer_len,
-                                          (unsigned long long)reply_offset);
+                                          (unsigned long long)reply_offset,
+                                          (unsigned long long)target_gpa,
+                                          translated ? 1 : 0);
                             } else {
                                 LAGFX_WARN("        0x1cc reply: write_memory "
                                            "failed at gpa=0x%llx",
                                            (unsigned long long)target_gpa);
                             }
-                        } else {
-                            LAGFX_WARN("        0x1cc reply: offset=0x%llx + "
-                                       "12 > buffer_len=%u — out of bounds",
-                                       (unsigned long long)reply_offset,
-                                       buffer_len);
                         }
                     } else {
                         LAGFX_WARN("        0x1cc reply: buffer_id=%u >= "

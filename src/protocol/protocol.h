@@ -159,11 +159,4 @@ void lagfx_protocol_stats(const lagfx_protocol_t *p,
 /* Query the last completed stamp (tests + observability). */
 uint32_t lagfx_protocol_last_completed_stamp(const lagfx_protocol_t *p);
 
-/* Last value written to any setter-candidate MMIO offset, together
- * with the offset itself. Until the true doorbell offset is known,
- * tests use these to confirm the probe captured the write. */
-uint32_t lagfx_protocol_last_setter_offset(const lagfx_protocol_t *p);
-uint32_t lagfx_protocol_last_setter_value(const lagfx_protocol_t *p);
-uint64_t lagfx_protocol_setter_write_count(const lagfx_protocol_t *p);
-
 #endif /* LIBAPPLEGFX_PROTOCOL_H */

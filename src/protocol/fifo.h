@@ -28,16 +28,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Called when the guest writes to any MMIO offset in the setter
- * candidate range 0x1004..0x1034. The true identities (basePage /
- * length / start / written / other) are not yet known, so this
- * handler logs (offset, value) and treats the value as a
- * "doorbell-candidate write pointer" for the purpose of attempting a
- * drain. Tests use it via lagfx_protocol_last_setter_* accessors to
- * confirm the wiring. */
-void lagfx_fifo_on_mmio_setter(lagfx_protocol_t *p,
-                               uint64_t offset, uint32_t value);
-
 /* Walk the ring from read_ptr up to the guest's advertised write
  * pointer.
  *

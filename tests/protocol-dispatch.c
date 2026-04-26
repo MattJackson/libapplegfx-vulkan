@@ -361,10 +361,18 @@ static void test_dispatch_nop(void) {
     CHECK(lagfx_protocol_last_completed_stamp(p) == 0x11110002u,
           "stamp cell updated to second stamp");
 
-    /* Stamp cell at MMIO 0x1014 readable. */
-    uint32_t cell = lagfx_mmio_read(dev, LAGFX_REG_STAMP_CELL_1);
-    CHECK(cell == 0x11110002u,
-          "MMIO STAMP_CELL_1 (0x1014) reads last completed stamp");
+    /* MMIO 0x1014 is the display-completion bitmask (xchg-and-clear)
+     * per A4d (2026-04-24). It is NOT a last-completed-stamp register —
+     * the older `STAMP_CELL_1` name is retained as a header alias for
+     * the offset only. With no display channels having completed in
+     * this test, the mask should read as 0 and stay 0 across repeated
+     * reads (xchg semantics on a zero-bit pending mask). */
+    uint32_t mask = lagfx_mmio_read(dev, LAGFX_REG_STAMP_CELL_1);
+    CHECK(mask == 0u,
+          "MMIO 0x1014 (display_bitmask) reads 0 with no displays pending");
+    uint32_t mask2 = lagfx_mmio_read(dev, LAGFX_REG_STAMP_CELL_1);
+    CHECK(mask2 == 0u,
+          "MMIO 0x1014 second read still 0 (xchg-and-clear)");
 
     /* _rootPageNumber read slot (0x101c) is NOT a stamp register —
      * decoder scaffold hasn't been asked to populate it, so it
@@ -473,48 +481,11 @@ static void test_dispatch_routes_to_correct_handler(void) {
     lagfx_device_free(dev);
 }
 
-static void test_mmio_setter_candidate_probe(void) {
-    fprintf(stdout, "\n--- test: mmio_setter_candidate_probe ---\n");
-
-    mock_shell_t shell = {0};
-    lagfx_device_t *dev = make_dev(&shell);
-    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-
-    /* Post-M3-plumbing: 0x1004/0x1008/0x1010/0x101c/0x1030 now have
-     * dedicated switch cases in lagfx_protocol_mmio_write and no longer
-     * fall through to the setter-candidate probe. The remaining
-     * unresolved candidate slots per Agent I's recipe are 0x1020, 0x1024,
-     * 0x1028, 0x1034 — those still route to lagfx_fifo_on_mmio_setter
-     * for observability. */
-    static const uint64_t candidates[] = {
-        0x1020u, 0x1024u, 0x1028u, 0x1034u,
-    };
-    uint64_t expected_count = 0;
-    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
-        uint32_t value = (uint32_t)(0xbeef0000u + (uint32_t)i);
-        lagfx_mmio_write(dev, candidates[i], value);
-        expected_count += 1;
-
-        CHECK(lagfx_protocol_setter_write_count(p) == expected_count,
-              "setter probe count increments");
-        CHECK(lagfx_protocol_last_setter_offset(p) == (uint32_t)candidates[i],
-              "setter probe records last offset");
-        CHECK(lagfx_protocol_last_setter_value(p) == value,
-              "setter probe records last value");
-    }
-
-    /* Resolved slots must NOT bump the setter probe — they have
-     * dedicated handlers. */
-    uint64_t saved = lagfx_protocol_setter_write_count(p);
-    lagfx_mmio_write(dev, 0x1004u, 0x10000u);
-    lagfx_mmio_write(dev, 0x1010u, 0x1000u);
-    lagfx_mmio_write(dev, LAGFX_REG_ROOT_PAGE_NUMBER, 0x12345678u);
-    lagfx_mmio_write(dev, 0x1030u, 0xabcu);
-    CHECK(lagfx_protocol_setter_write_count(p) == saved,
-          "resolved MMIO setters bypass the setter-candidate probe");
-
-    lagfx_device_free(dev);
-}
+/* test_mmio_setter_candidate_probe was removed alongside the
+ * setter-candidate probe state (last_setter_offset / last_setter_value
+ * / setter_write_count) — every offset in 0x1004..0x1034 now has a
+ * dedicated handler (or is silently ignored), so the probe was dead
+ * scaffolding. See m3-prod-readiness-audit.md cleanup item. */
 
 static void test_mmio_status_control_arms_ring(void) {
     fprintf(stdout, "\n--- test: mmio_status_control_arms_ring ---\n");
@@ -939,11 +910,21 @@ static void test_exec_indirect2_empty(void) {
     CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd0000001u,
           "CmdExecIndirect2(header-only) stamp signalled");
 
-    /* Explicit count=0 with taskID. payload=8, total=20. */
-    uint8_t zero[20];
-    build_header(zero, LAGFX_OP_EXEC_INDIRECT2, 0, 20, 0xd0000002u);
+    /* Explicit zero-record outer payload in the M4 layout (per
+     * src/protocol/ops_cmdbuf.c §"Outer payload layout"):
+     *
+     *   +0x00  u32 task_id
+     *   +0x04  u32 invalidate_count = 0
+     *   +0x08  u32 resource_count   = 0
+     *   +0x0c  16B reserved/middle block
+     *
+     * Total outer payload = 28 bytes; total command = 12 + 28 = 40. */
+    uint8_t zero[40] = {0};
+    build_header(zero, LAGFX_OP_EXEC_INDIRECT2, 0, 40, 0xd0000002u);
     put_le32(zero + 12, 1u);  /* taskID */
-    put_le32(zero + 16, 0u);  /* count=0 */
+    put_le32(zero + 16, 0u);  /* invalidate_count */
+    put_le32(zero + 20, 0u);  /* resource_count */
+    /* zero[24..39] left as zeros for the 16B middle/reserved block. */
     rc = lagfx_protocol_dispatch_one(p, zero, sizeof(zero));
     CHECK(rc == LAGFX_HANDLER_OK,
           "CmdExecIndirect2(count=0) returns OK");
@@ -955,118 +936,12 @@ static void test_exec_indirect2_empty(void) {
     lagfx_device_free(dev);
 }
 
-/* Phase 3.A inner-opcode dispatch smoke test — build a synthetic
- * CmdExecIndirect2 carrying three inner entries (BIND_PIPELINE, DRAW,
- * SET_VIEWPORT) and assert the per-opcode counters reflect each.
- *
- * PARTIAL confidence on the 8-byte inner header layout {u32
- * inner_opcode, u32 inner_length}; see ops_cmdbuf.c header comment +
- * phase-3-metal-vulkan-plan.md §R3.6 for the runtime-capture spike that
- * will confirm the real wire format. */
-static void test_exec_indirect2_inner_dispatch_smoke(void) {
-    fprintf(stdout, "\n--- test: exec_indirect2_inner_dispatch_smoke ---\n");
-
-    mock_shell_t shell = {0};
-    lagfx_device_t *dev = make_dev(&shell);
-    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-
-    /* Outer header (12) + outer args (8: taskID, count) + 3 inner entries.
-     *
-     * Inner entry layout per scaffold: 8-byte inner header {u32
-     * inner_opcode, u32 inner_length} followed by inner_length-8 payload
-     * bytes. inner_length is inclusive of the 8-byte header.
-     *
-     *   - BIND_PIPELINE (0x01): 4-byte pipeline handle  → inner_length=12
-     *   - DRAW (0x05): 8 bytes {u32 vertex_count, u32 instance_count}
-     *                                                  → inner_length=16
-     *   - SET_VIEWPORT (0x06): 16 bytes (x,y,w,h u32)   → inner_length=24
-     *
-     * Total inner stream bytes: 12 + 16 + 24 = 52.
-     * Outer payload: 8 + 52 = 60. Total command: 12 + 60 = 72. */
-    uint8_t buf[72];
-    build_header(buf, LAGFX_OP_EXEC_INDIRECT2, 0,
-                 /*total_length=*/72, /*stamp=*/0xd1a0001u);
-    put_le32(buf + 12, 0u);  /* taskID (unknown; fail-open) */
-    put_le32(buf + 16, 3u);  /* count=3 inner entries */
-
-    /* Inner #0: BIND_PIPELINE, handle=0xcafed00d. */
-    size_t off = 20;
-    put_le32(buf + off + 0, 0x01u);       /* inner_opcode */
-    put_le32(buf + off + 4, 12u);         /* inner_length */
-    put_le32(buf + off + 8, 0xcafed00du); /* pipeline handle */
-    off += 12;
-
-    /* Inner #1: DRAW, vertex_count=6, instance_count=1. */
-    put_le32(buf + off + 0, 0x05u);
-    put_le32(buf + off + 4, 16u);
-    put_le32(buf + off + 8, 6u);
-    put_le32(buf + off + 12, 1u);
-    off += 16;
-
-    /* Inner #2: SET_VIEWPORT, rect=(0,0,1920,1080). */
-    put_le32(buf + off + 0, 0x06u);
-    put_le32(buf + off + 4, 24u);
-    put_le32(buf + off + 8,  0u);
-    put_le32(buf + off + 12, 0u);
-    put_le32(buf + off + 16, 1920u);
-    put_le32(buf + off + 20, 1080u);
-
-    int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
-    CHECK(rc == LAGFX_HANDLER_OK,
-          "CmdExecIndirect2(3 inner entries) returns OK");
-    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd1a0001u,
-          "CmdExecIndirect2(3 inner entries) stamp signalled");
-
-    /* Counters — every inner entry routed to its handler + processed
-     * total bumped thrice. */
-    CHECK(p->inner_opcodes_processed == 3,
-          "inner_opcodes_processed == 3");
-    CHECK(p->inner_opcodes_bind_pipeline == 1,
-          "inner_opcodes_bind_pipeline == 1");
-    CHECK(p->inner_opcodes_draw == 1,
-          "inner_opcodes_draw == 1");
-    CHECK(p->inner_opcodes_set_viewport == 1,
-          "inner_opcodes_set_viewport == 1");
-    CHECK(p->inner_opcodes_unknown == 0,
-          "inner_opcodes_unknown == 0 (all three known)");
-
-    lagfx_device_free(dev);
-}
-
-/* Phase 3.A: emit an unknown inner opcode and assert the UNKNOWN
- * counter bumps without any crash. */
-static void test_exec_indirect2_unknown_inner(void) {
-    fprintf(stdout, "\n--- test: exec_indirect2_unknown_inner ---\n");
-
-    mock_shell_t shell = {0};
-    lagfx_device_t *dev = make_dev(&shell);
-    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-
-    /* One inner entry carrying a known-bogus opcode (0xdead) with a
-     * 4-byte payload. inner_length = 8 (header) + 4 = 12. */
-    uint8_t buf[12 + 8 + 12];
-    build_header(buf, LAGFX_OP_EXEC_INDIRECT2, 0,
-                 /*total_length=*/sizeof(buf), /*stamp=*/0xd1a0002u);
-    put_le32(buf + 12, 0u);  /* taskID */
-    put_le32(buf + 16, 1u);  /* count=1 */
-    put_le32(buf + 20, 0xdeadu); /* inner_opcode (unknown) */
-    put_le32(buf + 24, 12u);     /* inner_length */
-    put_le32(buf + 28, 0xfeedfaceu); /* inner payload */
-
-    int rc = lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
-    CHECK(rc == LAGFX_HANDLER_OK,
-          "CmdExecIndirect2(unknown inner) returns OK (fail-open)");
-    CHECK(lagfx_protocol_last_completed_stamp(p) == 0xd1a0002u,
-          "CmdExecIndirect2(unknown inner) stamp signalled");
-    CHECK(p->inner_opcodes_processed == 1,
-          "inner_opcodes_processed == 1 (bumped even for unknown)");
-    CHECK(p->inner_opcodes_unknown == 1,
-          "inner_opcodes_unknown == 1");
-    CHECK(p->inner_opcodes_draw == 0,
-          "inner_opcodes_draw untouched by unknown entry");
-
-    lagfx_device_free(dev);
-}
+/* test_exec_indirect2_inner_dispatch_smoke + test_exec_indirect2_unknown_inner
+ * were removed alongside the Phase 3.A inner-opcode dispatch scaffold
+ * (lagfx_process_inner + per-inner stubs + LAGFX_INNER_* enum +
+ * inner_opcodes_* counters). The M4 segment walker in
+ * lagfx_op_exec_indirect2 superseded that path; new wire-format coverage
+ * lands as part of the M4 work in flight. */
 
 static void test_metal_no_op_sequence(void) {
     fprintf(stdout, "\n--- test: metal_no_op_sequence ---\n");
@@ -1934,38 +1809,49 @@ static void test_m3_get_device_info2_response_and_count(void) {
           "m3-devinfo2: stamp completed");
 
     /*
-     * Current src/protocol/ops_device.c behavior (per Agent a6f4eb5 §15 RE):
-     * CmdGetDeviceInfo2 intentionally emits ZERO pairs and relies on the
-     * kext parser's post-loop fallback for defaults (feature-level
-     * 0x20002, has[0xb5]=1). See the comment in lagfx_op_get_device_info_2
-     * around the `n_pairs = 0` line. This test reflects that behavior;
-     * when/if the handler is changed to emit pairs again, update the
-     * expected values here (and add per-pair key/value checks).
-     */
-    CHECK(shell.devinfo_last_len == 0u,
-          "m3-devinfo2: response page write was 0 pairs (empty — fallback defaults)");
+     * Current src/protocol/ops_device.c behavior (A4a, 2026-04-24):
+     * CmdGetDeviceInfo2 emits the full TLV superset — 41 {u32 key, u32
+     * value} pairs covering tags 0x01..0x29, with tag 0x12 set to
+     * 0x00020008 (avoid the kext parser's missing-tag fallback) and the
+     * rest zero. Total response payload = 41 * 8 = 328 bytes. */
+    const size_t expected_pairs = 41u;
+    const size_t expected_resp_bytes = expected_pairs * 8u;
+    CHECK(shell.devinfo_last_len == expected_resp_bytes,
+          "m3-devinfo2: response page write was 41 pairs (328 bytes)");
 
-    /* First 40 bytes of resp_page should still be zero (no pairs written). */
-    int resp_zeroed = 1;
-    for (size_t i = 0; i < 40u; ++i) {
-        if (resp_page[i] != 0u) {
-            resp_zeroed = 0;
-            break;
-        }
-    }
-    CHECK(resp_zeroed,
-          "m3-devinfo2: resp page untouched in the first 40 bytes (no pairs emitted)");
+    /* Pair #0 → key=0x01, value=0 at resp_page[0..7]. */
+    uint32_t pair0_key = (uint32_t)resp_page[0]
+                       | ((uint32_t)resp_page[1] << 8)
+                       | ((uint32_t)resp_page[2] << 16)
+                       | ((uint32_t)resp_page[3] << 24);
+    CHECK(pair0_key == 0x01u,
+          "m3-devinfo2: pair #0 key == 0x01");
 
-    /* actual_count writeback: with 0 pairs emitted, the handler writes
-     * u32=0 to ring header offset +4 (the `length` slot) AFTER dispatch.
+    /* Pair #17 → key=0x12, value=0x00020008 (the version-tag override).
+     * Offset = 17 * 8 = 136. */
+    uint32_t pair17_key = (uint32_t)resp_page[136]
+                        | ((uint32_t)resp_page[137] << 8)
+                        | ((uint32_t)resp_page[138] << 16)
+                        | ((uint32_t)resp_page[139] << 24);
+    uint32_t pair17_val = (uint32_t)resp_page[140]
+                        | ((uint32_t)resp_page[141] << 8)
+                        | ((uint32_t)resp_page[142] << 16)
+                        | ((uint32_t)resp_page[143] << 24);
+    CHECK(pair17_key == 0x12u,
+          "m3-devinfo2: pair #17 key == 0x12 (version tag)");
+    CHECK(pair17_val == 0x00020008u,
+          "m3-devinfo2: pair #17 value == 0x00020008 (avoids parser fallback)");
+
+    /* actual_count writeback: with 41 pairs emitted, the handler writes
+     * u32=41 to ring header offset +4 (the `length` slot) AFTER dispatch.
      * mock_write captures writes into ring_backing for overlapping ranges,
      * so ring[4..7] now holds the actual_count LE u32. */
     uint32_t actual_count = (uint32_t)ring[4]
                           | ((uint32_t)ring[5] << 8)
                           | ((uint32_t)ring[6] << 16)
                           | ((uint32_t)ring[7] << 24);
-    CHECK(actual_count == 0u,
-          "m3-devinfo2: drain wrote actual_count=0 to ring header +4");
+    CHECK(actual_count == (uint32_t)expected_pairs,
+          "m3-devinfo2: drain wrote actual_count=41 to ring header +4");
 
     lagfx_device_free(dev);
 }
@@ -2025,8 +1911,6 @@ static void test_reset_clears_state(void) {
     CHECK(unknown == 0, "reset clears unknown_opcode_count");
     CHECK(lagfx_protocol_last_completed_stamp(p) == 0,
           "reset clears last_completed_stamp");
-    CHECK(lagfx_protocol_setter_write_count(p) == 0,
-          "reset clears setter probe counter");
     /* STATUS_CONTROL register should remain. */
     CHECK(lagfx_mmio_read(dev, LAGFX_REG_STATUS_CONTROL) != 0,
           "reset preserves STATUS_CONTROL register");
@@ -2694,7 +2578,6 @@ int main(void) {
     test_dispatch_debug();
     test_dispatch_unknown_opcode();
     test_dispatch_routes_to_correct_handler();
-    test_mmio_setter_candidate_probe();
     test_mmio_status_control_arms_ring();
     test_get_device_info_handler();
     test_task_lifecycle_handler();
@@ -2703,8 +2586,6 @@ int main(void) {
     test_map_memory2_handler();
     test_unmap_memory_handler();
     test_exec_indirect2_empty();
-    test_exec_indirect2_inner_dispatch_smoke();
-    test_exec_indirect2_unknown_inner();
     test_metal_no_op_sequence();
     test_display_ack_handler();
     test_display_swap_mapping_handler();

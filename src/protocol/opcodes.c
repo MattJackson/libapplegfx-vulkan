@@ -24,7 +24,6 @@
 #include "ops_display.h"
 #include "ops_iosurface.h"
 #include "protocol.h"
-#include "state.h"
 #include "../common/log.h"
 
 #include <stddef.h>
@@ -181,7 +180,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_CHANNEL_EVENT_37,         "CmdExecIndirect2/Kext(0x37)",
       LAGFX_PRIO_P1, 0,  0,  lagfx_op_exec_indirect2 },
     { LAGFX_OP_DEFINE_HOST_TASK,         "CmdDefineHostTask",
-      LAGFX_PRIO_P0, 16, 16, NULL },
+      LAGFX_PRIO_P0, 16, 16, lagfx_op_define_host_task },
     { LAGFX_OP_ROOT_CHANNEL_INVALIDATE,  "RootChannelInvalidateTask",
       LAGFX_PRIO_P2, 0,  0,  NULL },
     { LAGFX_OP_GET_DEVICE_INFO_2,        "CmdGetDeviceInfo2",

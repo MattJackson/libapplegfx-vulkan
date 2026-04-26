@@ -46,6 +46,19 @@ typedef struct {
     uint64_t      base_va;    /* base of reserved VA range */
     uint64_t      length;
     bool          live;
+
+    /* Host-task PFN-array indirection (M4):
+     * CmdDefineHostTask (0x38) publishes a root_page_pfn whose first
+     * page is a u32 PFN-array indexed by task-VA page number. To
+     * translate a task-virtual address (e.g. host_gpu_addr from a
+     * CmdExecIndirect2 resource_table entry) to a guest-physical
+     * address:
+     *   page_idx = (dev_addr >> 12) & ~0u;
+     *   data_pfn = u32 at (root_page_pfn << 12) + page_idx * 4;
+     *   gpa     = (data_pfn << 12) + (dev_addr & 0xfff);
+     * 0 means "no host-task table registered yet"; translation falls
+     * back to treating dev_addr as a literal GPA. */
+    uint32_t      root_page_pfn;
 } lagfx_task_entry_t;
 
 typedef struct {
@@ -69,32 +82,6 @@ typedef struct {
     uint16_t opcode;
     bool     completed;
 } lagfx_inflight_entry_t;
-
-/* === Phase 3.A inner-opcode dispatch (CmdExecIndirect2 nested stream) ===
- *
- * Per phase-3-metal-vulkan-plan.md §3.A and §7 R3.6, `CmdExecIndirect2`
- * (outer opcode 0x20) carries a nested stream of "inner" opcodes that
- * encode the actual render-encoder state + draw calls. The real wire
- * format has not been observed — the inner-opcode names below are the
- * best-guess set from the Metal BoM mapping table in
- * phase-3-metal-vulkan-plan.md §3.A. A 2-day runtime-capture RE spike
- * during Phase 3.A day 1–2 is required to confirm the numeric IDs,
- * header layout, and payload shapes. This scaffold wires the plumbing so
- * the translator can be slotted in as inner-opcode semantics land.
- *
- * PARTIAL confidence across the board. The IDs chosen here are
- * contiguous starting at 0x01 for compact dispatch; the real wire may
- * use completely different numbers, in which case
- * lagfx_inner_opcode_name() and the dispatch switch need updating. */
-typedef enum {
-    LAGFX_INNER_UNKNOWN              = 0x00,
-    LAGFX_INNER_BIND_PIPELINE        = 0x01,
-    LAGFX_INNER_BIND_VERTEX_BUFFER   = 0x02,
-    LAGFX_INNER_BIND_FRAGMENT_RESOURCE = 0x03,
-    LAGFX_INNER_SET_RENDER_TARGET    = 0x04,
-    LAGFX_INNER_DRAW                 = 0x05,
-    LAGFX_INNER_SET_VIEWPORT         = 0x06,
-} lagfx_inner_opcode_t;
 
 /* Display-pipe tracking (Phase 2.A). Populated by CmdDisplaySwapMapping
  * (0x12) and updated by CmdDisplayTransaction3 (0x16); cleared when the
@@ -175,12 +162,6 @@ struct lagfx_protocol {
     uint32_t write_ptr;             /* last-seen guest write ptr (doorbell) */
     uint32_t last_completed_stamp;
 
-    /* Legacy queue (unused after the A4d bitmask fix; retained for
-     * binary-compat with callers that still reference the fields). */
-    uint32_t pending_stamps[128];
-    uint32_t pending_stamps_head;  /* write index */
-    uint32_t pending_stamps_tail;  /* read index */
-
     /* Pending stamp-completion bitmask, per A4d (2026-04-24).
      *
      * The kext's unified ISR at vector 0 reads three BAR0 status regs:
@@ -225,13 +206,6 @@ struct lagfx_protocol {
      * requirement. */
     uint32_t device_info_actual_count;
 
-    /* Setter-candidate probe state — see protocol.h:
-     * the true doorbell offset in 0x1004..0x1034 is unknown, so we
-     * log each write to the range and expose it for runtime capture. */
-    uint32_t last_setter_offset;    /* last offset in the candidate range */
-    uint32_t last_setter_value;     /* last value written there */
-    uint64_t setter_write_count;
-
     /* Handle tables. */
     lagfx_task_entry_t      tasks[LAGFX_MAX_TASKS];
     lagfx_childfifo_entry_t fifos[LAGFX_MAX_CHILDFIFOS];
@@ -248,19 +222,6 @@ struct lagfx_protocol {
     uint64_t display_swaps_applied;
     uint64_t display_transactions_submitted;
     uint64_t display_acks_received;
-
-    /* Phase 3.A inner-opcode counters (scaffold). Bumped by
-     * lagfx_process_inner() as CmdExecIndirect2 walks the nested
-     * draw-stream. All PARTIAL — see inner-opcode enum comment above.
-     * Tests consume these to assert dispatch reached each handler. */
-    uint64_t inner_opcodes_processed;
-    uint64_t inner_opcodes_bind_pipeline;
-    uint64_t inner_opcodes_bind_vertex_buffer;
-    uint64_t inner_opcodes_bind_fragment_resource;
-    uint64_t inner_opcodes_set_render_target;
-    uint64_t inner_opcodes_draw;
-    uint64_t inner_opcodes_set_viewport;
-    uint64_t inner_opcodes_unknown;
 };
 
 /* Internal helper — index into reg[] by MMIO offset. Returns -1 if
@@ -311,6 +272,21 @@ int lagfx_protocol_dispatch_one_no_stamp(lagfx_protocol_t *p,
                                          const uint8_t *cmd_bytes,
                                          size_t cmd_len,
                                          lagfx_cmd_header_t *out_hdr);
+
+/* Translate a task-virtual device address to a guest-physical address
+ * via the per-task root-page PFN-array (published by CmdDefineHostTask
+ * 0x38). On success returns true and writes the GPA + how many bytes
+ * are contiguous before the next page boundary (so callers can chunk
+ * reads). On miss (no registered host-task or zero page entry),
+ * returns false. The caller can then choose to fall back to treating
+ * the dev_addr as a literal GPA, or fail.
+ *
+ * Used by the CmdExecIndirect2 segment walker to read per-resource
+ * cmdBufs whose host_gpu_addr is a task-virtual address rather than a
+ * literal GPA. */
+bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
+                          uint64_t dev_addr, uint64_t *out_gpa,
+                          uint64_t *out_run_len);
 
 /* === Task / FIFO table helpers =================================
  *

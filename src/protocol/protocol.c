@@ -5,15 +5,8 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Phase 1.A.2 scaffold. Provides:
- *
- *   - lagfx_protocol_{new,free,reset} lifecycle.
- *   - lagfx_protocol_mmio_{read,write} register shadow + setter
- *     candidate probe (doorbell offset is not yet identified).
- *   - lagfx_protocol_dispatch_one — parse 12-byte header, look up
- *     opcode, invoke handler, run completion path.
- *
- * The FIFO ring dequeue itself is stubbed in fifo.c (R1 gap).
+ * Decoder lifecycle, MMIO register shadow + per-channel doorbell
+ * (BAR0+0x1020), and the per-cmd dispatch + stamp-completion path.
  * Tests drive dispatch via lagfx_protocol_dispatch_one directly.
  */
 
@@ -89,9 +82,6 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->unknown_opcode_count = 0;
     p->interrupts_raised    = 0;
     p->last_completed_stamp = 0;
-    p->last_setter_offset   = 0;
-    p->last_setter_value    = 0;
-    p->setter_write_count   = 0;
     p->read_ptr             = 0;
     p->write_ptr            = 0;
     p->pending_stamps_bitmask = 0;
@@ -99,16 +89,6 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->display_swaps_applied          = 0;
     p->display_transactions_submitted = 0;
     p->display_acks_received          = 0;
-
-    /* Phase 3.A inner-opcode counters. */
-    p->inner_opcodes_processed            = 0;
-    p->inner_opcodes_bind_pipeline        = 0;
-    p->inner_opcodes_bind_vertex_buffer   = 0;
-    p->inner_opcodes_bind_fragment_resource = 0;
-    p->inner_opcodes_set_render_target    = 0;
-    p->inner_opcodes_draw                 = 0;
-    p->inner_opcodes_set_viewport         = 0;
-    p->inner_opcodes_unknown              = 0;
 }
 
 /* === Completion path ========================================
@@ -263,6 +243,74 @@ int lagfx_protocol_dispatch_one(lagfx_protocol_t *p,
         lagfx_protocol_complete_stamp(p, hdr.stamp);
     }
     return rc;
+}
+
+/* Translate a task-virtual address to a guest-physical address via
+ * the per-task root_page_pfn PFN-array. See state.h for callers and
+ * fallback semantics. */
+bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
+                          uint64_t dev_addr, uint64_t *out_gpa,
+                          uint64_t *out_run_len) {
+    if (!lagfx_protocol_is_valid(p) || !out_gpa) {
+        return false;
+    }
+    lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
+    if (!task || task->root_page_pfn == 0u) {
+        return false;
+    }
+    if (!p->dev || !p->dev->desc.shell.read_memory) {
+        return false;
+    }
+
+    uint64_t root_gpa = ((uint64_t)task->root_page_pfn << 12);
+    uint64_t page_idx = dev_addr >> 12;
+    uint64_t entry_gpa = root_gpa + page_idx * 4u;
+
+    uint32_t data_pfn = 0u;
+    if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                        entry_gpa, sizeof(data_pfn),
+                                        &data_pfn)) {
+        LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
+                  "entry_gpa=0x%llx read_memory FAILED",
+                  task_id, (unsigned long long)dev_addr,
+                  task->root_page_pfn,
+                  (unsigned long long)entry_gpa);
+        return false;
+    }
+    if (data_pfn == 0u) {
+        /* Dump 32 bytes around the entry so we can see whether the
+         * page is genuinely zeros (root_pfn wrong / not yet populated)
+         * or just the specific entry slot is zero. */
+        uint8_t around[32] = {0};
+        uint64_t around_gpa = entry_gpa & ~(uint64_t)0xfu;
+        p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                       around_gpa, sizeof(around), around);
+        LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
+                  "entry_gpa=0x%llx data_pfn=0 — "
+                  "around[0..31]=%02x%02x%02x%02x %02x%02x%02x%02x "
+                  "%02x%02x%02x%02x %02x%02x%02x%02x ...",
+                  task_id, (unsigned long long)dev_addr,
+                  task->root_page_pfn,
+                  (unsigned long long)entry_gpa,
+                  around[0], around[1], around[2], around[3],
+                  around[4], around[5], around[6], around[7],
+                  around[8], around[9], around[10], around[11],
+                  around[12], around[13], around[14], around[15]);
+        return false;
+    }
+
+    uint64_t page_off = dev_addr & 0xfffu;
+    *out_gpa = ((uint64_t)data_pfn << 12) + page_off;
+    if (out_run_len) {
+        *out_run_len = (uint64_t)0x1000u - page_off;
+    }
+    LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
+              "data_pfn=0x%x -> gpa=0x%llx run=%llu",
+              task_id, (unsigned long long)dev_addr,
+              task->root_page_pfn, data_pfn,
+              (unsigned long long)(*out_gpa),
+              (unsigned long long)((out_run_len) ? *out_run_len : 0));
+    return true;
 }
 
 /* Per-channel variant — runs the handler but does NOT auto-complete
@@ -1061,15 +1109,6 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
         }
         default: break;
     }
-
-    /* Any remaining write in the setter-candidate range: log for probe
-     * observability (0x1020, 0x1024, 0x1028, 0x1034 — still-unresolved
-     * slots per Agent I's recipe). */
-    if (offset >= LAGFX_REG_SETTER_CAND_FIRST &&
-        offset <= LAGFX_REG_SETTER_CAND_LAST) {
-        lagfx_fifo_on_mmio_setter(p, offset, value);
-        return;
-    }
 }
 
 /* === Stats accessors ======================================== */
@@ -1091,16 +1130,4 @@ void lagfx_protocol_stats(const lagfx_protocol_t *p,
 
 uint32_t lagfx_protocol_last_completed_stamp(const lagfx_protocol_t *p) {
     return lagfx_protocol_is_valid(p) ? p->last_completed_stamp : 0u;
-}
-
-uint32_t lagfx_protocol_last_setter_offset(const lagfx_protocol_t *p) {
-    return lagfx_protocol_is_valid(p) ? p->last_setter_offset : 0u;
-}
-
-uint32_t lagfx_protocol_last_setter_value(const lagfx_protocol_t *p) {
-    return lagfx_protocol_is_valid(p) ? p->last_setter_value : 0u;
-}
-
-uint64_t lagfx_protocol_setter_write_count(const lagfx_protocol_t *p) {
-    return lagfx_protocol_is_valid(p) ? p->setter_write_count : 0u;
 }

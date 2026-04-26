@@ -10,14 +10,10 @@
  * update, not a stamp, and lives at an MMIO offset in the
  * 0x1004..0x1034 range that we haven't identified yet.
  *
- * This TU owns two real pieces of code:
+ * This TU owns:
  *   - lagfx_fifo_parse_header: decodes the 12-byte on-wire header
  *     into lagfx_cmd_header_t. Unit-tested.
- *   - lagfx_fifo_on_mmio_setter: probe handler for any MMIO write
- *     in the setter-candidate range. Logs (offset, value) and records
- *     the most recent pair for test inspection / runtime capture.
- *
- * The ring walk (lagfx_fifo_drain) remains stubbed pending R1.
+ *   - lagfx_fifo_drain: ring-buffer walk driven by the 0x1008 doorbell.
  */
 
 #include "fifo.h"
@@ -87,31 +83,6 @@ bool lagfx_fifo_parse_header(const uint8_t *bytes, size_t len,
     hdr_out->payload      = payload;
 
     return true;
-}
-
-void lagfx_fifo_on_mmio_setter(lagfx_protocol_t *p,
-                               uint64_t offset, uint32_t value) {
-    if (!lagfx_protocol_is_valid(p)) {
-        return;
-    }
-
-    p->last_setter_offset = (uint32_t)offset;
-    p->last_setter_value  = value;
-    p->setter_write_count += 1;
-
-    /* Log at the candidate level until the runtime capture nails down
-     * which offset carries which setter. The value is logged as both
-     * hex (page number / length-in-bytes shape) and dec (byte offset
-     * / write pointer shape) to aid disambiguation. */
-    LAGFX_LOG("fifo: setter-candidate write off=0x%llx val=0x%08x (%u) #%llu",
-              (unsigned long long)offset,
-              value, value,
-              (unsigned long long)p->setter_write_count);
-
-    /* Attempt a drain regardless — if the write happened to be the
-     * real doorbell, drain will work once ring geometry is known.
-     * For now it's a no-op either way. */
-    (void)lagfx_fifo_drain(p);
 }
 
 size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
