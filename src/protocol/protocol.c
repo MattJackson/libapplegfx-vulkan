@@ -738,10 +738,13 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                                                   | (hdr_bytes[5] << 8)
                                                   | (hdr_bytes[6] << 16)
                                                   | (hdr_bytes[7] << 24));
-                    if (cmd_len < 12u || cur_rp + cmd_len > write_ptr) {
+                    /* Reject patently absurd cmd_len values BEFORE arithmetic
+                     * to avoid uint32 overflow in `cur_rp + cmd_len > wp`. */
+                    if (cmd_len < 12u || cmd_len > (write_ptr - cur_rp)) {
                         LAGFX_WARN("doorbell ch=%u: bad cmd_len=%u at rp=%u "
-                                   "(wp=%u) — stopping walk",
-                                   ch, cmd_len, cur_rp, write_ptr);
+                                   "(wp=%u, available=%u) — stopping walk",
+                                   ch, cmd_len, cur_rp, write_ptr,
+                                   write_ptr - cur_rp);
                         break;
                     }
 
