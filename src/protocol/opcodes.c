@@ -181,8 +181,14 @@ static const lagfx_op_descriptor_t g_op_table[] = {
       LAGFX_PRIO_P1, 0,  0,  lagfx_op_exec_indirect2 },
     { LAGFX_OP_DEFINE_HOST_TASK,         "CmdDefineHostTask",
       LAGFX_PRIO_P0, 16, 16, lagfx_op_define_host_task },
-    { LAGFX_OP_ROOT_CHANNEL_INVALIDATE,  "RootChannelInvalidateTask",
-      LAGFX_PRIO_P2, 0,  0,  NULL },
+    /* Symbolic name LAGFX_OP_ROOT_CHANNEL_INVALIDATE is historical/wrong;
+     * RE'd as CmdMapMemoryImmediate (kext opcode 0x39, ch=2 Immediate
+     * vchan). Publishes VA → GPA mappings to host after the kext
+     * commits memory into the GPU page-table. Wire format:
+     *   [scatter blocks][20-byte trailer {u32 task_id, u64 vaBase, u64 vaLength}]
+     * See paravirt-re/library/journey/opcodes-0x35-0x36-0x39.md. */
+    { LAGFX_OP_ROOT_CHANNEL_INVALIDATE,  "CmdMapMemoryImmediate",
+      LAGFX_PRIO_P0, 20, 0,  lagfx_op_map_memory_immediate },
     { LAGFX_OP_GET_DEVICE_INFO_2,        "CmdGetDeviceInfo2",
       LAGFX_PRIO_P0, 12, 12, lagfx_op_get_device_info_2 },
     { LAGFX_OP_UNKNOWN_3B,               "Unknown(0x3b)",

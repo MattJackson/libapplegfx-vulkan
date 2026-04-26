@@ -257,6 +257,8 @@ lagfx_handler_status_t lagfx_op_unmap_memory(lagfx_protocol_t *p,
                                              const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
                                                  const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_map_memory_immediate(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
 /* ops_queue.c — stubs (P0/P1 TODO). */
 lagfx_handler_status_t lagfx_op_define_child_fifo(lagfx_protocol_t *p,

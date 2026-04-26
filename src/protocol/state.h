@@ -40,6 +40,28 @@
  * (Defined in libapplegfx-vulkan.h as an incomplete type.) */
 typedef struct lagfx_task lagfx_task_t;
 
+/* Per-task VA → guest-physical mapping interval, populated by
+ * CmdMapMemoryImmediate (kext opcode 0x39, ch=2 Immediate vchan).
+ * `host_gpu_addr` values in CmdExecIndirect2 resource_table entries
+ * are guest-kernel VAs that fall inside one of these intervals.
+ *
+ * For now the intervals only carry {vaBase, length}; the actual GPA
+ * mapping for a given offset within the interval is captured from
+ * any preceding scatter blocks in the 0x39 payload (TODO — boot-trace
+ * 0x39s have zero-length scatter, so we don't have a runtime sample
+ * to RE the scatter format yet). */
+typedef struct {
+    uint64_t vaBase;     /* device-VA range start  */
+    uint64_t length;     /* range length in bytes  */
+    bool     live;
+    /* TODO: once scatter-block format is RE'd, store
+     *   uint32_t segment_count;
+     *   lagfx_va_segment_t *segments;
+     * for chunked GPA lookup. */
+} lagfx_task_mapping_t;
+
+#define LAGFX_MAX_TASK_MAPPINGS 32u
+
 typedef struct {
     uint32_t      id;         /* taskID from CmdDefineTask2 */
     lagfx_task_t *shell_task; /* opaque handle from shell.create_task */
@@ -49,16 +71,19 @@ typedef struct {
 
     /* Host-task PFN-array indirection (M4):
      * CmdDefineHostTask (0x38) publishes a root_page_pfn whose first
-     * page is a u32 PFN-array indexed by task-VA page number. To
-     * translate a task-virtual address (e.g. host_gpu_addr from a
-     * CmdExecIndirect2 resource_table entry) to a guest-physical
-     * address:
-     *   page_idx = (dev_addr >> 12) & ~0u;
-     *   data_pfn = u32 at (root_page_pfn << 12) + page_idx * 4;
-     *   gpa     = (data_pfn << 12) + (dev_addr & 0xfff);
-     * 0 means "no host-task table registered yet"; translation falls
-     * back to treating dev_addr as a literal GPA. */
+     * page is the SHARED HEADER. See state-machines/per-task-page-table.md
+     * for the actual radix-tree format. The kext also publishes
+     * VA→GPA mappings via opcode 0x39 (CmdMapMemoryImmediate) — those
+     * land in `mappings[]` below and are the AUTHORITATIVE translation
+     * source for host_gpu_addr values. */
     uint32_t      root_page_pfn;
+
+    /* Mappings from CmdMapMemoryImmediate (0x39). On segment-walker
+     * lookup, scan for the first mapping containing dev_addr; if
+     * found, the offset within (dev_addr - vaBase) tells us where in
+     * the IOAccelSysMemory backing to read. Translation of offset →
+     * GPA awaits scatter-block format RE. */
+    lagfx_task_mapping_t mappings[LAGFX_MAX_TASK_MAPPINGS];
 } lagfx_task_entry_t;
 
 typedef struct {

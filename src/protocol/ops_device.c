@@ -492,6 +492,122 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
 }
 
 /* ===========================================================================
+ * CmdMapMemoryImmediate (kext opcode 0x39 on the Immediate vchan) — P0
+ *
+ * Confirmed via paravirt-re/library/journey/opcodes-0x35-0x36-0x39.md
+ * and the annotated AppleParavirtMemoryMap-commitIntoGPUPageTable.asm.
+ * This opcode is what publishes VA → GPA mappings host-side after the
+ * kext commits memory into the GPU page-table. The naming mismatch
+ * (LAGFX_OP_ROOT_CHANNEL_INVALIDATE) is historical — the symbol stays
+ * for ABI; the descriptor name + handler are what matter.
+ *
+ * Wire format (20-byte trailer; optional preceding scatter blocks):
+ *
+ *   [scatter_block_0][scatter_block_1][scatter_block_2]
+ *   <trailer at payload tail (last 20 bytes):
+ *       +0x00  u32 task_id
+ *       +0x04  u64 vaBase       (guest-kernel VA into IOMemoryMap)
+ *       +0x0c  u64 vaLength
+ *
+ * Boot-trace samples have zero-length scatter blocks (only the 20-byte
+ * trailer). Runtime samples may have scatter prefix carrying the
+ * actual GPA segments — format pending RE. We log scatter prefix
+ * bytes for future analysis but only record `{vaBase, length}` in the
+ * task mapping table for now.
+ *
+ * Lookup path: when the CmdExecIndirect2 segment walker sees a
+ * resource_table entry with `host_gpu_addr=X`, lagfx_task_translate
+ * scans the per-task mappings for `vaBase ≤ X < vaBase+length`. If a
+ * matching mapping exists, M4 closure is one scatter-block-format
+ * RE step away. If not, the kext didn't publish the mapping host-
+ * side and we fall back to the radix walk (which is currently
+ * empty too — that's the M4 open issue).
+ * =========================================================================== */
+
+lagfx_handler_status_t lagfx_op_map_memory_immediate(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 20u) {
+        LAGFX_WARN("CmdMapMemoryImmediate: payload missing or too small "
+                   "(size=%u, need >= 20)", (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    /* Trailer is at the END of the payload (last 20 bytes). */
+    size_t off = (size_t)hdr->payload_size - 20u;
+    uint32_t task_id  = lagfx_le32(hdr->payload + off + 0);
+    uint64_t va_base  = (uint64_t)lagfx_le32(hdr->payload + off + 4)
+                        | ((uint64_t)lagfx_le32(hdr->payload + off + 8) << 32);
+    uint64_t va_len   = (uint64_t)lagfx_le32(hdr->payload + off + 12)
+                        | ((uint64_t)lagfx_le32(hdr->payload + off + 16) << 32);
+
+    /* Log any scatter prefix so future RE has data. */
+    if (off > 0) {
+        size_t n = (off < 64u) ? off : 64u;
+        char line[64 * 4 + 8];
+        size_t lpos = 0;
+        for (size_t i = 0; i < n; ++i) {
+            int x = snprintf(line + lpos, sizeof(line) - lpos, "%02x ",
+                             hdr->payload[i]);
+            if (x <= 0 || (size_t)x >= sizeof(line) - lpos) break;
+            lpos += (size_t)x;
+        }
+        LAGFX_LOG("CmdMapMemoryImmediate: scatter prefix[%zu]: %s",
+                  off, line);
+    }
+
+    /* Find or create the task entry. The kext can emit 0x39 against
+     * a taskID before CmdDefineHostTask for that ID — allocate
+     * defensively. */
+    lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
+    if (!task) {
+        task = lagfx_protocol_alloc_task_slot(p);
+        if (!task) {
+            LAGFX_WARN("CmdMapMemoryImmediate: task table full");
+            return LAGFX_HANDLER_ERR_STATE;
+        }
+        task->id = task_id;
+        task->live = true;
+    }
+
+    /* Add or refresh a mapping interval. Linear scan; small N. */
+    lagfx_task_mapping_t *slot = NULL;
+    for (unsigned i = 0; i < LAGFX_MAX_TASK_MAPPINGS; ++i) {
+        if (task->mappings[i].live
+            && task->mappings[i].vaBase == va_base
+            && task->mappings[i].length == va_len) {
+            slot = &task->mappings[i];
+            break;
+        }
+    }
+    if (!slot) {
+        for (unsigned i = 0; i < LAGFX_MAX_TASK_MAPPINGS; ++i) {
+            if (!task->mappings[i].live) {
+                slot = &task->mappings[i];
+                break;
+            }
+        }
+    }
+    if (slot) {
+        slot->vaBase = va_base;
+        slot->length = va_len;
+        slot->live = true;
+        LAGFX_LOG("CmdMapMemoryImmediate: taskID=%u vaBase=0x%llx "
+                  "vaLength=0x%llx (registered) stamp=0x%08x",
+                  task_id, (unsigned long long)va_base,
+                  (unsigned long long)va_len, hdr->stamp);
+    } else {
+        LAGFX_WARN("CmdMapMemoryImmediate: taskID=%u mapping table full "
+                   "(max=%u) — dropping vaBase=0x%llx",
+                   task_id, LAGFX_MAX_TASK_MAPPINGS,
+                   (unsigned long long)va_base);
+    }
+    return LAGFX_HANDLER_OK;
+}
+
+/* ===========================================================================
  * CmdMapMemory2 (0x02) — P1 (Phase 1.A.2)
  *
  * Request layout (command-buffer-format.md §4 "Variable-Length Arrays",
