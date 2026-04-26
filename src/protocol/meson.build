@@ -5,6 +5,7 @@
 
 lagfx_sources += files(
   'protocol.c',
+  'translate.c',
   'fifo.c',
   'opcodes.c',
   'ops_misc.c',
