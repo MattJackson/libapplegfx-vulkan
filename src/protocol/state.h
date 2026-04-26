@@ -283,8 +283,23 @@ static inline bool lagfx_protocol_is_valid(const lagfx_protocol_t *p) {
  * MMIO 0x1014) and raises the IRQ. Every command completes
  * unconditionally; the 12-byte header has no flags field and the
  * dylib's handler tails always call the "signal stamp" selector
- * (re-followup-spec-gaps.md §5.1). */
+ * (re-followup-spec-gaps.md §5.1).
+ *
+ * Stamp-cell writes are monotonic — internally clamped to
+ * max(target, cur+1) with a non-zero floor, so a stale `stamp` value
+ * coming from the ring (often 0 in practice) cannot regress the cell
+ * and park the kext (see library/howto/how-to-host-stamp-completion.md
+ * + library/m3-prod-readiness-audit.md HIGH item 1). */
 void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp);
+
+/* As above but for non-RootChannel completions (per-channel doorbells,
+ * Display0/1/2, vchan completions). `slot` indexes into the FIFO base
+ * page: cell GPA = (ring_base_pfn<<12) + slot*4. The pending-stamps
+ * bitmask bit set is bit `slot` (matches signalStamps's bsf
+ * iteration). */
+void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p,
+                                        uint32_t slot,
+                                        uint32_t stamp);
 
 /* === Task / FIFO table helpers =================================
  *

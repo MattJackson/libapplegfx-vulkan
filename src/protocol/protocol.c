@@ -114,15 +114,52 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
 /* === Completion path ========================================
  *
  * Every command unconditionally signals its stamp when done. Per
- * Per A4d (2026-04-24): the kext's unified ISR on MSI-X vec 0 reads
+ * A4d (2026-04-24): the kext's unified ISR on MSI-X vec 0 reads
  * BAR0+0x1018 as a stamp-completion bitmask and feeds it to
- * AppleParavirtEventMachine::signalStamps. So our per-completion work
- * is to OR bit `stamp_id` into pending_stamps_bitmask and raise MSI-X.
- * The ISR loops set bits, calls commandWakeup per stamp, which reads
- * the actual stamp value from [EM+0x20] in kernel heap. No DMA of
- * stamp values by us is required. */
+ * AppleParavirtEventMachine::signalStamps. Per-completion work:
+ *   1. monotonically advance *stampBases[slot] in DMA-visible memory
+ *      (see library/howto/how-to-host-stamp-completion.md),
+ *   2. OR bit `slot` into pending_stamps_bitmask shadow,
+ *   3. raise MSI vec 0.
+ * The ISR loops set bits, calls commandWakeup(slot) per stamp, which
+ * reads the cell via stampBases[slot] = u32 @ FIFO+slot*4. */
 
-void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
+/* Monotonic stamp-cell advance — never regresses. Reads current cell,
+ * writes max(target, cur+1), with a 1 floor (never 0). All callers
+ * that update a stamp cell MUST go through this helper, otherwise a
+ * stale write < current value will park the kext until the bounded
+ * 1-second deadline kicks in (waitForStamp-deadline-semantics.md). */
+static void lagfx_advance_stamp_cell(lagfx_protocol_t *p,
+                                     uint32_t slot,
+                                     uint32_t target_stamp) {
+    if (!p || !p->dev || !p->dev->desc.shell.write_memory
+        || p->ring_base_pfn == 0u) {
+        return;
+    }
+    uint64_t cell_gpa = ((uint64_t)p->ring_base_pfn << 12)
+                        + (uint64_t)slot * 4u;
+    uint32_t cur = 0u;
+    if (p->dev->desc.shell.read_memory) {
+        p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                       cell_gpa, sizeof(cur), &cur);
+    }
+    /* max(target, cur+1) with a non-zero floor. */
+    uint32_t want = (target_stamp > cur + 1u) ? target_stamp : (cur + 1u);
+    if (want == 0u) {
+        want = 1u;
+    }
+    if (p->dev->desc.shell.write_memory(
+            p->dev->desc.shell.opaque,
+            cell_gpa, sizeof(want), &want)) {
+        LAGFX_LOG("stamp_cell[%u] := %u (was %u, target=%u, gpa=0x%llx)",
+                  slot, want, cur, target_stamp,
+                  (unsigned long long)cell_gpa);
+    }
+}
+
+void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p,
+                                        uint32_t slot,
+                                        uint32_t stamp) {
     if (!lagfx_protocol_is_valid(p)) {
         return;
     }
@@ -130,51 +167,9 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     p->last_completed_stamp = stamp;
     p->total_cmds_completed += 1;
 
-    /* Per RE session 2026-04-24 (post A6d+A6e+A6f + runtime dmesg):
-     * for the RootChannel EventMachineFast2 with num_sids=32, the
-     * allocStampTable non-short-path (at 0x14855c36) allocates a
-     * 256-byte table of u32 pointers, each pointing at
-     * `baseAddr + i*4` where baseAddr = [accel+0xe10] = FIFO IOBMD
-     * first-page kernel VA. So stampBases[stamp_id] IS at
-     * `(ring_base_pfn<<12) + stamp_id*4` in DMA-visible memory.
-     *
-     * A3f's earlier claim that num_sids==1 short-path stored baseAddr
-     * at [EM+0x20] was technically correct for num_sids==1 but does
-     * not apply to our runtime: dmesg confirms numStamps=32, not 1.
-     *
-     * The kext's checkGPUProgress / waitForStamp predicate reads:
-     *   stamp = *stampBases[stamp_id] = u32 at FIFO_base + stamp_id*4
-     * and compares to the target. With num_sids=32 the stamp cell
-     * IS DMA-writable from the host.
-     *
-     * Empirical evidence: guest dmesg shows
-     *   waitForStamp: timeout waiting for Apple Paravirt Accelerator
-     *   stamp 7 (gpu_stamp=0)
-     * i.e. the kext sees gpu_stamp=0 at FIFO+0 because we never
-     * write there. Writing the command's stamp value (from the 12-
-     * byte header) to FIFO + stamp_id*4 satisfies the predicate.
-     *
-     * Write target value + raise bitmask bit + MSI-X. */
-    p->pending_stamps_bitmask |= (1u << 0);
+    lagfx_advance_stamp_cell(p, slot, stamp);
 
-    if (p->ring_base_pfn != 0u
-        && p->dev && p->dev->desc.shell.write_memory) {
-        /* stamp_id=0 for all RootChannel commands (confirmed A6e:
-         * every init-phase command emits `xor esi, esi` before
-         * writeStamp to pick slot 0). */
-        unsigned stamp_id = 0u;
-        uint64_t stamp_gpa = ((uint64_t)p->ring_base_pfn << 12)
-                             + (uint64_t)stamp_id * 4u;
-        if (p->dev->desc.shell.write_memory(
-                p->dev->desc.shell.opaque,
-                stamp_gpa,
-                sizeof(stamp),
-                &stamp)) {
-            LAGFX_LOG("stamp_cell[%u] := 0x%08x (gpa=0x%llx)",
-                      stamp_id, stamp,
-                      (unsigned long long)stamp_gpa);
-        }
-    }
+    p->pending_stamps_bitmask |= (1u << slot);
 
     if (p->dev && p->dev->desc.shell.raise_interrupt) {
         /* Per A4d (2026-04-24): the accelerator kext registers exactly
@@ -184,13 +179,22 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
          * kext's ISR and breaks guest networking. Pin to vec 0. */
         p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0u);
         p->interrupts_raised += 1;
-        LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x + IRQ vec=0 "
+        LAGFX_LOG("complete_stamp[slot=%u]: cmd_stamp=0x%08x + IRQ vec=0 "
                   "(pending_mask=0x%08x)",
-                  stamp, p->pending_stamps_bitmask);
+                  slot, stamp, p->pending_stamps_bitmask);
     } else {
-        LAGFX_LOG("complete_stamp: cmd_stamp=0x%08x (no IRQ cb)",
-                  stamp);
+        LAGFX_LOG("complete_stamp[slot=%u]: cmd_stamp=0x%08x (no IRQ cb)",
+                  slot, stamp);
     }
+}
+
+void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
+    /* RootChannel completions land on slot 0. Confirmed A6e: every
+     * init-phase dispatcher-driven command emits `xor esi, esi` before
+     * writeStamp. Doorbell-driven completions for per-channel rings
+     * (ch >= 1) call lagfx_protocol_complete_stamp_slot directly with
+     * the per-channel slot. */
+    lagfx_protocol_complete_stamp_slot(p, 0u, stamp);
 }
 
 /* === Dispatcher ============================================ */
@@ -531,26 +535,50 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             int have_payload = 0;
             if (ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
-                /* M3 attempt 2 — apply +0x1000 first-page-header skip.
+                /* Per AppleParavirtVirtualChannel-init.annotated.asm BLOCK
+                 * F+G+J: the per-channel ring BMD is allocated as
+                 * inTaskWithOptions(capacity=ring_size+0x1000). The first
+                 * page (page0) is a u32 PFN-array: page0[i] = physical
+                 * page number of the i-th data page (ring_kva + 0x1000 +
+                 * i*0x1000). this[+0x228] (the kva submitBuffer's memcpy
+                 * targets) = map_kva + 0x1000.
                  *
-                 * Per paravirt-re/annotated/AppleParavirtVirtualChannel-init
-                 * .annotated.asm BLOCK F+G+J: the per-channel ring BMD is
-                 * allocated as inTaskWithOptions(capacity=ring_size+0x1000).
-                 * this[+0x228] (the kva used by submitBuffer's memcpy) is
-                 * map_kva + 0x1000. Therefore submitted cmd data lives at
-                 *   (ring_pfn << 12) + 0x1000 + read_ptr
-                 * NOT
-                 *   (ring_pfn << 12) + read_ptr.
+                 * Older code used (ring_pfn<<12) + 0x1000 + read_ptr —
+                 * which only works when the kernel allocator happens to
+                 * give physically-contiguous pages. On a fragmented heap
+                 * (observed 2026-04-26 ch=6 run: ring_pfn=0x3da1e3 but
+                 * data page = 0x3da724) the +0x1000 bytes contain
+                 * zeros (next BMD metadata page), the cmd payload reads
+                 * back as zero, ss_pfn=0, and the post-wait apvAssert
+                 * panics at AppleParavirtDisplayPipe.cpp:240.
                  *
-                 * Previous attempt missed the +0x1000 and read PFN-array /
-                 * header bytes (zeros), causing display_index=0, ss_pfn=0.
+                 * Correct path: read u32 at (ring_pfn<<12)+0 to get the
+                 * actual data PFN (page0[0]), then read cmd at
+                 * (data_pfn<<12) + read_ptr. The init pages of every
+                 * channel cmd are <0x1000 bytes so we never cross a
+                 * page boundary in the first cmd; for larger commands
+                 * walking would index page0[read_ptr / 0x1000] (M4).
                  *
-                 * Diagnostic strategy: ALSO read at offset 0 (no +0x1000),
-                 * +0x1000 exactly (data area start with read_ptr=0), and at
-                 * the corrected +0x1000+read_ptr+12. Log raw bytes at each
-                 * so we can see where the kext's writes actually land. */
+                 * Fallback for safety: if page0[0] reads zero, fall
+                 * back to the +0x1000 contiguous-allocator heuristic so
+                 * we don't break the (likely common) lucky-allocator
+                 * path. */
                 uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
-                uint64_t ring_data_gpa = ring_gpa_base + 0x1000u;
+                uint32_t data_pfn = 0u;
+                p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                               ring_gpa_base, sizeof(data_pfn),
+                                               &data_pfn);
+                uint64_t ring_data_gpa;
+                if (data_pfn != 0u) {
+                    ring_data_gpa = (uint64_t)data_pfn << 12;
+                } else {
+                    /* Fallback: contiguous-allocator heuristic. */
+                    ring_data_gpa = ring_gpa_base + 0x1000u;
+                }
+                LAGFX_LOG("doorbell ch=%u: data via page0 PFN=0x%x "
+                          "(data_gpa=0x%llx)",
+                          ch, data_pfn,
+                          (unsigned long long)ring_data_gpa);
 
                 /* Diagnostic 1: dump 32 bytes at ring_gpa_base + 0 (the
                  * "first page" — should be PFN-array OR header per init
@@ -617,7 +645,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         (uint32_t)(hdr[8] | (hdr[9] << 8)
                                    | (hdr[10] << 16) | (hdr[11] << 24));
                     LAGFX_LOG("doorbell ch=%u: drain opcode=0x%04x len=%u "
-                              "stamp=%u (gpa=0x%llx) [+0x1000 corrected]",
+                              "stamp=%u (gpa=0x%llx)",
                               ch, opcode, cmd_len, cmd_stm,
                               (unsigned long long)(ring_data_gpa + read_ptr));
                 }
@@ -653,7 +681,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         LAGFX_LOG("doorbell ch=%u: cmd payload "
                                   "raw=%02x %02x %02x %02x %02x %02x %02x %02x "
                                   "display_index=%u ss_pfn=0x%x "
-                                  "(gpa=0x%llx) [+0x1000 corrected]",
+                                  "(gpa=0x%llx)",
                                   ch,
                                   pl[0], pl[1], pl[2], pl[3],
                                   pl[4], pl[5], pl[6], pl[7],
@@ -676,25 +704,15 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     }
                 }
 
-                /* Write a stamp value to FIFO+ch*4 stamp cell.
-                 * cmd_stm read from host-visible ring is consistently 0 because
-                 * the actual kext cmd lives in kernel heap (see
-                 * display0-cmd-actual-location.md). Default to 1 (the value
-                 * the kext's GPU hang log shows as the expected target). */
-                uint32_t stamp_value = (cmd_stm != 0u) ? cmd_stm : 1u;
-                if (p->ring_base_pfn != 0u && p->dev->desc.shell.write_memory) {
-                    uint64_t stamp_gpa =
-                        ((uint64_t)p->ring_base_pfn << 12)
-                        + (uint64_t)ch * 4u;
-                    if (p->dev->desc.shell.write_memory(
-                            p->dev->desc.shell.opaque,
-                            stamp_gpa, sizeof(stamp_value), &stamp_value)) {
-                        LAGFX_LOG("doorbell ch=%u: stamp_cell[%u] := %u "
-                                  "(gpa=0x%llx)",
-                                  ch, ch, stamp_value,
-                                  (unsigned long long)stamp_gpa);
-                    }
-                }
+                /* Write a stamp value to FIFO+ch*4 stamp cell via the
+                 * monotonic helper. cmd_stm from host-visible ring is
+                 * consistently 0 because the actual kext cmd lives in
+                 * kernel heap (display0-cmd-actual-location.md); the
+                 * helper's max(target, cur+1) clamp guarantees the cell
+                 * advances regardless. Slot index = ch (display channels
+                 * have slot == chan_id; ring_base_pfn is the FIFO data
+                 * page from BAR0+0x1030). */
+                lagfx_advance_stamp_cell(p, ch, cmd_stm);
 
                 /* Per setupSharedState-post-wait-predicates.md (2026-04-25):
                  * after waitForStamp releases, the kext runs
