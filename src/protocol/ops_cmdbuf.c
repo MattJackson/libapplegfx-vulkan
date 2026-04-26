@@ -431,7 +431,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                           inner_idx, inner_opcode, inner_total,
                           (unsigned)encoder_type);
 
-                /* InfoDecoder (encType=4) opcode 0x1cc =
+                /* InfoDecoder (encType=4) opcode 0x1c9 =
                  * decodeRenderPipelineStateInfo. Wire format:
                  *   inner_payload[0..3]  = u32 ref         (ignored — no real Metal device)
                  *   inner_payload[4..7]  = u32 buffer_id   (index into resource_table[])
@@ -449,7 +449,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                  * (decoder reads 16B body via PGByteIterator::readBytes(16)),
                  * pvg-disasm.txt:37794 (writer calls writeBytes(0xc, &val) =
                  * 12B reply). */
-                if (encoder_type == 4u && inner_opcode == 0x1ccu
+                if (encoder_type == 4u && inner_opcode == 0x1c9u
                     && ipl_len >= 16u
                     && p->dev != NULL
                     && p->dev->desc.shell.write_memory != NULL) {
@@ -469,7 +469,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                         uint32_t buffer_len = lagfx_le32(brec + 8);
 
                         if (reply_offset + 12u > (uint64_t)buffer_len) {
-                            LAGFX_WARN("        0x1cc reply: offset=0x%llx + "
+                            LAGFX_WARN("        0x1c9 reply: offset=0x%llx + "
                                        "12 > buffer_len=%u — out of bounds",
                                        (unsigned long long)reply_offset,
                                        buffer_len);
@@ -506,13 +506,13 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                             reply[10] = 0; reply[11] = 0;
 
                             if (target_run < 12u) {
-                                LAGFX_WARN("        0x1cc reply: target run=%llu "
+                                LAGFX_WARN("        0x1c9 reply: target run=%llu "
                                            "< 12 — would cross page (skip)",
                                            (unsigned long long)target_run);
                             } else if (p->dev->desc.shell.write_memory(
                                            p->dev->desc.shell.opaque,
                                            target_gpa, sizeof(reply), reply)) {
-                                LAGFX_LOG("        0x1cc reply: ref=0x%x "
+                                LAGFX_LOG("        0x1c9 reply: ref=0x%x "
                                           "buffer_id=%u (dev=0x%llx len=%u) "
                                           "+offset=0x%llx -> gpa=0x%llx 12B "
                                           "(translated=%d) maxTPT=1024",
@@ -523,13 +523,13 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                           (unsigned long long)target_gpa,
                                           translated ? 1 : 0);
                             } else {
-                                LAGFX_WARN("        0x1cc reply: write_memory "
+                                LAGFX_WARN("        0x1c9 reply: write_memory "
                                            "failed at gpa=0x%llx",
                                            (unsigned long long)target_gpa);
                             }
                         }
                     } else {
-                        LAGFX_WARN("        0x1cc reply: buffer_id=%u >= "
+                        LAGFX_WARN("        0x1c9 reply: buffer_id=%u >= "
                                    "resource_count=%u — out of range",
                                    buffer_id, resource_count);
                     }

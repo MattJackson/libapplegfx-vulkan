@@ -92,6 +92,63 @@ if fs.is_file(meson.current_source_dir() / 'protocol-dispatch.c')
   test('protocol dispatch', protocol_dispatch_test)
 endif
 
+# M3 stamp-helper unit tests. Covers lagfx_advance_stamp_cell (driven
+# indirectly via complete_stamp_slot, which is its only public caller),
+# lagfx_protocol_complete_stamp_slot, and the slot=0 wrapper
+# lagfx_protocol_complete_stamp. See tests/m3-stamp-helpers.c header.
+if fs.is_file(meson.current_source_dir() / 'm3-stamp-helpers.c')
+  m3_stamp_helpers_test = executable('m3-stamp-helpers',
+    'm3-stamp-helpers.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m3 stamp helpers', m3_stamp_helpers_test)
+endif
+
+# M4 task-translate + define_host_task unit tests. Covers
+# lagfx_task_translate (positive, unknown task, zero root_pfn, zero
+# data_pfn, page-cross run_len, read_memory failure) and
+# lagfx_op_define_host_task (allocate, update-existing, min-payload).
+if fs.is_file(meson.current_source_dir() / 'm4-task-translate.c')
+  m4_task_translate_test = executable('m4-task-translate',
+    'm4-task-translate.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m4 task translate', m4_task_translate_test)
+endif
+
+# M4 ExecIndirect2 outer-payload parser, segment walker, and 0x1cc reply
+# writer tests. Confirms the kext-side 0x37 layout (12B header + 16B
+# invalidates + 16B reserved + 16B resources), the encType=4/0x1cc reply
+# path, and the corner cases (offset oob, buffer_id oob, encType=2 no
+# reply, multi-segment, bad segment_size, inner totalLength<8).
+if fs.is_file(meson.current_source_dir() / 'm4-execindirect2-parser.c')
+  m4_execindirect2_test = executable('m4-execindirect2-parser',
+    'm4-execindirect2-parser.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m4 execindirect2 parser', m4_execindirect2_test)
+endif
+
+# M4 per-channel doorbell-drain tests (BAR0+0x1020). Exercises the
+# ch=1..4 ring-walk + dispatch_one_no_stamp branch, the ch=5..7
+# setupSharedState branch, the page0[0] PFN-array indirection vs the
+# +0x1000 fallback, and multi-cmd drain w/ last_stamp capture.
+if fs.is_file(meson.current_source_dir() / 'm4-doorbell-drain.c')
+  m4_doorbell_drain_test = executable('m4-doorbell-drain',
+    'm4-doorbell-drain.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m4 doorbell drain', m4_doorbell_drain_test)
+endif
+
 # Optional lavapipe smoke test — only built when vulkan is present.
 if fs.is_file(meson.current_source_dir() / 'lavapipe-smoke.c') \
    and vulkan_dep.found()
