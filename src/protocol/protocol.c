@@ -775,29 +775,134 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 }
             }
 
-            /* Signal channel completion via the appropriate bitmask + IRQ.
-             *
-             * Per display0-cmd-actual-location.md (2026-04-25): display
-             * channels (ch>=5) are routed through AppleParavirtDisplayMachine
-             * (display bitmask at 0x1014, signalDisplays). Non-display child
-             * channels (ch=1..4 = VirtualChannels) go through the stamp
-             * bitmask at 0x1018 (signalStamps).
-             *
-             * Set the bit in BOTH bitmasks for display channels — the kext
-             * reads each in its ISR demultiplexer, and the cost is only one
-             * extra u32 OR. Either route may be the one the wrangler is
-             * actually waiting on. */
-            if (ch >= 5u) {
-                p->pending_displays_bitmask |= (1u << ch);
-            }
+            /* Signal stamp completion to wake the setupSharedState
+             * waitForStamp parker. The stamp bitmask uses bit `ch` (the
+             * channel number = display_index+5 for Display0/1/2). */
             p->pending_stamps_bitmask |= (1u << ch);
             if (p->dev && p->dev->desc.shell.raise_interrupt) {
                 p->dev->desc.shell.raise_interrupt(
                     p->dev->desc.shell.opaque, 0u);
                 p->interrupts_raised += 1;
-                LAGFX_LOG("doorbell ch=%u: bit+IRQ "
+                LAGFX_LOG("doorbell ch=%u: stamp bit+IRQ "
                           "(pending_mask=0x%08x)",
                           ch, p->pending_stamps_bitmask);
+            }
+
+            /* M3 attempt 3 — wake AppleParavirtDisplayPipe::process_online
+             * by populating the rest of shared_state and raising the
+             * display-online IRQ. Without this the kext finishes
+             * setupSharedState successfully, then sits forever in the
+             * IES action waiting for the host to advertise display online.
+             *
+             * Bitmask routing: AppleParavirtDisplayMachine::signalDisplays
+             * does `bsf` over the mask and calls
+             * `getDisplayPipe(bit)->signalDisplay()`. getDisplayPipe at
+             * IOAccel+0xe344 indexes pipes by display_index
+             * (`[dm+0x88+idx*8]`), so the bit number MUST equal
+             * display_index (0/1/2), NOT the channel id (5/6/7).
+             *
+             * process_online (kext+0xb48a) reads the following ss fields
+             * before forwarding to AppleParavirtFramebuffer::connectionChange:
+             *   ss[0x00]  u32 connection-id (mode-id)
+             *   ss[0x04+] cstring modeName (we leave zero-terminated empty)
+             *   ss[0x14]  u16 active width
+             *   ss[0x16]  u16 active height
+             *   ss[0x18]  u16 cursor max width
+             *   ss[0x1a]  u16 cursor max height
+             *   ss[0x20]  u32 framebuffer aperture length (cookie)
+             *   ss[0x2c..0x48] 8*f32 colorimetry (sRGB primaries + D65
+             *                  whitepoint) — kext wrote defaults pre-stamp
+             *                  so we leave them.
+             *   ss[0x4c]  u16 hSyncTotal/DPI
+             *   ss[0x4e]  u16 vSyncTotal/DPI — kext wrote 0xFFFF defaults
+             *   ss[0x50]  u8  flags
+             *   ss[0x200] u32 framebuffer aperture PFN
+             *   ss[0x208] u16 numPixelFormats
+             *   ss[0x210+i*16] per-format records — ignored at numFormats=0
+             *
+             * For M3 we publish a synthetic 1920x1080 BGRA8 mode and zero
+             * pixel-format records (the format query block at
+             * 0x1456182c is only invoked if numPixelFormats > 0). */
+            if (ch >= 5u && have_payload && cmd_ss_pfn != 0u
+                && p->dev && p->dev->desc.shell.write_memory) {
+                uint64_t ss_gpa = ((uint64_t)cmd_ss_pfn << 12);
+                uint32_t display_index = cmd_display_index;
+
+                /* ss[0x00]: connection-id (mode-id 1 = synthetic mode). */
+                uint32_t conn_id = 1u;
+                p->dev->desc.shell.write_memory(
+                    p->dev->desc.shell.opaque, ss_gpa + 0x00u,
+                    sizeof(conn_id), &conn_id);
+
+                /* ss[0x14]: width, ss[0x16]: height (both u16). */
+                uint16_t width = 1920u;
+                uint16_t height = 1080u;
+                p->dev->desc.shell.write_memory(
+                    p->dev->desc.shell.opaque, ss_gpa + 0x14u,
+                    sizeof(width), &width);
+                p->dev->desc.shell.write_memory(
+                    p->dev->desc.shell.opaque, ss_gpa + 0x16u,
+                    sizeof(height), &height);
+
+                /* ss[0x18..0x1a]: cursor glyph max (64x64 covers both
+                 * the 32-bit MTL hardware cursor max and the 64-bit
+                 * software cursor). */
+                uint16_t cursor_max = 64u;
+                p->dev->desc.shell.write_memory(
+                    p->dev->desc.shell.opaque, ss_gpa + 0x18u,
+                    sizeof(cursor_max), &cursor_max);
+                p->dev->desc.shell.write_memory(
+                    p->dev->desc.shell.opaque, ss_gpa + 0x1au,
+                    sizeof(cursor_max), &cursor_max);
+
+                /* ss[0x20]: FB aperture length (cookie). 8 MB suffices
+                 * for 1920x1080xBGRA8 (~8.3 MB). */
+                uint32_t fb_len = 1920u * 1080u * 4u;
+                p->dev->desc.shell.write_memory(
+                    p->dev->desc.shell.opaque, ss_gpa + 0x20u,
+                    sizeof(fb_len), &fb_len);
+
+                /* ss[0x50]: orientation flags (0 = normal). */
+                uint8_t orient = 0u;
+                p->dev->desc.shell.write_memory(
+                    p->dev->desc.shell.opaque, ss_gpa + 0x50u,
+                    sizeof(orient), &orient);
+
+                /* ss[0x200]: FB aperture PFN. We use ss_pfn itself as a
+                 * placeholder; the kext caches this as a token at
+                 * this+0x3ac and forwards to connectionChange. Real FB
+                 * aperture binding happens via a later opcode. */
+                uint32_t fb_pfn = cmd_ss_pfn;
+                p->dev->desc.shell.write_memory(
+                    p->dev->desc.shell.opaque, ss_gpa + 0x200u,
+                    sizeof(fb_pfn), &fb_pfn);
+
+                /* ss[0x208]: numPixelFormats = 0. The block_invoke at
+                 * 0x1456182c only runs if this is >0. */
+                uint16_t num_formats = 0u;
+                p->dev->desc.shell.write_memory(
+                    p->dev->desc.shell.opaque, ss_gpa + 0x208u,
+                    sizeof(num_formats), &num_formats);
+
+                LAGFX_LOG("doorbell ch=%u: populated ss for online "
+                          "(display_index=%u, %ux%u@1mode_id, ss_gpa=0x%llx)",
+                          ch, display_index, width, height,
+                          (unsigned long long)ss_gpa);
+
+                /* Now raise display-online IRQ. Bit position MUST be
+                 * display_index (0/1/2), NOT channel (5/6/7) — verified
+                 * via IOAccelDisplayMachine::getDisplayPipe disasm. */
+                p->pending_displays_bitmask |= (1u << display_index);
+                if (p->dev->desc.shell.raise_interrupt) {
+                    p->dev->desc.shell.raise_interrupt(
+                        p->dev->desc.shell.opaque, 0u);
+                    p->interrupts_raised += 1;
+                    LAGFX_LOG("doorbell ch=%u: display-online bit+IRQ "
+                              "(display_index=%u, "
+                              "display_pending_mask=0x%08x)",
+                              ch, display_index,
+                              p->pending_displays_bitmask);
+                }
             }
             return;
         }
