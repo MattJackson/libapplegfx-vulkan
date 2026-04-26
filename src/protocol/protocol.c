@@ -246,8 +246,34 @@ int lagfx_protocol_dispatch_one(lagfx_protocol_t *p,
 }
 
 /* Translate a task-virtual address to a guest-physical address via
- * the per-task root_page_pfn PFN-array. See state.h for callers and
- * fallback semantics. */
+ * the per-task multi-level radix page-table.
+ *
+ * Page-table format (RE'd from `AppleParavirtTask::init` +
+ * `PageTable::allocate` + `StorageNode::setEntry` 2026-04-26 evening,
+ * see paravirt-re/agent-work/m4-cmdbuf-physical-hunt-progress.md):
+ *
+ *   Header at (root_page_pfn << 12):
+ *     +0x00  u32 L1_pfn         (PFN of first interior node)
+ *     +0x04  u32 levels         (= 3 for typical tasks)
+ *     +0x08  u64 reserved0
+ *     +0x10  u32 reserved1
+ *     +0x14  u64 taskHandleHint
+ *
+ *   For levels=3, walk:
+ *     shift = (levels-1)*10        (= 20 initially)
+ *     node = L1_pfn
+ *     while shift > 0:
+ *         idx = (page_idx >> shift) & 0x3ff
+ *         pte = u32 at (node<<12) + idx*4
+ *         next = pte & 0x7fffffff
+ *         is_leaf = pte >> 31     (interior=0, leaf=1)
+ *         node = next
+ *         shift -= 10
+ *     leaf:
+ *         leaf_idx = page_idx & 0x3ff
+ *         pte = u32 at (node<<12) + leaf_idx*4
+ *         data_pfn = pte & 0x7fffffff
+ */
 bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                           uint64_t dev_addr, uint64_t *out_gpa,
                           uint64_t *out_run_len) {
@@ -262,52 +288,85 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
         return false;
     }
 
-    uint64_t root_gpa = ((uint64_t)task->root_page_pfn << 12);
-    uint64_t page_idx = dev_addr >> 12;
-    uint64_t entry_gpa = root_gpa + page_idx * 4u;
-
-    uint32_t data_pfn = 0u;
+    uint64_t header_gpa = ((uint64_t)task->root_page_pfn << 12);
+    uint8_t hdr_bytes[8] = {0};
     if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                        entry_gpa, sizeof(data_pfn),
-                                        &data_pfn)) {
-        LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
-                  "entry_gpa=0x%llx read_memory FAILED",
-                  task_id, (unsigned long long)dev_addr,
-                  task->root_page_pfn,
-                  (unsigned long long)entry_gpa);
+                                        header_gpa, sizeof(hdr_bytes),
+                                        hdr_bytes)) {
         return false;
     }
-    if (data_pfn == 0u) {
-        /* Dump 32 bytes around the entry so we can see whether the
-         * page is genuinely zeros (root_pfn wrong / not yet populated)
-         * or just the specific entry slot is zero. */
-        uint8_t around[32] = {0};
-        uint64_t around_gpa = entry_gpa & ~(uint64_t)0xfu;
-        p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                       around_gpa, sizeof(around), around);
+    uint32_t l1_pfn = (uint32_t)(hdr_bytes[0]
+                                 | ((uint32_t)hdr_bytes[1] << 8)
+                                 | ((uint32_t)hdr_bytes[2] << 16)
+                                 | ((uint32_t)hdr_bytes[3] << 24));
+    uint32_t levels = (uint32_t)(hdr_bytes[4]
+                                 | ((uint32_t)hdr_bytes[5] << 8)
+                                 | ((uint32_t)hdr_bytes[6] << 16)
+                                 | ((uint32_t)hdr_bytes[7] << 24));
+
+    if (l1_pfn == 0u || levels == 0u || levels > 4u) {
         LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
-                  "entry_gpa=0x%llx data_pfn=0 — "
-                  "around[0..31]=%02x%02x%02x%02x %02x%02x%02x%02x "
-                  "%02x%02x%02x%02x %02x%02x%02x%02x ...",
+                  "header invalid (l1_pfn=0x%x levels=%u)",
                   task_id, (unsigned long long)dev_addr,
-                  task->root_page_pfn,
-                  (unsigned long long)entry_gpa,
-                  around[0], around[1], around[2], around[3],
-                  around[4], around[5], around[6], around[7],
-                  around[8], around[9], around[10], around[11],
-                  around[12], around[13], around[14], around[15]);
+                  task->root_page_pfn, l1_pfn, levels);
         return false;
     }
+
+    uint64_t page_idx = dev_addr >> 12;
+    uint32_t node_pfn = l1_pfn;
+    int32_t shift = (int32_t)((levels - 1u) * 10u);
+
+    while (shift > 0) {
+        uint64_t idx = (page_idx >> shift) & 0x3ffu;
+        uint64_t pte_gpa = ((uint64_t)node_pfn << 12) + idx * 4u;
+        uint32_t pte = 0u;
+        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                            pte_gpa, sizeof(pte), &pte)) {
+            return false;
+        }
+        if (pte == 0u) {
+            LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root=0x%x "
+                      "l1=0x%x — unmapped at level shift=%d idx=%u "
+                      "(node_pfn=0x%x pte_gpa=0x%llx)",
+                      task_id, (unsigned long long)dev_addr,
+                      task->root_page_pfn, l1_pfn, shift,
+                      (unsigned)idx, node_pfn,
+                      (unsigned long long)pte_gpa);
+            return false;
+        }
+        node_pfn = pte & 0x7fffffffu;
+        shift -= 10;
+    }
+
+    uint64_t leaf_idx = page_idx & 0x3ffu;
+    uint64_t leaf_pte_gpa = ((uint64_t)node_pfn << 12) + leaf_idx * 4u;
+    uint32_t leaf_pte = 0u;
+    if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                        leaf_pte_gpa, sizeof(leaf_pte),
+                                        &leaf_pte)) {
+        return false;
+    }
+    if (leaf_pte == 0u) {
+        LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root=0x%x l1=0x%x "
+                  "— leaf PTE zero (leaf_pte_gpa=0x%llx leaf_idx=%u "
+                  "leaf_node_pfn=0x%x)",
+                  task_id, (unsigned long long)dev_addr,
+                  task->root_page_pfn, l1_pfn,
+                  (unsigned long long)leaf_pte_gpa,
+                  (unsigned)leaf_idx, node_pfn);
+        return false;
+    }
+    uint32_t data_pfn = leaf_pte & 0x7fffffffu;
 
     uint64_t page_off = dev_addr & 0xfffu;
     *out_gpa = ((uint64_t)data_pfn << 12) + page_off;
     if (out_run_len) {
         *out_run_len = (uint64_t)0x1000u - page_off;
     }
-    LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
-              "data_pfn=0x%x -> gpa=0x%llx run=%llu",
+    LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root=0x%x l1=0x%x "
+              "levels=%u data_pfn=0x%x -> gpa=0x%llx run=%llu",
               task_id, (unsigned long long)dev_addr,
-              task->root_page_pfn, data_pfn,
+              task->root_page_pfn, l1_pfn, levels, data_pfn,
               (unsigned long long)(*out_gpa),
               (unsigned long long)((out_run_len) ? *out_run_len : 0));
     return true;
