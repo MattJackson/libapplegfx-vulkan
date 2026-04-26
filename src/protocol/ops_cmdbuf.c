@@ -385,26 +385,38 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         return LAGFX_HANDLER_OK;
     }
 
-    /* Outer payload layout per
-     * paravirt-re/library/M4-inner-opcode-implementation-guide.md §1.1
-     * (CONFIRMED by RE of AppleParavirtCommandQueue::processExecIndirect):
+    /* Outer payload layout — confirmed by raw-payload hex-dump of
+     * kext-side opcode 0x37 ExecIndirect2 traffic on ch=1 (per-channel
+     * exec ring) 2026-04-26:
      *
      *   +0x00  u32 task_id
-     *   +0x04  u32 invalidate_count        (NOT inner-entry count)
+     *   +0x04  u32 invalidate_count        (16B records, NOT 8B)
      *   +0x08  u32 resource_count
-     *   +0x0c  invalidate_record[]         (8 B each: {u32 rid, u32 flags})
-     *   +0x0c+ic*8  resource_table[]       (16 B each: {u64 host_gpu_addr, u32 length, u32 _pad})
+     *   +0x0c  invalidate_record[]         (16 B each: {u32 rid,
+     *                                       u32 flags, u64 reserved})
+     *   +0x0c+ic*16  16B reserved/middle   (zeros or task-state record)
+     *   +0x0c+ic*16+16  resource_table[]   (16 B each: {u64 host_gpu_addr,
+     *                                       u32 length, u32 _pad})
+     *
+     * NOTE: The M4 guide documents 8-byte invalidate records based on
+     * RE of AppleParavirtCommandQueue::processExecIndirect (kernel
+     * x86_64 code path). Live capture of kext-side 0x37 on ch=1 shows
+     * 16-byte invalidates + a 16-byte mid-section. Either the guide's
+     * RE is for a different code path (dylib-emitted 0x20?) or the
+     * kext-side 0x37 wraps the dylib-style payload with extra fields.
+     * Going with the live-capture format.
      *
      * Each resource_table entry's host_gpu_addr points at a per-resource
      * cmdBuf containing PGSerializerCommandSegmentHeader records + inner
-     * opcode streams. Inner walk is a separate step (not done here yet —
-     * scaffold prints + acks). */
+     * opcode streams. */
     uint32_t task_id          = lagfx_le32(hdr->payload + 0);
     uint32_t invalidate_count = lagfx_le32(hdr->payload + 4);
     uint32_t resource_count   = lagfx_le32(hdr->payload + 8);
 
     size_t off_invalidates = 12u;
-    size_t off_resources   = off_invalidates + (size_t)invalidate_count * 8u;
+    size_t off_resources   = off_invalidates
+                             + (size_t)invalidate_count * 16u
+                             + 16u;  /* 16B middle/reserved block */
     size_t end_resources   = off_resources + (size_t)resource_count * 16u;
 
     if (end_resources > (size_t)hdr->payload_size) {
@@ -443,12 +455,28 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
               task_id, invalidate_count, resource_count,
               (unsigned)hdr->payload_size, hdr->stamp);
 
-    /* Walk invalidate records — currently log-only; full meaning per
-     * processExecIndirect.writeInvalidates is "rid was modified by
-     * a prior segment, surface to subsequent segments". Map to a
-     * Vulkan barrier when the inner walk lands. */
+    /* RE diagnostic: hex-dump full payload so we can see what's
+     * actually on the wire and confirm or refute the task_id/ic/rc
+     * layout for kext-side opcode 0x37. */
+    {
+        size_t n = (hdr->payload_size < 256u) ? hdr->payload_size : 256u;
+        char line[256 * 4 + 8];
+        size_t off = 0;
+        for (size_t i = 0; i < n; ++i) {
+            int x = snprintf(line + off, sizeof(line) - off, "%02x ",
+                             hdr->payload[i]);
+            if (x <= 0 || (size_t)x >= sizeof(line) - off) break;
+            off += (size_t)x;
+        }
+        LAGFX_LOG("  raw payload[0..%zu]: %s", n, line);
+    }
+
+    /* Walk invalidate records — 16B each in the kext-side 0x37 wire
+     * format (per live capture). First u32=rid, second u32=flags, the
+     * remaining 8B trail is zeros in observed traffic but logged for
+     * symmetry. */
     for (uint32_t i = 0; i < invalidate_count; ++i) {
-        const uint8_t *rec = hdr->payload + off_invalidates + (size_t)i * 8u;
+        const uint8_t *rec = hdr->payload + off_invalidates + (size_t)i * 16u;
         uint32_t rid   = lagfx_le32(rec + 0);
         uint32_t flags = lagfx_le32(rec + 4);
         LAGFX_LOG("  invalidate[%u]: rid=0x%08x flags=0x%08x",
@@ -537,14 +565,87 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                           inner_idx, inner_opcode, inner_total,
                           (unsigned)encoder_type);
 
-                /* TODO M4: dispatch to encoder/inner-opcode handlers.
-                 * Currently logging only. The encoderType=4 (Info)
-                 * + inner opcode 0x1cc (decodeRenderPipelineStateInfo)
-                 * is the load-bearing path for unblocking
-                 * WindowServer's MetalShader::CopyPipelineState —
-                 * pipeline-state-creation.md documents the reply
-                 * struct that must be written back. */
-                (void)ipl_len;
+                /* InfoDecoder (encType=4) opcode 0x1cc =
+                 * decodeRenderPipelineStateInfo. Wire format:
+                 *   inner_payload[0..3]  = u32 ref         (ignored — no real Metal device)
+                 *   inner_payload[4..7]  = u32 buffer_id   (index into resource_table[])
+                 *   inner_payload[8..15] = u64 reply_offset (within resolved buffer)
+                 *
+                 * Host writes 12B PGReplyRenderPipelineStateInfo at
+                 * resource_table[buffer_id].host_gpu_addr + reply_offset.
+                 *
+                 * Without this reply, the dylib reads zeros from the reply
+                 * page and SkyLight's MetalShader::CopyPipelineState aborts
+                 * on `maxTotalThreadsPerThreadgroup == 0` (see
+                 * library/journey/pipeline-state-creation.md).
+                 *
+                 * Refs CONFIRMED via wire-format agent: pvg-disasm.txt:35920+
+                 * (decoder reads 16B body via PGByteIterator::readBytes(16)),
+                 * pvg-disasm.txt:37794 (writer calls writeBytes(0xc, &val) =
+                 * 12B reply). */
+                if (encoder_type == 4u && inner_opcode == 0x1ccu
+                    && ipl_len >= 16u
+                    && p->dev != NULL
+                    && p->dev->desc.shell.write_memory != NULL) {
+                    const uint8_t *ipl = cmdbuf + ioff + 8u;
+                    uint32_t ref           = lagfx_le32(ipl + 0);
+                    uint32_t buffer_id     = lagfx_le32(ipl + 4);
+                    uint64_t reply_offset  =
+                        (uint64_t)lagfx_le32(ipl + 8) |
+                        ((uint64_t)lagfx_le32(ipl + 12) << 32);
+
+                    if (buffer_id < resource_count) {
+                        const uint8_t *brec = hdr->payload + off_resources
+                                              + (size_t)buffer_id * 16u;
+                        uint64_t buffer_gpa =
+                            (uint64_t)lagfx_le32(brec + 0) |
+                            ((uint64_t)lagfx_le32(brec + 4) << 32);
+                        uint32_t buffer_len = lagfx_le32(brec + 8);
+                        uint64_t target_gpa = buffer_gpa + reply_offset;
+
+                        if (reply_offset + 12u <= (uint64_t)buffer_len) {
+                            uint8_t reply[12];
+                            /* maxTotalThreadsPerThreadgroup = 1024
+                             * (Apple-class minimum non-zero default). */
+                            reply[0] = 0x00; reply[1] = 0x04;
+                            reply[2] = 0x00; reply[3] = 0x00;
+                            /* imageblockSampleLength = 0 (not a tile shader). */
+                            reply[4] = 0; reply[5] = 0;
+                            reply[6] = 0; reply[7] = 0;
+                            /* threadgroupSizeMatchesTileSize = 0,
+                             * supportIndirectCommandBuffers = 0,
+                             * + 2 bytes padding. */
+                            reply[8] = 0; reply[9] = 0;
+                            reply[10] = 0; reply[11] = 0;
+
+                            if (p->dev->desc.shell.write_memory(
+                                    p->dev->desc.shell.opaque,
+                                    target_gpa, sizeof(reply), reply)) {
+                                LAGFX_LOG("        0x1cc reply: ref=0x%x "
+                                          "buffer_id=%u (gpa=0x%llx len=%u) "
+                                          "+offset=0x%llx -> 12B with "
+                                          "maxTPT=1024",
+                                          ref, buffer_id,
+                                          (unsigned long long)buffer_gpa,
+                                          buffer_len,
+                                          (unsigned long long)reply_offset);
+                            } else {
+                                LAGFX_WARN("        0x1cc reply: write_memory "
+                                           "failed at gpa=0x%llx",
+                                           (unsigned long long)target_gpa);
+                            }
+                        } else {
+                            LAGFX_WARN("        0x1cc reply: offset=0x%llx + "
+                                       "12 > buffer_len=%u — out of bounds",
+                                       (unsigned long long)reply_offset,
+                                       buffer_len);
+                        }
+                    } else {
+                        LAGFX_WARN("        0x1cc reply: buffer_id=%u >= "
+                                   "resource_count=%u — out of range",
+                                   buffer_id, resource_count);
+                    }
+                }
 
                 ioff += inner_total;
                 inner_idx += 1;

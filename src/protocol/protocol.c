@@ -199,22 +199,25 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
 
 /* === Dispatcher ============================================ */
 
-int lagfx_protocol_dispatch_one(lagfx_protocol_t *p,
-                                const uint8_t *cmd_bytes,
-                                size_t cmd_len) {
+/* Internal: parse + run the handler. Caller decides what (if any)
+ * stamp completion to run on the way out. Returns rc; on parse
+ * failure returns negative value and *did_run_handler = 0. */
+static int lagfx_dispatch_inner(lagfx_protocol_t *p,
+                                const uint8_t *cmd_bytes, size_t cmd_len,
+                                lagfx_cmd_header_t *out_hdr,
+                                int *did_run_handler) {
+    *did_run_handler = 0;
     if (!lagfx_protocol_is_valid(p) || !cmd_bytes) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
-
-    lagfx_cmd_header_t hdr;
-    if (!lagfx_fifo_parse_header(cmd_bytes, cmd_len, &hdr)) {
+    if (!lagfx_fifo_parse_header(cmd_bytes, cmd_len, out_hdr)) {
         LAGFX_ERR("dispatch: header parse failed (len=%zu)", cmd_len);
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
     p->total_cmds_seen += 1;
 
-    const lagfx_op_descriptor_t *desc = lagfx_opcode_lookup(hdr.opcode);
+    const lagfx_op_descriptor_t *desc = lagfx_opcode_lookup(out_hdr->opcode);
     lagfx_op_handler_fn fn = (desc && desc->handler) ? desc->handler
                                                      : lagfx_op_default_handler;
 
@@ -224,37 +227,62 @@ int lagfx_protocol_dispatch_one(lagfx_protocol_t *p,
 
     LAGFX_LOG("dispatch: op=0x%04x (%s) stamp=0x%08x arg_count_8b=%u "
               "length=%u payload=%u",
-              hdr.opcode, lagfx_opcode_name(hdr.opcode),
-              hdr.stamp, (unsigned)hdr.arg_count_8b,
-              (unsigned)hdr.length, (unsigned)hdr.payload_size);
+              out_hdr->opcode, lagfx_opcode_name(out_hdr->opcode),
+              out_hdr->stamp, (unsigned)out_hdr->arg_count_8b,
+              (unsigned)out_hdr->length, (unsigned)out_hdr->payload_size);
 
-    /* Payload-size guard. Handlers that want tighter validation do
-     * their own extra checks. */
     if (desc) {
-        if (hdr.payload_size < desc->min_payload) {
+        if (out_hdr->payload_size < desc->min_payload) {
             LAGFX_WARN("dispatch: %s payload too small (%u < %u min)",
-                       desc->name, (unsigned)hdr.payload_size,
+                       desc->name, (unsigned)out_hdr->payload_size,
                        (unsigned)desc->min_payload);
-            /* Still run completion so guest doesn't hang. */
-            lagfx_protocol_complete_stamp(p, hdr.stamp);
             return LAGFX_HANDLER_ERR_SIZE;
         }
-        if (desc->max_payload != 0 && hdr.payload_size > desc->max_payload) {
+        if (desc->max_payload != 0 && out_hdr->payload_size > desc->max_payload) {
             LAGFX_WARN("dispatch: %s payload too large (%u > %u max)",
-                       desc->name, (unsigned)hdr.payload_size,
+                       desc->name, (unsigned)out_hdr->payload_size,
                        (unsigned)desc->max_payload);
-            /* Fall through anyway — fail-open. */
+            /* Fall through — fail-open. */
         }
     }
 
-    lagfx_handler_status_t rc = fn(p, &hdr);
+    *did_run_handler = 1;
+    return (int)fn(p, out_hdr);
+}
 
-    /* Completion path runs unconditionally — see note on
-     * lagfx_protocol_complete_stamp. Even if the handler returned
-     * an error we write the stamp per the fail-open note in §6.3. */
-    lagfx_protocol_complete_stamp(p, hdr.stamp);
+int lagfx_protocol_dispatch_one(lagfx_protocol_t *p,
+                                const uint8_t *cmd_bytes,
+                                size_t cmd_len) {
+    lagfx_cmd_header_t hdr;
+    int did_run = 0;
+    int rc = lagfx_dispatch_inner(p, cmd_bytes, cmd_len, &hdr, &did_run);
+    /* RootChannel completions go to slot 0; whether the handler ran
+     * or we hit a parse/size error, we ack the stamp so the guest
+     * doesn't park. */
+    if (did_run || rc == LAGFX_HANDLER_ERR_SIZE) {
+        lagfx_protocol_complete_stamp(p, hdr.stamp);
+    }
+    return rc;
+}
 
-    return (int)rc;
+/* Per-channel variant — runs the handler but does NOT auto-complete
+ * the stamp. The caller (typically the per-channel doorbell handler)
+ * is responsible for advancing stamp_cell[ch] + setting the
+ * pending_stamps_bitmask bit + raising the IRQ once after draining
+ * all cmds in the ring. Returns the handler rc and writes the
+ * parsed header to *out_hdr if non-NULL. */
+int lagfx_protocol_dispatch_one_no_stamp(lagfx_protocol_t *p,
+                                         const uint8_t *cmd_bytes,
+                                         size_t cmd_len,
+                                         lagfx_cmd_header_t *out_hdr) {
+    lagfx_cmd_header_t local_hdr;
+    int did_run = 0;
+    int rc = lagfx_dispatch_inner(p, cmd_bytes, cmd_len, &local_hdr, &did_run);
+    (void)did_run;
+    if (out_hdr) {
+        *out_hdr = local_hdr;
+    }
+    return rc;
 }
 
 /* === MMIO register shadow =================================== */
@@ -525,6 +553,113 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             if (chan_id != ch) {
                 LAGFX_LOG("doorbell ch=%u: chan_id mismatch "
                           "(descr says %u), aborting", ch, chan_id);
+                return;
+            }
+
+            /* Per-channel ring drain for non-display channels (ch 1..4).
+             * Carries actual GPU work (CmdExecIndirect2 with full payload,
+             * CmdSyncResources, CmdMapMemory2, etc.) — must dispatch each
+             * cmd through the opcode handlers, NOT treat as setupSharedState.
+             * Display channels (ch 5..7) carry only setupSharedState; that
+             * code path is below.
+             *
+             * Wire format (CONFIRMED 2026-04-26 trace):
+             *   ring_data_gpa starts at page0[0]<<12 (PFN-array indirection).
+             *   First cmd at ring_data_gpa + read_ptr; advance by hdr.length
+             *   per cmd until cur_rp == write_ptr.
+             *
+             * For now: log + dispatch_one_no_stamp each cmd. After the walk,
+             * advance descr.read_ptr to write_ptr, advance stamp_cell[ch]
+             * via the monotonic helper using the LAST cmd's stamp value,
+             * set bitmask bit ch, raise IRQ once. */
+            if (ch >= 1u && ch <= 4u
+                && ring_pfn != 0u && write_ptr > read_ptr
+                && write_ptr <= 0x100000u) {
+                uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
+                uint32_t data_pfn = 0u;
+                p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                               ring_gpa_base, sizeof(data_pfn),
+                                               &data_pfn);
+                uint64_t ring_data_gpa = (data_pfn != 0u)
+                    ? ((uint64_t)data_pfn << 12)
+                    : ring_gpa_base + 0x1000u;
+
+                uint32_t last_stamp = 0u;
+                uint32_t cur_rp = read_ptr;
+                unsigned cmd_idx = 0;
+                while (cur_rp + 12u <= write_ptr) {
+                    /* Read the 12-byte cmd header. */
+                    uint8_t hdr_bytes[12];
+                    if (!p->dev->desc.shell.read_memory(
+                            p->dev->desc.shell.opaque,
+                            ring_data_gpa + cur_rp, 12, hdr_bytes)) {
+                        LAGFX_WARN("doorbell ch=%u: read_memory failed for "
+                                   "cmd header at gpa=0x%llx",
+                                   ch,
+                                   (unsigned long long)(ring_data_gpa + cur_rp));
+                        break;
+                    }
+                    uint32_t cmd_len = (uint32_t)(hdr_bytes[4]
+                                                  | (hdr_bytes[5] << 8)
+                                                  | (hdr_bytes[6] << 16)
+                                                  | (hdr_bytes[7] << 24));
+                    if (cmd_len < 12u || cur_rp + cmd_len > write_ptr) {
+                        LAGFX_WARN("doorbell ch=%u: bad cmd_len=%u at rp=%u "
+                                   "(wp=%u) — stopping walk",
+                                   ch, cmd_len, cur_rp, write_ptr);
+                        break;
+                    }
+
+                    /* Read the full cmd into a temporary buffer + dispatch. */
+                    uint8_t *cmd = malloc(cmd_len);
+                    if (!cmd) {
+                        LAGFX_WARN("doorbell ch=%u: malloc(%u) failed",
+                                   ch, cmd_len);
+                        break;
+                    }
+                    if (!p->dev->desc.shell.read_memory(
+                            p->dev->desc.shell.opaque,
+                            ring_data_gpa + cur_rp, cmd_len, cmd)) {
+                        LAGFX_WARN("doorbell ch=%u: read_memory(cmd, %u) "
+                                   "failed", ch, cmd_len);
+                        free(cmd);
+                        break;
+                    }
+
+                    lagfx_cmd_header_t parsed;
+                    int rc = lagfx_protocol_dispatch_one_no_stamp(
+                        p, cmd, cmd_len, &parsed);
+                    LAGFX_LOG("doorbell ch=%u cmd[%u]: opcode=0x%04x "
+                              "stamp=0x%08x len=%u rc=%d",
+                              ch, cmd_idx, parsed.opcode, parsed.stamp,
+                              cmd_len, rc);
+
+                    last_stamp = parsed.stamp;
+                    free(cmd);
+
+                    cur_rp += cmd_len;
+                    cmd_idx += 1;
+                }
+
+                /* Advance descr.read_ptr to write_ptr (drain done). */
+                uint32_t new_rp = write_ptr;
+                if (p->dev->desc.shell.write_memory) {
+                    p->dev->desc.shell.write_memory(
+                        p->dev->desc.shell.opaque,
+                        descr_gpa + 4u, sizeof(new_rp), &new_rp);
+                }
+                /* Advance stamp_cell[ch] (slot=ch). */
+                lagfx_advance_stamp_cell(p, ch, last_stamp);
+                p->pending_stamps_bitmask |= (1u << ch);
+                if (p->dev->desc.shell.raise_interrupt) {
+                    p->dev->desc.shell.raise_interrupt(
+                        p->dev->desc.shell.opaque, 0u);
+                    p->interrupts_raised += 1;
+                }
+                LAGFX_LOG("doorbell ch=%u: drained %u cmd(s), rp=%u->%u, "
+                          "stamp_cell+IRQ (pending_mask=0x%08x)",
+                          ch, cmd_idx, read_ptr, new_rp,
+                          p->pending_stamps_bitmask);
                 return;
             }
 

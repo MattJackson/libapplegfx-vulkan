@@ -301,6 +301,17 @@ void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p,
                                         uint32_t slot,
                                         uint32_t stamp);
 
+/* Per-channel variant of dispatch_one — runs the opcode handler but
+ * does NOT auto-complete the stamp. Caller advances stamp_cell[ch] +
+ * pending_stamps_bitmask + IRQ once after draining all cmds in the
+ * ring. Returns the handler rc; the parsed cmd header is returned via
+ * *out_hdr (non-NULL). Used by the per-channel doorbell handler at
+ * BAR0+0x1020. */
+int lagfx_protocol_dispatch_one_no_stamp(lagfx_protocol_t *p,
+                                         const uint8_t *cmd_bytes,
+                                         size_t cmd_len,
+                                         lagfx_cmd_header_t *out_hdr);
+
 /* === Task / FIFO table helpers =================================
  *
  * Tiny linear scans — the tables are small (16 and 8 entries) and
