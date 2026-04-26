@@ -208,6 +208,36 @@ static void define_host_task(lagfx_protocol_t *p,
     (void)lagfx_protocol_dispatch_one(p, buf, sizeof(buf));
 }
 
+/* Lay down a 3-level radix tree in the heap mirror so that VA-page 0
+ * maps to `data_pfn`. Uses 4 contiguous PFNs starting at root_pfn:
+ *   root=root_pfn (header), L1=root_pfn+1, L2=root_pfn+2, L3=root_pfn+3.
+ * Caller must ensure root_pfn..root_pfn+3 fall inside the heap mirror
+ * (and don't collide with data_pfn or other content). */
+static void prep_radix_for_data_pfn(ei2_shell_t *m, uint32_t root_pfn,
+                                    uint32_t data_pfn) {
+    uint64_t base = m->heap_gpa;
+    /* Header at root_pfn. */
+    uint8_t *hp = m->heap + (((uint64_t)root_pfn << 12) - base);
+    memset(hp, 0, 0x1000);
+    put_le32(hp + 0, root_pfn + 1u);  /* L1_pfn */
+    put_le32(hp + 4, 3u);             /* levels */
+
+    /* L1 PTE[0] = L2_pfn (interior, bit31=0). */
+    uint8_t *l1 = m->heap + ((((uint64_t)root_pfn + 1u) << 12) - base);
+    memset(l1, 0, 0x1000);
+    put_le32(l1 + 0, root_pfn + 2u);
+
+    /* L2 PTE[0] = L3_pfn (interior, bit31=0). */
+    uint8_t *l2 = m->heap + ((((uint64_t)root_pfn + 2u) << 12) - base);
+    memset(l2, 0, 0x1000);
+    put_le32(l2 + 0, root_pfn + 3u);
+
+    /* L3 leaf PTE[0] = data_pfn | bit31. */
+    uint8_t *l3 = m->heap + ((((uint64_t)root_pfn + 3u) << 12) - base);
+    memset(l3, 0, 0x1000);
+    put_le32(l3 + 0, data_pfn | 0x80000000u);
+}
+
 /* Build an outer ExecIndirect2 payload using the kext-side 0x37 layout
  * with INV_COUNT 16B-invalidate records + a 16B middle/reserved block +
  * RES_COUNT 16B resource records.
@@ -300,8 +330,8 @@ static void test_outer_resource_with_host_gpu_addr_invokes_walker(void) {
      * heap_gpa=0x40000000 covers PFNs 0x40000..0x40100. We'll use
      * root_pfn = 0x40000 (page 0 of the heap mirror) and write a 4B
      * entry [0]=0x40010. */
-    uint8_t *page0 = shell.heap + 0u;
-    put_le32(page0 + 0, 0x40010u);
+    prep_radix_for_data_pfn(&shell, /*root_pfn*/0x40000u,
+                            /*data_pfn*/0x40010u);
     define_host_task(p, /*task_id=*/77u, /*root_pfn=*/0x40000u,
                      /*stamp=*/0xc1000001u);
 
@@ -359,8 +389,8 @@ static void test_outer_uses_16B_invalidate_layout(void) {
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
     /* Same pfn-array setup as above. */
-    uint8_t *page0 = shell.heap + 0u;
-    put_le32(page0 + 0, 0x40010u);
+    prep_radix_for_data_pfn(&shell, /*root_pfn*/0x40000u,
+                            /*data_pfn*/0x40010u);
     define_host_task(p, 77u, 0x40000u, 0xc2000001u);
 
     /* One 16B invalidate (zeros). */
@@ -425,21 +455,22 @@ static void prep_resource_cmdbuf(ei2_shell_t *m, uint8_t *res_page,
     (void)m;
 }
 
-static void test_walker_encType4_inner_0x1cc(void) {
-    fprintf(stdout, "\n--- test: walker_encType4_inner_0x1cc ---\n");
+static void test_walker_encType4_inner_0x1c9(void) {
+    fprintf(stdout, "\n--- test: walker_encType4_inner_0x1c9 ---\n");
     ei2_shell_t shell;
     ei2_shell_init(&shell, 0x40000000ull);
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
     /* Task-VA 0 -> data_pfn 0x40010. So the cmdBuf is at heap+0x10000. */
-    uint8_t *page0 = shell.heap + 0u;
-    put_le32(page0 + 0, 0x40010u);
+    prep_radix_for_data_pfn(&shell, /*root_pfn*/0x40000u,
+                            /*data_pfn*/0x40010u);
     define_host_task(p, 77u, 0x40000u, 0xd0000001u);
 
     /* Build a cmdBuf:
      *   [0..15]  segment header (encType=4, segment_size=24, final=1)
-     *   [16..23] inner cmd: opcode=0x1cc, totalLength=24
+     *   [16..23] inner cmd: opcode=0x1c9 RenderPipelineStateInfo,
+     *            totalLength=24
      *   [24..39] inner payload: ref=0xaaaaaaaa, buffer_id=0,
      *            reply_offset=0x40 (LE u64) */
     uint8_t cmdbuf[64];
@@ -447,7 +478,7 @@ static void test_walker_encType4_inner_0x1cc(void) {
     put_segment_header(cmdbuf + 0,
                        /*size=*/24u, /*prot=*/0u, /*enc=*/4u,
                        /*final=*/1u, /*reuse=*/0u);
-    put_inner_cmd(cmdbuf + 16, /*op=*/0x1ccu, /*total_len=*/24u);
+    put_inner_cmd(cmdbuf + 16, /*op=*/0x1c9u, /*total_len=*/24u);
     put_le32(cmdbuf + 24, /*ref=*/0xaaaaaaaau);
     put_le32(cmdbuf + 28, /*buffer_id=*/0u);
     put_le64(cmdbuf + 32, /*reply_offset=*/0x40ull);
@@ -455,11 +486,13 @@ static void test_walker_encType4_inner_0x1cc(void) {
     uint8_t *res_page = shell.heap + 0x10000u;
     prep_resource_cmdbuf(&shell, res_page, cmdbuf, sizeof(cmdbuf));
 
-    /* resource[0] = {dev=0, length=64}. The 0x1cc reply will be written
-     * at task-VA 0+0x40 = data_pfn 0x40010 << 12 + 0x40 = heap+0x10040. */
+    /* resource[0] = {dev=0, length=128}. The 0x1c9 reply will be written
+     * at task-VA 0+0x40 = data_pfn 0x40010 << 12 + 0x40 = heap+0x10040.
+     * length=128 gives 64 bytes of buffer beyond reply_offset for the
+     * 12B reply to land inside the buffer-bounds check. */
     uint8_t resources[16] = {0};
     put_le64(resources + 0, 0ull);
-    put_le32(resources + 8, 64u);
+    put_le32(resources + 8, 128u);
 
     uint8_t cmd[12 + 128];
     size_t pl = build_exec_indirect2_outer(cmd + 12, 77u, NULL, 0,
@@ -475,12 +508,12 @@ static void test_walker_encType4_inner_0x1cc(void) {
 
     int rc = lagfx_protocol_dispatch_one(p, cmd, total);
     CHECK(rc == LAGFX_HANDLER_OK,
-          "exec_indirect2 with encType=4 + 0x1cc inner returns OK");
+          "exec_indirect2 with encType=4 + 0x1c9 inner returns OK");
 
     /* The 12B reply must be at heap+0x10040. */
     uint32_t maxTPT = get_le32(shell.heap + 0x10040u);
     CHECK(maxTPT == 1024u,
-          "0x1cc reply: maxTotalThreadsPerThreadgroup = 1024 at expected "
+          "0x1c9 reply: maxTotalThreadsPerThreadgroup = 1024 at expected "
           "GPA");
     /* Reply bytes 4..11 are zero (imageblockSampleLength + flags). */
     int zeros_ok = 1;
@@ -490,7 +523,7 @@ static void test_walker_encType4_inner_0x1cc(void) {
             break;
         }
     }
-    CHECK(zeros_ok, "0x1cc reply: bytes 4..11 are zero (no tile shader)");
+    CHECK(zeros_ok, "0x1c9 reply: bytes 4..11 are zero (no tile shader)");
 
     lagfx_device_free(dev);
     ei2_shell_free(&shell);
@@ -503,8 +536,8 @@ static void test_walker_encType2_no_reply(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    uint8_t *page0 = shell.heap + 0u;
-    put_le32(page0 + 0, 0x40010u);
+    prep_radix_for_data_pfn(&shell, /*root_pfn*/0x40000u,
+                            /*data_pfn*/0x40010u);
     define_host_task(p, 77u, 0x40000u, 0xd1000001u);
 
     /* Inner cmd is 0x1cc but encType=2 (Render) — walker must NOT write
@@ -564,8 +597,8 @@ static void test_walker_multi_segment(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    uint8_t *page0 = shell.heap + 0u;
-    put_le32(page0 + 0, 0x40010u);
+    prep_radix_for_data_pfn(&shell, /*root_pfn*/0x40000u,
+                            /*data_pfn*/0x40010u);
     define_host_task(p, 77u, 0x40000u, 0xd2000001u);
 
     /* Three segments back to back. Each segment_size=8 holds one inner
@@ -617,8 +650,8 @@ static void test_walker_bad_segment_size_bails(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    uint8_t *page0 = shell.heap + 0u;
-    put_le32(page0 + 0, 0x40010u);
+    prep_radix_for_data_pfn(&shell, /*root_pfn*/0x40000u,
+                            /*data_pfn*/0x40010u);
     define_host_task(p, 77u, 0x40000u, 0xd3000001u);
 
     /* segment_size = 0xffffffff -> walker's bound check catches it and
@@ -662,8 +695,8 @@ static void test_walker_inner_total_length_too_small(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    uint8_t *page0 = shell.heap + 0u;
-    put_le32(page0 + 0, 0x40010u);
+    prep_radix_for_data_pfn(&shell, /*root_pfn*/0x40000u,
+                            /*data_pfn*/0x40010u);
     define_host_task(p, 77u, 0x40000u, 0xd4000001u);
 
     /* Inner cmd totalLength=4 (< 8) — walker must bail. */
@@ -707,8 +740,8 @@ static void test_reply_offset_out_of_bounds(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    uint8_t *page0 = shell.heap + 0u;
-    put_le32(page0 + 0, 0x40010u);
+    prep_radix_for_data_pfn(&shell, /*root_pfn*/0x40000u,
+                            /*data_pfn*/0x40010u);
     define_host_task(p, 77u, 0x40000u, 0xe0000001u);
 
     /* buffer_len = 16, reply_offset = 8 -> 8+12=20 > 16 -> reject. */
@@ -763,8 +796,8 @@ static void test_reply_buffer_id_out_of_range(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    uint8_t *page0 = shell.heap + 0u;
-    put_le32(page0 + 0, 0x40010u);
+    prep_radix_for_data_pfn(&shell, /*root_pfn*/0x40000u,
+                            /*data_pfn*/0x40010u);
     define_host_task(p, 77u, 0x40000u, 0xe1000001u);
 
     /* resource_count=1; inner cmd targets buffer_id=2 (out of range). */
@@ -821,7 +854,7 @@ int main(void) {
     test_outer_uses_16B_invalidate_layout();
 
     /* Item 7. */
-    test_walker_encType4_inner_0x1cc();
+    test_walker_encType4_inner_0x1c9();
     test_walker_encType2_no_reply();
     test_walker_multi_segment();
     test_walker_bad_segment_size_bails();

@@ -330,7 +330,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         LAGFX_LOG("  resource[%u]: host_gpu_addr=0x%llx length=%u pad=0x%08x",
                   i, (unsigned long long)host_gpu_addr, length, pad);
 
-        if (host_gpu_addr == 0u || length == 0u || length > (1u << 22) /* 4 MiB cap */
+        if (length == 0u || length > (1u << 22) /* 4 MiB cap */
             || p->dev == NULL || p->dev->desc.shell.read_memory == NULL) {
             continue;
         }

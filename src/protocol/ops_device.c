@@ -473,6 +473,8 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
     (void)flags;
 
     lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
+    bool rebind = false;
+    uint32_t prev_root = 0u;
     if (!entry) {
         entry = lagfx_protocol_alloc_task_slot(p);
         if (!entry) {
@@ -482,12 +484,27 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
         }
         entry->id = task_id;
         entry->live = true;
+    } else if (entry->root_page_pfn != 0u
+               && entry->root_page_pfn != root_page_pfn) {
+        prev_root = entry->root_page_pfn;
+        rebind = true;
+        for (unsigned i = 0; i < LAGFX_MAX_TASK_MAPPINGS; ++i) {
+            entry->mappings[i].live = false;
+            entry->mappings[i].vaBase = 0u;
+            entry->mappings[i].length = 0u;
+        }
     }
     entry->root_page_pfn = root_page_pfn;
 
-    LAGFX_LOG("CmdDefineHostTask: taskID=%u root_page_pfn=0x%x "
-              "flags=0x%x stamp=0x%08x",
-              task_id, root_page_pfn, flags, hdr->stamp);
+    if (rebind) {
+        LAGFX_LOG("CmdDefineHostTask: taskID=%u rebound: root 0x%x -> "
+                  "0x%x (mappings cleared) flags=0x%x stamp=0x%08x",
+                  task_id, prev_root, root_page_pfn, flags, hdr->stamp);
+    } else {
+        LAGFX_LOG("CmdDefineHostTask: taskID=%u root_page_pfn=0x%x "
+                  "flags=0x%x stamp=0x%08x",
+                  task_id, root_page_pfn, flags, hdr->stamp);
+    }
     return LAGFX_HANDLER_OK;
 }
 

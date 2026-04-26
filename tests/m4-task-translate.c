@@ -169,29 +169,61 @@ static void put_le64(uint8_t *b, uint64_t v) {
     }
 }
 
-/* Arrange a synthetic PFN-array for task `task_id` whose root is at
- * (root_pfn<<12) within the heap mirror. Returns nothing — caller is
- * expected to call lagfx_op_define_host_task afterwards (or set up the
- * task directly via DefineTask2). */
-static void prep_pfn_array_in_heap(m4_shell_t *m,
-                                   uint32_t root_pfn,
-                                   const uint32_t *entries,
-                                   size_t entry_count) {
-    uint64_t root_gpa = (uint64_t)root_pfn << 12;
-    /* The heap mirror must cover [root_gpa, root_gpa+entry_count*4). */
-    uint64_t end = root_gpa + entry_count * 4u;
-    if (root_gpa < m->heap_gpa
-        || end > m->heap_gpa + sizeof(m->heap)) {
-        fprintf(stderr, "prep_pfn_array_in_heap: root_pfn=0x%x out of mirror "
-                "(heap [0x%llx..0x%llx))\n",
-                root_pfn,
-                (unsigned long long)m->heap_gpa,
-                (unsigned long long)(m->heap_gpa + sizeof(m->heap)));
-        exit(2);
+/* Place a 3-level radix tree for task `task_id` into the heap mirror.
+ *
+ *   page at root_pfn  : header { u32 L1_pfn, u32 levels=3 }
+ *   page at l1_pfn    : interior PTEs (bit31=0), leaf_pte[i] = l2_pfn-base+i
+ *   page at l2_pfn    : interior PTEs (bit31=0), leaf_pte[i] = l3_pfn-base+i
+ *   page at l3_pfn    : leaf PTEs (bit31=1), pte[i] = data_pfn_base + i
+ *
+ * For dev_addr that maps to page_idx <= entry_count, this lays down a
+ * fully populated radix tree. The caller must guarantee all referenced
+ * pages fall inside the heap mirror. */
+static void prep_radix_tree_in_heap(m4_shell_t *m,
+                                    uint32_t root_pfn,
+                                    uint32_t l1_pfn,
+                                    uint32_t l2_pfn,
+                                    uint32_t l3_pfn,
+                                    const uint32_t *leaf_data_pfns,
+                                    size_t entry_count) {
+    /* Validate every page is in the heap mirror. */
+    uint32_t pages[] = {root_pfn, l1_pfn, l2_pfn, l3_pfn};
+    for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); ++i) {
+        uint64_t gpa = (uint64_t)pages[i] << 12;
+        if (gpa < m->heap_gpa
+            || gpa + 0x1000ull > m->heap_gpa + sizeof(m->heap)) {
+            fprintf(stderr, "prep_radix_tree_in_heap: page 0x%x out of "
+                    "mirror (heap [0x%llx..0x%llx))\n",
+                    pages[i],
+                    (unsigned long long)m->heap_gpa,
+                    (unsigned long long)(m->heap_gpa + sizeof(m->heap)));
+            exit(2);
+        }
     }
-    uint8_t *p = m->heap + (root_gpa - m->heap_gpa);
-    for (size_t i = 0; i < entry_count; ++i) {
-        put_le32(p + i * 4u, entries[i]);
+
+    /* Header at root_pfn: L1_pfn @+0, levels=3 @+4. */
+    uint8_t *root_p = m->heap + (((uint64_t)root_pfn << 12) - m->heap_gpa);
+    memset(root_p, 0, 0x1000);
+    put_le32(root_p + 0, l1_pfn);
+    put_le32(root_p + 4, 3u);
+
+    /* L1 PTE[0] = l2_pfn (interior, bit31=0). */
+    uint8_t *l1_p = m->heap + (((uint64_t)l1_pfn << 12) - m->heap_gpa);
+    memset(l1_p, 0, 0x1000);
+    put_le32(l1_p + 0, l2_pfn & 0x7fffffffu);
+
+    /* L2 PTE[0] = l3_pfn (interior, bit31=0). */
+    uint8_t *l2_p = m->heap + (((uint64_t)l2_pfn << 12) - m->heap_gpa);
+    memset(l2_p, 0, 0x1000);
+    put_le32(l2_p + 0, l3_pfn & 0x7fffffffu);
+
+    /* L3 leaf PTEs: PTE[i] = data_pfn[i] | bit31. */
+    uint8_t *l3_p = m->heap + (((uint64_t)l3_pfn << 12) - m->heap_gpa);
+    memset(l3_p, 0, 0x1000);
+    for (size_t i = 0; i < entry_count && i < 1024; ++i) {
+        uint32_t pte = leaf_data_pfns[i];
+        if (pte != 0u) pte |= 0x80000000u;
+        put_le32(l3_p + i * 4u, pte);
     }
 }
 
@@ -218,30 +250,26 @@ static void define_host_task_via_dispatch(lagfx_protocol_t *p,
 static void test_translate_positive(void) {
     fprintf(stdout, "\n--- test: translate_positive ---\n");
     m4_shell_t shell = {0};
-    /* Pick a heap base that contains both root_pfn=0x10's page (0x10000)
-     * and data_pfn=0x12's page (0x12000). With heap_gpa=0x10000 and 64KiB
-     * mirror, range covers [0x10000..0x20000), which holds PFN 0x10..0x1f. */
+    /* Heap covers [0x10000..0x20000), holds PFN 0x10..0x1f. Tree:
+     *   root=0x10 (header), L1=0x11, L2=0x12, L3=0x13, data PFN=0x14. */
     shell.heap_gpa = 0x10000ull;
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    /* Root PFN-array at root_pfn=0x10. Entry [0]=0x12 (data_pfn), entries
-     * [1..N]=0 are fine. */
-    uint32_t entries[8] = {0x12u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
-    prep_pfn_array_in_heap(&shell, /*root_pfn*/ 0x10u, entries, 8);
+    uint32_t leaves[2] = {0x14u, 0u};
+    prep_radix_tree_in_heap(&shell, /*root*/0x10u, /*L1*/0x11u,
+                            /*L2*/0x12u, /*L3*/0x13u, leaves, 2);
 
-    /* Register a host task (taskID=7) with root_page_pfn=0x10 via the
-     * public 0x38 opcode. */
     define_host_task_via_dispatch(p, 7u, /*flags*/4u, /*root_pfn*/0x10u,
                                   /*stamp*/0xa5a50001u);
 
-    /* Translate dev_addr=0x100 -> page_idx=0, page_off=0x100, data_pfn=0x12,
-     * gpa = 0x12000 + 0x100 = 0x12100, run_len = 0x1000-0x100 = 0xf00. */
+    /* dev_addr=0x100 -> page_idx=0, off=0x100, leaf[0]=0x14,
+     * gpa = 0x14000 + 0x100 = 0x14100, run_len = 0xf00. */
     uint64_t gpa = 0, run = 0;
     bool ok = lagfx_task_translate(p, 7u, 0x100ull, &gpa, &run);
     CHECK(ok, "positive: lagfx_task_translate returns true");
-    CHECK(gpa == 0x12100ull,
-          "positive: dev=0x100 -> gpa=0x12100");
+    CHECK(gpa == 0x14100ull,
+          "positive: dev=0x100 -> gpa=0x14100");
     CHECK(run == (0x1000ull - 0x100ull),
           "positive: out_run_len = bytes-to-page-end (0xf00)");
 
@@ -288,10 +316,9 @@ static void test_translate_zero_data_pfn(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    /* PFN-array entry [0]=0 -> translate sees data_pfn==0 -> false +
-     * around-bytes diagnostic. */
-    uint32_t entries[4] = {0u, 0xaau, 0u, 0u};
-    prep_pfn_array_in_heap(&shell, 0x10u, entries, 4);
+    /* Leaf PTE[0]=0 -> translate sees leaf_pte==0 -> false. */
+    uint32_t leaves[4] = {0u, 0xaau, 0u, 0u};
+    prep_radix_tree_in_heap(&shell, 0x10u, 0x11u, 0x12u, 0x13u, leaves, 4);
     define_host_task_via_dispatch(p, 7u, 4u, 0x10u, 0xa5a50003u);
 
     uint64_t gpa = 0xdeadbeefull, run = 0xdeadbeefull;
@@ -309,27 +336,27 @@ static void test_translate_dev_addr_crosses_page(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    /* Two PFN-array entries: data_pfn[0]=0x12, data_pfn[1]=0x13. */
-    uint32_t entries[4] = {0x12u, 0x13u, 0u, 0u};
-    prep_pfn_array_in_heap(&shell, 0x10u, entries, 4);
+    /* Two leaf PTEs: leaf[0]=0x14, leaf[1]=0x15. */
+    uint32_t leaves[4] = {0x14u, 0x15u, 0u, 0u};
+    prep_radix_tree_in_heap(&shell, 0x10u, 0x11u, 0x12u, 0x13u, leaves, 4);
     define_host_task_via_dispatch(p, 7u, 4u, 0x10u, 0xa5a50004u);
 
     /* dev_addr = 0xfff (last byte of page 0). page_idx=0, off=0xfff,
-     * data_pfn=0x12, gpa=0x12fff, run_len = 0x1000-0xfff = 1. */
+     * leaf[0]=0x14, gpa=0x14fff, run_len = 1. */
     uint64_t gpa = 0, run = 0;
     bool ok = lagfx_task_translate(p, 7u, 0x0fffull, &gpa, &run);
     CHECK(ok, "page-crossing dev_addr: translate succeeds");
-    CHECK(gpa == 0x12fffull,
+    CHECK(gpa == 0x14fffull,
           "page-crossing dev_addr: gpa = data_pfn<<12 + page_off");
     CHECK(run == 1u,
           "page-crossing dev_addr: out_run_len = bytes-to-page-end (1)");
 
     /* dev_addr = 0x1000 (first byte of page 1). page_idx=1, off=0,
-     * data_pfn=0x13, gpa=0x13000, run_len = 0x1000. */
+     * leaf[1]=0x15, gpa=0x15000, run_len = 0x1000. */
     ok = lagfx_task_translate(p, 7u, 0x1000ull, &gpa, &run);
     CHECK(ok, "page-1 dev_addr: translate succeeds");
-    CHECK(gpa == 0x13000ull,
-          "page-1 dev_addr: gpa picks data_pfn=0x13 from entry[1]");
+    CHECK(gpa == 0x15000ull,
+          "page-1 dev_addr: gpa picks data_pfn=0x15 from leaf[1]");
     CHECK(run == 0x1000ull,
           "page-1 dev_addr: out_run_len = full page (0x1000)");
 
@@ -343,8 +370,8 @@ static void test_translate_read_memory_fails(void) {
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    uint32_t entries[4] = {0x12u, 0u, 0u, 0u};
-    prep_pfn_array_in_heap(&shell, 0x10u, entries, 4);
+    uint32_t leaves[4] = {0x14u, 0u, 0u, 0u};
+    prep_radix_tree_in_heap(&shell, 0x10u, 0x11u, 0x12u, 0x13u, leaves, 4);
     define_host_task_via_dispatch(p, 7u, 4u, 0x10u, 0xa5a50005u);
 
     /* Force the next read_memory call to fail. The handler call above
