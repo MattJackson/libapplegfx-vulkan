@@ -331,9 +331,17 @@ static void test_doorbell_ch2_walks_multi_cmd(void) {
     db_shell_free(&shell);
 }
 
-/* Fallback path: page0[0]=0 so the drain falls back to ring_gpa+0x1000. */
-static void test_doorbell_ch3_fallback_when_page0_zero(void) {
-    fprintf(stdout, "\n--- test: doorbell_ch3_fallback_page0_zero ---\n");
+/* page0[0]=0 means the kext hasn't published a data PFN yet — the drain
+ * must bail rather than read from a probabilistic +0x1000 location. The
+ * old fallback (ring_gpa + 0x1000) only worked when the kernel allocator
+ * happened to give physically-contiguous pages; it broke on fragmented
+ * heaps (cf. paravirt-re/library/state-machines/per-channel-ring-pfn-array.md).
+ *
+ * Walker behavior on page0[0]=0: read_memory of cmd header bails (PFN=0
+ * sentinel), warning logged, drain advances read_ptr to write_ptr to
+ * unblock the kext, NO cmd dispatched. */
+static void test_doorbell_ch3_bails_when_page0_zero(void) {
+    fprintf(stdout, "\n--- test: doorbell_ch3_bails_when_page0_zero ---\n");
     db_shell_t shell;
     db_shell_init(&shell, 0x40000000ull);
     lagfx_device_t *dev = make_dev(&shell);
@@ -344,15 +352,10 @@ static void test_doorbell_ch3_fallback_when_page0_zero(void) {
     uint32_t ring_base_pfn = 0x40020u;
     arm_doorbell_state(dev, shared_pfn, ring_base_pfn);
 
-    /* page0[0] = 0 -> fallback to (ring_pfn<<12)+0x1000. */
+    /* page0[0] = 0 -> walker bails (no dispatch). */
     uint64_t ring_page_gpa = (uint64_t)ring_pfn * 0x1000ull;
     uint8_t *ring_page = shell.heap + (ring_page_gpa - shell.heap_gpa);
     put_le32(ring_page, 0u);
-
-    /* Place the cmd at the fallback location: (ring_pfn<<12) + 0x1000. */
-    uint8_t *fallback_page = shell.heap
-        + ((ring_page_gpa + 0x1000ull) - shell.heap_gpa);
-    put_cmd_header(fallback_page, LAGFX_OP_NOP, 0, 12u, 0xfa110001u);
 
     place_descr(&shell, shared_pfn, /*ch=*/3u,
                 12u, 0u, 0u, 3u, ring_pfn);
@@ -363,14 +366,8 @@ static void test_doorbell_ch3_fallback_when_page0_zero(void) {
     uint64_t seen_after = 0;
     lagfx_protocol_stats(p, &seen_after, NULL, NULL);
 
-    CHECK(seen_after - seen_before == 1u,
-          "ch=3 doorbell with page0[0]=0: cmd dispatched via +0x1000 "
-          "fallback");
-
-    uint64_t cell_gpa = (uint64_t)ring_base_pfn * 0x1000ull + 3u * 4u;
-    uint32_t cell = get_le32(shell.heap + (cell_gpa - shell.heap_gpa));
-    CHECK(cell == 0xfa110001u,
-          "ch=3 doorbell fallback: stamp cell carries cmd's stamp");
+    CHECK(seen_after - seen_before == 0u,
+          "ch=3 doorbell with page0[0]=0: walker bails, NO cmd dispatched");
 
     lagfx_device_free(dev);
     db_shell_free(&shell);
@@ -493,7 +490,7 @@ int main(void) {
 
     test_doorbell_ch1_walks_ring_one_cmd();
     test_doorbell_ch2_walks_multi_cmd();
-    test_doorbell_ch3_fallback_when_page0_zero();
+    test_doorbell_ch3_bails_when_page0_zero();
     test_doorbell_ch5_keeps_setupSharedState_path();
     test_doorbell_ch6_keeps_ss_path();
 

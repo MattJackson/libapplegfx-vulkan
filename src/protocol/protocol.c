@@ -711,28 +711,51 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 && ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
                 uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
-                uint32_t data_pfn = 0u;
-                p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                               ring_gpa_base, sizeof(data_pfn),
-                                               &data_pfn);
-                uint64_t ring_data_gpa = (data_pfn != 0u)
-                    ? ((uint64_t)data_pfn << 12)
-                    : ring_gpa_base + 0x1000u;
 
+                /* page0 is a u32 PFN-array; data_pfn[i] is at page0+i*4.
+                 * Cmd at ring offset `off` lives in data_pfn[off/0x1000]
+                 * at page-offset (off & 0xfff). Cmds CAN cross page
+                 * boundaries — read in per-page chunks and stitch. */
                 uint32_t last_stamp = 0u;
                 uint32_t cur_rp = read_ptr;
                 unsigned cmd_idx = 0;
                 while (cur_rp + 12u <= write_ptr) {
-                    /* Read the 12-byte cmd header. */
+                    /* Helper: read `n` bytes from ring offset `off` into
+                     * `out`, walking page0 as needed. Returns false on
+                     * read_memory failure. */
                     uint8_t hdr_bytes[12];
-                    if (!p->dev->desc.shell.read_memory(
-                            p->dev->desc.shell.opaque,
-                            ring_data_gpa + cur_rp, 12, hdr_bytes)) {
-                        LAGFX_WARN("doorbell ch=%u: read_memory failed for "
-                                   "cmd header at gpa=0x%llx",
-                                   ch,
-                                   (unsigned long long)(ring_data_gpa + cur_rp));
-                        break;
+                    {
+                        bool ok = true;
+                        uint32_t off = cur_rp;
+                        size_t got = 0;
+                        while (got < 12u && ok) {
+                            uint32_t page_idx = off >> 12;
+                            uint32_t page_off = off & 0xfffu;
+                            uint32_t can = 0x1000u - page_off;
+                            uint32_t want = (uint32_t)(12u - got);
+                            uint32_t take = (want < can) ? want : can;
+                            uint32_t pte_pfn = 0u;
+                            if (!p->dev->desc.shell.read_memory(
+                                    p->dev->desc.shell.opaque,
+                                    ring_gpa_base + (uint64_t)page_idx * 4u,
+                                    sizeof(pte_pfn), &pte_pfn) || pte_pfn == 0u) {
+                                ok = false; break;
+                            }
+                            if (!p->dev->desc.shell.read_memory(
+                                    p->dev->desc.shell.opaque,
+                                    ((uint64_t)pte_pfn << 12) + page_off,
+                                    take, hdr_bytes + got)) {
+                                ok = false; break;
+                            }
+                            off += take;
+                            got += take;
+                        }
+                        if (!ok) {
+                            LAGFX_WARN("doorbell ch=%u: read_memory failed "
+                                       "for cmd header at rp=%u",
+                                       ch, cur_rp);
+                            break;
+                        }
                     }
                     uint32_t cmd_len = (uint32_t)(hdr_bytes[4]
                                                   | (hdr_bytes[5] << 8)
@@ -748,20 +771,48 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         break;
                     }
 
-                    /* Read the full cmd into a temporary buffer + dispatch. */
+                    /* Read the full cmd into a temporary buffer + dispatch.
+                     * Same per-page walk as the header read above so cmds
+                     * crossing page boundaries assemble correctly. */
                     uint8_t *cmd = malloc(cmd_len);
                     if (!cmd) {
                         LAGFX_WARN("doorbell ch=%u: malloc(%u) failed",
                                    ch, cmd_len);
                         break;
                     }
-                    if (!p->dev->desc.shell.read_memory(
-                            p->dev->desc.shell.opaque,
-                            ring_data_gpa + cur_rp, cmd_len, cmd)) {
-                        LAGFX_WARN("doorbell ch=%u: read_memory(cmd, %u) "
-                                   "failed", ch, cmd_len);
-                        free(cmd);
-                        break;
+                    {
+                        bool ok = true;
+                        uint32_t off = cur_rp;
+                        size_t got = 0;
+                        while (got < cmd_len && ok) {
+                            uint32_t page_idx = off >> 12;
+                            uint32_t page_off = off & 0xfffu;
+                            uint32_t can = 0x1000u - page_off;
+                            uint32_t want = (uint32_t)(cmd_len - got);
+                            uint32_t take = (want < can) ? want : can;
+                            uint32_t pte_pfn = 0u;
+                            if (!p->dev->desc.shell.read_memory(
+                                    p->dev->desc.shell.opaque,
+                                    ring_gpa_base + (uint64_t)page_idx * 4u,
+                                    sizeof(pte_pfn), &pte_pfn) || pte_pfn == 0u) {
+                                ok = false; break;
+                            }
+                            if (!p->dev->desc.shell.read_memory(
+                                    p->dev->desc.shell.opaque,
+                                    ((uint64_t)pte_pfn << 12) + page_off,
+                                    take, cmd + got)) {
+                                ok = false; break;
+                            }
+                            off += take;
+                            got += take;
+                        }
+                        if (!ok) {
+                            LAGFX_WARN("doorbell ch=%u: read_memory(cmd, %u) "
+                                       "failed at rp=%u (paginated walk)",
+                                       ch, cmd_len, cur_rp);
+                            free(cmd);
+                            break;
+                        }
                     }
 
                     lagfx_cmd_header_t parsed;
