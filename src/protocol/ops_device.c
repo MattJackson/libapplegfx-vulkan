@@ -473,8 +473,8 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
     (void)flags;
 
     lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
-    bool rebind = false;
     uint32_t prev_root = 0u;
+    bool rebind = false;
     if (!entry) {
         entry = lagfx_protocol_alloc_task_slot(p);
         if (!entry) {
@@ -488,17 +488,12 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
                && entry->root_page_pfn != root_page_pfn) {
         prev_root = entry->root_page_pfn;
         rebind = true;
-        for (unsigned i = 0; i < LAGFX_MAX_TASK_MAPPINGS; ++i) {
-            entry->mappings[i].live = false;
-            entry->mappings[i].vaBase = 0u;
-            entry->mappings[i].length = 0u;
-        }
     }
     entry->root_page_pfn = root_page_pfn;
 
     if (rebind) {
         LAGFX_LOG("CmdDefineHostTask: taskID=%u rebound: root 0x%x -> "
-                  "0x%x (mappings cleared) flags=0x%x stamp=0x%08x",
+                  "0x%x flags=0x%x stamp=0x%08x",
                   task_id, prev_root, root_page_pfn, flags, hdr->stamp);
     } else {
         LAGFX_LOG("CmdDefineHostTask: taskID=%u root_page_pfn=0x%x "
@@ -513,10 +508,13 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
  *
  * Confirmed via paravirt-re/library/journey/opcodes-0x35-0x36-0x39.md
  * and the annotated AppleParavirtMemoryMap-commitIntoGPUPageTable.asm.
- * This opcode is what publishes VA → GPA mappings host-side after the
- * kext commits memory into the GPU page-table. The naming mismatch
- * (LAGFX_OP_ROOT_CHANNEL_INVALIDATE) is historical — the symbol stays
- * for ABI; the descriptor name + handler are what matter.
+ * This opcode publishes a (taskID, vaBase, vaLength) declaration after
+ * the kext commits memory into the GPU page-table. The kext writes
+ * PTEs into the radix tree at task->root_page_pfn directly via guest
+ * CPU stores (per AppleParavirtPageTable-StorageNode-setEntry); the
+ * host walks those PTEs in lagfx_task_translate. So 0x39 itself does
+ * NOT carry GPA data the host needs — translation is via the radix
+ * tree, not this opcode.
  *
  * Wire format (20-byte trailer; optional preceding scatter blocks):
  *
@@ -526,19 +524,11 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
  *       +0x04  u64 vaBase       (guest-kernel VA into IOMemoryMap)
  *       +0x0c  u64 vaLength
  *
- * Boot-trace samples have zero-length scatter blocks (only the 20-byte
- * trailer). Runtime samples may have scatter prefix carrying the
- * actual GPA segments — format pending RE. We log scatter prefix
- * bytes for future analysis but only record `{vaBase, length}` in the
- * task mapping table for now.
- *
- * Lookup path: when the CmdExecIndirect2 segment walker sees a
- * resource_table entry with `host_gpu_addr=X`, lagfx_task_translate
- * scans the per-task mappings for `vaBase ≤ X < vaBase+length`. If a
- * matching mapping exists, M4 closure is one scatter-block-format
- * RE step away. If not, the kext didn't publish the mapping host-
- * side and we fall back to the radix walk (which is currently
- * empty too — that's the M4 open issue).
+ * Boot/runtime traces observed have zero-length scatter prefix because
+ * the per-resource scatter table is empty / single-PA (per the
+ * commitIntoGPUPageTable RE: emit() calls are no-ops in single-PA
+ * mode). We still log any prefix bytes for future RE in case a
+ * multi-PA case ever shows up on the wire.
  * =========================================================================== */
 
 lagfx_handler_status_t lagfx_op_map_memory_immediate(
@@ -560,7 +550,8 @@ lagfx_handler_status_t lagfx_op_map_memory_immediate(
     uint64_t va_len   = (uint64_t)lagfx_le32(hdr->payload + off + 12)
                         | ((uint64_t)lagfx_le32(hdr->payload + off + 16) << 32);
 
-    /* Log any scatter prefix so future RE has data. */
+    /* Log any scatter prefix so future RE has data when a multi-PA
+     * sample finally lands on the wire. */
     if (off > 0) {
         size_t n = (off < 64u) ? off : 64u;
         char line[64 * 4 + 8];
@@ -575,52 +566,10 @@ lagfx_handler_status_t lagfx_op_map_memory_immediate(
                   off, line);
     }
 
-    /* Find or create the task entry. The kext can emit 0x39 against
-     * a taskID before CmdDefineHostTask for that ID — allocate
-     * defensively. */
-    lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
-    if (!task) {
-        task = lagfx_protocol_alloc_task_slot(p);
-        if (!task) {
-            LAGFX_WARN("CmdMapMemoryImmediate: task table full");
-            return LAGFX_HANDLER_ERR_STATE;
-        }
-        task->id = task_id;
-        task->live = true;
-    }
-
-    /* Add or refresh a mapping interval. Linear scan; small N. */
-    lagfx_task_mapping_t *slot = NULL;
-    for (unsigned i = 0; i < LAGFX_MAX_TASK_MAPPINGS; ++i) {
-        if (task->mappings[i].live
-            && task->mappings[i].vaBase == va_base
-            && task->mappings[i].length == va_len) {
-            slot = &task->mappings[i];
-            break;
-        }
-    }
-    if (!slot) {
-        for (unsigned i = 0; i < LAGFX_MAX_TASK_MAPPINGS; ++i) {
-            if (!task->mappings[i].live) {
-                slot = &task->mappings[i];
-                break;
-            }
-        }
-    }
-    if (slot) {
-        slot->vaBase = va_base;
-        slot->length = va_len;
-        slot->live = true;
-        LAGFX_LOG("CmdMapMemoryImmediate: taskID=%u vaBase=0x%llx "
-                  "vaLength=0x%llx (registered) stamp=0x%08x",
-                  task_id, (unsigned long long)va_base,
-                  (unsigned long long)va_len, hdr->stamp);
-    } else {
-        LAGFX_WARN("CmdMapMemoryImmediate: taskID=%u mapping table full "
-                   "(max=%u) — dropping vaBase=0x%llx",
-                   task_id, LAGFX_MAX_TASK_MAPPINGS,
-                   (unsigned long long)va_base);
-    }
+    LAGFX_LOG("CmdMapMemoryImmediate: taskID=%u vaBase=0x%llx "
+              "vaLength=0x%llx stamp=0x%08x",
+              task_id, (unsigned long long)va_base,
+              (unsigned long long)va_len, hdr->stamp);
     return LAGFX_HANDLER_OK;
 }
 

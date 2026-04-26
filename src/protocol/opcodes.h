@@ -103,7 +103,7 @@ typedef enum {
     LAGFX_OP_CHANNEL_EVENT_36         = 0x36, /* ChannelEventMachine-adjacent */
     LAGFX_OP_CHANNEL_EVENT_37         = 0x37, /* ChannelEventMachine-adjacent */
     LAGFX_OP_DEFINE_HOST_TASK         = 0x38,
-    LAGFX_OP_ROOT_CHANNEL_INVALIDATE  = 0x39, /* RootChannel-adjacent; probably invalidateTask */
+    LAGFX_OP_MAP_MEMORY_IMMEDIATE     = 0x39, /* CmdMapMemoryImmediate, Immediate vchan; opcodes-0x35-0x36-0x39.md */
     LAGFX_OP_GET_DEVICE_INFO_2        = 0x3a,
     LAGFX_OP_UNKNOWN_3B               = 0x3b,
     LAGFX_OP_UNKNOWN_3C               = 0x3c,

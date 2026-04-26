@@ -43,25 +43,11 @@ typedef struct lagfx_task lagfx_task_t;
 /* Per-task VA → guest-physical mapping interval, populated by
  * CmdMapMemoryImmediate (kext opcode 0x39, ch=2 Immediate vchan).
  * `host_gpu_addr` values in CmdExecIndirect2 resource_table entries
- * are guest-kernel VAs that fall inside one of these intervals.
- *
- * For now the intervals only carry {vaBase, length}; the actual GPA
- * mapping for a given offset within the interval is captured from
- * any preceding scatter blocks in the 0x39 payload (TODO — boot-trace
- * 0x39s have zero-length scatter, so we don't have a runtime sample
- * to RE the scatter format yet). */
-typedef struct {
-    uint64_t vaBase;     /* device-VA range start  */
-    uint64_t length;     /* range length in bytes  */
-    bool     live;
-    /* TODO: once scatter-block format is RE'd, store
-     *   uint32_t segment_count;
-     *   lagfx_va_segment_t *segments;
-     * for chunked GPA lookup. */
-} lagfx_task_mapping_t;
-
-#define LAGFX_MAX_TASK_MAPPINGS 32u
-
+ * are guest-kernel VAs translated via the 3-level radix tree at
+ * `root_page_pfn` (per state-machines/per-task-page-table.md). 0x39
+ * is logged for diagnostic visibility but does NOT participate in
+ * translation — the kext writes PTEs into the radix pages directly,
+ * and the host walks them on each translate. */
 typedef struct {
     uint32_t      id;         /* taskID from CmdDefineTask2 */
     lagfx_task_t *shell_task; /* opaque handle from shell.create_task */
@@ -69,21 +55,11 @@ typedef struct {
     uint64_t      length;
     bool          live;
 
-    /* Host-task PFN-array indirection (M4):
-     * CmdDefineHostTask (0x38) publishes a root_page_pfn whose first
-     * page is the SHARED HEADER. See state-machines/per-task-page-table.md
-     * for the actual radix-tree format. The kext also publishes
-     * VA→GPA mappings via opcode 0x39 (CmdMapMemoryImmediate) — those
-     * land in `mappings[]` below and are the AUTHORITATIVE translation
-     * source for host_gpu_addr values. */
+    /* Host-task page-table root: CmdDefineHostTask (0x38) publishes a
+     * root_page_pfn whose first page is the SHARED HEADER. See
+     * state-machines/per-task-page-table.md for the actual radix-tree
+     * format. lagfx_task_translate walks this on every lookup. */
     uint32_t      root_page_pfn;
-
-    /* Mappings from CmdMapMemoryImmediate (0x39). On segment-walker
-     * lookup, scan for the first mapping containing dev_addr; if
-     * found, the offset within (dev_addr - vaBase) tells us where in
-     * the IOAccelSysMemory backing to read. Translation of offset →
-     * GPA awaits scatter-block format RE. */
-    lagfx_task_mapping_t mappings[LAGFX_MAX_TASK_MAPPINGS];
 } lagfx_task_entry_t;
 
 typedef struct {

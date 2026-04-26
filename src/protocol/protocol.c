@@ -288,30 +288,6 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
         return false;
     }
 
-    /* First: check if the dev_addr falls inside one of the published
-     * mapping intervals (from CmdMapMemoryImmediate 0x39). When the
-     * scatter-block format is RE'd this will be the AUTHORITATIVE
-     * lookup. For now we report the interval match in the log so we
-     * can see which mappings are being hit. */
-    for (unsigned i = 0; i < LAGFX_MAX_TASK_MAPPINGS; ++i) {
-        const lagfx_task_mapping_t *m = &task->mappings[i];
-        if (!m->live) continue;
-        if (dev_addr < m->vaBase) continue;
-        uint64_t off = dev_addr - m->vaBase;
-        if (off >= m->length) continue;
-        LAGFX_LOG("task_translate: taskID=%u dev=0x%llx -> mapping[%u] "
-                  "vaBase=0x%llx length=0x%llx offset=0x%llx (scatter "
-                  "decode TBD)",
-                  task_id, (unsigned long long)dev_addr, i,
-                  (unsigned long long)m->vaBase,
-                  (unsigned long long)m->length,
-                  (unsigned long long)off);
-        /* TODO: once scatter blocks are decoded, look up segment and
-         * return real GPA. For now, fall through to the radix walk so
-         * the diagnostic chain stays consistent. */
-        break;
-    }
-
     if (task->root_page_pfn == 0u) {
         return false;
     }
