@@ -670,6 +670,28 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     LAGFX_LOG("doorbell ch=%u: no cmd payload — skipping "
                               "ss[0x12]/ss[0x1c] write (would target wrong "
                               "page)", ch);
+                } else {
+                    /* have_payload=1 but cmd_ss_pfn==0 — ring read returned
+                     * zero bytes. Per display0-cmd-actual-location.md, the
+                     * kext writes the cmd body via wrapper::appendBytes()
+                     * into a stack buffer that gets submitted; observed
+                     * behaviour is that (ring_pfn<<12)+read_ptr is NOT
+                     * coherent with the kext's writes (the page is either
+                     * a metadata/decorative slot or the data lives in
+                     * kernel heap). We can derive display_index from the
+                     * channel number (display_index = ch - 5) but without
+                     * ss_pfn we cannot address the per-display BMD page,
+                     * so the post-wait apvAssert
+                     *   (fSharedState->port == fPort)
+                     * will pass for ch=5 (Display0, fPort=0, page bzero'd)
+                     * but PANIC for ch>=6 at AppleParavirtDisplayPipe.cpp:240.
+                     * Logged here so the diagnostic trail is visible. */
+                    unsigned derived_display_index =
+                        (ch >= 5u) ? (ch - 5u) : 0u;
+                    LAGFX_LOG("doorbell ch=%u: cmd_ss_pfn=0 from ring read "
+                              "(derived display_index=%u) — cannot address "
+                              "BMD ss page; predicate will panic for ch>=6",
+                              ch, derived_display_index);
                 }
             }
 
