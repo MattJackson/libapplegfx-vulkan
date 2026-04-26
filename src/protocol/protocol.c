@@ -531,10 +531,83 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             int have_payload = 0;
             if (ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
-                uint64_t ring_gpa = ((uint64_t)ring_pfn << 12);
+                /* M3 attempt 2 — apply +0x1000 first-page-header skip.
+                 *
+                 * Per paravirt-re/annotated/AppleParavirtVirtualChannel-init
+                 * .annotated.asm BLOCK F+G+J: the per-channel ring BMD is
+                 * allocated as inTaskWithOptions(capacity=ring_size+0x1000).
+                 * this[+0x228] (the kva used by submitBuffer's memcpy) is
+                 * map_kva + 0x1000. Therefore submitted cmd data lives at
+                 *   (ring_pfn << 12) + 0x1000 + read_ptr
+                 * NOT
+                 *   (ring_pfn << 12) + read_ptr.
+                 *
+                 * Previous attempt missed the +0x1000 and read PFN-array /
+                 * header bytes (zeros), causing display_index=0, ss_pfn=0.
+                 *
+                 * Diagnostic strategy: ALSO read at offset 0 (no +0x1000),
+                 * +0x1000 exactly (data area start with read_ptr=0), and at
+                 * the corrected +0x1000+read_ptr+12. Log raw bytes at each
+                 * so we can see where the kext's writes actually land. */
+                uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
+                uint64_t ring_data_gpa = ring_gpa_base + 0x1000u;
+
+                /* Diagnostic 1: dump 32 bytes at ring_gpa_base + 0 (the
+                 * "first page" — should be PFN-array OR header per init
+                 * annotation, NOT cmd data). */
+                {
+                    uint8_t dbg[32] = {0};
+                    if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                         ring_gpa_base,
+                                                         32, dbg)) {
+                        LAGFX_LOG("doorbell ch=%u: dbg page0[0..31] = "
+                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
+                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
+                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
+                                  "%02x %02x %02x %02x %02x %02x %02x %02x",
+                                  ch,
+                                  dbg[0], dbg[1], dbg[2], dbg[3],
+                                  dbg[4], dbg[5], dbg[6], dbg[7],
+                                  dbg[8], dbg[9], dbg[10], dbg[11],
+                                  dbg[12], dbg[13], dbg[14], dbg[15],
+                                  dbg[16], dbg[17], dbg[18], dbg[19],
+                                  dbg[20], dbg[21], dbg[22], dbg[23],
+                                  dbg[24], dbg[25], dbg[26], dbg[27],
+                                  dbg[28], dbg[29], dbg[30], dbg[31]);
+                    }
+                }
+
+                /* Diagnostic 2: dump 32 bytes at ring_data_gpa + read_ptr
+                 * (the corrected position — should hold the 12-byte cmd
+                 * header followed by the 8-byte payload). */
+                {
+                    uint8_t dbg[32] = {0};
+                    if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                         ring_data_gpa + read_ptr,
+                                                         32, dbg)) {
+                        LAGFX_LOG("doorbell ch=%u: dbg data+rp[0..31] = "
+                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
+                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
+                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
+                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
+                                  "(gpa=0x%llx)",
+                                  ch,
+                                  dbg[0], dbg[1], dbg[2], dbg[3],
+                                  dbg[4], dbg[5], dbg[6], dbg[7],
+                                  dbg[8], dbg[9], dbg[10], dbg[11],
+                                  dbg[12], dbg[13], dbg[14], dbg[15],
+                                  dbg[16], dbg[17], dbg[18], dbg[19],
+                                  dbg[20], dbg[21], dbg[22], dbg[23],
+                                  dbg[24], dbg[25], dbg[26], dbg[27],
+                                  dbg[28], dbg[29], dbg[30], dbg[31],
+                                  (unsigned long long)(ring_data_gpa + read_ptr));
+                    }
+                }
+
+                /* Real header read — corrected to use ring_data_gpa. */
                 uint8_t hdr[12] = {0};
                 if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                                     ring_gpa + read_ptr,
+                                                     ring_data_gpa + read_ptr,
                                                      12, hdr)) {
                     uint16_t opcode  = (uint16_t)(hdr[0] | (hdr[1] << 8));
                     uint32_t cmd_len =
@@ -544,9 +617,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         (uint32_t)(hdr[8] | (hdr[9] << 8)
                                    | (hdr[10] << 16) | (hdr[11] << 24));
                     LAGFX_LOG("doorbell ch=%u: drain opcode=0x%04x len=%u "
-                              "stamp=%u (gpa=0x%llx)",
+                              "stamp=%u (gpa=0x%llx) [+0x1000 corrected]",
                               ch, opcode, cmd_len, cmd_stm,
-                              (unsigned long long)(ring_gpa + read_ptr));
+                              (unsigned long long)(ring_data_gpa + read_ptr));
                 }
 
                 /* Per AppleParavirtDisplayPipe-setupSharedState.annotated.asm
@@ -563,12 +636,13 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                  * 20 bytes (write_ptr=0x14 in descriptor), matching this
                  * layout.
                  *
-                 * Read the 8-byte payload at ring_gpa + read_ptr + 12. */
+                 * Read the 8-byte payload at ring_data_gpa + read_ptr + 12
+                 * (i.e. (ring_pfn<<12) + 0x1000 + read_ptr + 12). */
                 if (write_ptr - read_ptr >= 20u) {
                     uint8_t pl[8] = {0};
                     if (p->dev->desc.shell.read_memory(
                             p->dev->desc.shell.opaque,
-                            ring_gpa + read_ptr + 12u, 8, pl)) {
+                            ring_data_gpa + read_ptr + 12u, 8, pl)) {
                         cmd_display_index =
                             (uint32_t)(pl[0] | (pl[1] << 8)
                                        | (pl[2] << 16) | (pl[3] << 24));
@@ -577,8 +651,14 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                                        | (pl[6] << 16) | (pl[7] << 24));
                         have_payload = 1;
                         LAGFX_LOG("doorbell ch=%u: cmd payload "
-                                  "display_index=%u ss_pfn=0x%x",
-                                  ch, cmd_display_index, cmd_ss_pfn);
+                                  "raw=%02x %02x %02x %02x %02x %02x %02x %02x "
+                                  "display_index=%u ss_pfn=0x%x "
+                                  "(gpa=0x%llx) [+0x1000 corrected]",
+                                  ch,
+                                  pl[0], pl[1], pl[2], pl[3],
+                                  pl[4], pl[5], pl[6], pl[7],
+                                  cmd_display_index, cmd_ss_pfn,
+                                  (unsigned long long)(ring_data_gpa + read_ptr + 12u));
                     }
                 }
 
