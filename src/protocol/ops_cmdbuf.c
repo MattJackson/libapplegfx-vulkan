@@ -431,107 +431,305 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                           inner_idx, inner_opcode, inner_total,
                           (unsigned)encoder_type);
 
-                /* InfoDecoder (encType=4) opcode 0x1c9 =
-                 * decodeRenderPipelineStateInfo. Wire format:
-                 *   inner_payload[0..3]  = u32 ref         (ignored — no real Metal device)
-                 *   inner_payload[4..7]  = u32 buffer_id   (index into resource_table[])
-                 *   inner_payload[8..15] = u64 reply_offset (within resolved buffer)
+                /* InfoDecoder (encType=4) opcode 0x1c2..0x1d0 family.
                  *
-                 * Host writes 12B PGReplyRenderPipelineStateInfo at
-                 * resource_table[buffer_id].host_gpu_addr + reply_offset.
+                 * Every Info-class opcode (except 0x1c5, no reply) follows
+                 * a common wire shape:
                  *
-                 * Without this reply, the dylib reads zeros from the reply
-                 * page and SkyLight's MetalShader::CopyPipelineState aborts
-                 * on `maxTotalThreadsPerThreadgroup == 0` (see
-                 * library/journey/pipeline-state-creation.md).
+                 *   inner_payload[+0..+3]   u32 ref          (resource ID)
+                 *   inner_payload[+4..+7]   u32 buffer_id    (resolved against
+                 *                                             outer resource_table[])
+                 *   inner_payload[+8..+15]  u64 reply_offset (within resolved buffer)
+                 *   inner_payload[+16..]    per-opcode args  (size varies)
                  *
-                 * Refs CONFIRMED via wire-format agent: pvg-disasm.txt:35920+
-                 * (decoder reads 16B body via PGByteIterator::readBytes(16)),
-                 * pvg-disasm.txt:37794 (writer calls writeBytes(0xc, &val) =
-                 * 12B reply). */
-                if (encoder_type == 4u && inner_opcode == 0x1c9u
-                    && ipl_len >= 16u
+                 * For most ops {ref, buffer_id, reply_offset} sit at the very
+                 * start. Exceptions:
+                 *   - 0x1ca / 0x1cb: 24B MTLSize between ref and buffer_id
+                 *     ({u32 ref, MTLSize(24B), u32 buffer_id, u64 reply_offset}).
+                 *   - 0x1cc:        {u32 ref, u32 objectType, u32 buffer_id, u64 reply_offset}.
+                 *
+                 * Stubs reply with sane defaults (see per-opcode comments
+                 * below) so future Metal clients hitting these don't read
+                 * zeros and abort. Real implementations are a Phase 3 task.
+                 *
+                 * Refs:
+                 *   - paravirt-re/library/state-machines/info-decoder-replies.tsv
+                 *   - paravirt-re/library/journey/info-decoder-opcodes.md
+                 *
+                 * Helper macro used below for shell write + log/skip on
+                 * page-cross or short run. */
+                if (encoder_type == 4u
+                    && inner_opcode >= 0x1c2u && inner_opcode <= 0x1d0u
                     && p->dev != NULL
                     && p->dev->desc.shell.write_memory != NULL) {
                     const uint8_t *ipl = cmdbuf + ioff + 8u;
-                    uint32_t ref           = lagfx_le32(ipl + 0);
-                    uint32_t buffer_id     = lagfx_le32(ipl + 4);
-                    uint64_t reply_offset  =
-                        (uint64_t)lagfx_le32(ipl + 8) |
-                        ((uint64_t)lagfx_le32(ipl + 12) << 32);
 
-                    if (buffer_id < resource_count) {
-                        const uint8_t *brec = hdr->payload + off_resources
-                                              + (size_t)buffer_id * 16u;
-                        uint64_t buffer_dev_addr =
-                            (uint64_t)lagfx_le32(brec + 0) |
-                            ((uint64_t)lagfx_le32(brec + 4) << 32);
-                        uint32_t buffer_len = lagfx_le32(brec + 8);
+                    /* Decode common {ref, buffer_id, reply_offset} triplet.
+                     * Layout-specific opcodes (0x1ca/0x1cb/0x1cc) re-decode
+                     * inside their case below. */
+                    uint32_t ref          = 0;
+                    uint32_t buffer_id    = 0;
+                    uint64_t reply_offset = 0;
+                    bool     have_triplet = false;
+                    size_t   reply_size   = 0;
+                    uint8_t  reply[32]    = {0};
+                    const char *opname    = "(info-stub)";
 
-                        if (reply_offset + 12u > (uint64_t)buffer_len) {
-                            LAGFX_WARN("        0x1c9 reply: offset=0x%llx + "
-                                       "12 > buffer_len=%u — out of bounds",
-                                       (unsigned long long)reply_offset,
-                                       buffer_len);
-                        } else {
-                            /* Translate buffer_dev_addr + reply_offset
-                             * through the task's PFN-array. The 12-byte
-                             * reply fits in a single page per the layout
-                             * (4-byte aligned, no boundary cross). */
-                            uint64_t target_dev_addr =
-                                buffer_dev_addr + reply_offset;
-                            uint64_t target_gpa = 0;
-                            uint64_t target_run = 0;
-                            bool translated = lagfx_task_translate(
-                                p, task_id, target_dev_addr,
-                                &target_gpa, &target_run);
-                            if (!translated) {
-                                /* Fallback: literal GPA. */
-                                target_gpa = target_dev_addr;
-                                target_run = 0x1000u - (target_dev_addr & 0xfffu);
-                            }
-
-                            uint8_t reply[12];
-                            /* maxTotalThreadsPerThreadgroup = 1024
-                             * (Apple-class minimum non-zero default). */
+                    switch (inner_opcode) {
+                    case 0x1c2u:  /* ComputePipelineStateInfo — body 0x10 reply 0x1c */
+                        if (ipl_len >= 16u) {
+                            ref          = lagfx_le32(ipl + 0);
+                            buffer_id    = lagfx_le32(ipl + 4);
+                            reply_offset = (uint64_t)lagfx_le32(ipl + 8) |
+                                ((uint64_t)lagfx_le32(ipl + 12) << 32);
+                            have_triplet = true;
+                            reply_size   = 0x1c;
+                            opname       = "0x1c2 ComputePipelineStateInfo";
+                            /* maxTotalThreadsPerThreadgroup=1024 */
+                            reply[0]  = 0x00; reply[1]  = 0x04;
+                            reply[2]  = 0x00; reply[3]  = 0x00;
+                            /* +4..7 pad. threadExecutionWidth=32 @ +8 */
+                            reply[8]  = 32;   reply[9]  = 0;
+                            reply[10] = 0;    reply[11] = 0;
+                            /* +12..15 pad. staticThreadgroupMemoryLength=0 @ +16 */
+                            /* +20..23 pad. supportIndirectCommandBuffers=0 @ +24 */
+                        }
+                        break;
+                    case 0x1c3u:  /* HeapTextureDescriptorSizeAndAlign — body 0x2c reply 0x10 */
+                        if (ipl_len >= 0x2cu) {
+                            /* descriptor at +0..+0x1f, then buffer_id @ +0x20,
+                             * reply_offset @ +0x24. ref slot is implicit
+                             * (descriptor-only — no resource ref). Use 0. */
+                            ref          = 0;
+                            buffer_id    = lagfx_le32(ipl + 0x20);
+                            reply_offset = (uint64_t)lagfx_le32(ipl + 0x24) |
+                                ((uint64_t)lagfx_le32(ipl + 0x28) << 32);
+                            have_triplet = true;
+                            reply_size   = 0x10;
+                            opname       = "0x1c3 HeapTextureSizeAndAlign";
+                            /* MTLSizeAndAlign { NSUInteger size; NSUInteger align; }
+                             * size=4096, align=4096 (one page). */
+                            reply[0] = 0x00; reply[1] = 0x10; reply[2] = 0; reply[3] = 0;
+                            reply[4] = 0;    reply[5] = 0;    reply[6] = 0; reply[7] = 0;
+                            reply[8] = 0x00; reply[9] = 0x10; reply[10] = 0; reply[11] = 0;
+                            reply[12]= 0;    reply[13]= 0;    reply[14] = 0; reply[15] = 0;
+                        }
+                        break;
+                    case 0x1c4u:  /* GetRasterizationRateMapInfo — body 0x18 reply 0x14+N*0x4 */
+                        if (ipl_len >= 0x18u) {
+                            ref          = lagfx_le32(ipl + 0);
+                            buffer_id    = lagfx_le32(ipl + 4);
+                            reply_offset = (uint64_t)lagfx_le32(ipl + 8) |
+                                ((uint64_t)lagfx_le32(ipl + 12) << 32);
+                            have_triplet = true;
+                            reply_size   = 0x14;  /* fixed header only */
+                            opname       = "0x1c4 RasterizationRateMapInfo";
+                            /* All zeros: zero screenSize, zero physicalGranularity,
+                             * zero zoom buckets. Per-layer trailer not stubbed —
+                             * guest will read zeros for each layer's physicalSize. */
+                            LAGFX_LOG("        0x1c4 reply: variable trailer "
+                                      "(per-layer physicalSize) not yet stubbed");
+                        }
+                        break;
+                    case 0x1c5u:  /* CopyRasterizationRateParameterBuffer — no reply */
+                        opname     = "0x1c5 CopyRasterizationRateParameterBuffer";
+                        reply_size = 0;
+                        LAGFX_LOG("        %s: no-op (no reply)", opname);
+                        break;
+                    case 0x1c6u:  /* MapPhysicalToScreenCoordinates — body 0x1c reply 0x8 */
+                    case 0x1c7u:  /* MapScreenToPhysicalCoordinates  — body 0x1c reply 0x8 */
+                        if (ipl_len >= 0x1cu) {
+                            ref          = lagfx_le32(ipl + 0);
+                            buffer_id    = lagfx_le32(ipl + 4);
+                            reply_offset = (uint64_t)lagfx_le32(ipl + 8) |
+                                ((uint64_t)lagfx_le32(ipl + 12) << 32);
+                            have_triplet = true;
+                            reply_size   = 0x8;
+                            opname = (inner_opcode == 0x1c6u)
+                                ? "0x1c6 MapPhysicalToScreen"
+                                : "0x1c7 MapScreenToPhysical";
+                            /* Pass-through: copy MTLCoordinate2D @ +0x14
+                             * (8B = {float x, float y}) to the reply slot. */
+                            memcpy(reply, ipl + 0x14, 8);
+                        }
+                        break;
+                    case 0x1c8u:  /* MapPhysicalToScreenCoordinatesMultiple — N*0x8 */
+                        if (ipl_len >= 0x20u) {
+                            ref          = lagfx_le32(ipl + 0);
+                            buffer_id    = lagfx_le32(ipl + 4);
+                            reply_offset = (uint64_t)lagfx_le32(ipl + 8) |
+                                ((uint64_t)lagfx_le32(ipl + 12) << 32);
+                            opname       = "0x1c8 MapPhysicalToScreenMultiple";
+                            /* Reply is purely variable (count × 8B). Stub
+                             * with header-only no-op — the guest will read
+                             * zeros for every coordinate, but at least we
+                             * resolved the buffer. Don't write anything to
+                             * avoid scribbling beyond the reply slot. */
+                            LAGFX_LOG("        %s: variable-only reply (count*8B) "
+                                      "not yet stubbed (ref=0x%x buffer_id=%u "
+                                      "reply_offset=0x%llx)",
+                                      opname, ref, buffer_id,
+                                      (unsigned long long)reply_offset);
+                            reply_size = 0;
+                        }
+                        break;
+                    case 0x1c9u:  /* RenderPipelineStateInfo — body 0x10 reply 0xc */
+                        if (ipl_len >= 16u) {
+                            ref          = lagfx_le32(ipl + 0);
+                            buffer_id    = lagfx_le32(ipl + 4);
+                            reply_offset = (uint64_t)lagfx_le32(ipl + 8) |
+                                ((uint64_t)lagfx_le32(ipl + 12) << 32);
+                            have_triplet = true;
+                            reply_size   = 0xc;
+                            opname       = "0x1c9 RenderPipelineStateInfo";
+                            /* maxTotalThreadsPerThreadgroup=1024, rest zero. */
                             reply[0] = 0x00; reply[1] = 0x04;
                             reply[2] = 0x00; reply[3] = 0x00;
-                            /* imageblockSampleLength = 0 (not a tile shader). */
-                            reply[4] = 0; reply[5] = 0;
-                            reply[6] = 0; reply[7] = 0;
-                            /* threadgroupSizeMatchesTileSize = 0,
-                             * supportIndirectCommandBuffers = 0,
-                             * + 2 bytes padding. */
-                            reply[8] = 0; reply[9] = 0;
-                            reply[10] = 0; reply[11] = 0;
-
-                            if (target_run < 12u) {
-                                LAGFX_WARN("        0x1c9 reply: target run=%llu "
-                                           "< 12 — would cross page (skip)",
-                                           (unsigned long long)target_run);
-                            } else if (p->dev->desc.shell.write_memory(
-                                           p->dev->desc.shell.opaque,
-                                           target_gpa, sizeof(reply), reply)) {
-                                LAGFX_LOG("        0x1c9 reply: ref=0x%x "
-                                          "buffer_id=%u (dev=0x%llx len=%u) "
-                                          "+offset=0x%llx -> gpa=0x%llx 12B "
-                                          "(translated=%d) maxTPT=1024",
-                                          ref, buffer_id,
-                                          (unsigned long long)buffer_dev_addr,
-                                          buffer_len,
-                                          (unsigned long long)reply_offset,
-                                          (unsigned long long)target_gpa,
-                                          translated ? 1 : 0);
-                            } else {
-                                LAGFX_WARN("        0x1c9 reply: write_memory "
-                                           "failed at gpa=0x%llx",
-                                           (unsigned long long)target_gpa);
-                            }
                         }
-                    } else {
-                        LAGFX_WARN("        0x1c9 reply: buffer_id=%u >= "
-                                   "resource_count=%u — out of range",
-                                   buffer_id, resource_count);
+                        break;
+                    case 0x1cau:  /* RenderPipelineImageBlockMemoryLength — body 0x28 reply 0x4 */
+                    case 0x1cbu:  /* ComputePipelineImageBlockMemoryLength — body 0x28 reply 0x4 */
+                        if (ipl_len >= 0x28u) {
+                            ref          = lagfx_le32(ipl + 0);
+                            /* 24B MTLSize at +4..+0x1b, then buffer_id @ +0x1c,
+                             * reply_offset @ +0x20. */
+                            buffer_id    = lagfx_le32(ipl + 0x1c);
+                            reply_offset = (uint64_t)lagfx_le32(ipl + 0x20) |
+                                ((uint64_t)lagfx_le32(ipl + 0x24) << 32);
+                            have_triplet = true;
+                            reply_size   = 0x4;
+                            opname = (inner_opcode == 0x1cau)
+                                ? "0x1ca RenderPipelineImageBlockMemoryLength"
+                                : "0x1cb ComputePipelineImageBlockMemoryLength";
+                            /* u32 length = 0 (no imageblock memory). */
+                        }
+                        break;
+                    case 0x1ccu:  /* ObjectUniqueIdentifier — body 0x14 reply 0x8 */
+                        if (ipl_len >= 0x14u) {
+                            ref          = lagfx_le32(ipl + 0);
+                            /* +4 u32 objectType (1=texture, 9=buffer, 10=other) */
+                            buffer_id    = lagfx_le32(ipl + 8);
+                            reply_offset = (uint64_t)lagfx_le32(ipl + 0xc) |
+                                ((uint64_t)lagfx_le32(ipl + 0x10) << 32);
+                            have_triplet = true;
+                            reply_size   = 0x8;
+                            opname       = "0x1cc ObjectUniqueIdentifier";
+                            /* Echo ref as low 32 bits of u64 MTLResourceID;
+                             * upper 32 bits 0. Stable per-resource identifier
+                             * is the goal — using ref makes it deterministic. */
+                            reply[0] = (uint8_t)(ref);
+                            reply[1] = (uint8_t)(ref >> 8);
+                            reply[2] = (uint8_t)(ref >> 16);
+                            reply[3] = (uint8_t)(ref >> 24);
+                            /* +4..7 already zero. */
+                        }
+                        break;
+                    case 0x1cdu:  /* BufferHostResourceInfo  — body 0x10 reply 0x8 (zeros) */
+                    case 0x1ceu:  /* TextureHostResourceInfo — body 0x10 reply 0x10 (zeros) */
+                    case 0x1cfu:  /* HeapHostResourceInfo    — body 0x10 reply 0x8 (zeros) */
+                    case 0x1d0u:  /* SamplerStateHostResourceInfo — body 0x10 reply 0x10 (zeros) */
+                        if (ipl_len >= 16u) {
+                            ref          = lagfx_le32(ipl + 0);
+                            buffer_id    = lagfx_le32(ipl + 4);
+                            reply_offset = (uint64_t)lagfx_le32(ipl + 8) |
+                                ((uint64_t)lagfx_le32(ipl + 12) << 32);
+                            have_triplet = true;
+                            switch (inner_opcode) {
+                            case 0x1cdu:
+                                reply_size = 0x8;
+                                opname     = "0x1cd BufferHostResourceInfo";
+                                break;
+                            case 0x1ceu:
+                                reply_size = 0x10;
+                                opname     = "0x1ce TextureHostResourceInfo";
+                                break;
+                            case 0x1cfu:
+                                reply_size = 0x8;
+                                opname     = "0x1cf HeapHostResourceInfo";
+                                break;
+                            default: /* 0x1d0 */
+                                reply_size = 0x10;
+                                opname     = "0x1d0 SamplerStateHostResourceInfo";
+                                break;
+                            }
+                            /* reply[] already zero-initialised. */
+                        }
+                        break;
+                    default:
+                        /* Should be unreachable given the outer range check. */
+                        break;
+                    }
+
+                    /* Common reply-target resolution + write. Skip for
+                     * 0x1c5 (no reply) and the 0x1c8 variable-only path. */
+                    if (have_triplet && reply_size > 0u) {
+                        if (buffer_id < resource_count) {
+                            const uint8_t *brec = hdr->payload + off_resources
+                                                  + (size_t)buffer_id * 16u;
+                            uint64_t buffer_dev_addr =
+                                (uint64_t)lagfx_le32(brec + 0) |
+                                ((uint64_t)lagfx_le32(brec + 4) << 32);
+                            uint32_t buffer_len = lagfx_le32(brec + 8);
+
+                            if (reply_offset + (uint64_t)reply_size
+                                    > (uint64_t)buffer_len) {
+                                LAGFX_WARN("        %s reply: offset=0x%llx + "
+                                           "%zu > buffer_len=%u — out of bounds",
+                                           opname,
+                                           (unsigned long long)reply_offset,
+                                           reply_size, buffer_len);
+                            } else {
+                                /* Translate buffer_dev_addr + reply_offset
+                                 * through the task's PFN-array. Reply sizes
+                                 * are <= 32B and 4-byte aligned; in practice
+                                 * never crosses a page. */
+                                uint64_t target_dev_addr =
+                                    buffer_dev_addr + reply_offset;
+                                uint64_t target_gpa = 0;
+                                uint64_t target_run = 0;
+                                bool translated = lagfx_task_translate(
+                                    p, task_id, target_dev_addr,
+                                    &target_gpa, &target_run);
+                                if (!translated) {
+                                    /* Fallback: literal GPA. */
+                                    target_gpa = target_dev_addr;
+                                    target_run = 0x1000u
+                                        - (target_dev_addr & 0xfffu);
+                                }
+
+                                if (target_run < (uint64_t)reply_size) {
+                                    LAGFX_WARN("        %s reply: target run=%llu "
+                                               "< %zu — would cross page (skip)",
+                                               opname,
+                                               (unsigned long long)target_run,
+                                               reply_size);
+                                } else if (p->dev->desc.shell.write_memory(
+                                               p->dev->desc.shell.opaque,
+                                               target_gpa,
+                                               (uint32_t)reply_size, reply)) {
+                                    LAGFX_LOG("        %s reply: ref=0x%x "
+                                              "buffer_id=%u (dev=0x%llx len=%u) "
+                                              "+offset=0x%llx -> gpa=0x%llx %zuB "
+                                              "(translated=%d)",
+                                              opname, ref, buffer_id,
+                                              (unsigned long long)buffer_dev_addr,
+                                              buffer_len,
+                                              (unsigned long long)reply_offset,
+                                              (unsigned long long)target_gpa,
+                                              reply_size,
+                                              translated ? 1 : 0);
+                                } else {
+                                    LAGFX_WARN("        %s reply: write_memory "
+                                               "failed at gpa=0x%llx",
+                                               opname,
+                                               (unsigned long long)target_gpa);
+                                }
+                            }
+                        } else {
+                            LAGFX_WARN("        %s reply: buffer_id=%u >= "
+                                       "resource_count=%u — out of range",
+                                       opname, buffer_id, resource_count);
+                        }
                     }
                 }
 

@@ -13,8 +13,14 @@ lagfx_sources += files(
   'ops_cmdbuf.c',
   'ops_display.c',
   'ops_iosurface.c',
+  # M5 — Render-decoder inner-opcode dispatch scaffold. Self-contained
+  # module: not yet hooked into ops_cmdbuf.c's segment walker. See
+  # src/protocol/render_decoder.h header comment for the wire-up plan.
+  'render_opcodes.c',
+  'render_decoder.c',
 )
 
-# state.h / protocol.h / opcodes.h / fifo.h are private to src/protocol/
-# — not installed, reachable via the internal_include_dir declared in
-# the top-level meson.build.
+# state.h / protocol.h / opcodes.h / fifo.h / render_opcodes.h /
+# render_decoder.h are private to src/protocol/ — not installed,
+# reachable via the internal_include_dir declared in the top-level
+# meson.build.
