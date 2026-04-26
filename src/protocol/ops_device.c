@@ -473,8 +473,6 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
     (void)flags;
 
     lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
-    uint32_t prev_root = 0u;
-    bool rebind = false;
     if (!entry) {
         entry = lagfx_protocol_alloc_task_slot(p);
         if (!entry) {
@@ -484,22 +482,15 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
         }
         entry->id = task_id;
         entry->live = true;
-    } else if (entry->root_page_pfn != 0u
-               && entry->root_page_pfn != root_page_pfn) {
-        prev_root = entry->root_page_pfn;
-        rebind = true;
     }
+    /* Overwriting root_page_pfn is correct on slot reuse: the old radix
+     * pages have been freed by the kext, so the next translate must
+     * walk the new tree. No additional state to clear. */
     entry->root_page_pfn = root_page_pfn;
 
-    if (rebind) {
-        LAGFX_LOG("CmdDefineHostTask: taskID=%u rebound: root 0x%x -> "
-                  "0x%x flags=0x%x stamp=0x%08x",
-                  task_id, prev_root, root_page_pfn, flags, hdr->stamp);
-    } else {
-        LAGFX_LOG("CmdDefineHostTask: taskID=%u root_page_pfn=0x%x "
-                  "flags=0x%x stamp=0x%08x",
-                  task_id, root_page_pfn, flags, hdr->stamp);
-    }
+    LAGFX_TRACE("CmdDefineHostTask: taskID=%u root_page_pfn=0x%x "
+              "flags=0x%x stamp=0x%08x",
+              task_id, root_page_pfn, flags, hdr->stamp);
     return LAGFX_HANDLER_OK;
 }
 
@@ -562,11 +553,11 @@ lagfx_handler_status_t lagfx_op_map_memory_immediate(
             if (x <= 0 || (size_t)x >= sizeof(line) - lpos) break;
             lpos += (size_t)x;
         }
-        LAGFX_LOG("CmdMapMemoryImmediate: scatter prefix[%zu]: %s",
+        LAGFX_TRACE("CmdMapMemoryImmediate: scatter prefix[%zu]: %s",
                   off, line);
     }
 
-    LAGFX_LOG("CmdMapMemoryImmediate: taskID=%u vaBase=0x%llx "
+    LAGFX_TRACE("CmdMapMemoryImmediate: taskID=%u vaBase=0x%llx "
               "vaLength=0x%llx stamp=0x%08x",
               task_id, (unsigned long long)va_base,
               (unsigned long long)va_len, hdr->stamp);

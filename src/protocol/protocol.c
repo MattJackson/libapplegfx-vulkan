@@ -131,7 +131,7 @@ static void lagfx_advance_stamp_cell(lagfx_protocol_t *p,
     if (p->dev->desc.shell.write_memory(
             p->dev->desc.shell.opaque,
             cell_gpa, sizeof(want), &want)) {
-        LAGFX_LOG("stamp_cell[%u] := %u (was %u, target=%u, gpa=0x%llx)",
+        LAGFX_TRACE("stamp_cell[%u] := %u (was %u, target=%u, gpa=0x%llx)",
                   slot, want, cur, target_stamp,
                   (unsigned long long)cell_gpa);
     }
@@ -159,12 +159,12 @@ void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p,
          * kext's ISR and breaks guest networking. Pin to vec 0. */
         p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0u);
         p->interrupts_raised += 1;
-        LAGFX_LOG("complete_stamp[slot=%u]: cmd_stamp=0x%08x + IRQ vec=0 "
-                  "(pending_mask=0x%08x)",
-                  slot, stamp, p->pending_stamps_bitmask);
+        LAGFX_TRACE("complete_stamp[slot=%u]: cmd_stamp=0x%08x + IRQ vec=0 "
+                    "(pending_mask=0x%08x)",
+                    slot, stamp, p->pending_stamps_bitmask);
     } else {
-        LAGFX_LOG("complete_stamp[slot=%u]: cmd_stamp=0x%08x (no IRQ cb)",
-                  slot, stamp);
+        LAGFX_TRACE("complete_stamp[slot=%u]: cmd_stamp=0x%08x (no IRQ cb)",
+                    slot, stamp);
     }
 }
 
@@ -205,11 +205,11 @@ static int lagfx_dispatch_inner(lagfx_protocol_t *p,
         p->unknown_opcode_count += 1;
     }
 
-    LAGFX_LOG("dispatch: op=0x%04x (%s) stamp=0x%08x arg_count_8b=%u "
-              "length=%u payload=%u",
-              out_hdr->opcode, lagfx_opcode_name(out_hdr->opcode),
-              out_hdr->stamp, (unsigned)out_hdr->arg_count_8b,
-              (unsigned)out_hdr->length, (unsigned)out_hdr->payload_size);
+    LAGFX_TRACE("dispatch: op=0x%04x (%s) stamp=0x%08x arg_count_8b=%u "
+                "length=%u payload=%u",
+                out_hdr->opcode, lagfx_opcode_name(out_hdr->opcode),
+                out_hdr->stamp, (unsigned)out_hdr->arg_count_8b,
+                (unsigned)out_hdr->length, (unsigned)out_hdr->payload_size);
 
     if (desc) {
         if (out_hdr->payload_size < desc->min_payload) {
@@ -309,7 +309,7 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                                  | ((uint32_t)hdr_bytes[7] << 24));
 
     if (l1_pfn == 0u || levels == 0u || levels > 4u) {
-        LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
+        LAGFX_TRACE("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
                   "header invalid (l1_pfn=0x%x levels=%u)",
                   task_id, (unsigned long long)dev_addr,
                   task->root_page_pfn, l1_pfn, levels);
@@ -329,7 +329,7 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
             return false;
         }
         if (pte == 0u) {
-            LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root=0x%x "
+            LAGFX_TRACE("task_translate: taskID=%u dev=0x%llx root=0x%x "
                       "l1=0x%x — unmapped at level shift=%d idx=%u "
                       "(node_pfn=0x%x pte_gpa=0x%llx)",
                       task_id, (unsigned long long)dev_addr,
@@ -351,7 +351,7 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
         return false;
     }
     if (leaf_pte == 0u) {
-        LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root=0x%x l1=0x%x "
+        LAGFX_TRACE("task_translate: taskID=%u dev=0x%llx root=0x%x l1=0x%x "
                   "— leaf PTE zero (leaf_pte_gpa=0x%llx leaf_idx=%u "
                   "leaf_node_pfn=0x%x)",
                   task_id, (unsigned long long)dev_addr,
@@ -367,7 +367,7 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
     if (out_run_len) {
         *out_run_len = (uint64_t)0x1000u - page_off;
     }
-    LAGFX_LOG("task_translate: taskID=%u dev=0x%llx root=0x%x l1=0x%x "
+    LAGFX_TRACE("task_translate: taskID=%u dev=0x%llx root=0x%x l1=0x%x "
               "levels=%u data_pfn=0x%x -> gpa=0x%llx run=%llu",
               task_id, (unsigned long long)dev_addr,
               task->root_page_pfn, l1_pfn, levels, data_pfn,
@@ -432,7 +432,7 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
     /* 0x100c is the guest-observable read pointer; return a live
      * value so the kext can poll our drain progress. */
     if (offset == LAGFX_REG_FIFO_FAULT_OFFSET) {
-        LAGFX_LOG("mmio_read: FIFO_FAULT_OFFSET -> 0x%x (read_ptr)",
+        LAGFX_TRACE("mmio_read: FIFO_FAULT_OFFSET -> 0x%x (read_ptr)",
                   p->read_ptr);
         return p->read_ptr;
     }
@@ -450,7 +450,7 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
      * no fault path is wired yet.
      */
     if (offset == 0x102cu) {
-        LAGFX_LOG("mmio_read: 0x102c (fault_status) -> 0");
+        LAGFX_TRACE("mmio_read: 0x102c (fault_status) -> 0");
         return 0u;
     }
 
@@ -469,7 +469,7 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
     if (offset == LAGFX_REG_STAMP_CELL_2) {
         uint32_t mask = p->pending_stamps_bitmask;
         p->pending_stamps_bitmask = 0u;
-        LAGFX_LOG("mmio_read: 0x1018 (stamp_bitmask) xchg -> 0x%x", mask);
+        LAGFX_TRACE("mmio_read: 0x1018 (stamp_bitmask) xchg -> 0x%x", mask);
         return mask;
     }
 
@@ -490,20 +490,20 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
          * what signalDisplays consumes — separate from the stamp bitmask. */
         uint32_t mask = p->pending_displays_bitmask;
         p->pending_displays_bitmask = 0u;
-        LAGFX_LOG("mmio_read: 0x1014 (display_bitmask) xchg -> 0x%x", mask);
+        LAGFX_TRACE("mmio_read: 0x1014 (display_bitmask) xchg -> 0x%x", mask);
         return mask;
     }
 
     int idx = lagfx_protocol_reg_index(offset);
     if (idx < 0) {
-        LAGFX_LOG("mmio_read: unmapped offset 0x%llx -> 0",
+        LAGFX_TRACE("mmio_read: unmapped offset 0x%llx -> 0",
                   (unsigned long long)offset);
         return 0;
     }
 
     uint32_t value = p->reg[idx];
 
-    LAGFX_LOG("mmio_read: off=0x%llx -> 0x%08x",
+    LAGFX_TRACE("mmio_read: off=0x%llx -> 0x%08x",
               (unsigned long long)offset, value);
     return value;
 }
@@ -521,7 +521,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
     int idx = lagfx_protocol_reg_index(offset);
     if (idx < 0) {
-        LAGFX_LOG("mmio_write: unmapped offset 0x%llx val=0x%08x",
+        LAGFX_TRACE("mmio_write: unmapped offset 0x%llx val=0x%08x",
                   (unsigned long long)offset, value);
         return;
     }
@@ -535,7 +535,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
      * selector), so shadowing is consistent. */
     p->reg[idx] = value;
 
-    LAGFX_LOG("mmio_write: off=0x%llx val=0x%08x",
+    LAGFX_TRACE("mmio_write: off=0x%llx val=0x%08x",
               (unsigned long long)offset, value);
 
     /* Primary-ring MMIO write map (resolved 2026-04-21 from live M2
@@ -556,21 +556,21 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
     switch (offset) {
         case LAGFX_REG_STATUS_CONTROL:
             p->ring_armed = (value != 0u);
-            LAGFX_LOG("mmio_write: STATUS_CONTROL ring_armed=%d",
+            LAGFX_TRACE("mmio_write: STATUS_CONTROL ring_armed=%d",
                       (int)p->ring_armed);
             return;
         case 0x1004u:
             p->ring_size = value ? value : 0x10000u;
-            LAGFX_LOG("mmio_write: ring_size=0x%x", p->ring_size);
+            LAGFX_TRACE("mmio_write: ring_size=0x%x", p->ring_size);
             return;
         case 0x1008u: {
             uint32_t old_wp = p->write_ptr;
             p->write_ptr = value;
-            LAGFX_LOG("mmio_write: doorbell wp=0x%x (was 0x%x)",
+            LAGFX_TRACE("mmio_write: doorbell wp=0x%x (was 0x%x)",
                       value, old_wp);
             if (p->ring_armed && p->write_ptr != p->read_ptr) {
                 size_t drained = lagfx_fifo_drain(p);
-                LAGFX_LOG("mmio_write: doorbell drained %zu cmds", drained);
+                LAGFX_TRACE("mmio_write: doorbell drained %zu cmds", drained);
             }
             return;
         }
@@ -583,12 +583,12 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             p->page_size = 0x1000u;  /* assumed; not read from MMIO */
             p->ring_base_gpa =
                 ((uint64_t)p->ring_base_pfn << 12) + p->ring_start_offset;
-            LAGFX_LOG("mmio_write: ring_start_offset=0x%x -> gpa=0x%llx",
+            LAGFX_TRACE("mmio_write: ring_start_offset=0x%x -> gpa=0x%llx",
                       value, (unsigned long long)p->ring_base_gpa);
             return;
         case 0x101cu:
             p->ring_shared_page_pfn = value;
-            LAGFX_LOG("mmio_write: ring_shared_page_pfn=0x%x", value);
+            LAGFX_TRACE("mmio_write: ring_shared_page_pfn=0x%x", value);
             return;
         case 0x1030u: {
             p->ring_base_pfn = value;
@@ -597,7 +597,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             if (p->ring_size == 0u) {
                 p->ring_size = 0x10000u;
             }
-            LAGFX_LOG("mmio_write: ring_base_pfn=0x%x -> gpa=0x%llx size=0x%x",
+            LAGFX_TRACE("mmio_write: ring_base_pfn=0x%x -> gpa=0x%llx size=0x%x",
                       value, (unsigned long long)p->ring_base_gpa,
                       p->ring_size);
             return;
@@ -620,12 +620,12 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
              * Display0 = ch_id 5 (per A10a: display_index+5). */
             unsigned ch = value;
             if (ch == 0u || ch >= 32u) {
-                LAGFX_LOG("doorbell ch=%u: out of range", ch);
+                LAGFX_TRACE("doorbell ch=%u: out of range", ch);
                 return;
             }
             if (p->ring_shared_page_pfn == 0u
                 || !p->dev || !p->dev->desc.shell.read_memory) {
-                LAGFX_LOG("doorbell ch=%u: shared page unknown or no read cb",
+                LAGFX_TRACE("doorbell ch=%u: shared page unknown or no read cb",
                           ch);
                 return;
             }
@@ -636,7 +636,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
                                                   descr_gpa,
                                                   sizeof(descr), descr)) {
-                LAGFX_LOG("doorbell ch=%u: read_memory failed at gpa=0x%llx",
+                LAGFX_TRACE("doorbell ch=%u: read_memory failed at gpa=0x%llx",
                           ch, (unsigned long long)descr_gpa);
                 return;
             }
@@ -654,7 +654,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             uint32_t chan_id   = ((uint32_t *)descr)[3];
             uint32_t ring_pfn  = ((uint32_t *)descr)[4];
 
-            LAGFX_LOG("doorbell ch=%u: descr wr=%u rd=%u mid=0x%x "
+            LAGFX_TRACE("doorbell ch=%u: descr wr=%u rd=%u mid=0x%x "
                       "chan_id=%u ring_pfn=0x%x",
                       ch, write_ptr, read_ptr, mid, chan_id, ring_pfn);
 
@@ -662,7 +662,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
              * wrote to 0x1020. If not, descriptor format isn't what we expect
              * for this channel — bail rather than write to wrong location. */
             if (chan_id != ch) {
-                LAGFX_LOG("doorbell ch=%u: chan_id mismatch "
+                LAGFX_TRACE("doorbell ch=%u: chan_id mismatch "
                           "(descr says %u), aborting", ch, chan_id);
                 return;
             }
@@ -794,7 +794,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     lagfx_cmd_header_t parsed;
                     int rc = lagfx_protocol_dispatch_one_no_stamp(
                         p, cmd, cmd_len, &parsed);
-                    LAGFX_LOG("doorbell ch=%u cmd[%u]: opcode=0x%04x "
+                    LAGFX_TRACE("doorbell ch=%u cmd[%u]: opcode=0x%04x "
                               "stamp=0x%08x len=%u rc=%d",
                               ch, cmd_idx, parsed.opcode, parsed.stamp,
                               cmd_len, rc);
@@ -821,7 +821,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         p->dev->desc.shell.opaque, 0u);
                     p->interrupts_raised += 1;
                 }
-                LAGFX_LOG("doorbell ch=%u: drained %u cmd(s), rp=%u->%u, "
+                LAGFX_TRACE("doorbell ch=%u: drained %u cmd(s), rp=%u->%u, "
                           "stamp_cell+IRQ (pending_mask=0x%08x)",
                           ch, cmd_idx, read_ptr, new_rp,
                           p->pending_stamps_bitmask);
@@ -875,7 +875,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     /* Fallback: contiguous-allocator heuristic. */
                     ring_data_gpa = ring_gpa_base + 0x1000u;
                 }
-                LAGFX_LOG("doorbell ch=%u: data via page0 PFN=0x%x "
+                LAGFX_TRACE("doorbell ch=%u: data via page0 PFN=0x%x "
                           "(data_gpa=0x%llx)",
                           ch, data_pfn,
                           (unsigned long long)ring_data_gpa);
@@ -888,7 +888,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
                                                          ring_gpa_base,
                                                          32, dbg)) {
-                        LAGFX_LOG("doorbell ch=%u: dbg page0[0..31] = "
+                        LAGFX_TRACE("doorbell ch=%u: dbg page0[0..31] = "
                                   "%02x %02x %02x %02x %02x %02x %02x %02x "
                                   "%02x %02x %02x %02x %02x %02x %02x %02x "
                                   "%02x %02x %02x %02x %02x %02x %02x %02x "
@@ -913,7 +913,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
                                                          ring_data_gpa + read_ptr,
                                                          32, dbg)) {
-                        LAGFX_LOG("doorbell ch=%u: dbg data+rp[0..31] = "
+                        LAGFX_TRACE("doorbell ch=%u: dbg data+rp[0..31] = "
                                   "%02x %02x %02x %02x %02x %02x %02x %02x "
                                   "%02x %02x %02x %02x %02x %02x %02x %02x "
                                   "%02x %02x %02x %02x %02x %02x %02x %02x "
@@ -944,7 +944,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     cmd_stm =
                         (uint32_t)(hdr[8] | (hdr[9] << 8)
                                    | (hdr[10] << 16) | (hdr[11] << 24));
-                    LAGFX_LOG("doorbell ch=%u: drain opcode=0x%04x len=%u "
+                    LAGFX_TRACE("doorbell ch=%u: drain opcode=0x%04x len=%u "
                               "stamp=%u (gpa=0x%llx)",
                               ch, opcode, cmd_len, cmd_stm,
                               (unsigned long long)(ring_data_gpa + read_ptr));
@@ -978,7 +978,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             (uint32_t)(pl[4] | (pl[5] << 8)
                                        | (pl[6] << 16) | (pl[7] << 24));
                         have_payload = 1;
-                        LAGFX_LOG("doorbell ch=%u: cmd payload "
+                        LAGFX_TRACE("doorbell ch=%u: cmd payload "
                                   "raw=%02x %02x %02x %02x %02x %02x %02x %02x "
                                   "display_index=%u ss_pfn=0x%x "
                                   "(gpa=0x%llx)",
@@ -999,7 +999,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             p->dev->desc.shell.opaque,
                             descr_gpa + 4u, sizeof(new_read_ptr),
                             &new_read_ptr)) {
-                        LAGFX_LOG("doorbell ch=%u: descr.read_ptr 0x%x->0x%x",
+                        LAGFX_TRACE("doorbell ch=%u: descr.read_ptr 0x%x->0x%x",
                                   ch, read_ptr, new_read_ptr);
                     }
                 }
@@ -1048,7 +1048,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             p->dev->desc.shell.opaque,
                             ss_gpa + 0x12u,
                             sizeof(port), &port)) {
-                        LAGFX_LOG("doorbell ch=%u: ss[0x12] := %u "
+                        LAGFX_TRACE("doorbell ch=%u: ss[0x12] := %u "
                                   "(port, ss_gpa=0x%llx)",
                                   ch, (unsigned)port,
                                   (unsigned long long)(ss_gpa + 0x12u));
@@ -1059,13 +1059,13 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             p->dev->desc.shell.opaque,
                             ss_gpa + 0x1cu,
                             sizeof(resp_code), &resp_code)) {
-                        LAGFX_LOG("doorbell ch=%u: ss[0x1c] := %u "
+                        LAGFX_TRACE("doorbell ch=%u: ss[0x1c] := %u "
                                   "(ss_gpa=0x%llx)",
                                   ch, resp_code,
                                   (unsigned long long)(ss_gpa + 0x1cu));
                     }
                 } else if (!have_payload) {
-                    LAGFX_LOG("doorbell ch=%u: no cmd payload — skipping "
+                    LAGFX_TRACE("doorbell ch=%u: no cmd payload — skipping "
                               "ss[0x12]/ss[0x1c] write (would target wrong "
                               "page)", ch);
                 } else {
@@ -1086,7 +1086,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                      * Logged here so the diagnostic trail is visible. */
                     unsigned derived_display_index =
                         (ch >= 5u) ? (ch - 5u) : 0u;
-                    LAGFX_LOG("doorbell ch=%u: cmd_ss_pfn=0 from ring read "
+                    LAGFX_TRACE("doorbell ch=%u: cmd_ss_pfn=0 from ring read "
                               "(derived display_index=%u) — cannot address "
                               "BMD ss page; predicate will panic for ch>=6",
                               ch, derived_display_index);
@@ -1101,7 +1101,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 p->dev->desc.shell.raise_interrupt(
                     p->dev->desc.shell.opaque, 0u);
                 p->interrupts_raised += 1;
-                LAGFX_LOG("doorbell ch=%u: stamp bit+IRQ "
+                LAGFX_TRACE("doorbell ch=%u: stamp bit+IRQ "
                           "(pending_mask=0x%08x)",
                           ch, p->pending_stamps_bitmask);
             }
@@ -1202,7 +1202,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     p->dev->desc.shell.opaque, ss_gpa + 0x208u,
                     sizeof(num_formats), &num_formats);
 
-                LAGFX_LOG("doorbell ch=%u: populated ss for online "
+                LAGFX_TRACE("doorbell ch=%u: populated ss for online "
                           "(display_index=%u, %ux%u@1mode_id, ss_gpa=0x%llx)",
                           ch, display_index, width, height,
                           (unsigned long long)ss_gpa);
@@ -1215,7 +1215,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     p->dev->desc.shell.raise_interrupt(
                         p->dev->desc.shell.opaque, 0u);
                     p->interrupts_raised += 1;
-                    LAGFX_LOG("doorbell ch=%u: display-online bit+IRQ "
+                    LAGFX_TRACE("doorbell ch=%u: display-online bit+IRQ "
                               "(display_index=%u, "
                               "display_pending_mask=0x%08x)",
                               ch, display_index,

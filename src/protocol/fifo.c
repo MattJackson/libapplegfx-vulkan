@@ -91,7 +91,7 @@ size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
     }
 
     if (!p->ring_armed || p->ring_size == 0u || p->ring_base_gpa == 0u) {
-        LAGFX_LOG("fifo_drain: ring not armed (armed=%d size=0x%x gpa=0x%llx)",
+        LAGFX_TRACE("fifo_drain: ring not armed (armed=%d size=0x%x gpa=0x%llx)",
                   (int)p->ring_armed, p->ring_size,
                   (unsigned long long)p->ring_base_gpa);
         return 0;
@@ -131,7 +131,7 @@ size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
         lagfx_cmd_header_t hdr;
         if (!lagfx_fifo_parse_header(hdr_buf, LAGFX_CMD_HEADER_BYTES,
                                      &hdr)) {
-            LAGFX_LOG("fifo_drain: malformed header at rp=0x%x — stop", rp);
+            LAGFX_TRACE("fifo_drain: malformed header at rp=0x%x — stop", rp);
             break;
         }
 
@@ -169,14 +169,14 @@ size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
             }
         }
 
-        LAGFX_LOG("fifo_drain: dispatch rp=0x%x opcode=0x%x len=0x%x stamp=0x%x",
-                  rp, hdr.opcode, hdr.length, hdr.stamp);
+        LAGFX_TRACE("fifo_drain: dispatch rp=0x%x opcode=0x%x len=0x%x stamp=0x%x",
+                    rp, hdr.opcode, hdr.length, hdr.stamp);
 
         /* Hex dump of the full command (up to 32 bytes) for stamp-field
          * and payload cross-referencing during M3 bring-up. Resolves the
          * contradiction between spec-gaps §13 (stamps in trace 1..7) and
          * the static RE claim that `[stream+8..11]` is always zero. */
-        if (lagfx_log_enabled()) {
+        if (lagfx_log_level() >= LAGFX_LOG_LVL_TRACE) {
             uint32_t dump_len = hdr.length < 32u ? hdr.length : 32u;
             char hexline[128];
             size_t pos = 0;
@@ -187,7 +187,7 @@ size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
                 pos += (size_t)n;
             }
             hexline[pos] = '\0';
-            LAGFX_LOG("fifo_drain: bytes[%u] %s", dump_len, hexline);
+            LAGFX_TRACE("fifo_drain: bytes[%u] %s", dump_len, hexline);
         }
 
         /* Expose ring-header GPA to handlers so they can DMA-write
@@ -204,7 +204,7 @@ size_t lagfx_fifo_drain(lagfx_protocol_t *p) {
         drained += 1;
     }
 
-    LAGFX_LOG("fifo_drain: drained=%zu, new read_ptr=0x%x",
+    LAGFX_TRACE("fifo_drain: drained=%zu, new read_ptr=0x%x",
               drained, p->read_ptr);
     return drained;
 }

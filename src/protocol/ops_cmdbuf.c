@@ -210,7 +210,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
      * of CmdSynchronizeResources). Spec descriptor sets min_payload=0,
      * so this branch is valid. */
     if (!hdr->payload || hdr->payload_size < 8) {
-        LAGFX_LOG("CmdExecIndirect2: stamp=0x%08x payload_size=%u "
+        LAGFX_TRACE("CmdExecIndirect2: stamp=0x%08x payload_size=%u "
                   "(empty-list completion — metal-no-op alternate path)",
                   hdr->stamp, (unsigned)hdr->payload_size);
         lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
@@ -267,7 +267,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
     /* Both counts zero: still a valid no-op submit (guest may flush
      * a task with no work, just to advance the stamp). */
     if (invalidate_count == 0 && resource_count == 0) {
-        LAGFX_LOG("CmdExecIndirect2: taskID=%u empty (no invalidates, "
+        LAGFX_TRACE("CmdExecIndirect2: taskID=%u empty (no invalidates, "
                   "no resources) stamp=0x%08x",
                   task_id, hdr->stamp);
         lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
@@ -283,7 +283,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                    "(continuing fail-open)", task_id);
     }
 
-    LAGFX_LOG("CmdExecIndirect2: taskID=%u invalidate_count=%u "
+    LAGFX_TRACE("CmdExecIndirect2: taskID=%u invalidate_count=%u "
               "resource_count=%u payload_size=%u stamp=0x%08x",
               task_id, invalidate_count, resource_count,
               (unsigned)hdr->payload_size, hdr->stamp);
@@ -312,7 +312,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         const uint8_t *rec = hdr->payload + off_invalidates + (size_t)i * 16u;
         uint32_t rid   = lagfx_le32(rec + 0);
         uint32_t flags = lagfx_le32(rec + 4);
-        LAGFX_LOG("  invalidate[%u]: rid=0x%08x flags=0x%08x",
+        LAGFX_TRACE("  invalidate[%u]: rid=0x%08x flags=0x%08x",
                   i, rid, flags);
     }
 
@@ -327,7 +327,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             ((uint64_t)lagfx_le32(rec + 4) << 32);
         uint32_t length = lagfx_le32(rec + 8);
         uint32_t pad    = lagfx_le32(rec + 12);
-        LAGFX_LOG("  resource[%u]: host_gpu_addr=0x%llx length=%u pad=0x%08x",
+        LAGFX_TRACE("  resource[%u]: host_gpu_addr=0x%llx length=%u pad=0x%08x",
                   i, (unsigned long long)host_gpu_addr, length, pad);
 
         if (length == 0u || length > (1u << 22) /* 4 MiB cap */
@@ -372,7 +372,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
                                                 gpa, this_chunk,
                                                 cmdbuf + bytes_read)) {
-                LAGFX_LOG("  resource[%u]: read_memory failed at gpa=0x%llx "
+                LAGFX_TRACE("  resource[%u]: read_memory failed at gpa=0x%llx "
                           "(dev=0x%llx, %u bytes, translated=%d) — skipping",
                           i, (unsigned long long)gpa,
                           (unsigned long long)cur_dev_addr, this_chunk,
@@ -401,7 +401,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             uint8_t  reuse_flag   = cmdbuf[soff + 10];
             /* +0x0b padding, +0x0c reserved u32. */
 
-            LAGFX_LOG("    segment[%u]: size=%u prot=0x%x encoderType=%u "
+            LAGFX_TRACE("    segment[%u]: size=%u prot=0x%x encoderType=%u "
                       "final=%u reuse=%u (offset=%zu)",
                       segment_idx, segment_size, prot_options,
                       (unsigned)encoder_type, (unsigned)final_flag,
@@ -427,7 +427,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                     break;
                 }
                 size_t ipl_len = (size_t)inner_total - 8u;
-                LAGFX_LOG("      inner[%u]: op=0x%04x totalLen=%u (encType=%u)",
+                LAGFX_TRACE("      inner[%u]: op=0x%04x totalLen=%u (encType=%u)",
                           inner_idx, inner_opcode, inner_total,
                           (unsigned)encoder_type);
 
