@@ -525,17 +525,22 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             uint32_t chan_id   = ((uint32_t *)descr)[3];
             uint32_t ring_pfn  = ((uint32_t *)descr)[4];
 
-            LAGFX_TRACE("doorbell ch=%u: descr wr=%u rd=%u mid=0x%x "
+            LAGFX_WARN("doorbell ch=%u: descr wr=%u rd=%u mid=0x%x "
                       "chan_id=%u ring_pfn=0x%x",
                       ch, write_ptr, read_ptr, mid, chan_id, ring_pfn);
 
-            /* Sanity: descriptor's chan_id should match the value the kext
-             * wrote to 0x1020. If not, descriptor format isn't what we expect
-             * for this channel — bail rather than write to wrong location. */
             if (chan_id != ch) {
-                LAGFX_TRACE("doorbell ch=%u: chan_id mismatch "
+                LAGFX_WARN("doorbell ch=%u: chan_id mismatch "
                           "(descr says %u), aborting", ch, chan_id);
                 return;
+            }
+
+            if (ch >= 1u && ch <= 4u
+                && (ring_pfn == 0u || write_ptr <= read_ptr
+                    || write_ptr > 0x100000u)) {
+                LAGFX_WARN("doorbell ch=%u: guard FAIL ring_pfn=0x%x "
+                          "wp=%u rp=%u — skipping drain",
+                          ch, ring_pfn, write_ptr, read_ptr);
             }
 
             /* Per-channel ring drain for non-display channels (ch 1..4).
@@ -562,14 +567,44 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 /* page0 is a u32 PFN-array; data_pfn[i] is at page0+i*4.
                  * Cmd at ring offset `off` lives in data_pfn[off/0x1000]
                  * at page-offset (off & 0xfff). Cmds CAN cross page
-                 * boundaries — read in per-page chunks and stitch. */
+                 * boundaries — read in per-page chunks and stitch.
+                 *
+                 * Diagnostic: on first drain for each channel, dump
+                 * the first 16 u32 entries of page0 to understand the
+                 * PFN-array layout when it fails. */
+                {
+                    static uint32_t ch_drained[32] = {0};
+                    if (ch < 32u && ch_drained[ch] == 0u) {
+                        ch_drained[ch] = 1u;
+                        uint32_t pfn_dump[16] = {0};
+                        p->dev->desc.shell.read_memory(
+                            p->dev->desc.shell.opaque,
+                            ring_gpa_base, sizeof(pfn_dump), pfn_dump);
+                        LAGFX_WARN("doorbell ch=%u FIRST DRAIN: "
+                                   "ring_pfn=0x%x ring_gpa_base=0x%llx "
+                                   "rp=%u wp=%u "
+                                   "page0[0..15]=%08x %08x %08x %08x "
+                                   "%08x %08x %08x %08x "
+                                   "%08x %08x %08x %08x "
+                                   "%08x %08x %08x %08x",
+                                   ch, ring_pfn,
+                                   (unsigned long long)ring_gpa_base,
+                                   read_ptr, write_ptr,
+                                   pfn_dump[0], pfn_dump[1],
+                                   pfn_dump[2], pfn_dump[3],
+                                   pfn_dump[4], pfn_dump[5],
+                                   pfn_dump[6], pfn_dump[7],
+                                   pfn_dump[8], pfn_dump[9],
+                                   pfn_dump[10], pfn_dump[11],
+                                   pfn_dump[12], pfn_dump[13],
+                                   pfn_dump[14], pfn_dump[15]);
+                    }
+                }
+
                 uint32_t last_stamp = 0u;
                 uint32_t cur_rp = read_ptr;
                 unsigned cmd_idx = 0;
                 while (cur_rp + 12u <= write_ptr) {
-                    /* Helper: read `n` bytes from ring offset `off` into
-                     * `out`, walking page0 as needed. Returns false on
-                     * read_memory failure. */
                     uint8_t hdr_bytes[12];
                     {
                         bool ok = true;
@@ -585,7 +620,22 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             if (!p->dev->desc.shell.read_memory(
                                     p->dev->desc.shell.opaque,
                                     ring_gpa_base + (uint64_t)page_idx * 4u,
-                                    sizeof(pte_pfn), &pte_pfn) || pte_pfn == 0u) {
+                                    sizeof(pte_pfn), &pte_pfn)) {
+                                LAGFX_WARN("doorbell ch=%u: PFN-array read "
+                                           "failed at page_idx=%u "
+                                           "(gpa=0x%llx)",
+                                           ch, page_idx,
+                                           (unsigned long long)(
+                                               ring_gpa_base +
+                                               (uint64_t)page_idx * 4u));
+                                ok = false; break;
+                            }
+                            if (pte_pfn == 0u) {
+                                LAGFX_WARN("doorbell ch=%u: PFN-array "
+                                           "entry[%u]=0 (unmapped) at "
+                                           "rp=%u off=%u page_idx=%u",
+                                           ch, page_idx, cur_rp, off,
+                                           page_idx);
                                 ok = false; break;
                             }
                             if (!p->dev->desc.shell.read_memory(
@@ -665,10 +715,17 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     lagfx_cmd_header_t parsed;
                     int rc = lagfx_protocol_dispatch_one_no_stamp(
                         p, cmd, cmd_len, &parsed);
-                    LAGFX_TRACE("doorbell ch=%u cmd[%u]: opcode=0x%04x "
-                              "stamp=0x%08x len=%u rc=%d",
-                              ch, cmd_idx, parsed.opcode, parsed.stamp,
-                              cmd_len, rc);
+                    if (cmd_idx < 5u) {
+                        LAGFX_WARN("doorbell ch=%u cmd[%u]: opcode=0x%04x "
+                                  "stamp=0x%08x len=%u rc=%d "
+                                  "hdr_bytes=%02x %02x %02x %02x %02x %02x "
+                                  "%02x %02x %02x %02x %02x %02x",
+                                  ch, cmd_idx, parsed.opcode, parsed.stamp,
+                                  cmd_len, rc,
+                                  cmd[0], cmd[1], cmd[2], cmd[3],
+                                  cmd[4], cmd[5], cmd[6], cmd[7],
+                                  cmd[8], cmd[9], cmd[10], cmd[11]);
+                    }
 
                     last_stamp = parsed.stamp;
                     free(cmd);

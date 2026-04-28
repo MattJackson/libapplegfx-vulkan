@@ -218,56 +218,44 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         return LAGFX_HANDLER_OK;
     }
 
-    /* Outer payload layout — confirmed by raw-payload hex-dump of
-     * kext-side opcode 0x37 ExecIndirect2 traffic on ch=1 (per-channel
-     * exec ring) 2026-04-26:
+    /* Outer payload layout — CONFIRMED 2026-04-28 from live capture
+     * of kext-side opcode 0x37 on ch=1 (per-channel exec ring):
      *
      *   +0x00  u32 task_id
-     *   +0x04  u32 invalidate_count        (16B records, NOT 8B)
+     *   +0x04  u32 descriptor_count   (24 B records, NOT 16 B)
      *   +0x08  u32 resource_count
-     *   +0x0c  invalidate_record[]         (16 B each: {u32 rid,
-     *                                       u32 flags, u64 reserved})
-     *   +0x0c+ic*16  16B reserved/middle   (zeros or task-state record)
-     *   +0x0c+ic*16+16  resource_table[]   (16 B each: {u64 host_gpu_addr,
-     *                                       u32 length, u32 _pad})
+     *   +0x0c  descriptor[descriptor_count]  (24 B each: {u32 id,
+     *          u32 flags, u64 reserved}) — flags 0x100=invalidate,
+     *          1=sync, 0=reference
+     *   +0x0c+dc*24  resource[resource_count]  (16 B each:
+     *          {u64 host_gpu_addr, u32 length, u32 _pad})
      *
-     * NOTE: The M4 guide documents 8-byte invalidate records based on
-     * RE of AppleParavirtCommandQueue::processExecIndirect (kernel
-     * x86_64 code path). Live capture of kext-side 0x37 on ch=1 shows
-     * 16-byte invalidates + a 16-byte mid-section. Either the guide's
-     * RE is for a different code path (dylib-emitted 0x20?) or the
-     * kext-side 0x37 wraps the dylib-style payload with extra fields.
-     * Going with the live-capture format.
-     *
-     * Each resource_table entry's host_gpu_addr points at a per-resource
-     * cmdBuf containing PGSerializerCommandSegmentHeader records + inner
-     * opcode streams. */
-    uint32_t task_id          = lagfx_le32(hdr->payload + 0);
-    uint32_t invalidate_count = lagfx_le32(hdr->payload + 4);
-    uint32_t resource_count   = lagfx_le32(hdr->payload + 8);
+     * Previous M4 guide's 16-byte invalidate records + 16-byte
+     * mid-section was WRONG — live capture clearly shows 24-byte
+     * records with no mid-section.  The "16B mid" was actually the
+     * last 8 bytes of one record + first 8 bytes of the next. */
+    uint32_t task_id           = lagfx_le32(hdr->payload + 0);
+    uint32_t descriptor_count  = lagfx_le32(hdr->payload + 4);
+    uint32_t resource_count    = lagfx_le32(hdr->payload + 8);
 
-    size_t off_invalidates = 12u;
-    size_t off_resources   = off_invalidates
-                             + (size_t)invalidate_count * 16u
-                             + 16u;  /* 16B middle/reserved block */
+    size_t off_descriptors = 12u;
+    size_t off_resources   = off_descriptors
+                             + (size_t)descriptor_count * 24u;
     size_t end_resources   = off_resources + (size_t)resource_count * 16u;
 
     if (end_resources > (size_t)hdr->payload_size) {
         LAGFX_WARN("CmdExecIndirect2: outer payload too small "
-                   "(taskID=%u invalidate_count=%u resource_count=%u "
+                   "(taskID=%u descriptor_count=%u resource_count=%u "
                    "need=%zu have=%u)",
-                   task_id, invalidate_count, resource_count,
+                   task_id, descriptor_count, resource_count,
                    end_resources, (unsigned)hdr->payload_size);
-        /* Fail-open: ack the stamp so the guest doesn't park. */
         lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
                                             hdr->stamp);
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
-    /* Both counts zero: still a valid no-op submit (guest may flush
-     * a task with no work, just to advance the stamp). */
-    if (invalidate_count == 0 && resource_count == 0) {
-        LAGFX_TRACE("CmdExecIndirect2: taskID=%u empty (no invalidates, "
+    if (descriptor_count == 0 && resource_count == 0) {
+        LAGFX_TRACE("CmdExecIndirect2: taskID=%u empty (no descriptors, "
                   "no resources) stamp=0x%08x",
                   task_id, hdr->stamp);
         lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
@@ -275,17 +263,15 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         return LAGFX_HANDLER_OK;
     }
 
-    /* Fail-open on unknown task — completing the stamp is more
-     * important than rejecting based on table-not-yet-populated. */
     lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
     if (!task) {
         LAGFX_WARN("CmdExecIndirect2: taskID=%u not found "
                    "(continuing fail-open)", task_id);
     }
 
-    LAGFX_TRACE("CmdExecIndirect2: taskID=%u invalidate_count=%u "
+    LAGFX_TRACE("CmdExecIndirect2: taskID=%u descriptor_count=%u "
               "resource_count=%u payload_size=%u stamp=0x%08x",
-              task_id, invalidate_count, resource_count,
+              task_id, descriptor_count, resource_count,
               (unsigned)hdr->payload_size, hdr->stamp);
 
     /* RE diagnostic: hex-dump full payload so we can see what's
@@ -293,26 +279,22 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
      * layout for kext-side opcode 0x37. */
     {
         size_t n = (hdr->payload_size < 256u) ? hdr->payload_size : 256u;
-        char line[256 * 4 + 8];
-        size_t off = 0;
-        for (size_t i = 0; i < n; ++i) {
-            int x = snprintf(line + off, sizeof(line) - off, "%02x ",
-                             hdr->payload[i]);
-            if (x <= 0 || (size_t)x >= sizeof(line) - off) break;
-            off += (size_t)x;
+        char buf[1024];
+        size_t pos = 0;
+        for (size_t i = 0; i + 3 < n && pos < 900; i += 4) {
+            uint32_t v = lagfx_le32(hdr->payload + i);
+            int w = snprintf(buf + pos, sizeof(buf) - pos,
+                             "+%02zx=%08x ", i, v);
+            if (w > 0) pos += (size_t)w;
         }
-        LAGFX_LOG("  raw payload[0..%zu]: %s", n, line);
+        LAGFX_WARN("  CmdExecIndirect2 dump: %s", buf);
     }
 
-    /* Walk invalidate records — 16B each in the kext-side 0x37 wire
-     * format (per live capture). First u32=rid, second u32=flags, the
-     * remaining 8B trail is zeros in observed traffic but logged for
-     * symmetry. */
-    for (uint32_t i = 0; i < invalidate_count; ++i) {
-        const uint8_t *rec = hdr->payload + off_invalidates + (size_t)i * 16u;
+    for (uint32_t i = 0; i < descriptor_count; ++i) {
+        const uint8_t *rec = hdr->payload + off_descriptors + (size_t)i * 24u;
         uint32_t rid   = lagfx_le32(rec + 0);
         uint32_t flags = lagfx_le32(rec + 4);
-        LAGFX_TRACE("  invalidate[%u]: rid=0x%08x flags=0x%08x",
+        LAGFX_TRACE("  descriptor[%u]: rid=0x%08x flags=0x%08x",
                   i, rid, flags);
     }
 
@@ -327,7 +309,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             ((uint64_t)lagfx_le32(rec + 4) << 32);
         uint32_t length = lagfx_le32(rec + 8);
         uint32_t pad    = lagfx_le32(rec + 12);
-        LAGFX_TRACE("  resource[%u]: host_gpu_addr=0x%llx length=%u pad=0x%08x",
+        LAGFX_WARN("  resource[%u]: host_gpu_addr=0x%llx length=%u pad=0x%08x",
                   i, (unsigned long long)host_gpu_addr, length, pad);
 
         if (length == 0u || length > (1u << 22) /* 4 MiB cap */
@@ -399,13 +381,26 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             uint8_t  encoder_type = cmdbuf[soff + 8];
             uint8_t  final_flag   = cmdbuf[soff + 9];
             uint8_t  reuse_flag   = cmdbuf[soff + 10];
-            /* +0x0b padding, +0x0c reserved u32. */
 
-            LAGFX_TRACE("    segment[%u]: size=%u prot=0x%x encoderType=%u "
-                      "final=%u reuse=%u (offset=%zu)",
-                      segment_idx, segment_size, prot_options,
-                      (unsigned)encoder_type, (unsigned)final_flag,
-                      (unsigned)reuse_flag, soff);
+            if (segment_idx == 0u) {
+                LAGFX_WARN("    segment[%u]: size=%u prot=0x%x "
+                          "encType=%u final=%u reuse=%u "
+                          "hdr=%02x%02x%02x%02x %02x%02x%02x%02x "
+                          "%02x%02x%02x%02x %02x%02x%02x%02x "
+                          "off=%zu taskID=%u",
+                          segment_idx, segment_size, prot_options,
+                          (unsigned)encoder_type, (unsigned)final_flag,
+                          (unsigned)reuse_flag,
+                          cmdbuf[soff+0], cmdbuf[soff+1],
+                          cmdbuf[soff+2], cmdbuf[soff+3],
+                          cmdbuf[soff+4], cmdbuf[soff+5],
+                          cmdbuf[soff+6], cmdbuf[soff+7],
+                          cmdbuf[soff+8], cmdbuf[soff+9],
+                          cmdbuf[soff+10], cmdbuf[soff+11],
+                          cmdbuf[soff+12], cmdbuf[soff+13],
+                          cmdbuf[soff+14], cmdbuf[soff+15],
+                          soff, task_id);
+            }
 
             if (segment_size == 0u
                 || segment_size > (uint32_t)((size_t)length - soff - 16u)) {
