@@ -24,6 +24,7 @@
 
 #include "opcodes.h"
 #include "protocol.h"
+#include "render_decoder.h"
 #include "state.h"
 #include "../common/log.h"
 #include "../device.h"
@@ -287,7 +288,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                              "+%02zx=%08x ", i, v);
             if (w > 0) pos += (size_t)w;
         }
-        LAGFX_WARN("  CmdExecIndirect2 dump: %s", buf);
+        LAGFX_LOG("  CmdExecIndirect2 dump: %s", buf);
     }
 
     for (uint32_t i = 0; i < descriptor_count; ++i) {
@@ -383,7 +384,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             uint8_t  reuse_flag   = cmdbuf[soff + 10];
 
             if (segment_idx == 0u) {
-                LAGFX_WARN("    segment[%u]: size=%u prot=0x%x "
+                LAGFX_LOG("    segment[%u]: size=%u prot=0x%x "
                           "encType=%u final=%u reuse=%u "
                           "hdr=%02x%02x%02x%02x %02x%02x%02x%02x "
                           "%02x%02x%02x%02x %02x%02x%02x%02x "
@@ -726,6 +727,23 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                        opname, buffer_id, resource_count);
                         }
                     }
+                } else if (encoder_type == 2u) {
+                    const uint8_t *ipl = cmdbuf + ioff + 8u;
+                    int rc = lagfx_render_decoder_dispatch(p, inner_opcode,
+                                                          ipl, ipl_len);
+                    if (rc != 0) {
+                        LAGFX_TRACE("      inner[%u]: render dispatch op=0x%04x "
+                                  "returned %d (continuing)",
+                                  inner_idx, inner_opcode, rc);
+                    }
+                } else if (encoder_type == 0u) {
+                    LAGFX_TRACE("      inner[%u]: blit op=0x%04x len=%zu "
+                              "(no dispatch module)",
+                              inner_idx, inner_opcode, ipl_len);
+                } else if (encoder_type == 1u) {
+                    LAGFX_TRACE("      inner[%u]: compute op=0x%04x len=%zu "
+                              "(no dispatch module)",
+                              inner_idx, inner_opcode, ipl_len);
                 }
 
                 ioff += inner_total;

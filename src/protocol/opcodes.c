@@ -159,7 +159,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_FREE_VIRTUAL_CHANNEL,     "VirtualChannelFree",
       LAGFX_PRIO_P2, 0,  0,  NULL },
     { LAGFX_OP_SET_RESOURCE_HEAP,        "CmdSetResourceHeap",
-      LAGFX_PRIO_P0, 12, 12, NULL },
+      LAGFX_PRIO_P0, 12, 12, lagfx_op_set_resource_heap },
     { LAGFX_OP_CHANNEL_EVENT_34,         "ChannelEvent34",
       LAGFX_PRIO_P2, 0,  0,  NULL },
     { LAGFX_OP_CHANNEL_EVENT_35,         "ChannelEvent35",

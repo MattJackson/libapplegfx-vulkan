@@ -5,14 +5,15 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Populates the 95-entry descriptor table for the Render inner-opcode
- * decoder. Every entry currently points at `render_op_ack_stub`, which
- * just logs and returns OK — real handlers land one-by-one as M5
- * progresses. Entries are listed in numerical opcode order (matches the
- * row order of paravirt-re/library/state-machines/render-decoder-
- * handlers.tsv).
+ * Populates the 96-entry descriptor table for the Render inner-opcode
+ * decoder. Most entries point at `render_op_ack_stub`; real handlers
+ * land one-by-one as M5 progresses. Entries are listed in numerical
+ * opcode order (matches the row order of
+ * paravirt-re/library/state-machines/render-decoder-handlers.tsv
+ * plus the sub-decoder opcode 0x1a).
  *
- * Source-of-truth row count: 95 (TSV body lines, excluding the header).
+ * Source-of-truth row count: 96 (95 main TSV rows + sub-decoder
+ * opcode 0x1a RenderDescribeRenderPass).
  *
  * Body sizes ("payload_size" in the TSV) are stored verbatim. Variable-
  * length entries (TSV value of the form "8+N*4") store 0 in `body_size`
@@ -22,41 +23,324 @@
  */
 
 #include "render_opcodes.h"
+#include "render_pass.h"
 
 #include "../common/log.h"
 
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
-/* The default ack-only stub. Per the M5 brief: "Each stub just logs
- * `[lagfx render] op=0x%02x (%s) — ack-only stub`." We reach for
- * fprintf + LAGFX_LOG_ENABLED to keep the unconditional ack visible
- * even when LAGFX_LOG=0; the expectation is that during M5 bring-up
- * the operator wants to see when the dispatcher fired. If that proves
- * too noisy when the real handlers are landing, it's a one-line flip
- * to LAGFX_LOG. */
+static uint32_t read_le32(const uint8_t *p) {
+    return (uint32_t)p[0]
+         | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16)
+         | ((uint32_t)p[3] << 24);
+}
+
+static uint64_t read_le64(const uint8_t *p) {
+    return (uint64_t)read_le32(p)
+         | ((uint64_t)read_le32(p + 4) << 32);
+}
+
+static float read_f32(const uint8_t *p) {
+    uint32_t u = read_le32(p);
+    float f;
+    memcpy(&f, &u, sizeof(f));
+    return f;
+}
+
+static double read_f64(const uint8_t *p) {
+    uint64_t u = read_le64(p);
+    double d;
+    memcpy(&d, &u, sizeof(d));
+    return d;
+}
+
 static int render_op_ack_stub(lagfx_protocol_t *p,
                               const uint8_t    *payload,
                               size_t            len) {
     (void)p;
     (void)payload;
     (void)len;
-    /* The lookup happens in the dispatcher; the descriptor itself
-     * carries the canonical name + opcode. We don't have access to
-     * those here without adding a parameter, so the dispatcher logs
-     * the formatted "[lagfx render] op=0xNN (name) — ack-only stub"
-     * line just before invoking us. */
-    return 0; /* OK */
+    return 0;
 }
 
-/* === Descriptor table — 95 entries ============================
+bool lagfx_render_op_is_stub(uint32_t opcode) {
+    const lagfx_render_op_descriptor_t *d = lagfx_render_op_lookup(opcode);
+    return d != NULL && d->default_handler == render_op_ack_stub;
+}
+
+static int render_op_set_viewport(lagfx_protocol_t *p,
+                                  const uint8_t    *payload,
+                                  size_t            len) {
+    (void)p;
+    if (len < 48) {
+        LAGFX_WARN("SetViewport: payload too short (%zu < 48)", len);
+        return 0;
+    }
+    double ox = read_f64(payload);
+    double oy = read_f64(payload + 8);
+    double w  = read_f64(payload + 16);
+    double h  = read_f64(payload + 24);
+    double zn = read_f64(payload + 32);
+    double zf = read_f64(payload + 40);
+    LAGFX_TRACE("SetViewport: origin=(%g,%g) size=%gx%g znear=%g zfar=%g",
+                ox, oy, w, h, zn, zf);
+    return 0;
+}
+
+static int render_op_set_scissor_rect(lagfx_protocol_t *p,
+                                      const uint8_t    *payload,
+                                      size_t            len) {
+    (void)p;
+    if (len < 32) {
+        LAGFX_WARN("SetScissorRect: payload too short (%zu < 32)", len);
+        return 0;
+    }
+    uint64_t x = read_le64(payload);
+    uint64_t y = read_le64(payload + 8);
+    uint64_t w = read_le64(payload + 16);
+    uint64_t h = read_le64(payload + 24);
+    LAGFX_TRACE("SetScissorRect: x=%llu y=%llu w=%llu h=%llu",
+                (unsigned long long)x, (unsigned long long)y,
+                (unsigned long long)w, (unsigned long long)h);
+    return 0;
+}
+
+static int render_op_set_blend_color(lagfx_protocol_t *p,
+                                     const uint8_t    *payload,
+                                     size_t            len) {
+    (void)p;
+    if (len < 16) {
+        LAGFX_WARN("SetBlendColor: payload too short (%zu < 16)", len);
+        return 0;
+    }
+    float r = read_f32(payload);
+    float g = read_f32(payload + 4);
+    float b = read_f32(payload + 8);
+    float a = read_f32(payload + 12);
+    LAGFX_TRACE("SetBlendColor: r=%g g=%g b=%g a=%g",
+                (double)r, (double)g, (double)b, (double)a);
+    return 0;
+}
+
+static int render_op_set_front_facing_winding(lagfx_protocol_t *p,
+                                              const uint8_t    *payload,
+                                              size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetFrontFacingWinding: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t value = read_le32(payload);
+    uint32_t extra = read_le32(payload + 4);
+    LAGFX_TRACE("SetFrontFacingWinding: value=%u extra=%u", value, extra);
+    return 0;
+}
+
+static int render_op_set_cull_mode(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetCullMode: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t value = read_le32(payload);
+    uint32_t extra = read_le32(payload + 4);
+    LAGFX_TRACE("SetCullMode: value=%u extra=%u", value, extra);
+    return 0;
+}
+
+static int render_op_texture_barrier(lagfx_protocol_t *p,
+                                     const uint8_t    *payload,
+                                     size_t            len) {
+    (void)p;
+    (void)payload;
+    (void)len;
+    LAGFX_TRACE("TextureBarrier");
+    return 0;
+}
+
+static int render_op_set_render_pipeline_state(lagfx_protocol_t *p,
+                                                const uint8_t    *payload,
+                                                size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetRenderPipelineState: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    uint32_t reference = read_le32(payload);
+    LAGFX_TRACE("SetRenderPipelineState: reference=0x%08x", reference);
+    return 0;
+}
+
+static int render_op_draw_primitives_64(lagfx_protocol_t *p,
+                                        const uint8_t    *payload,
+                                        size_t            len) {
+    (void)p;
+    if (len < 20) {
+        LAGFX_WARN("DrawPrimitives64: payload too short (%zu < 20)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint64_t vertex_start = read_le64(payload + 4);
+    uint64_t vertex_count = read_le64(payload + 12);
+    LAGFX_TRACE("DrawPrimitives64: type=%u start=%llu count=%llu",
+                prim_type,
+                (unsigned long long)vertex_start,
+                (unsigned long long)vertex_count);
+    return 0;
+}
+
+static int render_op_set_vertex_buffers(lagfx_protocol_t *p,
+                                        const uint8_t    *payload,
+                                        size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetVertexBuffers: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t first = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 12;
+    if (len < needed) {
+        LAGFX_WARN("SetVertexBuffers: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetVertexBuffers: count=%u first=%u", count, first);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        const uint8_t *entry = payload + 8 + (size_t)i * 12;
+        uint32_t ref = read_le32(entry);
+        uint64_t off = read_le64(entry + 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x offset=%llu",
+                    first + i, ref, (unsigned long long)off);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_fragment_textures(lagfx_protocol_t *p,
+                                           const uint8_t    *payload,
+                                           size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetFragmentTextures: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t first = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 4;
+    if (len < needed) {
+        LAGFX_WARN("SetFragmentTextures: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetFragmentTextures: count=%u first=%u", count, first);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        uint32_t ref = read_le32(payload + 8 + (size_t)i * 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x", first + i, ref);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_use_resources(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("UseResources: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t usage = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 4;
+    if (len < needed) {
+        LAGFX_WARN("UseResources: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("UseResources: count=%u usage=0x%x", count, usage);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        uint32_t ref = read_le32(payload + 8 + (size_t)i * 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x", i, ref);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_fragment_buffers(lagfx_protocol_t *p,
+                                          const uint8_t    *payload,
+                                          size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetFragmentBuffers: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t first = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 12;
+    if (len < needed) {
+        LAGFX_WARN("SetFragmentBuffers: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetFragmentBuffers: count=%u first=%u", count, first);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        const uint8_t *entry = payload + 8 + (size_t)i * 12;
+        uint32_t ref = read_le32(entry);
+        uint64_t off = read_le64(entry + 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x offset=%llu",
+                    first + i, ref, (unsigned long long)off);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static lagfx_render_pass_desc_t g_last_render_pass_desc;
+
+static int render_op_describe_render_pass(lagfx_protocol_t *p,
+                                          const uint8_t    *payload,
+                                          size_t            len) {
+    (void)p;
+    lagfx_render_pass_desc_t desc;
+    memset(&desc, 0, sizeof(desc));
+    int rc = lagfx_parse_render_pass_descriptor(payload, len, &desc);
+    if (rc != 0) {
+        LAGFX_ERR("render_op_describe_render_pass: parse failed (rc=%d len=%zu)",
+                  rc, len);
+        return rc;
+    }
+    g_last_render_pass_desc = desc;
+    LAGFX_LOG("render_op_describe_render_pass: depth=%u stencil=%u "
+              "colors=%u rt=%llux%llu",
+              desc.has_depth, desc.has_stencil,
+              desc.color_attachment_count,
+              (unsigned long long)desc.render_target_width,
+              (unsigned long long)desc.render_target_height);
+    return 0;
+}
+
+const lagfx_render_pass_desc_t *
+lagfx_render_pass_desc_get(void) {
+    return &g_last_render_pass_desc;
+}
+
+/* === Descriptor table — 96 entries ============================
  *
  * Layout: { opcode, name, body_size, ref_count, default_handler }.
  *
  * `name` strings match the `name` column of the TSV exactly. */
 static const lagfx_render_op_descriptor_t g_render_op_table[] = {
     /* --- Draw family (0x00-0x1d) -------------------------------- */
-    { 0x00, "DrawPrimitives64",                          20, 0, render_op_ack_stub },
+    { 0x00, "DrawPrimitives64",                          20, 0, render_op_draw_primitives_64 },
     { 0x01, "DrawPrimitives16",                           8, 0, render_op_ack_stub },
     { 0x02, "DrawInstancedPrimitives64",                 28, 0, render_op_ack_stub },
     { 0x03, "DrawInstancedPrimitives16",                  8, 0, render_op_ack_stub },
@@ -82,33 +366,34 @@ static const lagfx_render_op_descriptor_t g_render_op_table[] = {
     { 0x17, "RenderBarrierScope",                         4, 0, render_op_ack_stub },
     { 0x18, "RenderUpdateFence",                          8, 1, render_op_ack_stub },
     { 0x19, "RenderWaitForFence",                         8, 1, render_op_ack_stub },
+    { 0x1a, "RenderDescribeRenderPass",                   584, 0, render_op_describe_render_pass },
     /* TSV body_size for 0x1b is "8+N*4" (variable) — store 0. */
     { 0x1b, "UseHeapsWithStages",                         0, 0, render_op_ack_stub },
     { 0x1c, "DrawIndexedInstancedBasePrimitives64_2",    48, 1, render_op_ack_stub },
     { 0x1d, "DrawIndexedInstancedBasePrimitives16_2",    20, 1, render_op_ack_stub },
 
     /* --- State-set family (0x65-0xa6) --------------------------- */
-    { 0x65, "SetBlendColor",                             16, 0, render_op_ack_stub },
+    { 0x65, "SetBlendColor",                             16, 0, render_op_set_blend_color },
     { 0x66, "SetColorStoreAction",                        8, 0, render_op_ack_stub },
     { 0x67, "SetColorStoreActionOptions",                12, 0, render_op_ack_stub },
     { 0x68, "SetDepthStencilState",                       4, 1, render_op_ack_stub },
     { 0x69, "SetDepthStoreAction",                        8, 0, render_op_ack_stub },
     { 0x6a, "SetDepthStoreActionOptions",                 8, 0, render_op_ack_stub },
-    { 0x6b, "SetCullMode",                                8, 0, render_op_ack_stub },
+    { 0x6b, "SetCullMode",                                8, 0, render_op_set_cull_mode },
     { 0x6c, "SetDepthBias",                              12, 0, render_op_ack_stub },
     { 0x6d, "SetDepthClipMode",                           8, 0, render_op_ack_stub },
     /* 0x6e SetFragmentBuffers — variable "8+N*12". */
-    { 0x6e, "SetFragmentBuffers",                         0, 0, render_op_ack_stub },
+    { 0x6e, "SetFragmentBuffers",                         0, 0, render_op_set_fragment_buffers },
     { 0x6f, "SetFragmentBufferOffset",                   12, 0, render_op_ack_stub },
     /* 0x70 SetFragmentSamplerStates — variable "8+N*4". */
     { 0x70, "SetFragmentSamplerStates",                   0, 0, render_op_ack_stub },
     /* 0x71 SetFragmentSamplerStatesLODClamp — variable "8+N*12". */
     { 0x71, "SetFragmentSamplerStatesLODClamp",           0, 0, render_op_ack_stub },
     /* 0x72 SetFragmentTextures — variable "8+N*4". */
-    { 0x72, "SetFragmentTextures",                        0, 0, render_op_ack_stub },
-    { 0x73, "SetFrontFacingWinding",                      8, 0, render_op_ack_stub },
-    { 0x74, "SetRenderPipelineState",                     4, 1, render_op_ack_stub },
-    { 0x75, "SetScissorRect",                            32, 0, render_op_ack_stub },
+    { 0x72, "SetFragmentTextures",                        0, 0, render_op_set_fragment_textures },
+    { 0x73, "SetFrontFacingWinding",                      8, 0, render_op_set_front_facing_winding },
+    { 0x74, "SetRenderPipelineState",                     4, 1, render_op_set_render_pipeline_state },
+    { 0x75, "SetScissorRect",                            32, 0, render_op_set_scissor_rect },
     /* 0x76 SetScissorRects — variable "8+N*32". */
     { 0x76, "SetScissorRects",                            0, 0, render_op_ack_stub },
     { 0x77, "SetStencilRef",                              8, 0, render_op_ack_stub },
@@ -118,7 +403,7 @@ static const lagfx_render_op_descriptor_t g_render_op_table[] = {
     { 0x7b, "SetTesselationFactorScale",                  4, 0, render_op_ack_stub },
     { 0x7c, "SetTriangleFillMode",                        8, 0, render_op_ack_stub },
     /* 0x7d SetVertexBuffers — variable "8+N*12". */
-    { 0x7d, "SetVertexBuffers",                           0, 0, render_op_ack_stub },
+    { 0x7d, "SetVertexBuffers",                           0, 0, render_op_set_vertex_buffers },
     { 0x7e, "SetVertexBufferOffset",                     12, 0, render_op_ack_stub },
     /* 0x7f SetVertexSamplerStates — variable "8+N*4". */
     { 0x7f, "SetVertexSamplerStates",                     0, 0, render_op_ack_stub },
@@ -126,15 +411,15 @@ static const lagfx_render_op_descriptor_t g_render_op_table[] = {
     { 0x80, "SetVertexSamplerStatesLODClamp",             0, 0, render_op_ack_stub },
     /* 0x81 SetVertexTextures — variable "8+N*4". */
     { 0x81, "SetVertexTextures",                          0, 0, render_op_ack_stub },
-    { 0x82, "SetViewport",                               48, 0, render_op_ack_stub },
+    { 0x82, "SetViewport",                               48, 0, render_op_set_viewport },
     /* 0x83 SetViewports — variable "4+N*48". */
     { 0x83, "SetViewports",                               0, 0, render_op_ack_stub },
     { 0x84, "SetVisibilityResultMode",                   16, 0, render_op_ack_stub },
-    { 0x85, "TextureBarrier",                             0, 0, render_op_ack_stub },
+    { 0x85, "TextureBarrier",                             0, 0, render_op_texture_barrier },
     /* 0x86 UseHeaps — variable "4+N*4". */
     { 0x86, "UseHeaps",                                   0, 0, render_op_ack_stub },
     /* 0x87 UseResources — variable "8+N*4". */
-    { 0x87, "UseResources",                               0, 0, render_op_ack_stub },
+    { 0x87, "UseResources",                               0, 0, render_op_use_resources },
     { 0x88, "SetLineWidth",                               4, 0, render_op_ack_stub },
     /* 0x89 UseResourcesWithStages — variable "8+N*4". */
     { 0x89, "UseResourcesWithStages",                     0, 0, render_op_ack_stub },
@@ -184,7 +469,7 @@ static const size_t g_render_op_table_count =
 _Static_assert(sizeof(g_render_op_table) / sizeof(g_render_op_table[0]) ==
                LAGFX_RENDER_OPCODE_COUNT,
                "render_opcodes.c table size must match "
-               "LAGFX_RENDER_OPCODE_COUNT (95)");
+               "LAGFX_RENDER_OPCODE_COUNT (96)");
 
 const lagfx_render_op_descriptor_t *
 lagfx_render_op_lookup(uint32_t opcode) {

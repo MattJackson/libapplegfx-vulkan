@@ -9,13 +9,13 @@
  * Covers items 6, 7, 8 from the M3/M4 critical-path coverage plan.
  *
  *   6. lagfx_op_exec_indirect2 outer-payload parser:
- *      - kext-side 0x37 layout: 12B header + 16B invalidates + 16B
- *        reserved/middle + 16B resources.
- *      - resource_count=0, invalidate_count=0 -> empty-list completion.
+ *      - kext-side 0x37 layout: 12B header + 24B descriptors + 16B
+ *        resources. No middle/reserved block.
+ *      - resource_count=0, descriptor_count=0 -> empty-list completion.
  *      - resource[0] with non-zero host_gpu_addr -> segment walker is
  *        invoked (we observe shell.read_memory hits the resource cmdBuf).
- *      - Should NOT misparse with the 8B-invalidate layout. We feed a
- *        payload sized for 16B-invalidates and confirm the parser walks
+ *      - Should NOT misparse with the 16B-descriptor layout. We feed a
+ *        payload sized for 24B-descriptors and confirm the parser walks
  *        the resource_table at the expected offset.
  *
  *   7. Segment walker (inside lagfx_op_exec_indirect2):
@@ -239,30 +239,27 @@ static void prep_radix_for_data_pfn(ei2_shell_t *m, uint32_t root_pfn,
 }
 
 /* Build an outer ExecIndirect2 payload using the kext-side 0x37 layout
- * with INV_COUNT 16B-invalidate records + a 16B middle/reserved block +
- * RES_COUNT 16B resource records.
+ * with DESC_COUNT 24B descriptor records + RES_COUNT 16B resource
+ * records. No middle/reserved block.
  *
- * Total payload size: 12 + 16*INV_COUNT + 16 + 16*RES_COUNT.
+ * Total payload size: 12 + 24*DESC_COUNT + 16*RES_COUNT.
  *
- * Caller passes pre-built invalidate + resource record blobs; this only
+ * Caller passes pre-built descriptor + resource record blobs; this only
  * stitches them together in the canonical order. */
 static size_t build_exec_indirect2_outer(uint8_t *out,
                                          uint32_t task_id,
-                                         const uint8_t *invalidates,
-                                         uint32_t inv_count,
+                                         const uint8_t *descriptors,
+                                         uint32_t desc_count,
                                          const uint8_t *resources,
                                          uint32_t res_count) {
     put_le32(out + 0, task_id);
-    put_le32(out + 4, inv_count);
+    put_le32(out + 4, desc_count);
     put_le32(out + 8, res_count);
     size_t off = 12u;
-    if (inv_count > 0 && invalidates) {
-        memcpy(out + off, invalidates, (size_t)inv_count * 16u);
+    if (desc_count > 0 && descriptors) {
+        memcpy(out + off, descriptors, (size_t)desc_count * 24u);
     }
-    off += (size_t)inv_count * 16u;
-    /* 16B reserved/middle block. */
-    memset(out + off, 0, 16u);
-    off += 16u;
+    off += (size_t)desc_count * 24u;
     if (res_count > 0 && resources) {
         memcpy(out + off, resources, (size_t)res_count * 16u);
     }
@@ -291,22 +288,22 @@ static void put_inner_cmd(uint8_t *out, uint32_t opcode, uint32_t total_len) {
 
 /* === Item 6 tests: outer-payload parser ================================ */
 
-static void test_outer_empty_invalidate_empty_resources(void) {
-    fprintf(stdout, "\n--- test: outer_empty_invalidate_empty_resources ---\n");
+static void test_outer_empty_descriptor_empty_resources(void) {
+    fprintf(stdout, "\n--- test: outer_empty_descriptor_empty_resources ---\n");
     ei2_shell_t shell;
     ei2_shell_init(&shell, 0x40000000ull);
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
 
-    /* invalidate_count=0, resource_count=0. payload = 12 + 16 (middle)
-     * = 28 bytes. The (need=12 + 0 + 16 + 0 = 28) <= payload_size check
+    /* descriptor_count=0, resource_count=0. payload = 12 bytes.
+     * The (need=12 + 0 + 0 = 12) <= payload_size check
      * must accept; the empty-list completion path should run. */
     uint8_t cmd[12 + 64];
     build_header(cmd, LAGFX_OP_EXEC_INDIRECT2, 0,
-                 /*total_length=*/12u + 28u, /*stamp=*/0xc0000001u);
+                 /*total_length=*/12u + 12u, /*stamp=*/0xc0000001u);
     size_t pl = build_exec_indirect2_outer(cmd + 12, /*task_id=*/0u,
                                            NULL, 0, NULL, 0);
-    CHECK(pl == 28u, "empty exec_indirect2 payload size = 28B");
+    CHECK(pl == 12u, "empty exec_indirect2 payload size = 12B");
 
     int rc = lagfx_protocol_dispatch_one(p, cmd, 12u + pl);
     CHECK(rc == LAGFX_HANDLER_OK,
@@ -352,7 +349,7 @@ static void test_outer_resource_with_host_gpu_addr_invokes_walker(void) {
     uint8_t cmd[12 + 256];
     build_header(cmd, LAGFX_OP_EXEC_INDIRECT2, 0,
                  /*total_length=*/12u + 12u + 16u + 16u, 0xc1000002u);
-    /* invalidate_count=0, resource_count=1. */
+    /* descriptor_count=0, resource_count=1. */
     size_t pl = build_exec_indirect2_outer(cmd + 12, 77u,
                                            NULL, 0, resources, 1);
     /* Update the header to reflect actual computed length. */
@@ -375,14 +372,14 @@ static void test_outer_resource_with_host_gpu_addr_invokes_walker(void) {
     ei2_shell_free(&shell);
 }
 
-/* Confirm the outer parser uses the 16B-invalidates layout, NOT the
- * 8B-invalidates legacy layout. We populate a payload with one 16B
- * invalidate record and one 16B resource record at the correct offsets;
- * if the parser were using 8B invalidates it would compute
- * off_resources = 12 + 8 + 16 = 36, read garbage as the resource record,
+/* Confirm the outer parser uses the 24B-descriptor layout, NOT the
+ * 16B-descriptor legacy layout. We populate a payload with one 24B
+ * descriptor record and one 16B resource record at the correct offsets;
+ * if the parser were using 16B descriptors it would compute
+ * off_resources = 12 + 16 = 28, read garbage as the resource record,
  * and fail to invoke the walker against our resource cmdBuf. */
-static void test_outer_uses_16B_invalidate_layout(void) {
-    fprintf(stdout, "\n--- test: outer_uses_16B_invalidate_layout ---\n");
+static void test_outer_uses_24B_descriptor_layout(void) {
+    fprintf(stdout, "\n--- test: outer_uses_24B_descriptor_layout ---\n");
     ei2_shell_t shell;
     ei2_shell_init(&shell, 0x40000000ull);
     lagfx_device_t *dev = make_dev(&shell);
@@ -393,10 +390,11 @@ static void test_outer_uses_16B_invalidate_layout(void) {
                             /*data_pfn*/0x40010u);
     define_host_task(p, 77u, 0x40000u, 0xc2000001u);
 
-    /* One 16B invalidate (zeros). */
-    uint8_t invalidates[16] = {0};
-    put_le32(invalidates + 0, /*rid=*/0xdead0001u);
-    put_le32(invalidates + 4, /*flags=*/0x0000ABCDu);
+    /* One 24B descriptor: {u32 id, u32 flags, u64 reserved, 8B pad}. */
+    uint8_t descriptors[24] = {0};
+    put_le32(descriptors + 0, /*id=*/0xdead0001u);
+    put_le32(descriptors + 4, /*flags=*/0x0000ABCDu);
+    /* bytes 8..23 are reserved/pad, left as zero. */
 
     /* Place a 16B segment header at task-VA 0. */
     uint8_t *res_page = shell.heap + 0x10000u;
@@ -408,20 +406,19 @@ static void test_outer_uses_16B_invalidate_layout(void) {
     put_le32(resources + 8, 16u);
     put_le32(resources + 12, 0u);
 
-    /* outer_size = 12 + 16 (one invalidate) + 16 (middle) + 16 (one
-     * resource) = 60 B. */
+    /* outer_size = 12 + 24 (one descriptor) + 16 (one resource) = 52 B. */
     uint8_t cmd[12 + 256];
     size_t pl = build_exec_indirect2_outer(cmd + 12, 77u,
-                                           invalidates, 1, resources, 1);
-    CHECK(pl == 60u,
-          "outer payload with 16B invalidate is 60 bytes "
-          "(12+16+16+16)");
+                                           descriptors, 1, resources, 1);
+    CHECK(pl == 52u,
+          "outer payload with 24B descriptor is 52 bytes "
+          "(12+24+16)");
 
     uint32_t total = (uint32_t)(12u + pl);
     build_header(cmd, LAGFX_OP_EXEC_INDIRECT2, 0, total, 0xc2000002u);
     /* re-stamp the size after build_header overwrote it. */
     pl = build_exec_indirect2_outer(cmd + 12, 77u,
-                                    invalidates, 1, resources, 1);
+                                    descriptors, 1, resources, 1);
     total = (uint32_t)(12u + pl);
     cmd[4] = (uint8_t)(total & 0xff);
     cmd[5] = (uint8_t)((total >> 8) & 0xff);
@@ -431,13 +428,13 @@ static void test_outer_uses_16B_invalidate_layout(void) {
     unsigned reads_before = shell.read_memory_count;
     int rc = lagfx_protocol_dispatch_one(p, cmd, total);
     CHECK(rc == LAGFX_HANDLER_OK,
-          "exec_indirect2 with 16B invalidate dispatched OK "
+          "exec_indirect2 with 24B descriptor dispatched OK "
           "(parser found resource record at correct offset)");
     /* Walker read the resource cmdBuf (proves it reached res_page at
-     * the offset computed under the 16B-invalidate layout). */
+     * the offset computed under the 24B-descriptor layout). */
     CHECK(shell.read_memory_count > reads_before,
-          "walker read resource cmdBuf with 16B invalidate layout — "
-          "parser did NOT misparse as 8B-invalidate legacy layout");
+          "walker read resource cmdBuf with 24B descriptor layout — "
+          "parser did NOT misparse as 16B-descriptor legacy layout");
 
     lagfx_device_free(dev);
     ei2_shell_free(&shell);
@@ -849,9 +846,9 @@ int main(void) {
     fprintf(stdout, "tests/m4-execindirect2-parser: starting\n");
 
     /* Item 6. */
-    test_outer_empty_invalidate_empty_resources();
+    test_outer_empty_descriptor_empty_resources();
     test_outer_resource_with_host_gpu_addr_invokes_walker();
-    test_outer_uses_16B_invalidate_layout();
+    test_outer_uses_24B_descriptor_layout();
 
     /* Item 7. */
     test_walker_encType4_inner_0x1c9();

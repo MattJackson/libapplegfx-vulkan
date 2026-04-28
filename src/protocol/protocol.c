@@ -525,7 +525,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             uint32_t chan_id   = ((uint32_t *)descr)[3];
             uint32_t ring_pfn  = ((uint32_t *)descr)[4];
 
-            LAGFX_WARN("doorbell ch=%u: descr wr=%u rd=%u mid=0x%x "
+            LAGFX_TRACE("doorbell ch=%u: descr wr=%u rd=%u mid=0x%x "
                       "chan_id=%u ring_pfn=0x%x",
                       ch, write_ptr, read_ptr, mid, chan_id, ring_pfn);
 
@@ -563,6 +563,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 && ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
                 uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
+                uint32_t child_ring_size = 0x10000u;
 
                 /* page0 is a u32 PFN-array; data_pfn[i] is at page0+i*4.
                  * Cmd at ring offset `off` lives in data_pfn[off/0x1000]
@@ -611,8 +612,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         uint32_t off = cur_rp;
                         size_t got = 0;
                         while (got < 12u && ok) {
-                            uint32_t page_idx = off >> 12;
-                            uint32_t page_off = off & 0xfffu;
+                            uint32_t mod_off = off % child_ring_size;
+                            uint32_t page_idx = mod_off >> 12;
+                            uint32_t page_off = mod_off & 0xfffu;
                             uint32_t can = 0x1000u - page_off;
                             uint32_t want = (uint32_t)(12u - got);
                             uint32_t take = (want < can) ? want : can;
@@ -682,8 +684,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         uint32_t off = cur_rp;
                         size_t got = 0;
                         while (got < cmd_len && ok) {
-                            uint32_t page_idx = off >> 12;
-                            uint32_t page_off = off & 0xfffu;
+                            uint32_t mod_off = off % child_ring_size;
+                            uint32_t page_idx = mod_off >> 12;
+                            uint32_t page_off = mod_off & 0xfffu;
                             uint32_t can = 0x1000u - page_off;
                             uint32_t want = (uint32_t)(cmd_len - got);
                             uint32_t take = (want < can) ? want : can;
@@ -715,17 +718,15 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     lagfx_cmd_header_t parsed;
                     int rc = lagfx_protocol_dispatch_one_no_stamp(
                         p, cmd, cmd_len, &parsed);
-                    if (cmd_idx < 5u) {
-                        LAGFX_WARN("doorbell ch=%u cmd[%u]: opcode=0x%04x "
-                                  "stamp=0x%08x len=%u rc=%d "
-                                  "hdr_bytes=%02x %02x %02x %02x %02x %02x "
-                                  "%02x %02x %02x %02x %02x %02x",
-                                  ch, cmd_idx, parsed.opcode, parsed.stamp,
-                                  cmd_len, rc,
-                                  cmd[0], cmd[1], cmd[2], cmd[3],
-                                  cmd[4], cmd[5], cmd[6], cmd[7],
-                                  cmd[8], cmd[9], cmd[10], cmd[11]);
-                    }
+                    LAGFX_TRACE("doorbell ch=%u cmd[%u]: opcode=0x%04x "
+                              "stamp=0x%08x len=%u rc=%d "
+                              "hdr_bytes=%02x %02x %02x %02x %02x %02x "
+                              "%02x %02x %02x %02x %02x %02x",
+                              ch, cmd_idx, parsed.opcode, parsed.stamp,
+                              cmd_len, rc,
+                              cmd[0], cmd[1], cmd[2], cmd[3],
+                              cmd[4], cmd[5], cmd[6], cmd[7],
+                              cmd[8], cmd[9], cmd[10], cmd[11]);
 
                     last_stamp = parsed.stamp;
                     free(cmd);

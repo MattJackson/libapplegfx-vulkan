@@ -8,7 +8,8 @@
  * The Render decoder (PGDeserializerRenderDecoder, encoderType=2 in the
  * inner-opcode wire format — see
  * paravirt-re/library/state-machines/inner-opcode-format.md) recognises
- * 95 inner opcodes in the range 0x00..0xa6 (sparse). Each enumerated
+ * 96 inner opcodes in the range 0x00..0xa6 (sparse) plus the sub-decoder
+ * opcode 0x1a (RenderDescribeRenderPass). Each enumerated
  * value carries:
  *
  *   - the on-wire opcode (low u32 of the 8-byte PGCmdHeader),
@@ -19,8 +20,8 @@
  *     decoder retains for this command (used by the residency tracker
  *     once the real handlers land).
  *
- * Source of truth for opcode list, names, payload sizes, and ref counts:
  *   paravirt-re/library/state-machines/render-decoder-handlers.tsv
+ * plus sub-decoder opcode 0x1a (RenderDescribeRenderPass).
  *
  * M5 scaffold (this file): every opcode resolves to an ack-only stub
  * (logs and returns OK). When M4 closes and real handlers land, the
@@ -40,6 +41,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "render_pass.h"
+
 /* Forward declaration — full layout in state.h, but this scaffold only
  * needs the typedef so handler signatures are well-formed. */
 typedef struct lagfx_protocol lagfx_protocol_t;
@@ -50,7 +53,9 @@ typedef struct lagfx_protocol lagfx_protocol_t;
  * The enum is sparse (gaps at 0x1a, 0x1e..0x64, 0x65..0xa6 dense).
  * Names mirror the Apple ObjC selector stems where known
  * (decodeXxxWithCursor:) so cross-referencing the dylib symbol table
- * is straightforward. */
+ * is straightforward. Opcode 0x1a is dispatched from the sub-decoder
+ * decodeRenderPassDescriptor:, not from the main jump table, but is
+ * included here for completeness. */
 typedef enum {
     /* --- Draw family (0x00-0x1d) ---------------------------------- */
     LAGFX_RENDER_OP_DRAW_PRIMITIVES_64                          = 0x00,
@@ -79,6 +84,7 @@ typedef enum {
     LAGFX_RENDER_OP_RENDER_BARRIER_SCOPE                        = 0x17,
     LAGFX_RENDER_OP_RENDER_UPDATE_FENCE                         = 0x18,
     LAGFX_RENDER_OP_RENDER_WAIT_FOR_FENCE                       = 0x19,
+    LAGFX_RENDER_OP_RENDER_DESCRIBE_RENDER_PASS                 = 0x1a,
     LAGFX_RENDER_OP_USE_HEAPS_WITH_STAGES                       = 0x1b,
     LAGFX_RENDER_OP_DRAW_INDEXED_INSTANCED_BASE_PRIMITIVES_64_2 = 0x1c,
     LAGFX_RENDER_OP_DRAW_INDEXED_INSTANCED_BASE_PRIMITIVES_16_2 = 0x1d,
@@ -155,7 +161,7 @@ typedef enum {
 /* The on-wire opcode is u32; the per-decoder validity check
  * (`<= 0xa6` for Render — see inner-opcode-format.md §6) bounds it.
  * We expose the table count and a sentinel here. */
-#define LAGFX_RENDER_OPCODE_COUNT  95u
+#define LAGFX_RENDER_OPCODE_COUNT  96u
 #define LAGFX_RENDER_OPCODE_MAX    0xa6u
 
 /* === Handler signature ========================================
@@ -199,5 +205,12 @@ lagfx_render_op_table_entry(size_t index);
  * (in a static buffer) for opcodes not in the table. The buffer is
  * shared, so callers must not retain the pointer across calls. */
 const char *lagfx_render_op_name(uint32_t opcode);
+
+bool lagfx_render_op_is_stub(uint32_t opcode);
+
+/* Return a pointer to the most recently parsed RenderDescribeRenderPass
+ * (opcode 0x1a) descriptor. Valid until the next 0x1a is dispatched.
+ * Single-threaded (BQL-gated) — the pointer is to a static buffer. */
+const lagfx_render_pass_desc_t *lagfx_render_pass_desc_get(void);
 
 #endif /* LIBAPPLEGFX_PROTOCOL_RENDER_OPCODES_H */

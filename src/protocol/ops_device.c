@@ -464,6 +464,36 @@ lagfx_handler_status_t lagfx_op_delete_task(lagfx_protocol_t *p,
  * fired for vchan/exec-channel tasks).
  * =========================================================================== */
 
+lagfx_handler_status_t lagfx_op_set_resource_heap(lagfx_protocol_t *p,
+                                                   const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 12u) {
+        LAGFX_WARN("CmdSetResourceHeap: payload missing or too small "
+                   "(size=%u, need >= 12)", (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint32_t task_id   = lagfx_le32(hdr->payload + 0);
+    uint32_t heap_pfn  = lagfx_le32(hdr->payload + 4);
+    uint32_t heap_size = lagfx_le32(hdr->payload + 8);
+
+    lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
+    if (!entry) {
+        LAGFX_WARN("CmdSetResourceHeap: taskID=%u not found", task_id);
+        return LAGFX_HANDLER_OK;
+    }
+
+    entry->heap_pfn  = heap_pfn;
+    entry->heap_size = heap_size;
+
+    LAGFX_TRACE("CmdSetResourceHeap: taskID=%u heap_pfn=0x%x "
+              "heap_size=0x%x stamp=0x%08x",
+              task_id, heap_pfn, heap_size, hdr->stamp);
+    return LAGFX_HANDLER_OK;
+}
+
 lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
                                                  const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) {
@@ -571,6 +601,44 @@ lagfx_handler_status_t lagfx_op_map_memory_immediate(
               "vaLength=0x%llx stamp=0x%08x",
               task_id, (unsigned long long)va_base,
               (unsigned long long)va_len, hdr->stamp);
+
+    lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
+    if (!entry) {
+        LAGFX_WARN("CmdMapMemoryImmediate: taskID=%u not found "
+                   "(interval not registered)", task_id);
+        return LAGFX_HANDLER_OK;
+    }
+
+    {
+        uint64_t new_end = va_base + va_len;
+        bool merged = false;
+        for (uint32_t i = 0; i < entry->va_interval_count; ++i) {
+            lagfx_va_interval_t *iv = &entry->va_intervals[i];
+            uint64_t iv_end = iv->va_base + iv->length;
+            if (va_base <= iv_end && iv->va_base <= new_end) {
+                uint64_t mb = va_base < iv->va_base ? va_base : iv->va_base;
+                uint64_t me = new_end  > iv_end    ? new_end  : iv_end;
+                iv->va_base  = mb;
+                iv->gpa_base = mb;
+                iv->length   = me - mb;
+                merged = true;
+                break;
+            }
+        }
+        if (!merged) {
+            if (entry->va_interval_count < LAGFX_MAX_VA_INTERVALS) {
+                lagfx_va_interval_t *iv =
+                    &entry->va_intervals[entry->va_interval_count++];
+                iv->va_base  = va_base;
+                iv->gpa_base = va_base;
+                iv->length   = va_len;
+            } else {
+                LAGFX_WARN("CmdMapMemoryImmediate: taskID=%u va_interval table "
+                           "full (max=%u)", task_id, LAGFX_MAX_VA_INTERVALS);
+            }
+        }
+    }
+
     return LAGFX_HANDLER_OK;
 }
 

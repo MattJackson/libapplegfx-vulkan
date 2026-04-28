@@ -59,7 +59,7 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
     }
 
     if (task->root_page_pfn == 0u) {
-        return false;
+        goto fallback;
     }
 
     uint64_t header_gpa = ((uint64_t)task->root_page_pfn << 12);
@@ -83,7 +83,7 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                     "header invalid (l1_pfn=0x%x levels=%u)",
                     task_id, (unsigned long long)dev_addr,
                     task->root_page_pfn, l1_pfn, levels);
-        return false;
+        goto fallback;
     }
 
     uint64_t page_idx = dev_addr >> 12;
@@ -106,7 +106,7 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                         task->root_page_pfn, l1_pfn, shift,
                         (unsigned)idx, node_pfn,
                         (unsigned long long)pte_gpa);
-            return false;
+            goto fallback;
         }
         node_pfn = pte & 0x7fffffffu;
         shift -= 10;
@@ -128,7 +128,7 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                     task->root_page_pfn, l1_pfn,
                     (unsigned long long)leaf_pte_gpa,
                     (unsigned)leaf_idx, node_pfn);
-        return false;
+        goto fallback;
     }
     uint32_t data_pfn = leaf_pte & 0x7fffffffu;
 
@@ -144,4 +144,26 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                 (unsigned long long)(*out_gpa),
                 (unsigned long long)((out_run_len) ? *out_run_len : 0));
     return true;
+
+fallback:
+    for (uint32_t i = 0; i < task->va_interval_count; ++i) {
+        const lagfx_va_interval_t *iv = &task->va_intervals[i];
+        if (dev_addr >= iv->va_base && dev_addr < iv->va_base + iv->length) {
+            *out_gpa = iv->gpa_base + (dev_addr - iv->va_base);
+            if (out_run_len) {
+                *out_run_len = iv->va_base + iv->length - dev_addr;
+            }
+            LAGFX_TRACE("task_translate: taskID=%u dev=0x%llx — interval "
+                        "fallback hit [%u] va_base=0x%llx gpa_base=0x%llx "
+                        "length=0x%llx -> gpa=0x%llx run=%llu",
+                        task_id, (unsigned long long)dev_addr, i,
+                        (unsigned long long)iv->va_base,
+                        (unsigned long long)iv->gpa_base,
+                        (unsigned long long)iv->length,
+                        (unsigned long long)(*out_gpa),
+                        (unsigned long long)(out_run_len ? *out_run_len : 0));
+            return true;
+        }
+    }
+    return false;
 }

@@ -40,26 +40,27 @@
  * (Defined in libapplegfx-vulkan.h as an incomplete type.) */
 typedef struct lagfx_task lagfx_task_t;
 
-/* Per-task VA → guest-physical mapping interval, populated by
- * CmdMapMemoryImmediate (kext opcode 0x39, ch=2 Immediate vchan).
- * `host_gpu_addr` values in CmdExecIndirect2 resource_table entries
- * are guest-kernel VAs translated via the 3-level radix tree at
- * `root_page_pfn` (per state-machines/per-task-page-table.md). 0x39
- * is logged for diagnostic visibility but does NOT participate in
- * translation — the kext writes PTEs into the radix pages directly,
- * and the host walks them on each translate. */
+#define LAGFX_MAX_VA_INTERVALS 256u
+
 typedef struct {
-    uint32_t      id;         /* taskID from CmdDefineTask2 */
-    lagfx_task_t *shell_task; /* opaque handle from shell.create_task */
-    uint64_t      base_va;    /* base of reserved VA range */
+    uint64_t va_base;
+    uint64_t gpa_base;
+    uint64_t length;
+} lagfx_va_interval_t;
+
+typedef struct {
+    uint32_t      id;
+    lagfx_task_t *shell_task;
+    uint64_t      base_va;
     uint64_t      length;
     bool          live;
 
-    /* Host-task page-table root: CmdDefineHostTask (0x38) publishes a
-     * root_page_pfn whose first page is the SHARED HEADER. See
-     * state-machines/per-task-page-table.md for the actual radix-tree
-     * format. lagfx_task_translate walks this on every lookup. */
     uint32_t      root_page_pfn;
+    uint32_t      heap_pfn;
+    uint32_t      heap_size;
+
+    lagfx_va_interval_t va_intervals[LAGFX_MAX_VA_INTERVALS];
+    uint32_t            va_interval_count;
 } lagfx_task_entry_t;
 
 typedef struct {

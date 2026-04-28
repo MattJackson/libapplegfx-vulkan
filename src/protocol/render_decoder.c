@@ -40,15 +40,11 @@ int lagfx_render_decoder_dispatch(lagfx_protocol_t *p,
         return 0;
     }
 
-    /* Required trace per the M5 brief: every dispatched opcode prints
-     *   [lagfx render] op=0xNN (name) — ack-only stub
-     * Print unconditionally during scaffolding so the operator can
-     * confirm the dispatcher fired without flipping LAGFX_LOG. The
-     * line will be removed (or routed through LAGFX_LOG) when real
-     * handlers replace the stubs. */
-    fprintf(stderr,
-            "[lagfx render] op=0x%02x (%s) — ack-only stub\n",
-            (unsigned)(d->opcode & 0xffu), d->name);
+    if (lagfx_render_op_is_stub(opcode)) {
+        fprintf(stderr,
+                "[lagfx render] op=0x%02x (%s) — ack-only stub\n",
+                (unsigned)(d->opcode & 0xffu), d->name);
+    }
 
     if (d->default_handler == NULL) {
         /* Should not happen in the M5 scaffold — every entry has a
