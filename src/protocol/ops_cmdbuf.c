@@ -755,39 +755,52 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                 bool translated = lagfx_task_translate(
                                     p, task_id, target_dev_addr,
                                     &target_gpa, &target_run);
-                                if (!translated) {
-                                    /* Fallback: literal GPA. */
-                                    target_gpa = target_dev_addr;
-                                    target_run = 0x1000u
-                                        - (target_dev_addr & 0xfffu);
-                                }
 
-                                if (target_run < (uint64_t)reply_size) {
+                                if (!translated) {
+                                    LAGFX_WARN("        %s reply: task-VA -> GPA "
+                                               "translation failed "
+                                               "(dev_addr=0x%llx taskID=%u "
+                                               "buffer_id=%u reply_offset=0x%llx "
+                                               "buffer_dev_addr=0x%llx "
+                                               "reply_size=%zu) — skipping write",
+                                               opname,
+                                               (unsigned long long)target_dev_addr,
+                                               task_id, buffer_id,
+                                               (unsigned long long)reply_offset,
+                                               (unsigned long long)buffer_dev_addr,
+                                               reply_size);
+                                } else if (target_run < (uint64_t)reply_size) {
                                     LAGFX_WARN("        %s reply: target run=%llu "
                                                "< %zu — would cross page (skip)",
                                                opname,
                                                (unsigned long long)target_run,
                                                reply_size);
                                 } else if (p->dev->desc.shell.write_memory(
-                                               p->dev->desc.shell.opaque,
-                                               target_gpa,
-                                               (uint32_t)reply_size, reply)) {
+                                                p->dev->desc.shell.opaque,
+                                                target_gpa,
+                                                (uint32_t)reply_size, reply)) {
                                     LAGFX_LOG("        %s reply: ref=0x%x "
                                               "buffer_id=%u (dev=0x%llx len=%u) "
-                                              "+offset=0x%llx -> gpa=0x%llx %zuB "
-                                              "(translated=%d)",
+                                              "+offset=0x%llx -> gpa=0x%llx %zuB",
                                               opname, ref, buffer_id,
                                               (unsigned long long)buffer_dev_addr,
                                               buffer_len,
                                               (unsigned long long)reply_offset,
                                               (unsigned long long)target_gpa,
-                                              reply_size,
-                                              translated ? 1 : 0);
+                                              reply_size);
                                 } else {
                                     LAGFX_WARN("        %s reply: write_memory "
-                                               "failed at gpa=0x%llx",
+                                               "failed at gpa=0x%llx "
+                                               "(taskID=%u buffer_id=%u "
+                                               "reply_offset=0x%llx "
+                                               "buffer_dev_addr=0x%llx "
+                                               "reply_size=%zu)",
                                                opname,
-                                               (unsigned long long)target_gpa);
+                                               (unsigned long long)target_gpa,
+                                               task_id, buffer_id,
+                                               (unsigned long long)reply_offset,
+                                               (unsigned long long)buffer_dev_addr,
+                                               reply_size);
                                 }
                             }
                         } else {

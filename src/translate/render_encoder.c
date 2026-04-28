@@ -416,6 +416,92 @@ lagfx_status_t lagfx_translate_render_set_blend_color(
     return LAGFX_OK;
 }
 
+lagfx_status_t lagfx_translate_render_set_stencil_ref(
+    lagfx_translate_render_state_t *state,
+    uint32_t front_ref,
+    uint32_t back_ref) {
+    if (!state) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    state->stencil_front_ref = front_ref;
+    state->stencil_back_ref  = back_ref;
+    if (state->render_pass_active && state->cmdbuf != VK_NULL_HANDLE) {
+        vkCmdSetStencilReference(state->cmdbuf,
+                                 VK_STENCIL_FRONT_AND_BACK,
+                                 front_ref);
+    }
+    LAGFX_TRACE("translate_render_set_stencil_ref: front=%u back=%u",
+                front_ref, back_ref);
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_translate_render_set_depth_bias(
+    lagfx_translate_render_state_t *state,
+    float depth_bias_constant,
+    float depth_bias_clamp,
+    float depth_bias_slope_factor) {
+    if (!state) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    state->depth_bias_constant     = depth_bias_constant;
+    state->depth_bias_clamp        = depth_bias_clamp;
+    state->depth_bias_slope_factor = depth_bias_slope_factor;
+    if (state->render_pass_active && state->cmdbuf != VK_NULL_HANDLE) {
+        vkCmdSetDepthBias(state->cmdbuf,
+                          depth_bias_constant,
+                          depth_bias_clamp,
+                          depth_bias_slope_factor);
+    }
+    LAGFX_TRACE("translate_render_set_depth_bias: bias=%g clamp=%g slope=%g",
+                (double)depth_bias_constant, (double)depth_bias_clamp,
+                (double)depth_bias_slope_factor);
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_translate_render_set_depth_stencil_state(
+    lagfx_translate_render_state_t *state,
+    uint32_t ref) {
+    if (!state) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    state->bound_depth_stencil_state_ref = ref;
+    LAGFX_TRACE("translate_render_set_depth_stencil_state: ref=0x%08x", ref);
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_translate_render_set_depth_clip_mode(
+    lagfx_translate_render_state_t *state,
+    uint32_t mode) {
+    if (!state) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    state->depth_clip_mode = mode;
+    LAGFX_TRACE("translate_render_set_depth_clip_mode: mode=%u", mode);
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_translate_render_set_front_facing_winding(
+    lagfx_translate_render_state_t *state,
+    uint32_t value) {
+    if (!state) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    state->front_facing_winding = value;
+    LAGFX_TRACE("translate_render_set_front_facing_winding: value=%u", value);
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_translate_render_set_cull_mode(
+    lagfx_translate_render_state_t *state,
+    uint32_t value) {
+    if (!state) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    state->cull_mode = value;
+    LAGFX_TRACE("translate_render_set_cull_mode: value=%u", value);
+    return LAGFX_OK;
+}
+
 #else /* !LAGFX_HAVE_VULKAN --------------------------------- */
 
 /* No-vulkan stubs: every entry point returns LAGFX_ERR_BACKEND so
@@ -492,6 +578,50 @@ lagfx_status_t lagfx_translate_render_set_blend_color(
     lagfx_translate_render_state_t *state,
     const float rgba[4]) {
     (void)state; (void)rgba;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_render_set_stencil_ref(
+    lagfx_translate_render_state_t *state,
+    uint32_t front_ref, uint32_t back_ref) {
+    (void)state; (void)front_ref; (void)back_ref;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_render_set_depth_bias(
+    lagfx_translate_render_state_t *state,
+    float depth_bias_constant, float depth_bias_clamp,
+    float depth_bias_slope_factor) {
+    (void)state; (void)depth_bias_constant; (void)depth_bias_clamp;
+    (void)depth_bias_slope_factor;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_render_set_depth_stencil_state(
+    lagfx_translate_render_state_t *state,
+    uint32_t ref) {
+    (void)state; (void)ref;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_render_set_depth_clip_mode(
+    lagfx_translate_render_state_t *state,
+    uint32_t mode) {
+    (void)state; (void)mode;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_render_set_front_facing_winding(
+    lagfx_translate_render_state_t *state,
+    uint32_t value) {
+    (void)state; (void)value;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_render_set_cull_mode(
+    lagfx_translate_render_state_t *state,
+    uint32_t value) {
+    (void)state; (void)value;
     return LAGFX_ERR_BACKEND;
 }
 

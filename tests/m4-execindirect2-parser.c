@@ -526,6 +526,69 @@ static void test_walker_encType4_inner_0x1c9(void) {
     ei2_shell_free(&shell);
 }
 
+static void test_walker_encType4_inner_0x1c2(void) {
+    fprintf(stdout, "\n--- test: walker_encType4_inner_0x1c2 ---\n");
+    ei2_shell_t shell;
+    ei2_shell_init(&shell, 0x40000000ull);
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    prep_radix_for_data_pfn(&shell, /*root_pfn*/0x40000u,
+                            /*data_pfn*/0x40010u);
+    define_host_task(p, 77u, 0x40000u, 0xd0050001u);
+
+    uint8_t cmdbuf[64];
+    memset(cmdbuf, 0, sizeof(cmdbuf));
+    put_segment_header(cmdbuf + 0,
+                        /*size=*/24u, /*prot=*/0u, /*enc=*/4u,
+                        /*final=*/1u, /*reuse=*/0u);
+    put_inner_cmd(cmdbuf + 16, /*op=*/0x1c2u, /*total_len=*/24u);
+    put_le32(cmdbuf + 24, /*ref=*/0xbbbbbbbbu);
+    put_le32(cmdbuf + 28, /*buffer_id=*/0u);
+    put_le64(cmdbuf + 32, /*reply_offset=*/0x40ull);
+
+    uint8_t *res_page = shell.heap + 0x10000u;
+    prep_resource_cmdbuf(&shell, res_page, cmdbuf, sizeof(cmdbuf));
+
+    uint8_t resources[16] = {0};
+    put_le64(resources + 0, 0ull);
+    put_le32(resources + 8, 128u);
+
+    uint8_t cmd[12 + 128];
+    size_t pl = build_exec_indirect2_outer(cmd + 12, 77u, NULL, 0,
+                                            resources, 1);
+    uint32_t total = (uint32_t)(12u + pl);
+    build_header(cmd, LAGFX_OP_EXEC_INDIRECT2, 0, total, 0xd0050002u);
+    pl = build_exec_indirect2_outer(cmd + 12, 77u, NULL, 0, resources, 1);
+    total = (uint32_t)(12u + pl);
+    cmd[4] = (uint8_t)(total & 0xff);
+    cmd[5] = (uint8_t)((total >> 8) & 0xff);
+    cmd[6] = (uint8_t)((total >> 16) & 0xff);
+    cmd[7] = (uint8_t)((total >> 24) & 0xff);
+
+    int rc = lagfx_protocol_dispatch_one(p, cmd, total);
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "exec_indirect2 with encType=4 + 0x1c2 inner returns OK");
+
+    uint32_t maxTPT = get_le32(shell.heap + 0x10040u);
+    CHECK(maxTPT == 1024u,
+          "0x1c2 reply: maxTotalThreadsPerThreadgroup = 1024");
+
+    uint32_t tew = get_le32(shell.heap + 0x10048u);
+    CHECK(tew == 32u,
+          "0x1c2 reply: threadExecutionWidth = 32 (non-zero, prevents "
+          "divide-by-zero in desktop_window_effects_update)");
+
+    CHECK(shell.write_memory_count > 0,
+          "0x1c2 reply: write_memory was called");
+
+    CHECK(shell.last_write_len == 28u,
+          "0x1c2 reply: wrote 28 bytes (0x1c)");
+
+    lagfx_device_free(dev);
+    ei2_shell_free(&shell);
+}
+
 static void test_walker_encType2_no_reply(void) {
     fprintf(stdout, "\n--- test: walker_encType2_no_reply ---\n");
     ei2_shell_t shell;
@@ -852,6 +915,7 @@ int main(void) {
 
     /* Item 7. */
     test_walker_encType4_inner_0x1c9();
+    test_walker_encType4_inner_0x1c2();
     test_walker_encType2_no_reply();
     test_walker_multi_segment();
     test_walker_bad_segment_size_bails();

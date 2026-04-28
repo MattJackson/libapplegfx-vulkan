@@ -160,9 +160,8 @@ static int render_op_set_blend_color(lagfx_protocol_t *p,
 }
 
 static int render_op_set_front_facing_winding(lagfx_protocol_t *p,
-                                              const uint8_t    *payload,
-                                              size_t            len) {
-    (void)p;
+                                               const uint8_t    *payload,
+                                               size_t            len) {
     if (len < 8) {
         LAGFX_WARN("SetFrontFacingWinding: payload too short (%zu < 8)", len);
         return 0;
@@ -170,13 +169,16 @@ static int render_op_set_front_facing_winding(lagfx_protocol_t *p,
     uint32_t value = read_le32(payload);
     uint32_t extra = read_le32(payload + 4);
     LAGFX_TRACE("SetFrontFacingWinding: value=%u extra=%u", value, extra);
+
+    if (p && p->render_enc.in_pass) {
+        lagfx_translate_render_set_front_facing_winding(&p->render_enc, value);
+    }
     return 0;
 }
 
 static int render_op_set_cull_mode(lagfx_protocol_t *p,
-                                   const uint8_t    *payload,
-                                   size_t            len) {
-    (void)p;
+                                    const uint8_t    *payload,
+                                    size_t            len) {
     if (len < 8) {
         LAGFX_WARN("SetCullMode: payload too short (%zu < 8)", len);
         return 0;
@@ -184,6 +186,10 @@ static int render_op_set_cull_mode(lagfx_protocol_t *p,
     uint32_t value = read_le32(payload);
     uint32_t extra = read_le32(payload + 4);
     LAGFX_TRACE("SetCullMode: value=%u extra=%u", value, extra);
+
+    if (p && p->render_enc.in_pass) {
+        lagfx_translate_render_set_cull_mode(&p->render_enc, value);
+    }
     return 0;
 }
 
@@ -352,9 +358,8 @@ static int render_op_use_resources(lagfx_protocol_t *p,
 }
 
 static int render_op_set_fragment_buffers(lagfx_protocol_t *p,
-                                          const uint8_t    *payload,
-                                          size_t            len) {
-    (void)p;
+                                           const uint8_t    *payload,
+                                           size_t            len) {
     if (len < 8) {
         LAGFX_WARN("SetFragmentBuffers: payload too short (%zu < 8)", len);
         return 0;
@@ -377,6 +382,22 @@ static int render_op_set_fragment_buffers(lagfx_protocol_t *p,
     }
     if (count > 4)
         LAGFX_TRACE("  ... (%u more)", count - 4);
+
+    if (p) {
+        uint32_t store_count = count;
+        if (store_count > LAGFX_MAX_BOUND_FRAGMENT_BUFFERS) {
+            LAGFX_WARN("SetFragmentBuffers: count=%u exceeds max=%u, truncating",
+                       count, LAGFX_MAX_BOUND_FRAGMENT_BUFFERS);
+            store_count = LAGFX_MAX_BOUND_FRAGMENT_BUFFERS;
+        }
+        for (uint32_t i = 0; i < store_count; ++i) {
+            const uint8_t *entry = payload + 8 + (size_t)i * 12;
+            p->render_enc.bound_fragment_buffers[i].ref = read_le32(entry);
+            p->render_enc.bound_fragment_buffers[i].offset = read_le64(entry + 4);
+        }
+        p->render_enc.bound_fragment_buffer_count = store_count;
+        p->render_enc.bound_fragment_buffer_first = first;
+    }
     return 0;
 }
 
@@ -466,22 +487,24 @@ static int render_op_set_color_store_action(lagfx_protocol_t *p,
 }
 
 static int render_op_set_depth_stencil_state(lagfx_protocol_t *p,
-                                              const uint8_t    *payload,
-                                              size_t            len) {
-    (void)p;
+                                               const uint8_t    *payload,
+                                               size_t            len) {
     if (len < 4) {
         LAGFX_WARN("SetDepthStencilState: payload too short (%zu < 4)", len);
         return 0;
     }
     uint32_t reference = read_le32(payload);
     LAGFX_TRACE("SetDepthStencilState: reference=0x%08x", reference);
+
+    if (p && p->render_enc.in_pass) {
+        lagfx_translate_render_set_depth_stencil_state(&p->render_enc, reference);
+    }
     return 0;
 }
 
 static int render_op_set_depth_bias(lagfx_protocol_t *p,
-                                     const uint8_t    *payload,
-                                     size_t            len) {
-    (void)p;
+                                      const uint8_t    *payload,
+                                      size_t            len) {
     if (len < 12) {
         LAGFX_WARN("SetDepthBias: payload too short (%zu < 12)", len);
         return 0;
@@ -491,13 +514,16 @@ static int render_op_set_depth_bias(lagfx_protocol_t *p,
     float clamp = read_f32(payload + 8);
     LAGFX_TRACE("SetDepthBias: bias=%g slope=%g clamp=%g",
                 (double)bias, (double)slope, (double)clamp);
+
+    if (p && p->render_enc.in_pass) {
+        lagfx_translate_render_set_depth_bias(&p->render_enc, bias, clamp, slope);
+    }
     return 0;
 }
 
 static int render_op_set_depth_clip_mode(lagfx_protocol_t *p,
-                                          const uint8_t    *payload,
-                                          size_t            len) {
-    (void)p;
+                                           const uint8_t    *payload,
+                                           size_t            len) {
     if (len < 8) {
         LAGFX_WARN("SetDepthClipMode: payload too short (%zu < 8)", len);
         return 0;
@@ -505,13 +531,16 @@ static int render_op_set_depth_clip_mode(lagfx_protocol_t *p,
     uint32_t mode = read_le32(payload);
     uint32_t extra = read_le32(payload + 4);
     LAGFX_TRACE("SetDepthClipMode: mode=%u extra=%u", mode, extra);
+
+    if (p && p->render_enc.in_pass) {
+        lagfx_translate_render_set_depth_clip_mode(&p->render_enc, mode);
+    }
     return 0;
 }
 
 static int render_op_set_fragment_sampler_states(lagfx_protocol_t *p,
-                                                  const uint8_t    *payload,
-                                                  size_t            len) {
-    (void)p;
+                                                   const uint8_t    *payload,
+                                                   size_t            len) {
     if (len < 8) {
         LAGFX_WARN("SetFragmentSamplerStates: payload too short (%zu < 8)", len);
         return 0;
@@ -531,13 +560,27 @@ static int render_op_set_fragment_sampler_states(lagfx_protocol_t *p,
     }
     if (count > 4)
         LAGFX_TRACE("  ... (%u more)", count - 4);
+
+    if (p) {
+        uint32_t store_count = count;
+        if (store_count > LAGFX_MAX_BOUND_FRAGMENT_SAMPLERS) {
+            LAGFX_WARN("SetFragmentSamplerStates: count=%u exceeds max=%u, truncating",
+                       count, LAGFX_MAX_BOUND_FRAGMENT_SAMPLERS);
+            store_count = LAGFX_MAX_BOUND_FRAGMENT_SAMPLERS;
+        }
+        for (uint32_t i = 0; i < store_count; ++i) {
+            p->render_enc.bound_fragment_samplers[i] =
+                read_le32(payload + 8 + (size_t)i * 4);
+        }
+        p->render_enc.bound_fragment_sampler_count = store_count;
+        p->render_enc.bound_fragment_sampler_first = first;
+    }
     return 0;
 }
 
 static int render_op_set_stencil_ref(lagfx_protocol_t *p,
-                                      const uint8_t    *payload,
-                                      size_t            len) {
-    (void)p;
+                                       const uint8_t    *payload,
+                                       size_t            len) {
     if (len < 8) {
         LAGFX_WARN("SetStencilRef: payload too short (%zu < 8)", len);
         return 0;
@@ -545,13 +588,16 @@ static int render_op_set_stencil_ref(lagfx_protocol_t *p,
     uint32_t front_ref = read_le32(payload);
     uint32_t back_ref = read_le32(payload + 4);
     LAGFX_TRACE("SetStencilRef: front=%u back=%u", front_ref, back_ref);
+
+    if (p && p->render_enc.in_pass) {
+        lagfx_translate_render_set_stencil_ref(&p->render_enc, front_ref, back_ref);
+    }
     return 0;
 }
 
 static int render_op_set_vertex_textures(lagfx_protocol_t *p,
-                                          const uint8_t    *payload,
-                                          size_t            len) {
-    (void)p;
+                                           const uint8_t    *payload,
+                                           size_t            len) {
     if (len < 8) {
         LAGFX_WARN("SetVertexTextures: payload too short (%zu < 8)", len);
         return 0;
@@ -571,13 +617,27 @@ static int render_op_set_vertex_textures(lagfx_protocol_t *p,
     }
     if (count > 4)
         LAGFX_TRACE("  ... (%u more)", count - 4);
+
+    if (p) {
+        uint32_t store_count = count;
+        if (store_count > LAGFX_MAX_BOUND_VERTEX_TEXTURES) {
+            LAGFX_WARN("SetVertexTextures: count=%u exceeds max=%u, truncating",
+                       count, LAGFX_MAX_BOUND_VERTEX_TEXTURES);
+            store_count = LAGFX_MAX_BOUND_VERTEX_TEXTURES;
+        }
+        for (uint32_t i = 0; i < store_count; ++i) {
+            p->render_enc.bound_vertex_textures[i] =
+                read_le32(payload + 8 + (size_t)i * 4);
+        }
+        p->render_enc.bound_vertex_texture_count = store_count;
+        p->render_enc.bound_vertex_texture_first = first;
+    }
     return 0;
 }
 
 static int render_op_set_vertex_buffers_with_stride(lagfx_protocol_t *p,
-                                                     const uint8_t    *payload,
-                                                     size_t            len) {
-    (void)p;
+                                                      const uint8_t    *payload,
+                                                      size_t            len) {
     if (len < 8) {
         LAGFX_WARN("SetVertexBuffersWithStride: payload too short (%zu < 8)", len);
         return 0;
@@ -602,6 +662,23 @@ static int render_op_set_vertex_buffers_with_stride(lagfx_protocol_t *p,
     }
     if (count > 4)
         LAGFX_TRACE("  ... (%u more)", count - 4);
+
+    if (p) {
+        uint32_t store_count = count;
+        if (store_count > LAGFX_MAX_BOUND_VERTEX_BUFFERS) {
+            LAGFX_WARN("SetVertexBuffersWithStride: count=%u exceeds max=%u, truncating",
+                       count, LAGFX_MAX_BOUND_VERTEX_BUFFERS);
+            store_count = LAGFX_MAX_BOUND_VERTEX_BUFFERS;
+        }
+        for (uint32_t i = 0; i < store_count; ++i) {
+            const uint8_t *entry = payload + 8 + (size_t)i * 20;
+            p->render_enc.bound_vertex_buffers_stride[i].ref = read_le32(entry);
+            p->render_enc.bound_vertex_buffers_stride[i].offset = read_le64(entry + 4);
+            p->render_enc.bound_vertex_buffers_stride[i].stride = read_le64(entry + 12);
+        }
+        p->render_enc.bound_vertex_buffers_stride_count = store_count;
+        p->render_enc.bound_vertex_buffers_stride_first = first;
+    }
     return 0;
 }
 

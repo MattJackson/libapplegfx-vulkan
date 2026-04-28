@@ -54,6 +54,9 @@
 
 #define LAGFX_MAX_BOUND_VERTEX_BUFFERS   16u
 #define LAGFX_MAX_BOUND_FRAGMENT_TEXTURES 32u
+#define LAGFX_MAX_BOUND_FRAGMENT_SAMPLERS  32u
+#define LAGFX_MAX_BOUND_FRAGMENT_BUFFERS   32u
+#define LAGFX_MAX_BOUND_VERTEX_TEXTURES    32u
 
 #ifdef LAGFX_HAVE_VULKAN
 #  include <vulkan/vulkan.h>
@@ -112,6 +115,12 @@ typedef struct lagfx_translate_render_state {
      * VK_NULL_HANDLE we skip the Vulkan render pass but still track
      * state. */
     bool render_pass_active;
+
+    uint32_t stencil_front_ref;
+    uint32_t stencil_back_ref;
+    float    depth_bias_constant;
+    float    depth_bias_clamp;
+    float    depth_bias_slope_factor;
 #else
     /* No-vulkan stub: a single field so sizeof(struct)>0 and callers
      * can still declare + zero-init. */
@@ -136,6 +145,34 @@ typedef struct lagfx_translate_render_state {
     uint32_t bound_fragment_textures[LAGFX_MAX_BOUND_FRAGMENT_TEXTURES];
     uint32_t bound_fragment_texture_count;
     uint32_t bound_fragment_texture_first;
+
+    uint32_t bound_depth_stencil_state_ref;
+    uint32_t depth_clip_mode;
+    uint32_t front_facing_winding;
+    uint32_t cull_mode;
+
+    struct {
+        uint32_t ref;
+        uint64_t offset;
+    } bound_fragment_buffers[LAGFX_MAX_BOUND_FRAGMENT_BUFFERS];
+    uint32_t bound_fragment_buffer_count;
+    uint32_t bound_fragment_buffer_first;
+
+    uint32_t bound_fragment_samplers[LAGFX_MAX_BOUND_FRAGMENT_SAMPLERS];
+    uint32_t bound_fragment_sampler_count;
+    uint32_t bound_fragment_sampler_first;
+
+    uint32_t bound_vertex_textures[LAGFX_MAX_BOUND_VERTEX_TEXTURES];
+    uint32_t bound_vertex_texture_count;
+    uint32_t bound_vertex_texture_first;
+
+    struct {
+        uint32_t ref;
+        uint64_t offset;
+        uint64_t stride;
+    } bound_vertex_buffers_stride[LAGFX_MAX_BOUND_VERTEX_BUFFERS];
+    uint32_t bound_vertex_buffers_stride_count;
+    uint32_t bound_vertex_buffers_stride_first;
 } lagfx_translate_render_state_t;
 
 /* === Public API ===============================================
@@ -233,6 +270,33 @@ lagfx_status_t lagfx_translate_render_set_blend_color(
     lagfx_translate_render_state_t *state,
     const float rgba[4]);
 
+lagfx_status_t lagfx_translate_render_set_stencil_ref(
+    lagfx_translate_render_state_t *state,
+    uint32_t front_ref,
+    uint32_t back_ref);
+
+lagfx_status_t lagfx_translate_render_set_depth_bias(
+    lagfx_translate_render_state_t *state,
+    float depth_bias_constant,
+    float depth_bias_clamp,
+    float depth_bias_slope_factor);
+
+lagfx_status_t lagfx_translate_render_set_depth_stencil_state(
+    lagfx_translate_render_state_t *state,
+    uint32_t ref);
+
+lagfx_status_t lagfx_translate_render_set_depth_clip_mode(
+    lagfx_translate_render_state_t *state,
+    uint32_t mode);
+
+lagfx_status_t lagfx_translate_render_set_front_facing_winding(
+    lagfx_translate_render_state_t *state,
+    uint32_t value);
+
+lagfx_status_t lagfx_translate_render_set_cull_mode(
+    lagfx_translate_render_state_t *state,
+    uint32_t value);
+
 #else /* !LAGFX_HAVE_VULKAN ------------------------------------ */
 
 /* Forward-decl-only stubs so callers can compile on the no-vulkan
@@ -295,6 +359,31 @@ lagfx_status_t lagfx_translate_render_set_scissor(
 lagfx_status_t lagfx_translate_render_set_blend_color(
     lagfx_translate_render_state_t *state,
     const float rgba[4]);
+
+lagfx_status_t lagfx_translate_render_set_stencil_ref(
+    lagfx_translate_render_state_t *state,
+    uint32_t front_ref, uint32_t back_ref);
+
+lagfx_status_t lagfx_translate_render_set_depth_bias(
+    lagfx_translate_render_state_t *state,
+    float depth_bias_constant, float depth_bias_clamp,
+    float depth_bias_slope_factor);
+
+lagfx_status_t lagfx_translate_render_set_depth_stencil_state(
+    lagfx_translate_render_state_t *state,
+    uint32_t ref);
+
+lagfx_status_t lagfx_translate_render_set_depth_clip_mode(
+    lagfx_translate_render_state_t *state,
+    uint32_t mode);
+
+lagfx_status_t lagfx_translate_render_set_front_facing_winding(
+    lagfx_translate_render_state_t *state,
+    uint32_t value);
+
+lagfx_status_t lagfx_translate_render_set_cull_mode(
+    lagfx_translate_render_state_t *state,
+    uint32_t value);
 
 #endif /* LAGFX_HAVE_VULKAN */
 
