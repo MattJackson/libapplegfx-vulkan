@@ -495,3 +495,284 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
     return LAGFX_OK;
 #endif
 }
+
+#ifdef LAGFX_HAVE_VULKAN
+static uint32_t display_find_memory_type(VkPhysicalDevice phys,
+                                          uint32_t typeBits,
+                                          VkMemoryPropertyFlags want) {
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+    for (uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+        if ((typeBits & (1u << i)) == 0) continue;
+        if ((mp.memoryTypes[i].propertyFlags & want) == want) return i;
+    }
+    return UINT32_MAX;
+}
+#endif
+
+lagfx_status_t lagfx_display_submit_rendered_frame(
+    lagfx_display_t *display,
+    uint64_t scanout_gpa,
+    uint64_t scanout_length) {
+    if (!display || display->magic != LAGFX_DISPLAY_MAGIC) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    if (scanout_gpa == 0 || scanout_length == 0) {
+        return LAGFX_OK;
+    }
+
+#ifdef LAGFX_HAVE_VULKAN
+    if (!display->device || !display->device->vk
+        || !display->device->vk->initialized) {
+        return LAGFX_OK;
+    }
+    struct lagfx_vk_state *vk = display->device->vk;
+    if (vk->frame_image == VK_NULL_HANDLE) {
+        return LAGFX_OK;
+    }
+    if (display->device->desc.shell.write_memory == NULL) {
+        return LAGFX_OK;
+    }
+
+    const uint32_t stride_expected = vk->frame_image_w * 4u;
+    const size_t frame_bytes = (size_t)vk->frame_image_h
+                             * (size_t)stride_expected;
+    if (frame_bytes == 0) {
+        return LAGFX_OK;
+    }
+    if (scanout_length < frame_bytes) {
+        LAGFX_WARN("display_submit_rendered_frame: scanout_length=%llu < "
+                   "frame_bytes=%zu — skipping DMA writeback",
+                   (unsigned long long)scanout_length, frame_bytes);
+        return LAGFX_OK;
+    }
+
+    VkBuffer         staging_buf = VK_NULL_HANDLE;
+    VkDeviceMemory   staging_mem = VK_NULL_HANDLE;
+    VkCommandBuffer  cb          = VK_NULL_HANDLE;
+    VkFence          fence       = VK_NULL_HANDLE;
+    lagfx_status_t   result      = LAGFX_OK;
+
+    VkBufferCreateInfo bci = {
+        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size        = frame_bytes,
+        .usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkResult vr = vkCreateBuffer(vk->device, &bci, NULL, &staging_buf);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("display_submit_rendered_frame: vkCreateBuffer failed (%d)",
+                  (int)vr);
+        return LAGFX_ERR_BACKEND;
+    }
+
+    VkMemoryRequirements breq;
+    vkGetBufferMemoryRequirements(vk->device, staging_buf, &breq);
+    uint32_t mtype = display_find_memory_type(
+        vk->phys_device, breq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mtype == UINT32_MAX) {
+        LAGFX_ERR("display_submit_rendered_frame: no HOST_VISIBLE+COHERENT");
+        result = LAGFX_ERR_BACKEND;
+        goto cleanup_rendered;
+    }
+
+    VkMemoryAllocateInfo mai = {
+        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize  = breq.size,
+        .memoryTypeIndex = mtype,
+    };
+    vr = vkAllocateMemory(vk->device, &mai, NULL, &staging_mem);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("display_submit_rendered_frame: vkAllocateMemory failed (%d)",
+                  (int)vr);
+        result = LAGFX_ERR_BACKEND;
+        goto cleanup_rendered;
+    }
+    vr = vkBindBufferMemory(vk->device, staging_buf, staging_mem, 0);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("display_submit_rendered_frame: vkBindBufferMemory failed (%d)",
+                  (int)vr);
+        result = LAGFX_ERR_BACKEND;
+        goto cleanup_rendered;
+    }
+
+    lagfx_status_t cb_st = lagfx_vk_cmdbuf_alloc(vk, &cb);
+    if (cb_st != LAGFX_OK) {
+        result = cb_st;
+        goto cleanup_rendered;
+    }
+
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vr = vkBeginCommandBuffer(cb, &bi);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("display_submit_rendered_frame: vkBeginCommandBuffer failed (%d)",
+                  (int)vr);
+        result = LAGFX_ERR_BACKEND;
+        goto cleanup_rendered;
+    }
+
+    {
+        VkImageMemoryBarrier barrier1 = {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = vk->frame_image,
+            .subresourceRange    = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            },
+        };
+        vkCmdPipelineBarrier(cb,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &barrier1);
+    }
+
+    {
+        VkBufferImageCopy region = {
+            .bufferOffset      = 0,
+            .bufferRowLength   = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource  = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel       = 0,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            },
+            .imageOffset = { 0, 0, 0 },
+            .imageExtent = { vk->frame_image_w, vk->frame_image_h, 1u },
+        };
+        vkCmdCopyImageToBuffer(cb, vk->frame_image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               staging_buf, 1, &region);
+    }
+
+    {
+        VkImageMemoryBarrier barrier2 = {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .srcAccessMask       = VK_ACCESS_TRANSFER_READ_BIT,
+            .dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = vk->frame_image,
+            .subresourceRange    = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            },
+        };
+        vkCmdPipelineBarrier(cb,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             0, 0, NULL, 0, NULL, 1, &barrier2);
+    }
+
+    vr = vkEndCommandBuffer(cb);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("display_submit_rendered_frame: vkEndCommandBuffer failed (%d)",
+                  (int)vr);
+        result = LAGFX_ERR_BACKEND;
+        goto cleanup_rendered;
+    }
+
+    {
+        VkFenceCreateInfo fci = {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        };
+        vr = vkCreateFence(vk->device, &fci, NULL, &fence);
+        if (vr != VK_SUCCESS) {
+            LAGFX_ERR("display_submit_rendered_frame: vkCreateFence failed (%d)",
+                      (int)vr);
+            result = LAGFX_ERR_BACKEND;
+            goto cleanup_rendered;
+        }
+    }
+
+    {
+        VkSubmitInfo si = {
+            .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers    = &cb,
+        };
+        vr = vkQueueSubmit(vk->graphics_queue, 1, &si, fence);
+        if (vr != VK_SUCCESS) {
+            LAGFX_ERR("display_submit_rendered_frame: vkQueueSubmit failed (%d)",
+                      (int)vr);
+            result = LAGFX_ERR_BACKEND;
+            goto cleanup_rendered;
+        }
+    }
+
+    {
+        const uint64_t timeout_ns = 1ull * 1000ull * 1000ull * 1000ull;
+        vr = vkWaitForFences(vk->device, 1, &fence, VK_TRUE, timeout_ns);
+        if (vr != VK_SUCCESS) {
+            LAGFX_ERR("display_submit_rendered_frame: vkWaitForFences failed (%d)",
+                      (int)vr);
+            result = LAGFX_ERR_BACKEND;
+            goto cleanup_rendered;
+        }
+    }
+
+    display->new_frame_ready = true;
+
+    {
+        void *mapped = NULL;
+        vr = vkMapMemory(vk->device, staging_mem, 0, frame_bytes, 0, &mapped);
+        if (vr != VK_SUCCESS) {
+            LAGFX_ERR("display_submit_rendered_frame: vkMapMemory failed (%d)",
+                      (int)vr);
+            result = LAGFX_ERR_BACKEND;
+            goto cleanup_rendered;
+        }
+        if (!display->device->desc.shell.write_memory(
+                display->device->desc.shell.opaque,
+                scanout_gpa, (uint64_t)frame_bytes, mapped)) {
+            LAGFX_WARN("display_submit_rendered_frame: DMA writeback to "
+                       "gpa=0x%llx (%zu bytes) failed",
+                       (unsigned long long)scanout_gpa, frame_bytes);
+        } else {
+            LAGFX_LOG("display_submit_rendered_frame: DMA writeback "
+                      "gpa=0x%llx bytes=%zu OK",
+                      (unsigned long long)scanout_gpa, frame_bytes);
+        }
+        vkUnmapMemory(vk->device, staging_mem);
+    }
+
+cleanup_rendered:
+    if (fence != VK_NULL_HANDLE) {
+        vkDestroyFence(vk->device, fence, NULL);
+    }
+    if (cb != VK_NULL_HANDLE) {
+        lagfx_vk_cmdbuf_free(vk, cb);
+    }
+    if (staging_mem != VK_NULL_HANDLE) {
+        vkFreeMemory(vk->device, staging_mem, NULL);
+    }
+    if (staging_buf != VK_NULL_HANDLE) {
+        vkDestroyBuffer(vk->device, staging_buf, NULL);
+    }
+    return result;
+#else
+    (void)scanout_gpa;
+    (void)scanout_length;
+    display->new_frame_ready = true;
+    return LAGFX_OK;
+#endif
+}

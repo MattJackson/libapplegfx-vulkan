@@ -11,4 +11,5 @@ lagfx_sources += files(
   'pipeline.c',
   'render_target.c',
   'cursor.c',
+  'iosurface.c',
 )

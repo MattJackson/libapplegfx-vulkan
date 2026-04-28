@@ -69,4 +69,9 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
                                                 uint64_t scanout_gpa,
                                                 uint64_t scanout_length);
 
+lagfx_status_t lagfx_display_submit_rendered_frame(
+    lagfx_display_t *display,
+    uint64_t scanout_gpa,
+    uint64_t scanout_length);
+
 #endif /* LIBAPPLEGFX_DISPLAY_INTERNAL_H */

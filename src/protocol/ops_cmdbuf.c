@@ -30,6 +30,7 @@
 #include "state.h"
 #include "../common/log.h"
 #include "../device.h"
+#include "../display.h"
 #include "../vulkan/command.h"
 #include "../translate/render_encoder.h"
 
@@ -860,6 +861,39 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                         lagfx_vk_end_frame(p->dev->vk);
                     }
 #endif
+                    if (p->dev) {
+                        lagfx_display_t *render_disp = NULL;
+                        for (size_t di = 0; di < LAGFX_MAX_DISPLAYS; ++di) {
+                            if (p->dev->displays[di] != NULL) {
+                                render_disp = p->dev->displays[di];
+                                break;
+                            }
+                        }
+                        if (render_disp != NULL) {
+                            uint64_t s_gpa = 0;
+                            uint64_t s_len = 0;
+                            for (unsigned si = 0;
+                                 si < LAGFX_PROTO_MAX_DISPLAYS; ++si) {
+                                if (p->displays[si].live
+                                    && p->displays[si].mapped) {
+                                    s_gpa = p->displays[si].buffer_va;
+                                    s_len = p->displays[si].length;
+                                    break;
+                                }
+                            }
+                            if (s_gpa != 0 && s_len > 0) {
+                                lagfx_status_t rst =
+                                    lagfx_display_submit_rendered_frame(
+                                        render_disp, s_gpa, s_len);
+                                if (rst != LAGFX_OK) {
+                                    LAGFX_WARN("render pass end: "
+                                               "submit_rendered_frame "
+                                               "failed (%d)",
+                                               (int)rst);
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

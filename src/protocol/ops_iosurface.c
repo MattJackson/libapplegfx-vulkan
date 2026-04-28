@@ -39,6 +39,8 @@
 #include "protocol.h"
 #include "state.h"
 #include "../common/log.h"
+#include "../device.h"
+#include "../vulkan/iosurface.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -111,12 +113,10 @@ static void lagfx_iosurf_capture_bytes(lagfx_iosurface_capture_t *c,
 
 lagfx_handler_status_t lagfx_op_iosurface_delete(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    (void)p;
     if (!hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
 
-    /* Zero the decode-only fields; we fill whichever we can below. */
     g_cap_delete.surface_id    = 0;
     g_cap_delete.width         = 0;
     g_cap_delete.height        = 0;
@@ -138,10 +138,25 @@ lagfx_handler_status_t lagfx_op_iosurface_delete(
     g_cap_delete.surface_id = lagfx_iosurf_le32(hdr->payload + 0);
 
     LAGFX_LOG("CmdDeleteIOSurface: surface_id=0x%x payload_size=%u "
-              "stamp=0x%08x (Phase 3+ real lifecycle TODO)",
+              "stamp=0x%08x",
               g_cap_delete.surface_id,
               (unsigned)hdr->payload_size,
               hdr->stamp);
+
+    if (p && p->dev && p->dev->vk && p->dev->vk->initialized) {
+#ifdef LAGFX_HAVE_VULKAN
+        lagfx_resource_entry_t *e = lagfx_resource_lookup(
+            &p->resources, g_cap_delete.surface_id, 0u);
+        if (e && e->host_handle) {
+            lagfx_vk_iosurface_destroy(p->dev->vk,
+                                       (lagfx_vk_iosurface_t *)e->host_handle);
+            e->host_handle = NULL;
+        }
+#endif
+        lagfx_resource_unregister(&p->resources,
+                                  g_cap_delete.surface_id, 0u);
+    }
+
     return LAGFX_HANDLER_OK;
 }
 
@@ -151,7 +166,6 @@ lagfx_handler_status_t lagfx_op_iosurface_delete(
 
 lagfx_handler_status_t lagfx_op_iosurface_create(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    (void)p;
     if (!hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
@@ -165,10 +179,6 @@ lagfx_handler_status_t lagfx_op_iosurface_create(
     g_cap_create.size          = 0;
     lagfx_iosurf_capture_bytes(&g_cap_create, hdr);
 
-    /* Opportunistic decode: take whichever fields fit in payload_size.
-     * We never fail the command on short payload — this is a log-only
-     * stub, and a premature SIZE error would hide real captures during
-     * the §14.8 instrumentation pass. */
     if (hdr->payload && hdr->payload_size >= 4) {
         g_cap_create.surface_id = lagfx_iosurf_le32(hdr->payload + 0);
     }
@@ -190,15 +200,13 @@ lagfx_handler_status_t lagfx_op_iosurface_create(
 
     if (hdr->payload_size < LAGFX_IOSURF_CREATE_MIN_PAYLOAD) {
         LAGFX_WARN("CmdIOSurfaceCreate: payload_size=%u < conjectured %u "
-                   "— layout may differ from §14.5 / Phase 4 §3.3 guess "
-                   "(captured for instrumentation); log+ack",
+                   "— layout may differ (captured for instrumentation)",
                    (unsigned)hdr->payload_size,
                    LAGFX_IOSURF_CREATE_MIN_PAYLOAD);
     }
 
     LAGFX_LOG("CmdIOSurfaceCreate: surface_id=0x%x %ux%u fmt=0x%x "
-              "bpr=%u size=%llu payload_size=%u stamp=0x%08x "
-              "(Phase 4 VkImage backing TODO)",
+              "bpr=%u size=%llu payload_size=%u stamp=0x%08x",
               g_cap_create.surface_id,
               g_cap_create.width, g_cap_create.height,
               g_cap_create.pixel_format,
@@ -206,6 +214,37 @@ lagfx_handler_status_t lagfx_op_iosurface_create(
               (unsigned long long)g_cap_create.size,
               (unsigned)hdr->payload_size,
               hdr->stamp);
+
+    if (p && p->dev && p->dev->vk && p->dev->vk->initialized
+        && g_cap_create.width > 0 && g_cap_create.height > 0
+        && hdr->payload_size >= LAGFX_IOSURF_CREATE_MIN_PAYLOAD) {
+#ifdef LAGFX_HAVE_VULKAN
+        lagfx_vk_iosurface_t *ios = NULL;
+        lagfx_status_t st = lagfx_vk_iosurface_create(
+            p->dev->vk,
+            g_cap_create.width,
+            g_cap_create.height,
+            g_cap_create.pixel_format,
+            &ios);
+        if (st == LAGFX_OK && ios) {
+            lagfx_resource_register(&p->resources,
+                                    g_cap_create.surface_id,
+                                    LAGFX_RESOURCE_TYPE_TEXTURE,
+                                    0u,
+                                    0u,
+                                    g_cap_create.size);
+            lagfx_resource_entry_t *e = lagfx_resource_lookup(
+                &p->resources, g_cap_create.surface_id, 0u);
+            if (e) {
+                e->host_handle = ios;
+            }
+        } else {
+            LAGFX_WARN("CmdIOSurfaceCreate: VkImage creation failed "
+                       "(status=%d)", (int)st);
+        }
+#endif
+    }
+
     return LAGFX_HANDLER_OK;
 }
 
