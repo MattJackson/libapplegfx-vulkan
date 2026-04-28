@@ -22,9 +22,11 @@
 
 #include "device.h"
 #include "display.h"
+#include "protocol/ops_display.h"
 #include "vulkan/instance.h"
 #include "vulkan/command.h"
 #include "vulkan/render_target.h"
+#include "vulkan/cursor.h"
 #include "common/log.h"
 
 #include <stdlib.h>
@@ -287,6 +289,20 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
         rgba_local[3] = 1.f;
     }
 
+    const lagfx_cursor_show_state_t  *cs = lagfx_ops_display_last_cursor_show();
+    const lagfx_cursor_glyph_state_t *cg = lagfx_ops_display_last_cursor_glyph();
+    bool want_cursor = (cs && cs->visible && cg && cg->captured_len > 0);
+
+    if (want_cursor && !vk->cursor_glyph_valid) {
+        lagfx_status_t up_st = lagfx_vk_cursor_upload_glyph(
+            vk, cg->bytes, cg->width, cg->height, cg->bytes_per_row);
+        if (up_st != LAGFX_OK) {
+            LAGFX_WARN("display_submit_clear: cursor glyph upload failed (%d)",
+                       (int)up_st);
+            want_cursor = false;
+        }
+    }
+
     VkCommandBuffer cb = VK_NULL_HANDLE;
     lagfx_status_t cb_st = lagfx_vk_cmdbuf_alloc(vk, &cb);
     if (cb_st != LAGFX_OK) {
@@ -305,14 +321,62 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
         return LAGFX_ERR_BACKEND;
     }
 
-    lagfx_status_t clear_st = lagfx_vk_render_clear_color(vk, cb,
-                                                          &display->rt,
-                                                          rgba_local);
-    if (clear_st != LAGFX_OK) {
-        vkEndCommandBuffer(cb);
-        lagfx_vk_cmdbuf_free(vk, cb);
-        return clear_st;
+    lagfx_vk_render_target_t *rt = &display->rt;
+
+    VkAccessFlags src_access = 0;
+    VkPipelineStageFlags src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    if (rt->layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        src_access = VK_ACCESS_TRANSFER_READ_BIT;
+        src_stage  = VK_PIPELINE_STAGE_TRANSFER_BIT;
     }
+    VkImageMemoryBarrier barrier = {
+        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask       = src_access,
+        .dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout           = rt->layout,
+        .newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image               = rt->image,
+        .subresourceRange    = {
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel   = 0,
+            .levelCount     = 1,
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        },
+    };
+    vkCmdPipelineBarrier(cb, src_stage,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         0, 0, NULL, 0, NULL, 1, &barrier);
+    rt->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkRenderingAttachmentInfo color_att = {
+        .sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView   = rt->view,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp     = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue  = { .color = { .float32 = { rgba_local[0], rgba_local[1],
+                                                  rgba_local[2],
+                                                  rgba_local[3] } } },
+    };
+    VkRenderingInfo ri = {
+        .sType                = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea           = { { 0, 0 }, { rt->width, rt->height } },
+        .layerCount           = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments    = &color_att,
+    };
+    vkCmdBeginRendering(cb, &ri);
+
+    if (want_cursor) {
+        lagfx_vk_cursor_draw(vk, cb,
+                             display->rt_width, display->rt_height,
+                             cs->x, cs->y, cs->hot_x, cs->hot_y);
+    }
+
+    vkCmdEndRendering(cb);
 
     vr = vkEndCommandBuffer(cb);
     if (vr != VK_SUCCESS) {

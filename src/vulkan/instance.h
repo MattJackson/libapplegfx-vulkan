@@ -82,6 +82,22 @@ struct lagfx_vk_state {
     VkDescriptorSet       fallback_desc_set;
     VkBuffer              fallback_ubo;
     VkDeviceMemory        fallback_ubo_mem;
+
+    VkPipeline       cursor_pipeline;
+    VkPipelineLayout cursor_layout;
+    VkDescriptorSetLayout cursor_dsl;
+    VkDescriptorPool      cursor_desc_pool;
+    VkDescriptorSet       cursor_desc_set;
+
+    VkImage          cursor_glyph_image;
+    VkImageView      cursor_glyph_view;
+    VkDeviceMemory   cursor_glyph_mem;
+    VkSampler        cursor_sampler;
+    VkBuffer         cursor_ubo;
+    VkDeviceMemory   cursor_ubo_mem;
+    bool             cursor_glyph_valid;
+    uint32_t         cursor_glyph_w;
+    uint32_t         cursor_glyph_h;
 #else
     /* Pad so sizeof(struct) > 0 on no-vulkan builds. */
     int _placeholder;
