@@ -22,6 +22,7 @@
  *     indirect-exec dispatch is Phase 3.
  */
 
+#include "blit_decoder.h"
 #include "opcodes.h"
 #include "protocol.h"
 #include "render_decoder.h"
@@ -737,9 +738,16 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                   inner_idx, inner_opcode, rc);
                     }
                 } else if (encoder_type == 0u) {
-                    LAGFX_TRACE("      inner[%u]: blit op=0x%04x len=%zu "
-                              "(no dispatch module)",
-                              inner_idx, inner_opcode, ipl_len);
+                    {
+                        const uint8_t *bpl = cmdbuf + ioff + 8u;
+                        int rc = lagfx_blit_decoder_dispatch(p, inner_opcode,
+                                                             bpl, ipl_len);
+                        if (rc != 0) {
+                            LAGFX_TRACE("      inner[%u]: blit dispatch "
+                                      "op=0x%04x returned %d (continuing)",
+                                      inner_idx, inner_opcode, rc);
+                        }
+                    }
                 } else if (encoder_type == 1u) {
                     LAGFX_TRACE("      inner[%u]: compute op=0x%04x len=%zu "
                               "(no dispatch module)",
