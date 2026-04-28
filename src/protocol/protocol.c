@@ -14,6 +14,7 @@
 #include "state.h"
 #include "opcodes.h"
 #include "fifo.h"
+#include "ops_display_vchan.h"
 #include "../device.h"
 #include "../common/log.h"
 
@@ -765,51 +766,25 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 return;
             }
 
-            /* Drain if there's pending work and ring is mapped. */
-            uint32_t cmd_stm = 0u;  /* Captured for stamp-cell write below. */
-            uint32_t cmd_display_index = 0u;  /* From cmd payload, used for SS port. */
-            uint32_t cmd_ss_pfn = 0u;          /* From cmd payload, BMD shared-state PFN. */
-            int have_payload = 0;
+            /* Display channel opcode dispatch loop (ch >= 5).
+             * The display vchan uses a separate opcode namespace:
+             *   0x01 = setupSharedState  (8 bytes payload)
+             *   0x06 = present           (12 bytes payload)
+             *   0x07 = present+gamma     (36 bytes payload)
+             * Resolve data pages via page0[0] PFN-array indirection,
+             * then walk the ring dispatching each command. */
+            uint32_t last_stamp = 0u;
             if (ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
-                /* Per AppleParavirtVirtualChannel-init.annotated.asm BLOCK
-                 * F+G+J: the per-channel ring BMD is allocated as
-                 * inTaskWithOptions(capacity=ring_size+0x1000). The first
-                 * page (page0) is a u32 PFN-array: page0[i] = physical
-                 * page number of the i-th data page (ring_kva + 0x1000 +
-                 * i*0x1000). this[+0x228] (the kva submitBuffer's memcpy
-                 * targets) = map_kva + 0x1000.
-                 *
-                 * Older code used (ring_pfn<<12) + 0x1000 + read_ptr —
-                 * which only works when the kernel allocator happens to
-                 * give physically-contiguous pages. On a fragmented heap
-                 * (observed 2026-04-26 ch=6 run: ring_pfn=0x3da1e3 but
-                 * data page = 0x3da724) the +0x1000 bytes contain
-                 * zeros (next BMD metadata page), the cmd payload reads
-                 * back as zero, ss_pfn=0, and the post-wait apvAssert
-                 * panics at AppleParavirtDisplayPipe.cpp:240.
-                 *
-                 * Correct path: read u32 at (ring_pfn<<12)+0 to get the
-                 * actual data PFN (page0[0]), then read cmd at
-                 * (data_pfn<<12) + read_ptr. The init pages of every
-                 * channel cmd are <0x1000 bytes so we never cross a
-                 * page boundary in the first cmd; for larger commands
-                 * walking would index page0[read_ptr / 0x1000] (M4).
-                 *
-                 * Fallback for safety: if page0[0] reads zero, fall
-                 * back to the +0x1000 contiguous-allocator heuristic so
-                 * we don't break the (likely common) lucky-allocator
-                 * path. */
                 uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
                 uint32_t data_pfn = 0u;
-                p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                               ring_gpa_base, sizeof(data_pfn),
-                                               &data_pfn);
+                p->dev->desc.shell.read_memory(
+                    p->dev->desc.shell.opaque,
+                    ring_gpa_base, sizeof(data_pfn), &data_pfn);
                 uint64_t ring_data_gpa;
                 if (data_pfn != 0u) {
                     ring_data_gpa = (uint64_t)data_pfn << 12;
                 } else {
-                    /* Fallback: contiguous-allocator heuristic. */
                     ring_data_gpa = ring_gpa_base + 0x1000u;
                 }
                 LAGFX_TRACE("doorbell ch=%u: data via page0 PFN=0x%x "
@@ -817,222 +792,112 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                           ch, data_pfn,
                           (unsigned long long)ring_data_gpa);
 
-                /* Diagnostic 1: dump 32 bytes at ring_gpa_base + 0 (the
-                 * "first page" — should be PFN-array OR header per init
-                 * annotation, NOT cmd data). */
-                {
-                    uint8_t dbg[32] = {0};
-                    if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                                         ring_gpa_base,
-                                                         32, dbg)) {
-                        LAGFX_TRACE("doorbell ch=%u: dbg page0[0..31] = "
-                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
-                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
-                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
-                                  "%02x %02x %02x %02x %02x %02x %02x %02x",
-                                  ch,
-                                  dbg[0], dbg[1], dbg[2], dbg[3],
-                                  dbg[4], dbg[5], dbg[6], dbg[7],
-                                  dbg[8], dbg[9], dbg[10], dbg[11],
-                                  dbg[12], dbg[13], dbg[14], dbg[15],
-                                  dbg[16], dbg[17], dbg[18], dbg[19],
-                                  dbg[20], dbg[21], dbg[22], dbg[23],
-                                  dbg[24], dbg[25], dbg[26], dbg[27],
-                                  dbg[28], dbg[29], dbg[30], dbg[31]);
+                uint32_t cur_rp = read_ptr;
+                unsigned cmd_idx = 0;
+                while (cur_rp + 12u <= write_ptr) {
+                    uint8_t hdr_bytes[12] = {0};
+                    if (!p->dev->desc.shell.read_memory(
+                            p->dev->desc.shell.opaque,
+                            ring_data_gpa + cur_rp, 12,
+                            hdr_bytes)) {
+                        LAGFX_WARN("doorbell ch=%u: read_memory failed "
+                                   "for cmd header at rp=%u",
+                                   ch, cur_rp);
+                        break;
                     }
-                }
 
-                /* Diagnostic 2: dump 32 bytes at ring_data_gpa + read_ptr
-                 * (the corrected position — should hold the 12-byte cmd
-                 * header followed by the 8-byte payload). */
-                {
-                    uint8_t dbg[32] = {0};
-                    if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                                         ring_data_gpa + read_ptr,
-                                                         32, dbg)) {
-                        LAGFX_TRACE("doorbell ch=%u: dbg data+rp[0..31] = "
-                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
-                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
-                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
-                                  "%02x %02x %02x %02x %02x %02x %02x %02x "
-                                  "(gpa=0x%llx)",
-                                  ch,
-                                  dbg[0], dbg[1], dbg[2], dbg[3],
-                                  dbg[4], dbg[5], dbg[6], dbg[7],
-                                  dbg[8], dbg[9], dbg[10], dbg[11],
-                                  dbg[12], dbg[13], dbg[14], dbg[15],
-                                  dbg[16], dbg[17], dbg[18], dbg[19],
-                                  dbg[20], dbg[21], dbg[22], dbg[23],
-                                  dbg[24], dbg[25], dbg[26], dbg[27],
-                                  dbg[28], dbg[29], dbg[30], dbg[31],
-                                  (unsigned long long)(ring_data_gpa + read_ptr));
-                    }
-                }
-
-                /* Real header read — corrected to use ring_data_gpa. */
-                uint8_t hdr[12] = {0};
-                if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                                     ring_data_gpa + read_ptr,
-                                                     12, hdr)) {
-                    uint16_t opcode  = (uint16_t)(hdr[0] | (hdr[1] << 8));
+                    uint16_t opcode = (uint16_t)(hdr_bytes[0]
+                                                  | (hdr_bytes[1] << 8));
                     uint32_t cmd_len =
-                        (uint32_t)(hdr[4] | (hdr[5] << 8)
-                                   | (hdr[6] << 16) | (hdr[7] << 24));
-                    cmd_stm =
-                        (uint32_t)(hdr[8] | (hdr[9] << 8)
-                                   | (hdr[10] << 16) | (hdr[11] << 24));
-                    LAGFX_TRACE("doorbell ch=%u: drain opcode=0x%04x len=%u "
-                              "stamp=%u (gpa=0x%llx)",
-                              ch, opcode, cmd_len, cmd_stm,
-                              (unsigned long long)(ring_data_gpa + read_ptr));
-                }
+                        (uint32_t)(hdr_bytes[4] | (hdr_bytes[5] << 8)
+                                   | (hdr_bytes[6] << 16)
+                                   | (hdr_bytes[7] << 24));
+                    uint32_t stamp =
+                        (uint32_t)(hdr_bytes[8] | (hdr_bytes[9] << 8)
+                                   | (hdr_bytes[10] << 16)
+                                   | (hdr_bytes[11] << 24));
 
-                /* Per AppleParavirtDisplayPipe-setupSharedState.annotated.asm
-                 * +0x217..+0x230: setupSharedState appends an 8-byte cmd
-                 * payload after the 12-byte header containing
-                 *   { u32 display_index, u32 ss_pfn }
-                 * where ss_pfn is the per-display BMD shared-state physical
-                 * PFN (this is DIFFERENT from ring_pfn — the ring_pfn is the
-                 * channel's command ring; the ss_pfn is the 4 KiB shared-
-                 * state page allocated by setupSharedState's
-                 * IOBufferMemoryDescriptor at this+0x368). The host needs
-                 * ss_pfn to address the BMD page where the post-wait
-                 * predicate lives (ss[0x12] = port). Total Display0 cmd is
-                 * 20 bytes (write_ptr=0x14 in descriptor), matching this
-                 * layout.
-                 *
-                 * Read the 8-byte payload at ring_data_gpa + read_ptr + 12
-                 * (i.e. (ring_pfn<<12) + 0x1000 + read_ptr + 12). */
-                if (write_ptr - read_ptr >= 20u) {
-                    uint8_t pl[8] = {0};
-                    if (p->dev->desc.shell.read_memory(
-                            p->dev->desc.shell.opaque,
-                            ring_data_gpa + read_ptr + 12u, 8, pl)) {
-                        cmd_display_index =
-                            (uint32_t)(pl[0] | (pl[1] << 8)
-                                       | (pl[2] << 16) | (pl[3] << 24));
-                        cmd_ss_pfn =
-                            (uint32_t)(pl[4] | (pl[5] << 8)
-                                       | (pl[6] << 16) | (pl[7] << 24));
-                        have_payload = 1;
-                        LAGFX_TRACE("doorbell ch=%u: cmd payload "
-                                  "raw=%02x %02x %02x %02x %02x %02x %02x %02x "
-                                  "display_index=%u ss_pfn=0x%x "
-                                  "(gpa=0x%llx)",
-                                  ch,
-                                  pl[0], pl[1], pl[2], pl[3],
-                                  pl[4], pl[5], pl[6], pl[7],
-                                  cmd_display_index, cmd_ss_pfn,
-                                  (unsigned long long)(ring_data_gpa + read_ptr + 12u));
+                    if (cmd_len < 12u
+                        || cmd_len > (write_ptr - cur_rp)) {
+                        LAGFX_WARN("doorbell ch=%u: bad cmd_len=%u "
+                                   "at rp=%u (wp=%u) — stopping walk",
+                                   ch, cmd_len, cur_rp, write_ptr);
+                        break;
                     }
+
+                    uint32_t payload_len = cmd_len - 12u;
+                    uint8_t *payload_buf = NULL;
+                    if (payload_len > 0u) {
+                        payload_buf = (uint8_t *)malloc(payload_len);
+                        if (!payload_buf) {
+                            LAGFX_WARN("doorbell ch=%u: malloc(%u) "
+                                       "failed", ch, payload_len);
+                            break;
+                        }
+                        if (!p->dev->desc.shell.read_memory(
+                                p->dev->desc.shell.opaque,
+                                ring_data_gpa + cur_rp + 12u,
+                                payload_len, payload_buf)) {
+                            LAGFX_WARN("doorbell ch=%u: read_memory "
+                                       "failed for payload at rp=%u",
+                                       ch, cur_rp);
+                            free(payload_buf);
+                            break;
+                        }
+                    }
+
+                    lagfx_cmd_header_t parsed;
+                    parsed.opcode       = opcode;
+                    parsed.arg_count_8b = 0u;
+                    parsed.length       = cmd_len;
+                    parsed.stamp        = stamp;
+                    parsed.payload_size = (uint16_t)payload_len;
+                    parsed.payload      = payload_buf;
+
+                    LAGFX_TRACE("doorbell ch=%u vchan cmd[%u]: "
+                              "opcode=0x%02x stamp=0x%08x len=%u",
+                              ch, cmd_idx, opcode, stamp, cmd_len);
+
+                    switch (opcode) {
+                        case 0x01u:
+                            lagfx_op_vchan_setup_shared_state(
+                                p, &parsed);
+                            break;
+                        case 0x06u:
+                            lagfx_op_vchan_present(p, &parsed);
+                            break;
+                        case 0x07u:
+                            lagfx_op_vchan_present_gamma(p, &parsed);
+                            break;
+                        default:
+                            LAGFX_WARN("doorbell ch=%u: unknown "
+                                       "display vchan opcode 0x%02x "
+                                       "at rp=%u len=%u",
+                                       ch, opcode, cur_rp, cmd_len);
+                            break;
+                    }
+
+                    if (stamp > last_stamp) {
+                        last_stamp = stamp;
+                    }
+
+                    free(payload_buf);
+                    cur_rp += cmd_len;
+                    cmd_idx += 1;
                 }
 
-                /* Advance read_ptr to write_ptr atomically. The kext's
-                 * watchdog is polling read_ptr; once it reaches write_ptr
-                 * the "GPU hang written:N read:0" log changes to read:N. */
-                uint32_t new_read_ptr = write_ptr;
+                uint32_t new_rp = write_ptr;
                 if (p->dev->desc.shell.write_memory) {
-                    if (p->dev->desc.shell.write_memory(
-                            p->dev->desc.shell.opaque,
-                            descr_gpa + 4u, sizeof(new_read_ptr),
-                            &new_read_ptr)) {
-                        LAGFX_TRACE("doorbell ch=%u: descr.read_ptr 0x%x->0x%x",
-                                  ch, read_ptr, new_read_ptr);
-                    }
+                    p->dev->desc.shell.write_memory(
+                        p->dev->desc.shell.opaque,
+                        descr_gpa + 4u, sizeof(new_rp), &new_rp);
                 }
-
-                /* Write a stamp value to FIFO+ch*4 stamp cell via the
-                 * monotonic helper. cmd_stm from host-visible ring is
-                 * consistently 0 because the actual kext cmd lives in
-                 * kernel heap (display0-cmd-actual-location.md); the
-                 * helper's max(target, cur+1) clamp guarantees the cell
-                 * advances regardless. Slot index = ch (display channels
-                 * have slot == chan_id; ring_base_pfn is the FIFO data
-                 * page from BAR0+0x1030). */
-                lagfx_advance_stamp_cell(p, ch, cmd_stm);
-
-                /* Per setupSharedState-post-wait-predicates.md (2026-04-25):
-                 * after waitForStamp releases, the kext runs
-                 *   apvAssert(fSharedState->port == fPort)
-                 * at setupSharedState +0x2a8 where fPort = this->display_index
-                 * (u32 at this+0x380) and fSharedState->port = u16 at the
-                 * BMD shared-state page +0x12.
-                 *
-                 * CRITICAL: the BMD shared-state page is at
-                 *   (cmd.ss_pfn << 12)
-                 * NOT (ring_pfn << 12). ring_pfn is the per-channel command
-                 * ring; ss_pfn is the per-display 4 KiB IOBufferMemoryDescriptor
-                 * page allocated inside setupSharedState and sent to host via
-                 * the 8-byte cmd payload. Writing to the wrong page is silent —
-                 * the kext just sees a zero page and panics on the predicate
-                 * (or, for Display0, accidentally passes because both pages
-                 * happen to be zero, but the response code at +0x1c is also
-                 * never seen).
-                 *
-                 * cmd_display_index from the payload is authoritative for the
-                 * port value; ch-5 derivation is a fallback if the payload was
-                 * not readable.
-                 *
-                 * Also write shared_state[0x1c] = 0 as the response code/host
-                 * caps token (kext stashes it at this+0x384, no validation). */
-                if (have_payload && cmd_ss_pfn != 0u
-                    && p->dev->desc.shell.write_memory) {
-                    uint64_t ss_gpa = ((uint64_t)cmd_ss_pfn << 12);
-
-                    /* Required to satisfy the post-wait apvAssert. */
-                    uint16_t port = (uint16_t)cmd_display_index;
-                    if (p->dev->desc.shell.write_memory(
-                            p->dev->desc.shell.opaque,
-                            ss_gpa + 0x12u,
-                            sizeof(port), &port)) {
-                        LAGFX_TRACE("doorbell ch=%u: ss[0x12] := %u "
-                                  "(port, ss_gpa=0x%llx)",
-                                  ch, (unsigned)port,
-                                  (unsigned long long)(ss_gpa + 0x12u));
-                    }
-
-                    uint32_t resp_code = 0u;  /* ack ready / host caps token */
-                    if (p->dev->desc.shell.write_memory(
-                            p->dev->desc.shell.opaque,
-                            ss_gpa + 0x1cu,
-                            sizeof(resp_code), &resp_code)) {
-                        LAGFX_TRACE("doorbell ch=%u: ss[0x1c] := %u "
-                                  "(ss_gpa=0x%llx)",
-                                  ch, resp_code,
-                                  (unsigned long long)(ss_gpa + 0x1cu));
-                    }
-                } else if (!have_payload) {
-                    LAGFX_TRACE("doorbell ch=%u: no cmd payload — skipping "
-                              "ss[0x12]/ss[0x1c] write (would target wrong "
-                              "page)", ch);
-                } else {
-                    /* have_payload=1 but cmd_ss_pfn==0 — ring read returned
-                     * zero bytes. Per display0-cmd-actual-location.md, the
-                     * kext writes the cmd body via wrapper::appendBytes()
-                     * into a stack buffer that gets submitted; observed
-                     * behaviour is that (ring_pfn<<12)+read_ptr is NOT
-                     * coherent with the kext's writes (the page is either
-                     * a metadata/decorative slot or the data lives in
-                     * kernel heap). We can derive display_index from the
-                     * channel number (display_index = ch - 5) but without
-                     * ss_pfn we cannot address the per-display BMD page,
-                     * so the post-wait apvAssert
-                     *   (fSharedState->port == fPort)
-                     * will pass for ch=5 (Display0, fPort=0, page bzero'd)
-                     * but PANIC for ch>=6 at AppleParavirtDisplayPipe.cpp:240.
-                     * Logged here so the diagnostic trail is visible. */
-                    unsigned derived_display_index =
-                        (ch >= 5u) ? (ch - 5u) : 0u;
-                    LAGFX_TRACE("doorbell ch=%u: cmd_ss_pfn=0 from ring read "
-                              "(derived display_index=%u) — cannot address "
-                              "BMD ss page; predicate will panic for ch>=6",
-                              ch, derived_display_index);
-                }
+                LAGFX_TRACE("doorbell ch=%u: display vchan drained "
+                          "%u cmd(s), rp=%u->%u",
+                          ch, cmd_idx, read_ptr, new_rp);
             }
 
-            /* Signal stamp completion to wake the setupSharedState
-             * waitForStamp parker. The stamp bitmask uses bit `ch` (the
-             * channel number = display_index+5 for Display0/1/2). */
+            lagfx_advance_stamp_cell(p, ch, last_stamp);
             p->pending_stamps_bitmask |= (1u << ch);
             if (p->dev && p->dev->desc.shell.raise_interrupt) {
                 p->dev->desc.shell.raise_interrupt(
@@ -1041,123 +906,6 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 LAGFX_TRACE("doorbell ch=%u: stamp bit+IRQ "
                           "(pending_mask=0x%08x)",
                           ch, p->pending_stamps_bitmask);
-            }
-
-            /* M3 attempt 3 — wake AppleParavirtDisplayPipe::process_online
-             * by populating the rest of shared_state and raising the
-             * display-online IRQ. Without this the kext finishes
-             * setupSharedState successfully, then sits forever in the
-             * IES action waiting for the host to advertise display online.
-             *
-             * Bitmask routing: AppleParavirtDisplayMachine::signalDisplays
-             * does `bsf` over the mask and calls
-             * `getDisplayPipe(bit)->signalDisplay()`. getDisplayPipe at
-             * IOAccel+0xe344 indexes pipes by display_index
-             * (`[dm+0x88+idx*8]`), so the bit number MUST equal
-             * display_index (0/1/2), NOT the channel id (5/6/7).
-             *
-             * process_online (kext+0xb48a) reads the following ss fields
-             * before forwarding to AppleParavirtFramebuffer::connectionChange:
-             *   ss[0x00]  u32 connection-id (mode-id)
-             *   ss[0x04+] cstring modeName (we leave zero-terminated empty)
-             *   ss[0x14]  u16 active width
-             *   ss[0x16]  u16 active height
-             *   ss[0x18]  u16 cursor max width
-             *   ss[0x1a]  u16 cursor max height
-             *   ss[0x20]  u32 framebuffer aperture length (cookie)
-             *   ss[0x2c..0x48] 8*f32 colorimetry (sRGB primaries + D65
-             *                  whitepoint) — kext wrote defaults pre-stamp
-             *                  so we leave them.
-             *   ss[0x4c]  u16 hSyncTotal/DPI
-             *   ss[0x4e]  u16 vSyncTotal/DPI — kext wrote 0xFFFF defaults
-             *   ss[0x50]  u8  flags
-             *   ss[0x200] u32 framebuffer aperture PFN
-             *   ss[0x208] u16 numPixelFormats
-             *   ss[0x210+i*16] per-format records — ignored at numFormats=0
-             *
-             * For M3 we publish a synthetic 1920x1080 BGRA8 mode and zero
-             * pixel-format records (the format query block at
-             * 0x1456182c is only invoked if numPixelFormats > 0). */
-            if (ch >= 5u && have_payload && cmd_ss_pfn != 0u
-                && p->dev && p->dev->desc.shell.write_memory) {
-                uint64_t ss_gpa = ((uint64_t)cmd_ss_pfn << 12);
-                uint32_t display_index = cmd_display_index;
-
-                /* ss[0x00]: connection-id (mode-id 1 = synthetic mode). */
-                uint32_t conn_id = 1u;
-                p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque, ss_gpa + 0x00u,
-                    sizeof(conn_id), &conn_id);
-
-                /* ss[0x14]: width, ss[0x16]: height (both u16). */
-                uint16_t width = 1920u;
-                uint16_t height = 1080u;
-                p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque, ss_gpa + 0x14u,
-                    sizeof(width), &width);
-                p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque, ss_gpa + 0x16u,
-                    sizeof(height), &height);
-
-                /* ss[0x18..0x1a]: cursor glyph max (64x64 covers both
-                 * the 32-bit MTL hardware cursor max and the 64-bit
-                 * software cursor). */
-                uint16_t cursor_max = 64u;
-                p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque, ss_gpa + 0x18u,
-                    sizeof(cursor_max), &cursor_max);
-                p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque, ss_gpa + 0x1au,
-                    sizeof(cursor_max), &cursor_max);
-
-                /* ss[0x20]: FB aperture length (cookie). 8 MB suffices
-                 * for 1920x1080xBGRA8 (~8.3 MB). */
-                uint32_t fb_len = 1920u * 1080u * 4u;
-                p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque, ss_gpa + 0x20u,
-                    sizeof(fb_len), &fb_len);
-
-                /* ss[0x50]: orientation flags (0 = normal). */
-                uint8_t orient = 0u;
-                p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque, ss_gpa + 0x50u,
-                    sizeof(orient), &orient);
-
-                /* ss[0x200]: FB aperture PFN. We use ss_pfn itself as a
-                 * placeholder; the kext caches this as a token at
-                 * this+0x3ac and forwards to connectionChange. Real FB
-                 * aperture binding happens via a later opcode. */
-                uint32_t fb_pfn = cmd_ss_pfn;
-                p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque, ss_gpa + 0x200u,
-                    sizeof(fb_pfn), &fb_pfn);
-
-                /* ss[0x208]: numPixelFormats = 0. The block_invoke at
-                 * 0x1456182c only runs if this is >0. */
-                uint16_t num_formats = 0u;
-                p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque, ss_gpa + 0x208u,
-                    sizeof(num_formats), &num_formats);
-
-                LAGFX_TRACE("doorbell ch=%u: populated ss for online "
-                          "(display_index=%u, %ux%u@1mode_id, ss_gpa=0x%llx)",
-                          ch, display_index, width, height,
-                          (unsigned long long)ss_gpa);
-
-                /* Now raise display-online IRQ. Bit position MUST be
-                 * display_index (0/1/2), NOT channel (5/6/7) — verified
-                 * via IOAccelDisplayMachine::getDisplayPipe disasm. */
-                p->pending_displays_bitmask |= (1u << display_index);
-                if (p->dev->desc.shell.raise_interrupt) {
-                    p->dev->desc.shell.raise_interrupt(
-                        p->dev->desc.shell.opaque, 0u);
-                    p->interrupts_raised += 1;
-                    LAGFX_TRACE("doorbell ch=%u: display-online bit+IRQ "
-                              "(display_index=%u, "
-                              "display_pending_mask=0x%08x)",
-                              ch, display_index,
-                              p->pending_displays_bitmask);
-                }
             }
             return;
         }

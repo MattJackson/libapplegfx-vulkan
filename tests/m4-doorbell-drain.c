@@ -404,7 +404,7 @@ static void test_doorbell_ch5_keeps_setupSharedState_path(void) {
      * ss_pfn=0x40040). Total length=20, write_ptr=20. */
     uint8_t *data_page = shell.heap
         + ((uint64_t)data_pfn * 0x1000ull - shell.heap_gpa);
-    put_cmd_header(data_page, /*opcode=*/0x16u /*arbitrary*/, 0,
+    put_cmd_header(data_page, /*opcode=*/0x01u, 0,
                    /*total_length=*/20u, /*stamp=*/0xdd550001u);
     put_le32(data_page + 12, /*display_index=*/0u);
     put_le32(data_page + 16, /*ss_pfn=*/ss_pfn);
@@ -465,7 +465,7 @@ static void test_doorbell_ch6_keeps_ss_path(void) {
 
     uint8_t *data_page = shell.heap
         + ((uint64_t)data_pfn * 0x1000ull - shell.heap_gpa);
-    put_cmd_header(data_page, /*opcode=*/0x16u, 0, 20u, 0xdd660001u);
+    put_cmd_header(data_page, /*opcode=*/0x01u, 0, 20u, 0xdd660001u);
     put_le32(data_page + 12, /*display_index=*/1u);
     put_le32(data_page + 16, /*ss_pfn=*/ss_pfn);
 

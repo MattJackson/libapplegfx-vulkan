@@ -22,6 +22,7 @@ lagfx_sources += files(
   'render_opcodes.c',
   'render_decoder.c',
   'render_pass.c',
+  'ops_display_vchan.c',
 )
 
 # state.h / protocol.h / opcodes.h / fifo.h / render_opcodes.h /

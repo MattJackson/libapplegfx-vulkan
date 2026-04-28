@@ -219,8 +219,15 @@ static lagfx_status_t create_passthrough_pipeline(struct lagfx_vk_state *vk) {
         .pDynamicStates    = dynamic_states,
     };
 
+    const VkFormat passthrough_color_fmt = VK_FORMAT_B8G8R8A8_UNORM;
+    VkPipelineRenderingCreateInfo passthrough_rendering = {
+        .sType                  = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount   = 1,
+        .pColorAttachmentFormats = &passthrough_color_fmt,
+    };
     VkGraphicsPipelineCreateInfo gpci = {
         .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext               = &passthrough_rendering,
         .stageCount          = 2,
         .pStages             = stages,
         .pVertexInputState   = &vertex_input,
@@ -763,8 +770,15 @@ static lagfx_status_t create_cursor_pipeline(struct lagfx_vk_state *vk) {
         .pDynamicStates    = dynamic_states,
     };
 
+    const VkFormat cursor_color_fmt = VK_FORMAT_B8G8R8A8_UNORM;
+    VkPipelineRenderingCreateInfo cursor_rendering = {
+        .sType                  = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount   = 1,
+        .pColorAttachmentFormats = &cursor_color_fmt,
+    };
     VkGraphicsPipelineCreateInfo gpci = {
         .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext               = &cursor_rendering,
         .stageCount          = 2,
         .pStages             = stages,
         .pVertexInputState   = &vertex_input,

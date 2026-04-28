@@ -211,6 +211,14 @@ lagfx_status_t lagfx_vk_cursor_draw(struct lagfx_vk_state *vk,
     if (!vk->cursor_glyph_valid) {
         return LAGFX_OK;
     }
+    if (vk->cursor_pipeline == VK_NULL_HANDLE) {
+        LAGFX_WARN("cursor_draw: pipeline is VK_NULL_HANDLE — skipping");
+        return LAGFX_OK;
+    }
+    if (vk->cursor_glyph_view == VK_NULL_HANDLE) {
+        LAGFX_WARN("cursor_draw: glyph view is VK_NULL_HANDLE — skipping");
+        return LAGFX_OK;
+    }
 
     float ndc_x = 2.0f * (float)(cursor_x - (int16_t)hot_x)
                 / (float)target_w - 1.0f;
