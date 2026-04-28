@@ -898,14 +898,14 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             }
 
             lagfx_advance_stamp_cell(p, ch, last_stamp);
-            p->pending_stamps_bitmask |= (1u << ch);
+            p->pending_displays_bitmask |= (1u << ch);
             if (p->dev && p->dev->desc.shell.raise_interrupt) {
                 p->dev->desc.shell.raise_interrupt(
                     p->dev->desc.shell.opaque, 0u);
                 p->interrupts_raised += 1;
-                LAGFX_TRACE("doorbell ch=%u: stamp bit+IRQ "
-                          "(pending_mask=0x%08x)",
-                          ch, p->pending_stamps_bitmask);
+                LAGFX_TRACE("doorbell ch=%u: display bit+IRQ "
+                          "(display_mask=0x%08x)",
+                          ch, p->pending_displays_bitmask);
             }
             return;
         }
