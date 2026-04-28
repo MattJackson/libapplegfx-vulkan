@@ -306,6 +306,8 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                    "(continuing fail-open)", task_id);
     }
 
+    bool saw_render_encoder = false;
+
     LAGFX_TRACE("CmdExecIndirect2: taskID=%u descriptor_count=%u "
               "resource_count=%u payload_size=%u stamp=0x%08x",
               task_id, descriptor_count, resource_count,
@@ -340,6 +342,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
      * each, read the cmdBuf via shell.read_memory and walk the
      * segment headers within. */
     unsigned render_passes_completed = 0;
+    (void)render_passes_completed;
     for (uint32_t i = 0; i < resource_count; ++i) {
         const uint8_t *rec = hdr->payload + off_resources + (size_t)i * 16u;
         uint64_t host_gpu_addr =
@@ -407,8 +410,6 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             continue;
         }
 
-        /* Walk PGSerializerCommandSegmentHeader (16 B) records. Per
-         * library/state-machines/inner-opcode-format.md. */
         size_t soff = 0;
         unsigned segment_idx = 0;
         while (soff + 16u <= (size_t)length) {
@@ -853,7 +854,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             }
 
             if (encoder_type == 2u) {
-                render_passes_completed++;
+                saw_render_encoder = true;
                 if (p->render_enc.in_pass) {
                     lagfx_translate_render_end(&p->render_enc);
                 }
@@ -877,10 +878,9 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
      * stamp (which is one more than the outer CmdExecIndirect2's
      * stamp per render pass). Without this the guest sees
      * gpu_stamp=N but expects N+render_passes. */
-    if (render_passes_completed > 0u) {
-        p->extra_stamp_advance = render_passes_completed;
-        LAGFX_LOG("  render passes completed: %u (extra_stamp_advance=%u)",
-                  render_passes_completed, p->extra_stamp_advance);
+    if (saw_render_encoder) {
+        p->extra_stamp_advance = 1u;
+        LAGFX_LOG("  render encoder seen: extra_stamp_advance=1");
     }
 
     /* Ack the stamp regardless. Inner-opcode handlers will do their
