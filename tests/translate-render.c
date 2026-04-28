@@ -267,22 +267,30 @@ static int test_real_vk_record(struct lagfx_vk_state *vk) {
     vr = vkEndCommandBuffer(cb);
     CHECK(vr == VK_SUCCESS, "vkEndCommandBuffer");
 
-    /* Do NOT submit this command buffer. The Phase 3.A encoder
-     * records a vkCmdDraw with no bound pipeline — that's undefined
-     * behaviour per the Vulkan spec (VUID-vkCmdDraw-None-08606) and
-     * lavapipe 1.3.296 crashes in its worker thread when it tries
-     * to execute it (SIGSEGV in libvulkan_lvp.so), rather than the
-     * "records as a no-op" behaviour the earlier test comment
-     * assumed. The encoder's Begin/End correctness is proven by
-     * reaching vkEndCommandBuffer with VK_SUCCESS; submission is
-     * deferred until Phase 3.E wires real VkPipelines so the draw
-     * call is actually well-defined. See
-     * FIXME(phase-3e-pipeline) in src/translate/render_encoder.c. */
-    fprintf(stdout, "INFO: skipping vkQueueSubmit — encoder is "
-            "record-only at Phase 3.A; vkCmdDraw without a bound "
-            "pipeline is UB and lavapipe does not tolerate it. "
-            "Phase 3.E will bind real pipelines and re-enable "
-            "the submit path.\n");
+    /* Submit with a fence to prove the command buffer is valid
+     * end-to-end. The passthrough pipeline is now bound so the
+     * vkCmdDraw is well-defined. */
+    VkFence fence = VK_NULL_HANDLE;
+    VkFenceCreateInfo fci = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+    };
+    vr = vkCreateFence(vk->device, &fci, NULL, &fence);
+    CHECK(vr == VK_SUCCESS, "vkCreateFence");
+
+    if (fence != VK_NULL_HANDLE) {
+        VkSubmitInfo si = {
+            .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers    = &cb,
+        };
+        vr = vkQueueSubmit(vk->graphics_queue, 1, &si, fence);
+        CHECK(vr == VK_SUCCESS, "vkQueueSubmit");
+
+        const uint64_t timeout_ns = 1ull * 1000ull * 1000ull * 1000ull;
+        vr = vkWaitForFences(vk->device, 1, &fence, VK_TRUE, timeout_ns);
+        CHECK(vr == VK_SUCCESS, "vkWaitForFences");
+        vkDestroyFence(vk->device, fence, NULL);
+    }
 
     lagfx_vk_cmdbuf_free(vk, cb);
     lagfx_vk_render_target_destroy(vk, &rt);

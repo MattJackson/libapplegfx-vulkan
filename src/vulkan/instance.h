@@ -62,6 +62,26 @@ struct lagfx_vk_state {
     VkCommandBuffer  frame_cmdbuf;
     VkFence          frame_fence;
     bool             frame_in_progress;
+
+    VkPipeline       passthrough_pipeline;
+    VkPipelineLayout passthrough_layout;
+    VkDescriptorSetLayout passthrough_dsl;
+
+    VkImage          frame_image;
+    VkImageView      frame_image_view;
+    VkDeviceMemory   frame_image_mem;
+    uint32_t         frame_image_w;
+    uint32_t         frame_image_h;
+    VkFormat         frame_image_fmt;
+    VkImageLayout    frame_image_layout;
+
+    VkBuffer         dummy_vb;
+    VkDeviceMemory   dummy_vb_mem;
+
+    VkDescriptorPool      fallback_desc_pool;
+    VkDescriptorSet       fallback_desc_set;
+    VkBuffer              fallback_ubo;
+    VkDeviceMemory        fallback_ubo_mem;
 #else
     /* Pad so sizeof(struct) > 0 on no-vulkan builds. */
     int _placeholder;
@@ -87,7 +107,7 @@ struct lagfx_vk_state {
 lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
                              const lagfx_device_descriptor_t *desc);
 
-/* Tear down: vkDestroyDevice + vkDestroyInstance + free state.
+/* Tear down: pipeline resources + command pool + device + instance.
  * Safe on NULL. */
 void lagfx_vk_shutdown(struct lagfx_vk_state *state);
 

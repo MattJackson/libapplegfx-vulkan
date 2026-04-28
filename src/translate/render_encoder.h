@@ -90,6 +90,10 @@ typedef struct lagfx_translate_render_state {
      * go here via vkCmd* calls. */
     VkCommandBuffer cmdbuf;
 
+    /* Back-reference to the Vulkan device state. Set by _begin so that
+     * _bind_pipeline / _draw can access passthrough pipeline etc. */
+    struct lagfx_vk_state *vk;
+
     /* Target attachment parameters — cached at _begin so _end /
      * _draw don't need them re-passed. */
     VkImage    target_image;

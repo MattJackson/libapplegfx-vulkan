@@ -38,6 +38,7 @@
 
 #ifdef LAGFX_HAVE_VULKAN
 #  include "vulkan/instance.h"
+#  include "vulkan/pipeline.h"
 #endif
 
 #include <stdlib.h>
@@ -140,12 +141,19 @@ lagfx_status_t lagfx_translate_render_begin(
     state->target_width   = target_width;
     state->target_height  = target_height;
     state->in_pass        = true;
+    state->vk             = vk;
 
     if (target == VK_NULL_HANDLE) {
-        LAGFX_LOG("translate_render_begin: target=NULL, skipping "
-                  "vkCmdBeginRendering (state-only) %ux%u",
-                  target_width, target_height);
-        return LAGFX_OK;
+        if (vk->frame_image_view != VK_NULL_HANDLE) {
+            state->target_image = vk->frame_image;
+            LAGFX_LOG("translate_render_begin: using default frame image %p "
+                      "as target", (void *)vk->frame_image);
+        } else {
+            LAGFX_LOG("translate_render_begin: target=NULL and no frame image, "
+                      "skipping vkCmdBeginRendering (state-only) %ux%u",
+                      target_width, target_height);
+            return LAGFX_OK;
+        }
     }
 
     VkRenderingAttachmentInfoKHR fallback_att = {
@@ -168,6 +176,9 @@ lagfx_status_t lagfx_translate_render_begin(
         p_atts = color_attachments;
         n_atts = color_attachment_count;
     } else {
+        if (vk->frame_image_view != VK_NULL_HANDLE) {
+            fallback_att.imageView = vk->frame_image_view;
+        }
         p_atts = &fallback_att;
         n_atts = 1u;
     }
@@ -198,20 +209,47 @@ lagfx_status_t lagfx_translate_render_bind_pipeline(
     if (!state_in_pass(state)) {
         return LAGFX_ERR_INVALID_ARG;
     }
-    /* Layout may legitimately be VK_NULL_HANDLE at Phase 3.A
-     * scaffold — Phase 3.E populates it. Log and continue. */
     state->layout         = layout;
     state->shader_kind    = (uint32_t)shader_kind;
     state->pipeline_bound = true;
 
-    /* FIXME(phase-3e-pipeline): once VkPipeline objects exist in
-     * the catalog, resolve `shader_kind` + layout into a bound
-     * VkPipeline here via vkCmdBindPipeline. Today we only track
-     * the intent so downstream _bind_texture / _draw can gate on
-     * "pipeline was set". */
-    LAGFX_LOG("translate_render_bind_pipeline: kind=%u layout=%p "
-              "(record-only at Phase 3.A)",
-              (unsigned)shader_kind, (void *)layout);
+    if (state->render_pass_active && state->cmdbuf != VK_NULL_HANDLE) {
+        struct lagfx_vk_state *vk = state->vk;
+        VkPipeline pipe = VK_NULL_HANDLE;
+        VkPipelineLayout lay = layout;
+
+        if (vk && vk->passthrough_pipeline != VK_NULL_HANDLE) {
+            pipe = vk->passthrough_pipeline;
+            if (lay == VK_NULL_HANDLE) {
+                lay = vk->passthrough_layout;
+            }
+        }
+
+        if (pipe != VK_NULL_HANDLE) {
+            vkCmdBindPipeline(state->cmdbuf,
+                              VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+            state->layout = lay;
+            if (vk->fallback_desc_set != VK_NULL_HANDLE) {
+                vkCmdBindDescriptorSets(state->cmdbuf,
+                                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        lay, 0, 1,
+                                        &vk->fallback_desc_set, 0, NULL);
+            }
+            LAGFX_LOG("translate_render_bind_pipeline: bound passthrough "
+                      "pipeline %p layout=%p ds=%p (kind=%u)",
+                      (void *)pipe, (void *)lay,
+                      (void *)vk->fallback_desc_set,
+                      (unsigned)shader_kind);
+        } else {
+            LAGFX_LOG("translate_render_bind_pipeline: kind=%u layout=%p "
+                      "(no passthrough pipeline — record-only)",
+                      (unsigned)shader_kind, (void *)layout);
+        }
+    } else {
+        LAGFX_LOG("translate_render_bind_pipeline: kind=%u layout=%p "
+                  "(state-only, no Vulkan render pass active)",
+                  (unsigned)shader_kind, (void *)layout);
+    }
     return LAGFX_OK;
 }
 
@@ -306,6 +344,11 @@ lagfx_status_t lagfx_translate_render_draw(
     }
 
     if (state->render_pass_active && state->cmdbuf != VK_NULL_HANDLE) {
+        if (state->vk && state->vk->dummy_vb != VK_NULL_HANDLE) {
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(state->cmdbuf, 0, 1,
+                                   &state->vk->dummy_vb, &offset);
+        }
         vkCmdDraw(state->cmdbuf, vertex_count, instance_count,
                   first_vertex, first_instance);
     }
@@ -338,6 +381,11 @@ lagfx_status_t lagfx_translate_render_draw_indexed(
     }
 
     if (state->render_pass_active && state->cmdbuf != VK_NULL_HANDLE) {
+        if (state->vk && state->vk->dummy_vb != VK_NULL_HANDLE) {
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(state->cmdbuf, 0, 1,
+                                   &state->vk->dummy_vb, &offset);
+        }
         vkCmdDrawIndexed(state->cmdbuf, index_count, instance_count,
                          first_index, vertex_offset, first_instance);
     }

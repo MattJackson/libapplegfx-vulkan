@@ -43,6 +43,7 @@
 
 #include "instance.h"
 #include "command.h"
+#include "pipeline.h"
 #include "common/log.h"
 
 #include <stdio.h>
@@ -405,6 +406,16 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
         return LAGFX_ERR_VULKAN_INIT;
     }
 
+    /* Phase 3.E: create the passthrough pipeline, frame image, and
+     * dummy vertex buffer. Failure is non-fatal for device init but
+     * draw calls will lack a real pipeline. */
+    lagfx_status_t pp_st = lagfx_vk_pipeline_init(s);
+    if (pp_st != LAGFX_OK) {
+        LAGFX_WARN("vk_init: lagfx_vk_pipeline_init failed (status=%d) "
+                   "— draw calls will lack passthrough pipeline",
+                   (int)pp_st);
+    }
+
     *out = s;
     return LAGFX_OK;
 }
@@ -421,6 +432,7 @@ void lagfx_vk_shutdown(struct lagfx_vk_state *state) {
         vkDestroyFence(state->device, state->frame_fence, NULL);
         state->frame_fence = VK_NULL_HANDLE;
     }
+    lagfx_vk_pipeline_shutdown(state);
     lagfx_vk_command_pool_destroy(state);
     if (state->device != VK_NULL_HANDLE) {
         vkDestroyDevice(state->device, NULL);
