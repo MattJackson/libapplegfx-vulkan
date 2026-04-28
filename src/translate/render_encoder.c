@@ -289,7 +289,9 @@ lagfx_status_t lagfx_translate_render_bind_texture(
 lagfx_status_t lagfx_translate_render_draw(
     lagfx_translate_render_state_t *state,
     uint32_t vertex_count,
-    uint32_t instance_count) {
+    uint32_t instance_count,
+    uint32_t first_vertex,
+    uint32_t first_instance) {
     if (!state_in_pass(state)) {
         return LAGFX_ERR_INVALID_ARG;
     }
@@ -303,11 +305,48 @@ lagfx_status_t lagfx_translate_render_draw(
         return LAGFX_ERR_INVALID_ARG;
     }
 
-    vkCmdDraw(state->cmdbuf, vertex_count, instance_count,
-              /* firstVertex = */ 0u, /* firstInstance = */ 0u);
+    if (state->render_pass_active && state->cmdbuf != VK_NULL_HANDLE) {
+        vkCmdDraw(state->cmdbuf, vertex_count, instance_count,
+                  first_vertex, first_instance);
+    }
 
-    LAGFX_LOG("translate_render_draw: v=%u i=%u (kind=%u)",
-              vertex_count, instance_count, state->shader_kind);
+    LAGFX_LOG("translate_render_draw: v=%u i=%u firstV=%u firstI=%u "
+              "(kind=%u)",
+              vertex_count, instance_count,
+              first_vertex, first_instance, state->shader_kind);
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_translate_render_draw_indexed(
+    lagfx_translate_render_state_t *state,
+    uint32_t index_count,
+    uint32_t instance_count,
+    uint32_t first_index,
+    int32_t vertex_offset,
+    uint32_t first_instance) {
+    if (!state_in_pass(state)) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    if (!state->pipeline_bound) {
+        LAGFX_ERR("translate_render_draw_indexed: no pipeline bound");
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    if (index_count == 0u || instance_count == 0u) {
+        LAGFX_ERR("translate_render_draw_indexed: zero counts "
+                  "(idx=%u inst=%u)", index_count, instance_count);
+        return LAGFX_ERR_INVALID_ARG;
+    }
+
+    if (state->render_pass_active && state->cmdbuf != VK_NULL_HANDLE) {
+        vkCmdDrawIndexed(state->cmdbuf, index_count, instance_count,
+                         first_index, vertex_offset, first_instance);
+    }
+
+    LAGFX_LOG("translate_render_draw_indexed: idx=%u inst=%u "
+              "firstIdx=%u vtxOff=%d firstInst=%u (kind=%u)",
+              index_count, instance_count,
+              first_index, vertex_offset, first_instance,
+              state->shader_kind);
     return LAGFX_OK;
 }
 
@@ -412,8 +451,20 @@ lagfx_status_t lagfx_translate_render_bind_texture(
 
 lagfx_status_t lagfx_translate_render_draw(
     lagfx_translate_render_state_t *state,
-    uint32_t vertex_count, uint32_t instance_count) {
+    uint32_t vertex_count, uint32_t instance_count,
+    uint32_t first_vertex, uint32_t first_instance) {
     (void)state; (void)vertex_count; (void)instance_count;
+    (void)first_vertex; (void)first_instance;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_render_draw_indexed(
+    lagfx_translate_render_state_t *state,
+    uint32_t index_count, uint32_t instance_count,
+    uint32_t first_index, int32_t vertex_offset,
+    uint32_t first_instance) {
+    (void)state; (void)index_count; (void)instance_count;
+    (void)first_index; (void)vertex_offset; (void)first_instance;
     return LAGFX_ERR_BACKEND;
 }
 

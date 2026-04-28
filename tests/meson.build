@@ -92,6 +92,19 @@ if fs.is_file(meson.current_source_dir() / 'protocol-dispatch.c')
   test('protocol dispatch', protocol_dispatch_test)
 endif
 
+# Resource registry unit tests. Covers register/lookup/unregister/
+# clear_task, plus opcode wiring (MapMemoryImmediate, DeleteTask,
+# DeleteResource, SetObjectPlacement).
+if fs.is_file(meson.current_source_dir() / 'resource-registry.c')
+  resource_registry_test = executable('resource-registry',
+    'resource-registry.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('resource registry', resource_registry_test)
+endif
+
 # M3 stamp-helper unit tests. Covers lagfx_advance_stamp_cell (driven
 # indirectly via complete_stamp_slot, which is its only public caller),
 # lagfx_protocol_complete_stamp_slot, and the slot=0 wrapper

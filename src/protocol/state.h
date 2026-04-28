@@ -15,6 +15,7 @@
 
 #include "protocol.h"
 #include "opcodes.h"
+#include "resource_registry.h"
 #include "../translate/render_encoder.h"
 
 #include <stdbool.h>
@@ -223,6 +224,11 @@ struct lagfx_protocol {
     lagfx_childfifo_entry_t fifos[LAGFX_MAX_CHILDFIFOS];
     lagfx_inflight_entry_t  inflight[LAGFX_MAX_INFLIGHT];
     lagfx_display_entry_t   displays[LAGFX_PROTO_MAX_DISPLAYS];
+
+    /* Resource reference registry — maps (ref, task_id) to host-side
+     * resource metadata. Populated by outer opcodes and IOUserClient
+     * selectors; consumed by inner-opcode handlers resolving refs. */
+    lagfx_resource_registry_t resources;
 
     /* Render encoder state — tracks lifecycle and dynamic state for
      * the current MTLRenderCommandEncoder session (encoder_type=2).

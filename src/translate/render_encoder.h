@@ -52,6 +52,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define LAGFX_MAX_BOUND_VERTEX_BUFFERS   16u
+#define LAGFX_MAX_BOUND_FRAGMENT_TEXTURES 32u
+
 #ifdef LAGFX_HAVE_VULKAN
 #  include <vulkan/vulkan.h>
 #endif
@@ -118,6 +121,21 @@ typedef struct lagfx_translate_render_state {
     /* Rendering state flags. */
     bool in_pass;          /* between _begin and _end */
     bool pipeline_bound;   /* bind_pipeline was called since _begin */
+
+    /* Protocol-level resource bindings — stored from opcode handlers
+     * for future VkPipeline/VkBuffer/VkDescriptor resolution. */
+    uint32_t bound_pipeline_ref;
+
+    struct {
+        uint32_t ref;
+        uint64_t offset;
+    } bound_vertex_buffers[LAGFX_MAX_BOUND_VERTEX_BUFFERS];
+    uint32_t bound_vertex_buffer_count;
+    uint32_t bound_vertex_buffer_first;
+
+    uint32_t bound_fragment_textures[LAGFX_MAX_BOUND_FRAGMENT_TEXTURES];
+    uint32_t bound_fragment_texture_count;
+    uint32_t bound_fragment_texture_first;
 } lagfx_translate_render_state_t;
 
 /* === Public API ===============================================
@@ -173,13 +191,24 @@ lagfx_status_t lagfx_translate_render_bind_texture(
     VkSampler sampler);
 
 /* Record a vkCmdDraw with the given vertex + instance counts.
- * Requires a bound pipeline. `first_vertex` + `first_instance` are
- * always 0 on this path — the guest command-buffer decoder has
- * already flattened any instance/vertex offsets. */
+ * Requires a bound pipeline. `first_vertex` and `first_instance`
+ * map directly to the Vulkan parameters of the same names. */
 lagfx_status_t lagfx_translate_render_draw(
     lagfx_translate_render_state_t *state,
     uint32_t vertex_count,
-    uint32_t instance_count);
+    uint32_t instance_count,
+    uint32_t first_vertex,
+    uint32_t first_instance);
+
+/* Record a vkCmdDrawIndexed. Requires a bound pipeline. Maps
+ * directly to the Vulkan vkCmdDrawIndexed parameters. */
+lagfx_status_t lagfx_translate_render_draw_indexed(
+    lagfx_translate_render_state_t *state,
+    uint32_t index_count,
+    uint32_t instance_count,
+    uint32_t first_index,
+    int32_t vertex_offset,
+    uint32_t first_instance);
 
 /* End the render pass (vkCmdEndRendering) and reset state for a
  * subsequent _begin. Does NOT end the underlying command buffer —
@@ -240,7 +269,17 @@ lagfx_status_t lagfx_translate_render_bind_texture(
 lagfx_status_t lagfx_translate_render_draw(
     lagfx_translate_render_state_t *state,
     uint32_t vertex_count,
-    uint32_t instance_count);
+    uint32_t instance_count,
+    uint32_t first_vertex,
+    uint32_t first_instance);
+
+lagfx_status_t lagfx_translate_render_draw_indexed(
+    lagfx_translate_render_state_t *state,
+    uint32_t index_count,
+    uint32_t instance_count,
+    uint32_t first_index,
+    int32_t vertex_offset,
+    uint32_t first_instance);
 
 lagfx_status_t lagfx_translate_render_end(
     lagfx_translate_render_state_t *state);

@@ -200,13 +200,16 @@ static int render_op_texture_barrier(lagfx_protocol_t *p,
 static int render_op_set_render_pipeline_state(lagfx_protocol_t *p,
                                                 const uint8_t    *payload,
                                                 size_t            len) {
-    (void)p;
     if (len < 4) {
         LAGFX_WARN("SetRenderPipelineState: payload too short (%zu < 4)", len);
         return 0;
     }
     uint32_t reference = read_le32(payload);
     LAGFX_TRACE("SetRenderPipelineState: reference=0x%08x", reference);
+
+    if (p) {
+        p->render_enc.bound_pipeline_ref = reference;
+    }
     return 0;
 }
 
@@ -225,13 +228,22 @@ static int render_op_draw_primitives_64(lagfx_protocol_t *p,
                 prim_type,
                 (unsigned long long)vertex_start,
                 (unsigned long long)vertex_count);
+
+    if (p && p->render_enc.in_pass && vertex_count > 0) {
+#ifdef LAGFX_HAVE_VULKAN
+        lagfx_translate_render_draw(&p->render_enc,
+                                    (uint32_t)vertex_count, 1,
+                                    (uint32_t)vertex_start, 0);
+#else
+        (void)prim_type;
+#endif
+    }
     return 0;
 }
 
 static int render_op_set_vertex_buffers(lagfx_protocol_t *p,
                                         const uint8_t    *payload,
                                         size_t            len) {
-    (void)p;
     if (len < 8) {
         LAGFX_WARN("SetVertexBuffers: payload too short (%zu < 8)", len);
         return 0;
@@ -254,13 +266,28 @@ static int render_op_set_vertex_buffers(lagfx_protocol_t *p,
     }
     if (count > 4)
         LAGFX_TRACE("  ... (%u more)", count - 4);
+
+    if (p) {
+        uint32_t store_count = count;
+        if (store_count > LAGFX_MAX_BOUND_VERTEX_BUFFERS) {
+            LAGFX_WARN("SetVertexBuffers: count=%u exceeds max=%u, truncating",
+                       count, LAGFX_MAX_BOUND_VERTEX_BUFFERS);
+            store_count = LAGFX_MAX_BOUND_VERTEX_BUFFERS;
+        }
+        for (uint32_t i = 0; i < store_count; ++i) {
+            const uint8_t *entry = payload + 8 + (size_t)i * 12;
+            p->render_enc.bound_vertex_buffers[i].ref = read_le32(entry);
+            p->render_enc.bound_vertex_buffers[i].offset = read_le64(entry + 4);
+        }
+        p->render_enc.bound_vertex_buffer_count = store_count;
+        p->render_enc.bound_vertex_buffer_first = first;
+    }
     return 0;
 }
 
 static int render_op_set_fragment_textures(lagfx_protocol_t *p,
                                            const uint8_t    *payload,
                                            size_t            len) {
-    (void)p;
     if (len < 8) {
         LAGFX_WARN("SetFragmentTextures: payload too short (%zu < 8)", len);
         return 0;
@@ -280,6 +307,21 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
     }
     if (count > 4)
         LAGFX_TRACE("  ... (%u more)", count - 4);
+
+    if (p) {
+        uint32_t store_count = count;
+        if (store_count > LAGFX_MAX_BOUND_FRAGMENT_TEXTURES) {
+            LAGFX_WARN("SetFragmentTextures: count=%u exceeds max=%u, truncating",
+                       count, LAGFX_MAX_BOUND_FRAGMENT_TEXTURES);
+            store_count = LAGFX_MAX_BOUND_FRAGMENT_TEXTURES;
+        }
+        for (uint32_t i = 0; i < store_count; ++i) {
+            p->render_enc.bound_fragment_textures[i] =
+                read_le32(payload + 8 + (size_t)i * 4);
+        }
+        p->render_enc.bound_fragment_texture_count = store_count;
+        p->render_enc.bound_fragment_texture_first = first;
+    }
     return 0;
 }
 
@@ -351,6 +393,16 @@ static int render_op_draw_primitives_16(lagfx_protocol_t *p,
     uint16_t vertex_count = (uint16_t)read_le32(payload + 6);
     LAGFX_TRACE("DrawPrimitives16: type=%u start=%u count=%u",
                 prim_type, vertex_start, vertex_count);
+
+    if (p && p->render_enc.in_pass && vertex_count > 0) {
+#ifdef LAGFX_HAVE_VULKAN
+        lagfx_translate_render_draw(&p->render_enc,
+                                    vertex_count, 1,
+                                    vertex_start, 0);
+#else
+        (void)prim_type;
+#endif
+    }
     return 0;
 }
 
@@ -371,6 +423,18 @@ static int render_op_draw_indexed_primitives_64(lagfx_protocol_t *p,
                 "idxBufRef=0x%08x idxBufOff=%llu",
                 prim_type, index_count, index_type, index_buf_ref,
                 (unsigned long long)index_buf_offset);
+
+    if (p && p->render_enc.in_pass && index_count > 0) {
+#ifdef LAGFX_HAVE_VULKAN
+        uint32_t elem_size = (index_type == 0) ? 2u : 4u;
+        uint32_t first_index = (uint32_t)(index_buf_offset / elem_size);
+        lagfx_translate_render_draw_indexed(&p->render_enc,
+                                            index_count, 1,
+                                            first_index, 0, 0);
+#else
+        (void)prim_type; (void)index_buf_ref;
+#endif
+    }
     return 0;
 }
 

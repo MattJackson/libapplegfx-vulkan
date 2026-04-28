@@ -131,7 +131,7 @@ static void test_state_machine_no_vk_calls(void) {
           "bind_texture before begin → ERR_INVALID_ARG");
 
     /* Illegal: _draw before _begin. */
-    st = lagfx_translate_render_draw(&state, 3, 1);
+    st = lagfx_translate_render_draw(&state, 3, 1, 0, 0);
     CHECK(st == LAGFX_ERR_INVALID_ARG,
           "draw before begin → ERR_INVALID_ARG");
 
@@ -248,7 +248,7 @@ static int test_real_vk_record(struct lagfx_vk_state *vk) {
           "bind_texture(NULL view) → ERR_INVALID_ARG");
 
     /* draw(0,1) → ERR_INVALID_ARG. */
-    lagfx_status_t dst0 = lagfx_translate_render_draw(&state, 0, 1);
+    lagfx_status_t dst0 = lagfx_translate_render_draw(&state, 0, 1, 0, 0);
     CHECK(dst0 == LAGFX_ERR_INVALID_ARG,
           "draw(0,1) → ERR_INVALID_ARG");
 
@@ -257,7 +257,7 @@ static int test_real_vk_record(struct lagfx_vk_state *vk) {
      * will ignore that or warn, but the encoder records the
      * command either way. We accept whichever the ICD does as
      * long as the eventual submit doesn't error. */
-    lagfx_status_t dst = lagfx_translate_render_draw(&state, 3, 1);
+    lagfx_status_t dst = lagfx_translate_render_draw(&state, 3, 1, 0, 0);
     CHECK(dst == LAGFX_OK, "translate_render_draw(3,1)");
 
     lagfx_status_t est = lagfx_translate_render_end(&state);
@@ -329,7 +329,7 @@ int main(void) {
     CHECK(st == LAGFX_ERR_BACKEND,
           "no-vulkan bind_pipeline → LAGFX_ERR_BACKEND");
 
-    st = lagfx_translate_render_draw(&state, 3, 1);
+    st = lagfx_translate_render_draw(&state, 3, 1, 0, 0);
     CHECK(st == LAGFX_ERR_BACKEND,
           "no-vulkan draw → LAGFX_ERR_BACKEND");
 

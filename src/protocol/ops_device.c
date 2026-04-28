@@ -27,6 +27,7 @@
 
 #include "opcodes.h"
 #include "protocol.h"
+#include "resource_registry.h"
 #include "state.h"
 #include "../device.h"
 #include "../common/log.h"
@@ -434,6 +435,8 @@ lagfx_handler_status_t lagfx_op_delete_task(lagfx_protocol_t *p,
 
     LAGFX_LOG("CmdDeleteTask: taskID=%u stamp=0x%08x", task_id, hdr->stamp);
 
+    lagfx_resource_clear_task(&p->resources, task_id);
+
     memset(entry, 0, sizeof(*entry));
     entry->live = false;
     return LAGFX_HANDLER_OK;
@@ -639,6 +642,82 @@ lagfx_handler_status_t lagfx_op_map_memory_immediate(
         }
     }
 
+    lagfx_resource_register(&p->resources, 0u,
+                            LAGFX_RESOURCE_TYPE_BUFFER,
+                            task_id, va_base, va_len);
+
+    return LAGFX_HANDLER_OK;
+}
+
+/* ===========================================================================
+ * CmdDeleteResource (0x08) — P2
+ *
+ * Payload layout UNKNOWN (min/max_payload=0 in the descriptor table).
+ * Best-effort: read first 8 bytes as {u32 task_id, u32 ref} and
+ * unregister from the resource registry. Fall back to {u32 ref} if
+ * only 4 bytes available. Unknown payload is logged for RE.
+ * =========================================================================== */
+
+lagfx_handler_status_t lagfx_op_delete_resource(lagfx_protocol_t *p,
+                                                 const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 4u) {
+        return LAGFX_HANDLER_OK;
+    }
+
+    uint32_t word0 = lagfx_le32(hdr->payload + 0);
+
+    if (hdr->payload_size >= 8u) {
+        uint32_t word1 = lagfx_le32(hdr->payload + 4);
+        lagfx_resource_unregister(&p->resources, word1, word0);
+        LAGFX_TRACE("CmdDeleteResource: taskID=%u ref=0x%x stamp=0x%08x",
+                   word0, word1, hdr->stamp);
+    } else {
+        LAGFX_TRACE("CmdDeleteResource: word0=0x%x stamp=0x%08x "
+                   "(payload too short for task_id+ref pair)",
+                   word0, hdr->stamp);
+    }
+
+    return LAGFX_HANDLER_OK;
+}
+
+/* ===========================================================================
+ * CmdSetObjectAndPlacementList / CmdReleaseObjectReference (0x25) — P2
+ *
+ * Payload layout UNKNOWN. Best-effort: attempt to extract resource
+ * references and unregister them. Wire format will be refined when
+ * runtime captures are available.
+ * =========================================================================== */
+
+lagfx_handler_status_t lagfx_op_set_object_placement(lagfx_protocol_t *p,
+                                                      const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 8u) {
+        return LAGFX_HANDLER_OK;
+    }
+
+    uint32_t task_id = lagfx_le32(hdr->payload + 0);
+    uint32_t count   = lagfx_le32(hdr->payload + 4);
+
+    if (count == 0) {
+        return LAGFX_HANDLER_OK;
+    }
+
+    if (count > ((uint32_t)hdr->payload_size - 8u) / 4u) {
+        count = ((uint32_t)hdr->payload_size - 8u) / 4u;
+    }
+
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t ref = lagfx_le32(hdr->payload + 8u + 4u * i);
+        lagfx_resource_unregister(&p->resources, ref, task_id);
+    }
+
+    LAGFX_TRACE("CmdSetObjectPlacement: taskID=%u count=%u stamp=0x%08x",
+               task_id, count, hdr->stamp);
     return LAGFX_HANDLER_OK;
 }
 

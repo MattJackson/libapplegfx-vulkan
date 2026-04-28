@@ -48,7 +48,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_DISCARD_RESOURCES,    "CmdDiscardResources",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_DELETE_RESOURCE,      "CmdDeleteResource",
-      LAGFX_PRIO_P2, 0, 0, NULL },
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_delete_resource },
     { LAGFX_OP_REPLACE_PHYSICAL,     "CmdReplacePhysical",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_GET_DEVICE_INFO,      "CmdGetDeviceInfo",
@@ -109,7 +109,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_SET_OBJECT_LIST,       "CmdSetObjectList",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_SET_OBJECT_PLACEMENT,  "CmdSetObjectAndPlacementList",
-      LAGFX_PRIO_P2, 0, 0, NULL },
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_set_object_placement },
     { LAGFX_OP_DELETE_IOSURFACE_BACKING, "CmdDeleteIOSurfaceBacking2",
       LAGFX_PRIO_P2, 0, 0, NULL },
 
