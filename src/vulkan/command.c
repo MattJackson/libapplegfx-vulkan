@@ -308,6 +308,11 @@ lagfx_status_t lagfx_vk_end_frame(struct lagfx_vk_state *vk) {
         return LAGFX_OK;
     }
 
+    if (vk->pending_fence_valid) {
+        LAGFX_WARN("end_frame: previous submission still pending, draining first");
+        lagfx_vk_drain_pending(vk);
+    }
+
     VkResult vr = vkEndCommandBuffer(vk->frame_cmdbuf);
     if (vr != VK_SUCCESS) {
         LAGFX_ERR("end_frame: vkEndCommandBuffer failed (VkResult=%d)",

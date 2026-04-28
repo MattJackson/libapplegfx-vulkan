@@ -853,9 +853,11 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             }
 
             if (final_flag == 0u && reuse_flag == 0u) {
-                if (encoder_type == 2u && p->render_enc.in_pass) {
-                    lagfx_translate_render_end(&p->render_enc);
+                if (encoder_type == 2u) {
                     render_passes_completed++;
+                    if (p->render_enc.in_pass) {
+                        lagfx_translate_render_end(&p->render_enc);
+                    }
 #ifdef LAGFX_HAVE_VULKAN
                     if (p->dev && p->dev->vk) {
                         lagfx_vk_end_frame(p->dev->vk);
