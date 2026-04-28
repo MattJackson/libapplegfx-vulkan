@@ -209,6 +209,15 @@ struct lagfx_protocol {
      * requirement. */
     uint32_t device_info_actual_count;
 
+    /* Extra stamp increments requested by the current handler.
+     * Set by lagfx_op_exec_indirect2 when it processes render
+     * segments (encoder_type=2) that complete render passes.
+     * The per-channel doorbell handler reads this after
+     * dispatch_one_no_stamp and adds it to last_stamp before
+     * calling lagfx_advance_stamp_cell. Reset to 0 by the
+     * doorbell handler before each dispatch. */
+    uint32_t extra_stamp_advance;
+
     /* Handle tables. */
     lagfx_task_entry_t      tasks[LAGFX_MAX_TASKS];
     lagfx_childfifo_entry_t fifos[LAGFX_MAX_CHILDFIFOS];

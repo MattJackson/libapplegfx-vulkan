@@ -59,6 +59,10 @@ static double read_f64(const uint8_t *p) {
     return d;
 }
 
+static uint16_t read_le16(const uint8_t *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
 static int render_op_ack_stub(lagfx_protocol_t *p,
                               const uint8_t    *payload,
                               size_t            len) {
@@ -566,6 +570,1413 @@ lagfx_render_pass_desc_get(void) {
     return &g_last_render_pass_desc;
 }
 
+/* --- Draw instanced/base/patch/indirect variants --------------- */
+
+static int render_op_draw_instanced_primitives_64(lagfx_protocol_t *p,
+                                                   const uint8_t    *payload,
+                                                   size_t            len) {
+    (void)p;
+    if (len < 28) {
+        LAGFX_WARN("DrawInstancedPrimitives64: payload too short (%zu < 28)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint64_t vertex_start = read_le64(payload + 4);
+    uint64_t vertex_count = read_le64(payload + 12);
+    uint64_t instance_count = read_le64(payload + 20);
+    LAGFX_TRACE("DrawInstancedPrimitives64: type=%u start=%llu count=%llu instances=%llu",
+                prim_type, (unsigned long long)vertex_start,
+                (unsigned long long)vertex_count,
+                (unsigned long long)instance_count);
+    return 0;
+}
+
+static int render_op_draw_instanced_primitives_16(lagfx_protocol_t *p,
+                                                   const uint8_t    *payload,
+                                                   size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("DrawInstancedPrimitives16: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint16_t prim_type = read_le16(payload);
+    uint16_t vertex_start = read_le16(payload + 2);
+    uint16_t vertex_count = read_le16(payload + 4);
+    uint16_t instance_count = read_le16(payload + 6);
+    LAGFX_TRACE("DrawInstancedPrimitives16: type=%u start=%u count=%u instances=%u",
+                prim_type, vertex_start, vertex_count, instance_count);
+    return 0;
+}
+
+static int render_op_draw_instanced_base_primitives_64(lagfx_protocol_t *p,
+                                                        const uint8_t    *payload,
+                                                        size_t            len) {
+    (void)p;
+    if (len < 36) {
+        LAGFX_WARN("DrawInstancedBasePrimitives64: payload too short (%zu < 36)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint64_t vertex_start = read_le64(payload + 4);
+    uint64_t vertex_count = read_le64(payload + 12);
+    uint64_t instance_count = read_le64(payload + 20);
+    uint64_t base_instance = read_le64(payload + 28);
+    LAGFX_TRACE("DrawInstancedBasePrimitives64: type=%u start=%llu count=%llu "
+                "instances=%llu base=%llu",
+                prim_type, (unsigned long long)vertex_start,
+                (unsigned long long)vertex_count,
+                (unsigned long long)instance_count,
+                (unsigned long long)base_instance);
+    return 0;
+}
+
+static int render_op_draw_instanced_base_primitives_16(lagfx_protocol_t *p,
+                                                        const uint8_t    *payload,
+                                                        size_t            len) {
+    (void)p;
+    if (len < 12) {
+        LAGFX_WARN("DrawInstancedBasePrimitives16: payload too short (%zu < 12)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint16_t vertex_start = read_le16(payload + 4);
+    uint16_t vertex_count = read_le16(payload + 6);
+    uint16_t instance_count = read_le16(payload + 8);
+    uint16_t base_instance = read_le16(payload + 10);
+    LAGFX_TRACE("DrawInstancedBasePrimitives16: type=%u start=%u count=%u "
+                "instances=%u base=%u",
+                prim_type, vertex_start, vertex_count,
+                instance_count, base_instance);
+    return 0;
+}
+
+static int render_op_draw_indexed_primitives_16(lagfx_protocol_t *p,
+                                                 const uint8_t    *payload,
+                                                 size_t            len) {
+    (void)p;
+    if (len < 12) {
+        LAGFX_WARN("DrawIndexedPrimitives16: payload too short (%zu < 12)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint16_t index_count = read_le16(payload + 4);
+    uint16_t index_type = read_le16(payload + 6);
+    uint32_t index_buf_ref = read_le32(payload + 8);
+    LAGFX_TRACE("DrawIndexedPrimitives16: type=%u count=%u idxType=%u "
+                "idxBufRef=0x%08x",
+                prim_type, index_count, index_type, index_buf_ref);
+    return 0;
+}
+
+static int render_op_draw_indexed_instanced_primitives_64(lagfx_protocol_t *p,
+                                                           const uint8_t    *payload,
+                                                           size_t            len) {
+    (void)p;
+    if (len < 32) {
+        LAGFX_WARN("DrawIndexedInstancedPrimitives64: payload too short (%zu < 32)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint32_t index_count = read_le32(payload + 4);
+    uint32_t index_type = read_le32(payload + 8);
+    uint32_t index_buf_ref = read_le32(payload + 12);
+    uint64_t index_buf_offset = read_le64(payload + 16);
+    uint64_t instance_count = read_le64(payload + 24);
+    LAGFX_TRACE("DrawIndexedInstancedPrimitives64: type=%u count=%u idxType=%u "
+                "idxBufRef=0x%08x idxBufOff=%llu instances=%llu",
+                prim_type, index_count, index_type, index_buf_ref,
+                (unsigned long long)index_buf_offset,
+                (unsigned long long)instance_count);
+    return 0;
+}
+
+static int render_op_draw_indexed_instanced_primitives_16(lagfx_protocol_t *p,
+                                                           const uint8_t    *payload,
+                                                           size_t            len) {
+    (void)p;
+    if (len < 16) {
+        LAGFX_WARN("DrawIndexedInstancedPrimitives16: payload too short (%zu < 16)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint16_t index_count = read_le16(payload + 4);
+    uint16_t index_type = read_le16(payload + 6);
+    uint32_t index_buf_ref = read_le32(payload + 8);
+    uint16_t index_buf_offset = read_le16(payload + 12);
+    uint16_t instance_count = read_le16(payload + 14);
+    LAGFX_TRACE("DrawIndexedInstancedPrimitives16: type=%u count=%u idxType=%u "
+                "idxBufRef=0x%08x idxBufOff=%u instances=%u",
+                prim_type, index_count, index_type, index_buf_ref,
+                index_buf_offset, instance_count);
+    return 0;
+}
+
+static int render_op_draw_indexed_instanced_base_primitives_64(lagfx_protocol_t *p,
+                                                                const uint8_t    *payload,
+                                                                size_t            len) {
+    (void)p;
+    if (len < 48) {
+        LAGFX_WARN("DrawIndexedInstancedBasePrimitives64: payload too short (%zu < 48)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint32_t index_count = read_le32(payload + 4);
+    uint32_t index_type = read_le32(payload + 8);
+    uint32_t index_buf_ref = read_le32(payload + 12);
+    uint64_t index_buf_offset = read_le64(payload + 16);
+    uint64_t instance_count = read_le64(payload + 24);
+    uint64_t base_vertex = read_le64(payload + 32);
+    uint64_t base_instance = read_le64(payload + 40);
+    LAGFX_TRACE("DrawIndexedInstancedBasePrimitives64: type=%u count=%u idxType=%u "
+                "idxBufRef=0x%08x idxBufOff=%llu instances=%llu baseVtx=%llu baseInst=%llu",
+                prim_type, index_count, index_type, index_buf_ref,
+                (unsigned long long)index_buf_offset,
+                (unsigned long long)instance_count,
+                (unsigned long long)base_vertex,
+                (unsigned long long)base_instance);
+    return 0;
+}
+
+static int render_op_draw_indexed_instanced_base_primitives_16(lagfx_protocol_t *p,
+                                                                const uint8_t    *payload,
+                                                                size_t            len) {
+    (void)p;
+    if (len < 20) {
+        LAGFX_WARN("DrawIndexedInstancedBasePrimitives16: payload too short (%zu < 20)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint16_t index_count = read_le16(payload + 4);
+    uint16_t index_type = read_le16(payload + 6);
+    uint32_t index_buf_ref = read_le32(payload + 8);
+    uint16_t index_buf_offset = read_le16(payload + 12);
+    uint16_t instance_count = read_le16(payload + 14);
+    uint16_t base_vertex = read_le16(payload + 16);
+    uint16_t base_instance = read_le16(payload + 18);
+    LAGFX_TRACE("DrawIndexedInstancedBasePrimitives16: type=%u count=%u idxType=%u "
+                "idxBufRef=0x%08x idxBufOff=%u instances=%u baseVtx=%u baseInst=%u",
+                prim_type, index_count, index_type, index_buf_ref,
+                index_buf_offset, instance_count, base_vertex, base_instance);
+    return 0;
+}
+
+static int render_op_draw_patches_64(lagfx_protocol_t *p,
+                                      const uint8_t    *payload,
+                                      size_t            len) {
+    (void)p;
+    if (len < 48) {
+        LAGFX_WARN("DrawPatches64: payload too short (%zu < 48)", len);
+        return 0;
+    }
+    uint32_t num_control_points = read_le32(payload);
+    uint64_t patch_start = read_le64(payload + 4);
+    uint64_t patch_count = read_le64(payload + 12);
+    uint32_t patch_index_buf_ref = read_le32(payload + 20);
+    uint64_t patch_index_buf_offset = read_le64(payload + 24);
+    uint64_t instance_count = read_le64(payload + 32);
+    uint64_t base_instance = read_le64(payload + 40);
+    LAGFX_TRACE("DrawPatches64: ctrlPts=%u start=%llu count=%llu "
+                "idxBufRef=0x%08x idxBufOff=%llu instances=%llu base=%llu",
+                num_control_points,
+                (unsigned long long)patch_start, (unsigned long long)patch_count,
+                patch_index_buf_ref,
+                (unsigned long long)patch_index_buf_offset,
+                (unsigned long long)instance_count,
+                (unsigned long long)base_instance);
+    return 0;
+}
+
+static int render_op_draw_patches_16(lagfx_protocol_t *p,
+                                      const uint8_t    *payload,
+                                      size_t            len) {
+    (void)p;
+    if (len < 16) {
+        LAGFX_WARN("DrawPatches16: payload too short (%zu < 16)", len);
+        return 0;
+    }
+    uint16_t num_control_points = read_le16(payload);
+    uint16_t patch_start = read_le16(payload + 2);
+    uint16_t patch_count = read_le16(payload + 4);
+    uint32_t patch_index_buf_ref = read_le32(payload + 6);
+    uint16_t patch_index_buf_offset = read_le16(payload + 10);
+    uint16_t instance_count = read_le16(payload + 12);
+    uint16_t base_instance = read_le16(payload + 14);
+    LAGFX_TRACE("DrawPatches16: ctrlPts=%u start=%u count=%u "
+                "idxBufRef=0x%08x idxBufOff=%u instances=%u base=%u",
+                num_control_points, patch_start, patch_count,
+                patch_index_buf_ref, patch_index_buf_offset,
+                instance_count, base_instance);
+    return 0;
+}
+
+static int render_op_draw_indexed_patches_64(lagfx_protocol_t *p,
+                                              const uint8_t    *payload,
+                                              size_t            len) {
+    (void)p;
+    if (len < 60) {
+        LAGFX_WARN("DrawIndexedPatches64: payload too short (%zu < 60)", len);
+        return 0;
+    }
+    uint32_t num_control_points = read_le32(payload);
+    uint64_t patch_start = read_le64(payload + 4);
+    uint64_t patch_count = read_le64(payload + 12);
+    uint32_t patch_index_buf_ref = read_le32(payload + 20);
+    uint64_t patch_index_buf_offset = read_le64(payload + 24);
+    uint32_t ctrl_pt_index_buf_ref = read_le32(payload + 32);
+    uint64_t ctrl_pt_index_buf_offset = read_le64(payload + 36);
+    uint64_t instance_count = read_le64(payload + 44);
+    uint64_t base_instance = read_le64(payload + 52);
+    LAGFX_TRACE("DrawIndexedPatches64: ctrlPts=%u start=%llu count=%llu "
+                "idxBufRef=0x%08x idxBufOff=%llu ctrlPtBufRef=0x%08x ctrlPtOff=%llu "
+                "instances=%llu base=%llu",
+                num_control_points,
+                (unsigned long long)patch_start, (unsigned long long)patch_count,
+                patch_index_buf_ref,
+                (unsigned long long)patch_index_buf_offset,
+                ctrl_pt_index_buf_ref,
+                (unsigned long long)ctrl_pt_index_buf_offset,
+                (unsigned long long)instance_count,
+                (unsigned long long)base_instance);
+    return 0;
+}
+
+static int render_op_draw_indexed_patches_16(lagfx_protocol_t *p,
+                                              const uint8_t    *payload,
+                                              size_t            len) {
+    (void)p;
+    if (len < 24) {
+        LAGFX_WARN("DrawIndexedPatches16: payload too short (%zu < 24)", len);
+        return 0;
+    }
+    uint32_t num_control_points = read_le32(payload);
+    uint16_t patch_start = read_le16(payload + 4);
+    uint16_t patch_count = read_le16(payload + 6);
+    uint32_t patch_index_buf_ref = read_le32(payload + 8);
+    uint16_t patch_index_buf_offset = read_le16(payload + 12);
+    uint32_t ctrl_pt_index_buf_ref = read_le32(payload + 14);
+    uint16_t ctrl_pt_index_buf_offset = read_le16(payload + 18);
+    uint16_t instance_count = read_le16(payload + 20);
+    uint16_t base_instance = read_le16(payload + 22);
+    LAGFX_TRACE("DrawIndexedPatches16: ctrlPts=%u start=%u count=%u "
+                "idxBufRef=0x%08x idxBufOff=%u ctrlPtBufRef=0x%08x ctrlPtOff=%u "
+                "instances=%u base=%u",
+                num_control_points, patch_start, patch_count,
+                patch_index_buf_ref, patch_index_buf_offset,
+                ctrl_pt_index_buf_ref, ctrl_pt_index_buf_offset,
+                instance_count, base_instance);
+    return 0;
+}
+
+static int render_op_draw_primitives_indirect(lagfx_protocol_t *p,
+                                               const uint8_t    *payload,
+                                               size_t            len) {
+    (void)p;
+    if (len < 16) {
+        LAGFX_WARN("DrawPrimitivesIndirect: payload too short (%zu < 16)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint32_t indirect_buf_ref = read_le32(payload + 4);
+    uint64_t indirect_buf_offset = read_le64(payload + 8);
+    LAGFX_TRACE("DrawPrimitivesIndirect: type=%u bufRef=0x%08x offset=%llu",
+                prim_type, indirect_buf_ref,
+                (unsigned long long)indirect_buf_offset);
+    return 0;
+}
+
+static int render_op_draw_indexed_primitives_indirect(lagfx_protocol_t *p,
+                                                       const uint8_t    *payload,
+                                                       size_t            len) {
+    (void)p;
+    if (len < 28) {
+        LAGFX_WARN("DrawIndexedPrimitivesIndirect: payload too short (%zu < 28)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint32_t index_type = read_le32(payload + 4);
+    uint32_t index_buf_ref = read_le32(payload + 8);
+    uint64_t index_buf_offset = read_le64(payload + 12);
+    uint32_t indirect_buf_ref = read_le32(payload + 20);
+    uint64_t indirect_buf_offset = read_le64(payload + 24);
+    LAGFX_TRACE("DrawIndexedPrimitivesIndirect: type=%u idxType=%u "
+                "idxBufRef=0x%08x idxBufOff=%llu bufRef=0x%08x bufOff=%llu",
+                prim_type, index_type, index_buf_ref,
+                (unsigned long long)index_buf_offset,
+                indirect_buf_ref,
+                (unsigned long long)indirect_buf_offset);
+    return 0;
+}
+
+static int render_op_draw_patches_indirect(lagfx_protocol_t *p,
+                                            const uint8_t    *payload,
+                                            size_t            len) {
+    (void)p;
+    if (len < 28) {
+        LAGFX_WARN("DrawPatchesIndirect: payload too short (%zu < 28)", len);
+        return 0;
+    }
+    uint32_t num_control_points = read_le32(payload);
+    uint32_t patch_index_buf_ref = read_le32(payload + 4);
+    uint64_t patch_index_buf_offset = read_le64(payload + 8);
+    uint32_t indirect_buf_ref = read_le32(payload + 16);
+    uint64_t indirect_buf_offset = read_le64(payload + 20);
+    LAGFX_TRACE("DrawPatchesIndirect: ctrlPts=%u idxBufRef=0x%08x idxBufOff=%llu "
+                "bufRef=0x%08x bufOff=%llu",
+                num_control_points, patch_index_buf_ref,
+                (unsigned long long)patch_index_buf_offset,
+                indirect_buf_ref,
+                (unsigned long long)indirect_buf_offset);
+    return 0;
+}
+
+static int render_op_draw_indexed_patches_indirect(lagfx_protocol_t *p,
+                                                     const uint8_t    *payload,
+                                                     size_t            len) {
+    (void)p;
+    if (len < 40) {
+        LAGFX_WARN("DrawIndexedPatchesIndirect: payload too short (%zu < 40)", len);
+        return 0;
+    }
+    uint32_t num_control_points = read_le32(payload);
+    uint32_t patch_index_buf_ref = read_le32(payload + 4);
+    uint64_t patch_index_buf_offset = read_le64(payload + 8);
+    uint32_t ctrl_pt_index_buf_ref = read_le32(payload + 16);
+    uint64_t ctrl_pt_index_buf_offset = read_le64(payload + 20);
+    uint32_t indirect_buf_ref = read_le32(payload + 28);
+    uint64_t indirect_buf_offset = read_le64(payload + 32);
+    LAGFX_TRACE("DrawIndexedPatchesIndirect: ctrlPts=%u idxBufRef=0x%08x idxBufOff=%llu "
+                "ctrlPtBufRef=0x%08x ctrlPtOff=%llu bufRef=0x%08x bufOff=%llu",
+                num_control_points, patch_index_buf_ref,
+                (unsigned long long)patch_index_buf_offset,
+                ctrl_pt_index_buf_ref,
+                (unsigned long long)ctrl_pt_index_buf_offset,
+                indirect_buf_ref,
+                (unsigned long long)indirect_buf_offset);
+    return 0;
+}
+
+static int render_op_execute_commands_in_buffer(lagfx_protocol_t *p,
+                                                 const uint8_t    *payload,
+                                                 size_t            len) {
+    (void)p;
+    if (len < 16) {
+        LAGFX_WARN("ExecuteCommandsInBuffer: payload too short (%zu < 16)", len);
+        return 0;
+    }
+    uint32_t icb_ref = read_le32(payload);
+    uint32_t buffer_ref = read_le32(payload + 4);
+    uint64_t offset = read_le64(payload + 8);
+    LAGFX_TRACE("ExecuteCommandsInBuffer: icbRef=0x%08x bufRef=0x%08x offset=%llu",
+                icb_ref, buffer_ref, (unsigned long long)offset);
+    return 0;
+}
+
+static int render_op_execute_commands_in_buffer_ranged(lagfx_protocol_t *p,
+                                                        const uint8_t    *payload,
+                                                        size_t            len) {
+    (void)p;
+    if (len < 20) {
+        LAGFX_WARN("ExecuteCommandsInBufferRanged: payload too short (%zu < 20)", len);
+        return 0;
+    }
+    uint32_t icb_ref = read_le32(payload);
+    uint32_t range_location = read_le32(payload + 4);
+    uint32_t range_length = read_le32(payload + 8);
+    uint64_t offset = read_le64(payload + 12);
+    LAGFX_TRACE("ExecuteCommandsInBufferRanged: icbRef=0x%08x range={%u,%u} offset=%llu",
+                icb_ref, range_location, range_length,
+                (unsigned long long)offset);
+    return 0;
+}
+
+/* --- Fence / barrier / heap handlers -------------------------- */
+
+static int render_op_render_update_fence(lagfx_protocol_t *p,
+                                          const uint8_t    *payload,
+                                          size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("RenderUpdateFence: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t fence_ref = read_le32(payload);
+    uint32_t stages = read_le32(payload + 4);
+    LAGFX_TRACE("RenderUpdateFence: fenceRef=0x%08x stages=0x%x",
+                fence_ref, stages);
+    return 0;
+}
+
+static int render_op_render_wait_for_fence(lagfx_protocol_t *p,
+                                            const uint8_t    *payload,
+                                            size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("RenderWaitForFence: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t fence_ref = read_le32(payload);
+    uint32_t stages = read_le32(payload + 4);
+    LAGFX_TRACE("RenderWaitForFence: fenceRef=0x%08x stages=0x%x",
+                fence_ref, stages);
+    return 0;
+}
+
+static int render_op_use_heaps_with_stages(lagfx_protocol_t *p,
+                                            const uint8_t    *payload,
+                                            size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("UseHeapsWithStages: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t stages = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 4;
+    if (len < needed) {
+        LAGFX_WARN("UseHeapsWithStages: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("UseHeapsWithStages: count=%u stages=0x%x", count, stages);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        uint32_t ref = read_le32(payload + 8 + (size_t)i * 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x", i, ref);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_draw_indexed_instanced_base_primitives_64_2(lagfx_protocol_t *p,
+                                                                  const uint8_t    *payload,
+                                                                  size_t            len) {
+    (void)p;
+    if (len < 48) {
+        LAGFX_WARN("DrawIndexedInstancedBasePrimitives64_2: payload too short (%zu < 48)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint32_t index_count = read_le32(payload + 4);
+    uint32_t index_type = read_le32(payload + 8);
+    uint32_t index_buf_ref = read_le32(payload + 12);
+    uint64_t index_buf_offset = read_le64(payload + 16);
+    uint64_t instance_count = read_le64(payload + 24);
+    uint64_t base_vertex = read_le64(payload + 32);
+    uint64_t base_instance = read_le64(payload + 40);
+    LAGFX_TRACE("DrawIndexedInstancedBasePrimitives64_2: type=%u count=%u idxType=%u "
+                "idxBufRef=0x%08x idxBufOff=%llu instances=%llu baseVtx=%llu baseInst=%llu",
+                prim_type, index_count, index_type, index_buf_ref,
+                (unsigned long long)index_buf_offset,
+                (unsigned long long)instance_count,
+                (unsigned long long)base_vertex,
+                (unsigned long long)base_instance);
+    return 0;
+}
+
+static int render_op_draw_indexed_instanced_base_primitives_16_2(lagfx_protocol_t *p,
+                                                                  const uint8_t    *payload,
+                                                                  size_t            len) {
+    (void)p;
+    if (len < 20) {
+        LAGFX_WARN("DrawIndexedInstancedBasePrimitives16_2: payload too short (%zu < 20)", len);
+        return 0;
+    }
+    uint32_t prim_type = read_le32(payload);
+    uint16_t index_count = read_le16(payload + 4);
+    uint16_t index_type = read_le16(payload + 6);
+    uint32_t index_buf_ref = read_le32(payload + 8);
+    uint16_t index_buf_offset = read_le16(payload + 12);
+    uint16_t instance_count = read_le16(payload + 14);
+    uint16_t base_vertex = read_le16(payload + 16);
+    uint16_t base_instance = read_le16(payload + 18);
+    LAGFX_TRACE("DrawIndexedInstancedBasePrimitives16_2: type=%u count=%u idxType=%u "
+                "idxBufRef=0x%08x idxBufOff=%u instances=%u baseVtx=%u baseInst=%u",
+                prim_type, index_count, index_type, index_buf_ref,
+                index_buf_offset, instance_count, base_vertex, base_instance);
+    return 0;
+}
+
+/* --- State-set scalar handlers (0x67..0xa6) -------------------- */
+
+static int render_op_set_color_store_action_options(lagfx_protocol_t *p,
+                                                     const uint8_t    *payload,
+                                                     size_t            len) {
+    (void)p;
+    if (len < 12) {
+        LAGFX_WARN("SetColorStoreActionOptions: payload too short (%zu < 12)", len);
+        return 0;
+    }
+    uint32_t action = read_le32(payload);
+    uint32_t options = read_le32(payload + 4);
+    uint32_t index = read_le32(payload + 8);
+    LAGFX_TRACE("SetColorStoreActionOptions: action=%u options=%u index=%u",
+                action, options, index);
+    return 0;
+}
+
+static int render_op_set_depth_store_action(lagfx_protocol_t *p,
+                                             const uint8_t    *payload,
+                                             size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetDepthStoreAction: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t action = read_le32(payload);
+    uint32_t extra = read_le32(payload + 4);
+    LAGFX_TRACE("SetDepthStoreAction: action=%u extra=%u", action, extra);
+    return 0;
+}
+
+static int render_op_set_depth_store_action_options(lagfx_protocol_t *p,
+                                                     const uint8_t    *payload,
+                                                     size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetDepthStoreActionOptions: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t options = read_le32(payload);
+    uint32_t extra = read_le32(payload + 4);
+    LAGFX_TRACE("SetDepthStoreActionOptions: options=%u extra=%u", options, extra);
+    return 0;
+}
+
+static int render_op_set_fragment_buffer_offset(lagfx_protocol_t *p,
+                                                 const uint8_t    *payload,
+                                                 size_t            len) {
+    (void)p;
+    if (len < 12) {
+        LAGFX_WARN("SetFragmentBufferOffset: payload too short (%zu < 12)", len);
+        return 0;
+    }
+    uint64_t offset = read_le64(payload);
+    uint32_t index = read_le32(payload + 8);
+    LAGFX_TRACE("SetFragmentBufferOffset: offset=%llu index=%u",
+                (unsigned long long)offset, index);
+    return 0;
+}
+
+static int render_op_set_fragment_sampler_states_lod_clamp(lagfx_protocol_t *p,
+                                                            const uint8_t    *payload,
+                                                            size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetFragmentSamplerStatesLODClamp: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t first = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 12;
+    if (len < needed) {
+        LAGFX_WARN("SetFragmentSamplerStatesLODClamp: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetFragmentSamplerStatesLODClamp: count=%u first=%u", count, first);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        const uint8_t *entry = payload + 8 + (size_t)i * 12;
+        uint32_t ref = read_le32(entry);
+        float lod_min = read_f32(entry + 4);
+        float lod_max = read_f32(entry + 8);
+        LAGFX_TRACE("  [%u] ref=0x%08x lodMin=%g lodMax=%g",
+                    first + i, ref, (double)lod_min, (double)lod_max);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_scissor_rects(lagfx_protocol_t *p,
+                                        const uint8_t    *payload,
+                                        size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetScissorRects: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t extra = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 32;
+    if (len < needed) {
+        LAGFX_WARN("SetScissorRects: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetScissorRects: count=%u extra=%u", count, extra);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        const uint8_t *entry = payload + 8 + (size_t)i * 32;
+        uint64_t x = read_le64(entry);
+        uint64_t y = read_le64(entry + 8);
+        uint64_t w = read_le64(entry + 16);
+        uint64_t h = read_le64(entry + 24);
+        LAGFX_TRACE("  [%u] x=%llu y=%llu w=%llu h=%llu",
+                    i, (unsigned long long)x, (unsigned long long)y,
+                    (unsigned long long)w, (unsigned long long)h);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_stencil_store_action(lagfx_protocol_t *p,
+                                               const uint8_t    *payload,
+                                               size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetStencilStoreAction: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t action = read_le32(payload);
+    uint32_t extra = read_le32(payload + 4);
+    LAGFX_TRACE("SetStencilStoreAction: action=%u extra=%u", action, extra);
+    return 0;
+}
+
+static int render_op_set_stencil_store_action_options(lagfx_protocol_t *p,
+                                                       const uint8_t    *payload,
+                                                       size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetStencilStoreActionOptions: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t options = read_le32(payload);
+    uint32_t extra = read_le32(payload + 4);
+    LAGFX_TRACE("SetStencilStoreActionOptions: options=%u extra=%u", options, extra);
+    return 0;
+}
+
+static int render_op_set_tesselation_factor_buffer(lagfx_protocol_t *p,
+                                                     const uint8_t    *payload,
+                                                     size_t            len) {
+    (void)p;
+    if (len < 20) {
+        LAGFX_WARN("SetTesselationFactorBuffer: payload too short (%zu < 20)", len);
+        return 0;
+    }
+    uint32_t buffer_ref = read_le32(payload);
+    uint64_t offset = read_le64(payload + 4);
+    uint64_t instance_stride = read_le64(payload + 12);
+    LAGFX_TRACE("SetTesselationFactorBuffer: ref=0x%08x offset=%llu stride=%llu",
+                buffer_ref, (unsigned long long)offset,
+                (unsigned long long)instance_stride);
+    return 0;
+}
+
+static int render_op_set_tesselation_factor_scale(lagfx_protocol_t *p,
+                                                    const uint8_t    *payload,
+                                                    size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetTesselationFactorScale: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    float scale = read_f32(payload);
+    LAGFX_TRACE("SetTesselationFactorScale: scale=%g", (double)scale);
+    return 0;
+}
+
+static int render_op_set_triangle_fill_mode(lagfx_protocol_t *p,
+                                              const uint8_t    *payload,
+                                              size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetTriangleFillMode: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t mode = read_le32(payload);
+    uint32_t extra = read_le32(payload + 4);
+    LAGFX_TRACE("SetTriangleFillMode: mode=%u extra=%u", mode, extra);
+    return 0;
+}
+
+static int render_op_set_vertex_buffer_offset(lagfx_protocol_t *p,
+                                               const uint8_t    *payload,
+                                               size_t            len) {
+    (void)p;
+    if (len < 12) {
+        LAGFX_WARN("SetVertexBufferOffset: payload too short (%zu < 12)", len);
+        return 0;
+    }
+    uint64_t offset = read_le64(payload);
+    uint32_t index = read_le32(payload + 8);
+    LAGFX_TRACE("SetVertexBufferOffset: offset=%llu index=%u",
+                (unsigned long long)offset, index);
+    return 0;
+}
+
+static int render_op_set_vertex_sampler_states(lagfx_protocol_t *p,
+                                                const uint8_t    *payload,
+                                                size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetVertexSamplerStates: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t first = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 4;
+    if (len < needed) {
+        LAGFX_WARN("SetVertexSamplerStates: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetVertexSamplerStates: count=%u first=%u", count, first);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        uint32_t ref = read_le32(payload + 8 + (size_t)i * 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x", first + i, ref);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_vertex_sampler_states_lod_clamp(lagfx_protocol_t *p,
+                                                          const uint8_t    *payload,
+                                                          size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetVertexSamplerStatesLODClamp: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t first = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 12;
+    if (len < needed) {
+        LAGFX_WARN("SetVertexSamplerStatesLODClamp: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetVertexSamplerStatesLODClamp: count=%u first=%u", count, first);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        const uint8_t *entry = payload + 8 + (size_t)i * 12;
+        uint32_t ref = read_le32(entry);
+        float lod_min = read_f32(entry + 4);
+        float lod_max = read_f32(entry + 8);
+        LAGFX_TRACE("  [%u] ref=0x%08x lodMin=%g lodMax=%g",
+                    first + i, ref, (double)lod_min, (double)lod_max);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_viewports(lagfx_protocol_t *p,
+                                    const uint8_t    *payload,
+                                    size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetViewports: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    size_t needed = 4 + (size_t)count * 48;
+    if (len < needed) {
+        LAGFX_WARN("SetViewports: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetViewports: count=%u", count);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        const uint8_t *vp = payload + 4 + (size_t)i * 48;
+        double ox = read_f64(vp);
+        double oy = read_f64(vp + 8);
+        double w  = read_f64(vp + 16);
+        double h  = read_f64(vp + 24);
+        double zn = read_f64(vp + 32);
+        double zf = read_f64(vp + 40);
+        LAGFX_TRACE("  [%u] origin=(%g,%g) size=%gx%g znear=%g zfar=%g",
+                    i, ox, oy, w, h, zn, zf);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_visibility_result_mode(lagfx_protocol_t *p,
+                                                  const uint8_t    *payload,
+                                                  size_t            len) {
+    (void)p;
+    if (len < 16) {
+        LAGFX_WARN("SetVisibilityResultMode: payload too short (%zu < 16)", len);
+        return 0;
+    }
+    uint32_t mode = read_le32(payload);
+    uint64_t offset = read_le64(payload + 4);
+    uint32_t extra = read_le32(payload + 12);
+    LAGFX_TRACE("SetVisibilityResultMode: mode=%u offset=%llu extra=%u",
+                mode, (unsigned long long)offset, extra);
+    return 0;
+}
+
+static int render_op_use_heaps(lagfx_protocol_t *p,
+                                const uint8_t    *payload,
+                                size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("UseHeaps: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    size_t needed = 4 + (size_t)count * 4;
+    if (len < needed) {
+        LAGFX_WARN("UseHeaps: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("UseHeaps: count=%u", count);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        uint32_t ref = read_le32(payload + 4 + (size_t)i * 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x", i, ref);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_line_width(lagfx_protocol_t *p,
+                                     const uint8_t    *payload,
+                                     size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetLineWidth: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    float width = read_f32(payload);
+    LAGFX_TRACE("SetLineWidth: width=%g", (double)width);
+    return 0;
+}
+
+static int render_op_use_resources_with_stages(lagfx_protocol_t *p,
+                                                 const uint8_t    *payload,
+                                                 size_t            len) {
+    (void)p;
+    if (len < 12) {
+        LAGFX_WARN("UseResourcesWithStages: payload too short (%zu < 12)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t usage = read_le32(payload + 4);
+    uint32_t stages = read_le32(payload + 8);
+    size_t needed = 12 + (size_t)count * 4;
+    if (len < needed) {
+        LAGFX_WARN("UseResourcesWithStages: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("UseResourcesWithStages: count=%u usage=0x%x stages=0x%x",
+                count, usage, stages);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        uint32_t ref = read_le32(payload + 12 + (size_t)i * 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x", i, ref);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_alpha_test_reference_value(lagfx_protocol_t *p,
+                                                      const uint8_t    *payload,
+                                                      size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetAlphaTestReferenceValue: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    uint32_t value = read_le32(payload);
+    LAGFX_TRACE("SetAlphaTestReferenceValue: value=0x%08x", value);
+    return 0;
+}
+
+static int render_op_set_point_size(lagfx_protocol_t *p,
+                                     const uint8_t    *payload,
+                                     size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetPointSize: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    float size = read_f32(payload);
+    LAGFX_TRACE("SetPointSize: size=%g", (double)size);
+    return 0;
+}
+
+static int render_op_set_clip_plane(lagfx_protocol_t *p,
+                                     const uint8_t    *payload,
+                                     size_t            len) {
+    (void)p;
+    if (len < 20) {
+        LAGFX_WARN("SetClipPlane: payload too short (%zu < 20)", len);
+        return 0;
+    }
+    float p1 = read_f32(payload);
+    float p2 = read_f32(payload + 4);
+    float p3 = read_f32(payload + 8);
+    float p4 = read_f32(payload + 12);
+    uint32_t index = read_le32(payload + 16);
+    LAGFX_TRACE("SetClipPlane: p=(%g,%g,%g,%g) index=%u",
+                (double)p1, (double)p2, (double)p3, (double)p4, index);
+    return 0;
+}
+
+static int render_op_set_vertex_sampler_state(lagfx_protocol_t *p,
+                                               const uint8_t    *payload,
+                                               size_t            len) {
+    (void)p;
+    if (len < 20) {
+        LAGFX_WARN("SetVertexSamplerState: payload too short (%zu < 20)", len);
+        return 0;
+    }
+    uint32_t ref = read_le32(payload);
+    float lod_min = read_f32(payload + 4);
+    float lod_max = read_f32(payload + 8);
+    float lod_bias = read_f32(payload + 12);
+    uint32_t index = read_le32(payload + 16);
+    LAGFX_TRACE("SetVertexSamplerState: ref=0x%08x lodMin=%g lodMax=%g lodBias=%g index=%u",
+                ref, (double)lod_min, (double)lod_max, (double)lod_bias, index);
+    return 0;
+}
+
+static int render_op_set_fragment_sampler_state(lagfx_protocol_t *p,
+                                                  const uint8_t    *payload,
+                                                  size_t            len) {
+    (void)p;
+    if (len < 20) {
+        LAGFX_WARN("SetFragmentSamplerState: payload too short (%zu < 20)", len);
+        return 0;
+    }
+    uint32_t ref = read_le32(payload);
+    float lod_min = read_f32(payload + 4);
+    float lod_max = read_f32(payload + 8);
+    float lod_bias = read_f32(payload + 12);
+    uint32_t index = read_le32(payload + 16);
+    LAGFX_TRACE("SetFragmentSamplerState: ref=0x%08x lodMin=%g lodMax=%g lodBias=%g index=%u",
+                ref, (double)lod_min, (double)lod_max, (double)lod_bias, index);
+    return 0;
+}
+
+static int render_op_set_viewport_transform_enabled(lagfx_protocol_t *p,
+                                                      const uint8_t    *payload,
+                                                      size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetViewportTransformEnabled: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    uint32_t enabled = read_le32(payload);
+    LAGFX_TRACE("SetViewportTransformEnabled: enabled=%u", enabled);
+    return 0;
+}
+
+static int render_op_set_provoking_vertex_mode(lagfx_protocol_t *p,
+                                                 const uint8_t    *payload,
+                                                 size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetProvokingVertexMode: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    uint32_t mode = read_le32(payload);
+    LAGFX_TRACE("SetProvokingVertexMode: mode=%u", mode);
+    return 0;
+}
+
+static int render_op_set_primitive_restart_index_enabled(lagfx_protocol_t *p,
+                                                          const uint8_t    *payload,
+                                                          size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetPrimitiveRestartIndexEnabled: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t enabled = read_le32(payload);
+    uint32_t index = read_le32(payload + 4);
+    LAGFX_TRACE("SetPrimitiveRestartIndexEnabled: enabled=%u index=0x%08x",
+                enabled, index);
+    return 0;
+}
+
+static int render_op_set_triangle_fill_mode_front_back(lagfx_protocol_t *p,
+                                                         const uint8_t    *payload,
+                                                         size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetTriangleFillModeFrontBack: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    uint32_t modes = read_le32(payload);
+    LAGFX_TRACE("SetTriangleFillModeFrontBack: modes=0x%08x", modes);
+    return 0;
+}
+
+static int render_op_set_transform_feedback_state(lagfx_protocol_t *p,
+                                                    const uint8_t    *payload,
+                                                    size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetTransformFeedbackState: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    uint32_t state = read_le32(payload);
+    LAGFX_TRACE("SetTransformFeedbackState: state=%u", state);
+    return 0;
+}
+
+static int render_op_set_depth_cleared(lagfx_protocol_t *p,
+                                        const uint8_t    *payload,
+                                        size_t            len) {
+    (void)p; (void)payload; (void)len;
+    LAGFX_TRACE("SetDepthCleared");
+    return 0;
+}
+
+static int render_op_set_stencil_cleared(lagfx_protocol_t *p,
+                                          const uint8_t    *payload,
+                                          size_t            len) {
+    (void)p; (void)payload; (void)len;
+    LAGFX_TRACE("SetStencilCleared");
+    return 0;
+}
+
+static int render_op_set_color_resolve_texture(lagfx_protocol_t *p,
+                                                const uint8_t    *payload,
+                                                size_t            len) {
+    (void)p;
+    if (len < 16) {
+        LAGFX_WARN("SetColorResolveTexture: payload too short (%zu < 16)", len);
+        return 0;
+    }
+    uint32_t ref = read_le32(payload);
+    uint32_t slice = read_le32(payload + 4);
+    uint32_t plane = read_le32(payload + 8);
+    uint32_t level = read_le32(payload + 12);
+    LAGFX_TRACE("SetColorResolveTexture: ref=0x%08x slice=%u plane=%u level=%u",
+                ref, slice, plane, level);
+    return 0;
+}
+
+static int render_op_set_depth_resolve_texture(lagfx_protocol_t *p,
+                                                const uint8_t    *payload,
+                                                size_t            len) {
+    (void)p;
+    if (len < 12) {
+        LAGFX_WARN("SetDepthResolveTexture: payload too short (%zu < 12)", len);
+        return 0;
+    }
+    uint32_t ref = read_le32(payload);
+    uint32_t slice = read_le32(payload + 4);
+    uint32_t plane = read_le32(payload + 8);
+    LAGFX_TRACE("SetDepthResolveTexture: ref=0x%08x slice=%u plane=%u",
+                ref, slice, plane);
+    return 0;
+}
+
+static int render_op_set_stencil_resolve_texture(lagfx_protocol_t *p,
+                                                  const uint8_t    *payload,
+                                                  size_t            len) {
+    (void)p;
+    if (len < 12) {
+        LAGFX_WARN("SetStencilResolveTexture: payload too short (%zu < 12)", len);
+        return 0;
+    }
+    uint32_t ref = read_le32(payload);
+    uint32_t slice = read_le32(payload + 4);
+    uint32_t plane = read_le32(payload + 8);
+    LAGFX_TRACE("SetStencilResolveTexture: ref=0x%08x slice=%u plane=%u",
+                ref, slice, plane);
+    return 0;
+}
+
+static int render_op_set_vertex_amplification_mode(lagfx_protocol_t *p,
+                                                     const uint8_t    *payload,
+                                                     size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetVertexAmplificationMode: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t mode = read_le32(payload);
+    uint32_t value = read_le32(payload + 4);
+    LAGFX_TRACE("SetVertexAmplificationMode: mode=%u value=%u", mode, value);
+    return 0;
+}
+
+static int render_op_set_vertex_amplification_count(lagfx_protocol_t *p,
+                                                      const uint8_t    *payload,
+                                                      size_t            len) {
+    (void)p;
+    if (len < 4) {
+        LAGFX_WARN("SetVertexAmplificationCount: payload too short (%zu < 4)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    size_t needed = 4 + (size_t)count * 8;
+    if (len < needed) {
+        LAGFX_WARN("SetVertexAmplificationCount: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetVertexAmplificationCount: count=%u", count);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        const uint8_t *entry = payload + 4 + (size_t)i * 8;
+        uint32_t a = read_le32(entry);
+        uint32_t b = read_le32(entry + 4);
+        LAGFX_TRACE("  [%u] mapping={%u,%u}", i, a, b);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_dispatch_threads_per_tile(lagfx_protocol_t *p,
+                                                const uint8_t    *payload,
+                                                size_t            len) {
+    (void)p;
+    if (len < 24) {
+        LAGFX_WARN("DispatchThreadsPerTile: payload too short (%zu < 24)", len);
+        return 0;
+    }
+    uint64_t w = read_le64(payload);
+    uint64_t h = read_le64(payload + 8);
+    uint64_t d = read_le64(payload + 16);
+    LAGFX_TRACE("DispatchThreadsPerTile: size=%llux%llux%llu",
+                (unsigned long long)w, (unsigned long long)h,
+                (unsigned long long)d);
+    return 0;
+}
+
+static int render_op_set_render_threadgroup_memory_length(lagfx_protocol_t *p,
+                                                            const uint8_t    *payload,
+                                                            size_t            len) {
+    (void)p;
+    if (len < 20) {
+        LAGFX_WARN("SetRenderThreadgroupMemoryLength: payload too short (%zu < 20)", len);
+        return 0;
+    }
+    uint64_t length = read_le64(payload);
+    uint64_t offset = read_le64(payload + 8);
+    uint32_t index = read_le32(payload + 16);
+    LAGFX_TRACE("SetRenderThreadgroupMemoryLength: length=%llu offset=%llu index=%u",
+                (unsigned long long)length, (unsigned long long)offset, index);
+    return 0;
+}
+
+static int render_op_set_tile_buffers(lagfx_protocol_t *p,
+                                       const uint8_t    *payload,
+                                       size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetTileBuffers: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t first = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 12;
+    if (len < needed) {
+        LAGFX_WARN("SetTileBuffers: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetTileBuffers: count=%u first=%u", count, first);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        const uint8_t *entry = payload + 8 + (size_t)i * 12;
+        uint32_t ref = read_le32(entry);
+        uint64_t off = read_le64(entry + 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x offset=%llu",
+                    first + i, ref, (unsigned long long)off);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_tile_buffer_offset(lagfx_protocol_t *p,
+                                              const uint8_t    *payload,
+                                              size_t            len) {
+    (void)p;
+    if (len < 12) {
+        LAGFX_WARN("SetTileBufferOffset: payload too short (%zu < 12)", len);
+        return 0;
+    }
+    uint64_t offset = read_le64(payload);
+    uint32_t index = read_le32(payload + 8);
+    LAGFX_TRACE("SetTileBufferOffset: offset=%llu index=%u",
+                (unsigned long long)offset, index);
+    return 0;
+}
+
+static int render_op_set_tile_sampler_states(lagfx_protocol_t *p,
+                                              const uint8_t    *payload,
+                                              size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetTileSamplerStates: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t first = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 4;
+    if (len < needed) {
+        LAGFX_WARN("SetTileSamplerStates: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetTileSamplerStates: count=%u first=%u", count, first);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        uint32_t ref = read_le32(payload + 8 + (size_t)i * 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x", first + i, ref);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_tile_sampler_states_lod_clamp(lagfx_protocol_t *p,
+                                                        const uint8_t    *payload,
+                                                        size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetTileSamplerStatesLODClamp: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t first = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 12;
+    if (len < needed) {
+        LAGFX_WARN("SetTileSamplerStatesLODClamp: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetTileSamplerStatesLODClamp: count=%u first=%u", count, first);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        const uint8_t *entry = payload + 8 + (size_t)i * 12;
+        uint32_t ref = read_le32(entry);
+        float lod_min = read_f32(entry + 4);
+        float lod_max = read_f32(entry + 8);
+        LAGFX_TRACE("  [%u] ref=0x%08x lodMin=%g lodMax=%g",
+                    first + i, ref, (double)lod_min, (double)lod_max);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_set_tile_textures(lagfx_protocol_t *p,
+                                        const uint8_t    *payload,
+                                        size_t            len) {
+    (void)p;
+    if (len < 8) {
+        LAGFX_WARN("SetTileTextures: payload too short (%zu < 8)", len);
+        return 0;
+    }
+    uint32_t count = read_le32(payload);
+    uint32_t first = read_le32(payload + 4);
+    size_t needed = 8 + (size_t)count * 4;
+    if (len < needed) {
+        LAGFX_WARN("SetTileTextures: count=%u needs %zu bytes, got %zu",
+                   count, needed, len);
+        return 0;
+    }
+    LAGFX_TRACE("SetTileTextures: count=%u first=%u", count, first);
+    for (uint32_t i = 0; i < count && i < 4; ++i) {
+        uint32_t ref = read_le32(payload + 8 + (size_t)i * 4);
+        LAGFX_TRACE("  [%u] ref=0x%08x", first + i, ref);
+    }
+    if (count > 4)
+        LAGFX_TRACE("  ... (%u more)", count - 4);
+    return 0;
+}
+
+static int render_op_dispatch_threads_per_tile_in_region(lagfx_protocol_t *p,
+                                                          const uint8_t    *payload,
+                                                          size_t            len) {
+    (void)p;
+    if (len < 76) {
+        LAGFX_WARN("DispatchThreadsPerTileInRegion: payload too short (%zu < 76)", len);
+        return 0;
+    }
+    uint64_t tw = read_le64(payload);
+    uint64_t th = read_le64(payload + 8);
+    uint64_t td = read_le64(payload + 16);
+    uint64_t ox = read_le64(payload + 24);
+    uint64_t oy = read_le64(payload + 32);
+    uint64_t oz = read_le64(payload + 40);
+    uint64_t rw = read_le64(payload + 48);
+    uint64_t rh = read_le64(payload + 56);
+    uint64_t rd = read_le64(payload + 64);
+    uint32_t extra = read_le32(payload + 72);
+    LAGFX_TRACE("DispatchThreadsPerTileInRegion: tileSize=%llux%llux%llu "
+                "origin=(%llu,%llu,%llu) region=%llux%llux%llu extra=%u",
+                (unsigned long long)tw, (unsigned long long)th,
+                (unsigned long long)td,
+                (unsigned long long)ox, (unsigned long long)oy,
+                (unsigned long long)oz,
+                (unsigned long long)rw, (unsigned long long)rh,
+                (unsigned long long)rd, extra);
+    return 0;
+}
+
+static int render_op_dispatch_threads_per_tile_in_region_w_idx(lagfx_protocol_t *p,
+                                                                const uint8_t    *payload,
+                                                                size_t            len) {
+    (void)p;
+    if (len < 76) {
+        LAGFX_WARN("DispatchThreadsPerTileInRegionWithIndex: payload too short (%zu < 76)", len);
+        return 0;
+    }
+    uint64_t tw = read_le64(payload);
+    uint64_t th = read_le64(payload + 8);
+    uint64_t td = read_le64(payload + 16);
+    uint64_t ox = read_le64(payload + 24);
+    uint64_t oy = read_le64(payload + 32);
+    uint64_t oz = read_le64(payload + 40);
+    uint64_t rw = read_le64(payload + 48);
+    uint64_t rh = read_le64(payload + 56);
+    uint64_t rd = read_le64(payload + 64);
+    uint32_t rt_array_index = read_le32(payload + 72);
+    LAGFX_TRACE("DispatchThreadsPerTileInRegionWithIndex: tileSize=%llux%llux%llu "
+                "origin=(%llu,%llu,%llu) region=%llux%llux%llu rtIdx=%u",
+                (unsigned long long)tw, (unsigned long long)th,
+                (unsigned long long)td,
+                (unsigned long long)ox, (unsigned long long)oy,
+                (unsigned long long)oz,
+                (unsigned long long)rw, (unsigned long long)rh,
+                (unsigned long long)rd, rt_array_index);
+    return 0;
+}
+
+static int render_op_get_tile_dimensions(lagfx_protocol_t *p,
+                                          const uint8_t    *payload,
+                                          size_t            len) {
+    (void)p;
+    if (len < 12) {
+        LAGFX_WARN("GetTileDimensions: payload too short (%zu < 12)", len);
+        return 0;
+    }
+    uint32_t ref = read_le32(payload);
+    uint64_t offset = read_le64(payload + 4);
+    LAGFX_TRACE("GetTileDimensions: ref=0x%08x offset=%llu",
+                ref, (unsigned long long)offset);
+    return 0;
+}
+
+static int render_op_set_vertex_buffer_offset_with_stride(lagfx_protocol_t *p,
+                                                            const uint8_t    *payload,
+                                                            size_t            len) {
+    (void)p;
+    if (len < 20) {
+        LAGFX_WARN("SetVertexBufferOffsetWithStride: payload too short (%zu < 20)", len);
+        return 0;
+    }
+    uint64_t offset = read_le64(payload);
+    uint64_t stride = read_le64(payload + 8);
+    uint32_t index = read_le32(payload + 16);
+    LAGFX_TRACE("SetVertexBufferOffsetWithStride: offset=%llu stride=%llu index=%u",
+                (unsigned long long)offset, (unsigned long long)stride, index);
+    return 0;
+}
+
 /* === Descriptor table — 96 entries ============================
  *
  * Layout: { opcode, name, body_size, ref_count, default_handler }.
@@ -575,122 +1986,102 @@ static const lagfx_render_op_descriptor_t g_render_op_table[] = {
     /* --- Draw family (0x00-0x1d) -------------------------------- */
     { 0x00, "DrawPrimitives64",                          20, 0, render_op_draw_primitives_64 },
     { 0x01, "DrawPrimitives16",                           8, 0, render_op_draw_primitives_16 },
-    { 0x02, "DrawInstancedPrimitives64",                 28, 0, render_op_ack_stub },
-    { 0x03, "DrawInstancedPrimitives16",                  8, 0, render_op_ack_stub },
-    { 0x04, "DrawInstancedBasePrimitives64",             36, 0, render_op_ack_stub },
-    { 0x05, "DrawInstancedBasePrimitives16",             12, 0, render_op_ack_stub },
+    { 0x02, "DrawInstancedPrimitives64",                 28, 0, render_op_draw_instanced_primitives_64 },
+    { 0x03, "DrawInstancedPrimitives16",                  8, 0, render_op_draw_instanced_primitives_16 },
+    { 0x04, "DrawInstancedBasePrimitives64",             36, 0, render_op_draw_instanced_base_primitives_64 },
+    { 0x05, "DrawInstancedBasePrimitives16",             12, 0, render_op_draw_instanced_base_primitives_16 },
     { 0x06, "DrawIndexedPrimitives64",                   24, 1, render_op_draw_indexed_primitives_64 },
-    { 0x07, "DrawIndexedPrimitives16",                   12, 1, render_op_ack_stub },
-    { 0x08, "DrawIndexedInstancedPrimitives64",          32, 1, render_op_ack_stub },
-    { 0x09, "DrawIndexedInstancedPrimitives16",          16, 1, render_op_ack_stub },
-    { 0x0a, "DrawIndexedInstancedBasePrimitives64",      48, 1, render_op_ack_stub },
-    { 0x0b, "DrawIndexedInstancedBasePrimitives16",      20, 1, render_op_ack_stub },
-    { 0x0c, "DrawPatches64",                             48, 1, render_op_ack_stub },
-    { 0x0d, "DrawPatches16",                             16, 1, render_op_ack_stub },
-    { 0x0e, "DrawIndexedPatches64",                      60, 2, render_op_ack_stub },
-    { 0x0f, "DrawIndexedPatches16",                      24, 2, render_op_ack_stub },
-    { 0x10, "DrawPrimitivesIndirect",                    16, 1, render_op_ack_stub },
-    { 0x11, "DrawIndexedPrimitivesIndirect",             28, 2, render_op_ack_stub },
-    { 0x12, "DrawPatchesIndirect",                       28, 2, render_op_ack_stub },
-    { 0x13, "DrawIndexedPatchesIndirect",                40, 3, render_op_ack_stub },
-    { 0x14, "ExecuteCommandsInBuffer",                   16, 2, render_op_ack_stub },
-    { 0x15, "ExecuteCommandsInBufferRanged",             20, 1, render_op_ack_stub },
+    { 0x07, "DrawIndexedPrimitives16",                   12, 1, render_op_draw_indexed_primitives_16 },
+    { 0x08, "DrawIndexedInstancedPrimitives64",          32, 1, render_op_draw_indexed_instanced_primitives_64 },
+    { 0x09, "DrawIndexedInstancedPrimitives16",          16, 1, render_op_draw_indexed_instanced_primitives_16 },
+    { 0x0a, "DrawIndexedInstancedBasePrimitives64",      48, 1, render_op_draw_indexed_instanced_base_primitives_64 },
+    { 0x0b, "DrawIndexedInstancedBasePrimitives16",      20, 1, render_op_draw_indexed_instanced_base_primitives_16 },
+    { 0x0c, "DrawPatches64",                             48, 1, render_op_draw_patches_64 },
+    { 0x0d, "DrawPatches16",                             16, 1, render_op_draw_patches_16 },
+    { 0x0e, "DrawIndexedPatches64",                      60, 2, render_op_draw_indexed_patches_64 },
+    { 0x0f, "DrawIndexedPatches16",                      24, 2, render_op_draw_indexed_patches_16 },
+    { 0x10, "DrawPrimitivesIndirect",                    16, 1, render_op_draw_primitives_indirect },
+    { 0x11, "DrawIndexedPrimitivesIndirect",             28, 2, render_op_draw_indexed_primitives_indirect },
+    { 0x12, "DrawPatchesIndirect",                       28, 2, render_op_draw_patches_indirect },
+    { 0x13, "DrawIndexedPatchesIndirect",                40, 3, render_op_draw_indexed_patches_indirect },
+    { 0x14, "ExecuteCommandsInBuffer",                   16, 2, render_op_execute_commands_in_buffer },
+    { 0x15, "ExecuteCommandsInBufferRanged",             20, 1, render_op_execute_commands_in_buffer_ranged },
     { 0x16, "RenderBarrierResources",                     0, 0, render_op_ack_stub },
     { 0x17, "RenderBarrierScope",                         4, 0, render_op_render_barrier_scope },
-    { 0x18, "RenderUpdateFence",                          8, 1, render_op_ack_stub },
-    { 0x19, "RenderWaitForFence",                         8, 1, render_op_ack_stub },
+    { 0x18, "RenderUpdateFence",                          8, 1, render_op_render_update_fence },
+    { 0x19, "RenderWaitForFence",                         8, 1, render_op_render_wait_for_fence },
     { 0x1a, "RenderDescribeRenderPass",                   584, 0, render_op_describe_render_pass },
-    /* TSV body_size for 0x1b is "8+N*4" (variable) — store 0. */
-    { 0x1b, "UseHeapsWithStages",                         0, 0, render_op_ack_stub },
-    { 0x1c, "DrawIndexedInstancedBasePrimitives64_2",    48, 1, render_op_ack_stub },
-    { 0x1d, "DrawIndexedInstancedBasePrimitives16_2",    20, 1, render_op_ack_stub },
+    { 0x1b, "UseHeapsWithStages",                         0, 0, render_op_use_heaps_with_stages },
+    { 0x1c, "DrawIndexedInstancedBasePrimitives64_2",    48, 1, render_op_draw_indexed_instanced_base_primitives_64_2 },
+    { 0x1d, "DrawIndexedInstancedBasePrimitives16_2",    20, 1, render_op_draw_indexed_instanced_base_primitives_16_2 },
 
     /* --- State-set family (0x65-0xa6) --------------------------- */
     { 0x65, "SetBlendColor",                             16, 0, render_op_set_blend_color },
     { 0x66, "SetColorStoreAction",                        8, 0, render_op_set_color_store_action },
-    { 0x67, "SetColorStoreActionOptions",                12, 0, render_op_ack_stub },
+    { 0x67, "SetColorStoreActionOptions",                12, 0, render_op_set_color_store_action_options },
     { 0x68, "SetDepthStencilState",                       4, 1, render_op_set_depth_stencil_state },
-    { 0x69, "SetDepthStoreAction",                        8, 0, render_op_ack_stub },
-    { 0x6a, "SetDepthStoreActionOptions",                 8, 0, render_op_ack_stub },
+    { 0x69, "SetDepthStoreAction",                        8, 0, render_op_set_depth_store_action },
+    { 0x6a, "SetDepthStoreActionOptions",                 8, 0, render_op_set_depth_store_action_options },
     { 0x6b, "SetCullMode",                                8, 0, render_op_set_cull_mode },
     { 0x6c, "SetDepthBias",                              12, 0, render_op_set_depth_bias },
     { 0x6d, "SetDepthClipMode",                           8, 0, render_op_set_depth_clip_mode },
-    /* 0x6e SetFragmentBuffers — variable "8+N*12". */
     { 0x6e, "SetFragmentBuffers",                         0, 0, render_op_set_fragment_buffers },
-    { 0x6f, "SetFragmentBufferOffset",                   12, 0, render_op_ack_stub },
-    /* 0x70 SetFragmentSamplerStates — variable "8+N*4". */
+    { 0x6f, "SetFragmentBufferOffset",                   12, 0, render_op_set_fragment_buffer_offset },
     { 0x70, "SetFragmentSamplerStates",                   0, 0, render_op_set_fragment_sampler_states },
-    /* 0x71 SetFragmentSamplerStatesLODClamp — variable "8+N*12". */
-    { 0x71, "SetFragmentSamplerStatesLODClamp",           0, 0, render_op_ack_stub },
-    /* 0x72 SetFragmentTextures — variable "8+N*4". */
+    { 0x71, "SetFragmentSamplerStatesLODClamp",           0, 0, render_op_set_fragment_sampler_states_lod_clamp },
     { 0x72, "SetFragmentTextures",                        0, 0, render_op_set_fragment_textures },
     { 0x73, "SetFrontFacingWinding",                      8, 0, render_op_set_front_facing_winding },
     { 0x74, "SetRenderPipelineState",                     4, 1, render_op_set_render_pipeline_state },
     { 0x75, "SetScissorRect",                            32, 0, render_op_set_scissor_rect },
-    /* 0x76 SetScissorRects — variable "8+N*32". */
-    { 0x76, "SetScissorRects",                            0, 0, render_op_ack_stub },
+    { 0x76, "SetScissorRects",                            0, 0, render_op_set_scissor_rects },
     { 0x77, "SetStencilRef",                              8, 0, render_op_set_stencil_ref },
-    { 0x78, "SetStencilStoreAction",                      8, 0, render_op_ack_stub },
-    { 0x79, "SetStencilStoreActionOptions",               8, 0, render_op_ack_stub },
-    { 0x7a, "SetTesselationFactorBuffer",                20, 1, render_op_ack_stub },
-    { 0x7b, "SetTesselationFactorScale",                  4, 0, render_op_ack_stub },
-    { 0x7c, "SetTriangleFillMode",                        8, 0, render_op_ack_stub },
-    /* 0x7d SetVertexBuffers — variable "8+N*12". */
+    { 0x78, "SetStencilStoreAction",                      8, 0, render_op_set_stencil_store_action },
+    { 0x79, "SetStencilStoreActionOptions",               8, 0, render_op_set_stencil_store_action_options },
+    { 0x7a, "SetTesselationFactorBuffer",                20, 1, render_op_set_tesselation_factor_buffer },
+    { 0x7b, "SetTesselationFactorScale",                  4, 0, render_op_set_tesselation_factor_scale },
+    { 0x7c, "SetTriangleFillMode",                        8, 0, render_op_set_triangle_fill_mode },
     { 0x7d, "SetVertexBuffers",                           0, 0, render_op_set_vertex_buffers },
-    { 0x7e, "SetVertexBufferOffset",                     12, 0, render_op_ack_stub },
-    /* 0x7f SetVertexSamplerStates — variable "8+N*4". */
-    { 0x7f, "SetVertexSamplerStates",                     0, 0, render_op_ack_stub },
-    /* 0x80 SetVertexSamplerStatesLODClamp — variable "8+N*12". */
-    { 0x80, "SetVertexSamplerStatesLODClamp",             0, 0, render_op_ack_stub },
-    /* 0x81 SetVertexTextures — variable "8+N*4". */
+    { 0x7e, "SetVertexBufferOffset",                     12, 0, render_op_set_vertex_buffer_offset },
+    { 0x7f, "SetVertexSamplerStates",                     0, 0, render_op_set_vertex_sampler_states },
+    { 0x80, "SetVertexSamplerStatesLODClamp",             0, 0, render_op_set_vertex_sampler_states_lod_clamp },
     { 0x81, "SetVertexTextures",                          0, 0, render_op_set_vertex_textures },
     { 0x82, "SetViewport",                               48, 0, render_op_set_viewport },
-    /* 0x83 SetViewports — variable "4+N*48". */
-    { 0x83, "SetViewports",                               0, 0, render_op_ack_stub },
-    { 0x84, "SetVisibilityResultMode",                   16, 0, render_op_ack_stub },
+    { 0x83, "SetViewports",                               0, 0, render_op_set_viewports },
+    { 0x84, "SetVisibilityResultMode",                   16, 0, render_op_set_visibility_result_mode },
     { 0x85, "TextureBarrier",                             0, 0, render_op_texture_barrier },
-    /* 0x86 UseHeaps — variable "4+N*4". */
-    { 0x86, "UseHeaps",                                   0, 0, render_op_ack_stub },
-    /* 0x87 UseResources — variable "8+N*4". */
+    { 0x86, "UseHeaps",                                   0, 0, render_op_use_heaps },
     { 0x87, "UseResources",                               0, 0, render_op_use_resources },
-    { 0x88, "SetLineWidth",                               4, 0, render_op_ack_stub },
-    /* 0x89 UseResourcesWithStages — variable "8+N*4". */
-    { 0x89, "UseResourcesWithStages",                     0, 0, render_op_ack_stub },
-    { 0x8a, "SetAlphaTestReferenceValue",                 4, 0, render_op_ack_stub },
-    { 0x8b, "SetPointSize",                               4, 0, render_op_ack_stub },
-    { 0x8c, "SetClipPlane",                              20, 0, render_op_ack_stub },
-    { 0x8d, "SetVertexSamplerState",                     20, 1, render_op_ack_stub },
-    { 0x8e, "SetFragmentSamplerState",                   20, 1, render_op_ack_stub },
-    { 0x8f, "SetViewportTransformEnabled",                4, 0, render_op_ack_stub },
-    { 0x90, "SetProvokingVertexMode",                     4, 0, render_op_ack_stub },
-    { 0x91, "SetPrimitiveRestartIndexEnabled",            8, 0, render_op_ack_stub },
-    { 0x92, "SetTriangleFillModeFrontBack",               4, 0, render_op_ack_stub },
-    { 0x93, "SetTransformFeedbackState",                  4, 0, render_op_ack_stub },
-    { 0x94, "SetDepthCleared",                            0, 0, render_op_ack_stub },
-    { 0x95, "SetStencilCleared",                          0, 0, render_op_ack_stub },
-    { 0x96, "SetColorResolveTexture",                    16, 1, render_op_ack_stub },
-    { 0x97, "SetDepthResolveTexture",                    12, 1, render_op_ack_stub },
-    { 0x98, "SetStencilResolveTexture",                  12, 1, render_op_ack_stub },
-    { 0x99, "SetVertexAmplificationMode",                 8, 0, render_op_ack_stub },
-    /* 0x9a SetVertexAmplificationCount — variable "4+N*8". */
-    { 0x9a, "SetVertexAmplificationCount",                0, 0, render_op_ack_stub },
-    { 0x9b, "DispatchThreadsPerTile",                    24, 0, render_op_ack_stub },
-    { 0x9c, "SetRenderThreadgroupMemoryLength",          20, 0, render_op_ack_stub },
-    /* 0x9d SetTileBuffers — variable "8+N*12". */
-    { 0x9d, "SetTileBuffers",                             0, 0, render_op_ack_stub },
-    { 0x9e, "SetTileBufferOffset",                       12, 0, render_op_ack_stub },
-    /* 0x9f SetTileSamplerStates — variable "8+N*4". */
-    { 0x9f, "SetTileSamplerStates",                       0, 0, render_op_ack_stub },
-    /* 0xa0 SetTileSamplerStatesLODClamp — variable "8+N*12". */
-    { 0xa0, "SetTileSamplerStatesLODClamp",               0, 0, render_op_ack_stub },
-    /* 0xa1 SetTileTextures — variable "8+N*4". */
-    { 0xa1, "SetTileTextures",                            0, 0, render_op_ack_stub },
-    { 0xa2, "DispatchThreadsPerTileInRegion",            76, 0, render_op_ack_stub },
-    { 0xa3, "DispatchThreadsPerTileInRegionWithIndex",   76, 0, render_op_ack_stub },
-    { 0xa4, "GetTileDimensions",                         12, 1, render_op_ack_stub },
-    /* 0xa5 SetVertexBuffersWithStride — variable "8+N*20". */
+    { 0x88, "SetLineWidth",                               4, 0, render_op_set_line_width },
+    { 0x89, "UseResourcesWithStages",                     0, 0, render_op_use_resources_with_stages },
+    { 0x8a, "SetAlphaTestReferenceValue",                 4, 0, render_op_set_alpha_test_reference_value },
+    { 0x8b, "SetPointSize",                               4, 0, render_op_set_point_size },
+    { 0x8c, "SetClipPlane",                              20, 0, render_op_set_clip_plane },
+    { 0x8d, "SetVertexSamplerState",                     20, 1, render_op_set_vertex_sampler_state },
+    { 0x8e, "SetFragmentSamplerState",                   20, 1, render_op_set_fragment_sampler_state },
+    { 0x8f, "SetViewportTransformEnabled",                4, 0, render_op_set_viewport_transform_enabled },
+    { 0x90, "SetProvokingVertexMode",                     4, 0, render_op_set_provoking_vertex_mode },
+    { 0x91, "SetPrimitiveRestartIndexEnabled",            8, 0, render_op_set_primitive_restart_index_enabled },
+    { 0x92, "SetTriangleFillModeFrontBack",               4, 0, render_op_set_triangle_fill_mode_front_back },
+    { 0x93, "SetTransformFeedbackState",                  4, 0, render_op_set_transform_feedback_state },
+    { 0x94, "SetDepthCleared",                            0, 0, render_op_set_depth_cleared },
+    { 0x95, "SetStencilCleared",                          0, 0, render_op_set_stencil_cleared },
+    { 0x96, "SetColorResolveTexture",                    16, 1, render_op_set_color_resolve_texture },
+    { 0x97, "SetDepthResolveTexture",                    12, 1, render_op_set_depth_resolve_texture },
+    { 0x98, "SetStencilResolveTexture",                  12, 1, render_op_set_stencil_resolve_texture },
+    { 0x99, "SetVertexAmplificationMode",                 8, 0, render_op_set_vertex_amplification_mode },
+    { 0x9a, "SetVertexAmplificationCount",                0, 0, render_op_set_vertex_amplification_count },
+    { 0x9b, "DispatchThreadsPerTile",                    24, 0, render_op_dispatch_threads_per_tile },
+    { 0x9c, "SetRenderThreadgroupMemoryLength",          20, 0, render_op_set_render_threadgroup_memory_length },
+    { 0x9d, "SetTileBuffers",                             0, 0, render_op_set_tile_buffers },
+    { 0x9e, "SetTileBufferOffset",                       12, 0, render_op_set_tile_buffer_offset },
+    { 0x9f, "SetTileSamplerStates",                       0, 0, render_op_set_tile_sampler_states },
+    { 0xa0, "SetTileSamplerStatesLODClamp",               0, 0, render_op_set_tile_sampler_states_lod_clamp },
+    { 0xa1, "SetTileTextures",                            0, 0, render_op_set_tile_textures },
+    { 0xa2, "DispatchThreadsPerTileInRegion",            76, 0, render_op_dispatch_threads_per_tile_in_region },
+    { 0xa3, "DispatchThreadsPerTileInRegionWithIndex",   76, 0, render_op_dispatch_threads_per_tile_in_region_w_idx },
+    { 0xa4, "GetTileDimensions",                         12, 1, render_op_get_tile_dimensions },
     { 0xa5, "SetVertexBuffersWithStride",                 0, 0, render_op_set_vertex_buffers_with_stride },
-    { 0xa6, "SetVertexBufferOffsetWithStride",           20, 0, render_op_ack_stub },
+    { 0xa6, "SetVertexBufferOffsetWithStride",           20, 0, render_op_set_vertex_buffer_offset_with_stride },
 };
 
 static const size_t g_render_op_table_count =

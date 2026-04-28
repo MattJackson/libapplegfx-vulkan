@@ -23,6 +23,7 @@
  */
 
 #include "blit_decoder.h"
+#include "compute_decoder.h"
 #include "opcodes.h"
 #include "protocol.h"
 #include "render_decoder.h"
@@ -337,6 +338,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
      * per-resource cmdBuf in IOAccelResource2 backing memory. For
      * each, read the cmdBuf via shell.read_memory and walk the
      * segment headers within. */
+    unsigned render_passes_completed = 0;
     for (uint32_t i = 0; i < resource_count; ++i) {
         const uint8_t *rec = hdr->payload + off_resources + (size_t)i * 16u;
         uint64_t host_gpu_addr =
@@ -517,14 +519,27 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                             have_triplet = true;
                             reply_size   = 0x1c;
                             opname       = "0x1c2 ComputePipelineStateInfo";
+                            /* Reply struct (28 B):
+                             *   +0x00 u32 maxTotalThreadsPerThreadgroup
+                             *   +0x04 u32 pad
+                             *   +0x08 u32 threadExecutionWidth
+                             *   +0x0c u32 pad
+                             *   +0x10 u32 staticThreadgroupMemoryLength
+                             *   +0x14 u32 pad
+                             *   +0x18 u8  supportIndirectCommandBuffers
+                             *   +0x19   pad[3]
+                             * Per info-decoder-opcodes.md CONFIRMED layout.
+                             * threadExecutionWidth MUST be non-zero —
+                             * SkyLight divides by this value when
+                             * computing threadgroup grid dimensions. */
                             /* maxTotalThreadsPerThreadgroup=1024 */
                             reply[0]  = 0x00; reply[1]  = 0x04;
                             reply[2]  = 0x00; reply[3]  = 0x00;
-                            /* +4..7 pad. threadExecutionWidth=32 @ +8 */
+                            /* threadExecutionWidth=32 @ +8 */
                             reply[8]  = 32;   reply[9]  = 0;
                             reply[10] = 0;    reply[11] = 0;
-                            /* +12..15 pad. staticThreadgroupMemoryLength=0 @ +16 */
-                            /* +20..23 pad. supportIndirectCommandBuffers=0 @ +24 */
+                            /* staticThreadgroupMemoryLength=0 @ +16 */
+                            /* supportIndirectCommandBuffers=0 @ +24 */
                         }
                         break;
                     case 0x1c3u:  /* HeapTextureDescriptorSizeAndAlign — body 0x2c reply 0x10 */
@@ -694,6 +709,24 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
 
                     /* Common reply-target resolution + write. Skip for
                      * 0x1c5 (no reply) and the 0x1c8 variable-only path. */
+
+                    /* Defensive: ensure 0x1c2 ComputePipelineStateInfo
+                     * threadExecutionWidth (+8..+11) is never zero.
+                     * A zero value causes SIGFPE in SkyLight when it
+                     * computes threadgroup grid dimensions. */
+                    if (inner_opcode == 0x1c2u && reply_size >= 12u) {
+                        uint32_t tew = (uint32_t)reply[8]
+                                     | ((uint32_t)reply[9] << 8)
+                                     | ((uint32_t)reply[10] << 16)
+                                     | ((uint32_t)reply[11] << 24);
+                        if (tew == 0u) {
+                            LAGFX_WARN("        0x1c2: threadExecutionWidth=0, "
+                                       "forcing 32 (divide-by-zero guard)");
+                            reply[8] = 32; reply[9] = 0;
+                            reply[10] = 0; reply[11] = 0;
+                        }
+                    }
+
                     if (have_triplet && reply_size > 0u) {
                         if (buffer_id < resource_count) {
                             const uint8_t *brec = hdr->payload + off_resources
@@ -789,9 +822,16 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                         }
                     }
                 } else if (encoder_type == 1u) {
-                    LAGFX_TRACE("      inner[%u]: compute op=0x%04x len=%zu "
-                              "(no dispatch module)",
-                              inner_idx, inner_opcode, ipl_len);
+                    {
+                        const uint8_t *cpl = cmdbuf + ioff + 8u;
+                        int rc = lagfx_compute_decoder_dispatch(p, inner_opcode,
+                                                                cpl, ipl_len);
+                        if (rc != 0) {
+                            LAGFX_TRACE("      inner[%u]: compute dispatch "
+                                      "op=0x%04x returned %d (continuing)",
+                                      inner_idx, inner_opcode, rc);
+                        }
+                    }
                 }
 
                 ioff += inner_total;
@@ -801,6 +841,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             if (final_flag == 0u && reuse_flag == 0u) {
                 if (encoder_type == 2u && p->render_enc.in_pass) {
                     lagfx_translate_render_end(&p->render_enc);
+                    render_passes_completed++;
 #ifdef LAGFX_HAVE_VULKAN
                     if (p->dev && p->dev->vk) {
                         lagfx_vk_end_frame(p->dev->vk);
@@ -814,6 +855,18 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         }
 
         free(cmdbuf);
+    }
+
+    /* Signal extra stamp advancement for render pass completions.
+     * On real hardware the GPU advances its completion stamp for
+     * each render pass that finishes; the kext waits for this
+     * stamp (which is one more than the outer CmdExecIndirect2's
+     * stamp per render pass). Without this the guest sees
+     * gpu_stamp=N but expects N+render_passes. */
+    if (render_passes_completed > 0u) {
+        p->extra_stamp_advance = render_passes_completed;
+        LAGFX_LOG("  render passes completed: %u (extra_stamp_advance=%u)",
+                  render_passes_completed, p->extra_stamp_advance);
     }
 
     /* Ack the stamp regardless. Inner-opcode handlers will do their

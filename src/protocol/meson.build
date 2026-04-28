@@ -16,6 +16,8 @@ lagfx_sources += files(
   'ops_iosurface.c',
   'blit_opcodes.c',
   'blit_decoder.c',
+  'compute_opcodes.c',
+  'compute_decoder.c',
   'render_opcodes.c',
   'render_decoder.c',
   'render_pass.c',

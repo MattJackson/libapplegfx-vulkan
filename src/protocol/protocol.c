@@ -716,19 +716,26 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     }
 
                     lagfx_cmd_header_t parsed;
+                    p->extra_stamp_advance = 0u;
                     int rc = lagfx_protocol_dispatch_one_no_stamp(
                         p, cmd, cmd_len, &parsed);
                     LAGFX_TRACE("doorbell ch=%u cmd[%u]: opcode=0x%04x "
                               "stamp=0x%08x len=%u rc=%d "
+                              "extra_stamp=%u "
                               "hdr_bytes=%02x %02x %02x %02x %02x %02x "
                               "%02x %02x %02x %02x %02x %02x",
                               ch, cmd_idx, parsed.opcode, parsed.stamp,
                               cmd_len, rc,
+                              p->extra_stamp_advance,
                               cmd[0], cmd[1], cmd[2], cmd[3],
                               cmd[4], cmd[5], cmd[6], cmd[7],
                               cmd[8], cmd[9], cmd[10], cmd[11]);
 
-                    last_stamp = parsed.stamp;
+                    uint32_t effective = parsed.stamp
+                                         + p->extra_stamp_advance;
+                    if (effective > last_stamp) {
+                        last_stamp = effective;
+                    }
                     free(cmd);
 
                     cur_rp += cmd_len;
