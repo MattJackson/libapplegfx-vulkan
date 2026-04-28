@@ -13,7 +13,13 @@
 #include "state.h"
 #include "resource_registry.h"
 #include "../device.h"
+#include "../display.h"
 #include "../common/log.h"
+
+#ifdef LAGFX_HAVE_VULKAN
+#include "../vulkan/iosurface.h"
+#include "../vulkan/display_blit.h"
+#endif
 
 #include <stdint.h>
 #include <string.h>
@@ -190,6 +196,48 @@ lagfx_handler_status_t lagfx_op_vchan_present(
               surf ? (unsigned long long)surf->gpu_addr : 0ull,
               hdr->stamp);
 
+#ifdef LAGFX_HAVE_VULKAN
+    if (surf && surf->host_handle && p->dev && p->dev->vk
+        && p->dev->vk->initialized) {
+        lagfx_vk_iosurface_t *ios =
+            (lagfx_vk_iosurface_t *)surf->host_handle;
+        lagfx_display_t *disp = NULL;
+        for (size_t i = 0; i < LAGFX_MAX_DISPLAYS; ++i) {
+            if (p->dev->displays[i] != NULL
+                && p->dev->displays[i]->port == display_index) {
+                disp = p->dev->displays[i];
+                break;
+            }
+        }
+        if (!disp) {
+            for (size_t i = 0; i < LAGFX_MAX_DISPLAYS; ++i) {
+                if (p->dev->displays[i] != NULL) {
+                    disp = p->dev->displays[i];
+                    break;
+                }
+            }
+        }
+        if (disp && disp->rt_ready) {
+            uint64_t scanout_gpa = 0;
+            uint64_t scanout_len = 0;
+            lagfx_display_entry_t *pe =
+                lagfx_protocol_find_display(p, display_index);
+            if (pe && pe->mapped) {
+                scanout_gpa = pe->buffer_va;
+                scanout_len = pe->length;
+            }
+            lagfx_vk_display_present_surface(
+                p->dev->vk, &disp->rt,
+                ios->image, &ios->layout,
+                ios->width, ios->height,
+                disp->rt_width, disp->rt_height,
+                scanout_gpa, scanout_len,
+                p->dev->desc.shell.opaque,
+                p->dev->desc.shell.write_memory);
+        }
+    }
+#endif
+
     return LAGFX_HANDLER_OK;
 }
 
@@ -247,6 +295,48 @@ lagfx_handler_status_t lagfx_op_vchan_present_gamma(
               surf ? surf->host_handle : NULL,
               surf ? (unsigned long long)surf->gpu_addr : 0ull,
               hdr->stamp);
+
+#ifdef LAGFX_HAVE_VULKAN
+    if (surf && surf->host_handle && p->dev && p->dev->vk
+        && p->dev->vk->initialized) {
+        lagfx_vk_iosurface_t *ios =
+            (lagfx_vk_iosurface_t *)surf->host_handle;
+        lagfx_display_t *disp = NULL;
+        for (size_t i = 0; i < LAGFX_MAX_DISPLAYS; ++i) {
+            if (p->dev->displays[i] != NULL
+                && p->dev->displays[i]->port == display_index) {
+                disp = p->dev->displays[i];
+                break;
+            }
+        }
+        if (!disp) {
+            for (size_t i = 0; i < LAGFX_MAX_DISPLAYS; ++i) {
+                if (p->dev->displays[i] != NULL) {
+                    disp = p->dev->displays[i];
+                    break;
+                }
+            }
+        }
+        if (disp && disp->rt_ready) {
+            uint64_t scanout_gpa = 0;
+            uint64_t scanout_len = 0;
+            lagfx_display_entry_t *pe =
+                lagfx_protocol_find_display(p, display_index);
+            if (pe && pe->mapped) {
+                scanout_gpa = pe->buffer_va;
+                scanout_len = pe->length;
+            }
+            lagfx_vk_display_present_surface(
+                p->dev->vk, &disp->rt,
+                ios->image, &ios->layout,
+                ios->width, ios->height,
+                disp->rt_width, disp->rt_height,
+                scanout_gpa, scanout_len,
+                p->dev->desc.shell.opaque,
+                p->dev->desc.shell.write_memory);
+        }
+    }
+#endif
 
     return LAGFX_HANDLER_OK;
 }

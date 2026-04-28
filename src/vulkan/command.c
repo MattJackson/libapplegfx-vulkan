@@ -244,6 +244,28 @@ lagfx_status_t lagfx_vk_submit_empty(struct lagfx_vk_state *vk) {
     return result;
 }
 
+lagfx_status_t lagfx_vk_drain_pending(struct lagfx_vk_state *vk) {
+    if (!vk || !vk->pending_fence_valid) {
+        return LAGFX_OK;
+    }
+
+    const uint64_t timeout_ns = 5ull * 1000ull * 1000ull * 1000ull;
+    VkResult vr = vkWaitForFences(vk->device, 1, &vk->pending_fence,
+                                   VK_TRUE, timeout_ns);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("drain_pending: vkWaitForFences failed (VkResult=%d)",
+                  (int)vr);
+    }
+
+    if (vk->pending_cmdbuf != VK_NULL_HANDLE) {
+        lagfx_vk_cmdbuf_free(vk, vk->pending_cmdbuf);
+        vk->pending_cmdbuf = VK_NULL_HANDLE;
+    }
+
+    vk->pending_fence_valid = false;
+    return (vr == VK_SUCCESS) ? LAGFX_OK : LAGFX_ERR_VULKAN_INIT;
+}
+
 lagfx_status_t lagfx_vk_begin_frame(struct lagfx_vk_state *vk) {
     if (!vk || !vk->initialized) {
         return LAGFX_ERR_INVALID_ARG;
@@ -255,6 +277,8 @@ lagfx_status_t lagfx_vk_begin_frame(struct lagfx_vk_state *vk) {
         LAGFX_ERR("begin_frame: command pool not available");
         return LAGFX_ERR_VULKAN_INIT;
     }
+
+    lagfx_vk_drain_pending(vk);
 
     lagfx_status_t st = lagfx_vk_cmdbuf_alloc(vk, &vk->frame_cmdbuf);
     if (st != LAGFX_OK) {
@@ -325,18 +349,12 @@ lagfx_status_t lagfx_vk_end_frame(struct lagfx_vk_state *vk) {
         return LAGFX_ERR_VULKAN_INIT;
     }
 
-    const uint64_t timeout_ns = 1ull * 1000ull * 1000ull * 1000ull;
-    vr = vkWaitForFences(vk->device, 1, &vk->frame_fence, VK_TRUE,
-                         timeout_ns);
-    if (vr != VK_SUCCESS) {
-        LAGFX_ERR("end_frame: vkWaitForFences failed (VkResult=%d)",
-                  (int)vr);
-    }
-
-    lagfx_vk_cmdbuf_free(vk, vk->frame_cmdbuf);
+    vk->pending_fence = vk->frame_fence;
+    vk->pending_fence_valid = true;
+    vk->pending_cmdbuf = vk->frame_cmdbuf;
     vk->frame_cmdbuf = VK_NULL_HANDLE;
     vk->frame_in_progress = false;
-    LAGFX_LOG("end_frame: submitted and waited");
+    LAGFX_LOG("end_frame: submitted (non-blocking)");
     return LAGFX_OK;
 }
 
@@ -363,6 +381,11 @@ void lagfx_vk_command_pool_destroy(struct lagfx_vk_state *vk) {
 }
 
 lagfx_status_t lagfx_vk_submit_empty(struct lagfx_vk_state *vk) {
+    (void)vk;
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_vk_drain_pending(struct lagfx_vk_state *vk) {
     (void)vk;
     return LAGFX_OK;
 }

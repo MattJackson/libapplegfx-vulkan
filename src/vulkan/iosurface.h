@@ -26,6 +26,7 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     VkFormat format;
+    VkImageLayout layout;
 } lagfx_vk_iosurface_t;
 
 lagfx_status_t lagfx_vk_iosurface_create(struct lagfx_vk_state *vk,

@@ -78,6 +78,7 @@ lagfx_status_t lagfx_vk_submit_empty(struct lagfx_vk_state *vk);
  *
  * On no-vulkan builds these are no-ops that return LAGFX_OK or
  * VK_NULL_HANDLE respectively. */
+lagfx_status_t lagfx_vk_drain_pending(struct lagfx_vk_state *vk);
 lagfx_status_t lagfx_vk_begin_frame(struct lagfx_vk_state *vk);
 lagfx_status_t lagfx_vk_end_frame(struct lagfx_vk_state *vk);
 

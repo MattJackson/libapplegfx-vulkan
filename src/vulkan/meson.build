@@ -12,4 +12,5 @@ lagfx_sources += files(
   'render_target.c',
   'cursor.c',
   'iosurface.c',
+  'display_blit.c',
 )

@@ -63,6 +63,10 @@ struct lagfx_vk_state {
     VkFence          frame_fence;
     bool             frame_in_progress;
 
+    VkFence          pending_fence;
+    bool             pending_fence_valid;
+    VkCommandBuffer  pending_cmdbuf;
+
     VkPipeline       passthrough_pipeline;
     VkPipelineLayout passthrough_layout;
     VkDescriptorSetLayout passthrough_dsl;

@@ -139,6 +139,7 @@ lagfx_status_t lagfx_vk_iosurface_create(struct lagfx_vk_state *vk,
     ios->width  = width;
     ios->height = height;
     ios->format = fmt;
+    ios->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     LAGFX_LOG("iosurface_create: %ux%u fmt=%d image=%p view=%p mem=%p",
               width, height, (int)fmt,
