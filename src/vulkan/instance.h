@@ -58,6 +58,10 @@ struct lagfx_vk_state {
      * this struct just carries the handle so the init/shutdown plumbing
      * in instance.c can reach it. */
     VkCommandPool    cmd_pool;
+
+    VkCommandBuffer  frame_cmdbuf;
+    VkFence          frame_fence;
+    bool             frame_in_progress;
 #else
     /* Pad so sizeof(struct) > 0 on no-vulkan builds. */
     int _placeholder;

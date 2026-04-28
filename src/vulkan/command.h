@@ -63,4 +63,31 @@ void lagfx_vk_cmdbuf_free(struct lagfx_vk_state *vk, VkCommandBuffer cb);
  * can assert "the API exists and doesn't crash" in a uniform way). */
 lagfx_status_t lagfx_vk_submit_empty(struct lagfx_vk_state *vk);
 
+/* === Frame-level command buffer management ======================
+ *
+ * begin_frame: allocate a primary command buffer from the pool and
+ * begin recording (one-time-submit). Stores the handle on
+ * vk->frame_cmdbuf. Idempotent if a frame is already in progress.
+ *
+ * end_frame: end recording, submit to the graphics queue with a
+ * fence, wait up to 1 second, free the command buffer. Clears
+ * vk->frame_cmdbuf and vk->frame_in_progress.
+ *
+ * get_cmd_buf: return vk->frame_cmdbuf (VK_NULL_HANDLE if no frame
+ * is in progress).
+ *
+ * On no-vulkan builds these are no-ops that return LAGFX_OK or
+ * VK_NULL_HANDLE respectively. */
+lagfx_status_t lagfx_vk_begin_frame(struct lagfx_vk_state *vk);
+lagfx_status_t lagfx_vk_end_frame(struct lagfx_vk_state *vk);
+
+#ifdef LAGFX_HAVE_VULKAN
+VkCommandBuffer lagfx_vk_get_cmd_buf(const struct lagfx_vk_state *vk);
+#else
+static inline void *lagfx_vk_get_cmd_buf(const void *vk) {
+    (void)vk;
+    return NULL;
+}
+#endif
+
 #endif /* LIBAPPLEGFX_VULKAN_COMMAND_H */

@@ -15,6 +15,7 @@
 
 #include "protocol.h"
 #include "opcodes.h"
+#include "../translate/render_encoder.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -213,6 +214,12 @@ struct lagfx_protocol {
     lagfx_childfifo_entry_t fifos[LAGFX_MAX_CHILDFIFOS];
     lagfx_inflight_entry_t  inflight[LAGFX_MAX_INFLIGHT];
     lagfx_display_entry_t   displays[LAGFX_PROTO_MAX_DISPLAYS];
+
+    /* Render encoder state — tracks lifecycle and dynamic state for
+     * the current MTLRenderCommandEncoder session (encoder_type=2).
+     * Zeroed at protocol init; managed by the segment walker in
+     * ops_cmdbuf.c and the render opcode handlers in render_opcodes.c. */
+    lagfx_translate_render_state_t render_enc;
 
     /* Stats / observability. */
     uint64_t total_cmds_seen;

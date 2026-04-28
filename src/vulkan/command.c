@@ -244,6 +244,109 @@ lagfx_status_t lagfx_vk_submit_empty(struct lagfx_vk_state *vk) {
     return result;
 }
 
+lagfx_status_t lagfx_vk_begin_frame(struct lagfx_vk_state *vk) {
+    if (!vk || !vk->initialized) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    if (vk->frame_in_progress) {
+        return LAGFX_OK;
+    }
+    if (vk->cmd_pool == VK_NULL_HANDLE) {
+        LAGFX_ERR("begin_frame: command pool not available");
+        return LAGFX_ERR_VULKAN_INIT;
+    }
+
+    lagfx_status_t st = lagfx_vk_cmdbuf_alloc(vk, &vk->frame_cmdbuf);
+    if (st != LAGFX_OK) {
+        return st;
+    }
+
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    VkResult vr = vkBeginCommandBuffer(vk->frame_cmdbuf, &bi);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("begin_frame: vkBeginCommandBuffer failed (VkResult=%d)",
+                  (int)vr);
+        lagfx_vk_cmdbuf_free(vk, vk->frame_cmdbuf);
+        vk->frame_cmdbuf = VK_NULL_HANDLE;
+        return LAGFX_ERR_VULKAN_INIT;
+    }
+
+    vk->frame_in_progress = true;
+    LAGFX_LOG("begin_frame: cmdbuf=%p", (void *)vk->frame_cmdbuf);
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_vk_end_frame(struct lagfx_vk_state *vk) {
+    if (!vk || !vk->frame_in_progress) {
+        return LAGFX_OK;
+    }
+
+    VkResult vr = vkEndCommandBuffer(vk->frame_cmdbuf);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("end_frame: vkEndCommandBuffer failed (VkResult=%d)",
+                  (int)vr);
+        lagfx_vk_cmdbuf_free(vk, vk->frame_cmdbuf);
+        vk->frame_cmdbuf = VK_NULL_HANDLE;
+        vk->frame_in_progress = false;
+        return LAGFX_ERR_VULKAN_INIT;
+    }
+
+    if (vk->frame_fence == VK_NULL_HANDLE) {
+        VkFenceCreateInfo fci = {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        };
+        vr = vkCreateFence(vk->device, &fci, NULL, &vk->frame_fence);
+        if (vr != VK_SUCCESS) {
+            LAGFX_ERR("end_frame: vkCreateFence failed (VkResult=%d)",
+                      (int)vr);
+            lagfx_vk_cmdbuf_free(vk, vk->frame_cmdbuf);
+            vk->frame_cmdbuf = VK_NULL_HANDLE;
+            vk->frame_in_progress = false;
+            return LAGFX_ERR_VULKAN_INIT;
+        }
+    } else {
+        vkResetFences(vk->device, 1, &vk->frame_fence);
+    }
+
+    VkSubmitInfo si = {
+        .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers    = &vk->frame_cmdbuf,
+    };
+    vr = vkQueueSubmit(vk->graphics_queue, 1, &si, vk->frame_fence);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("end_frame: vkQueueSubmit failed (VkResult=%d)", (int)vr);
+        lagfx_vk_cmdbuf_free(vk, vk->frame_cmdbuf);
+        vk->frame_cmdbuf = VK_NULL_HANDLE;
+        vk->frame_in_progress = false;
+        return LAGFX_ERR_VULKAN_INIT;
+    }
+
+    const uint64_t timeout_ns = 1ull * 1000ull * 1000ull * 1000ull;
+    vr = vkWaitForFences(vk->device, 1, &vk->frame_fence, VK_TRUE,
+                         timeout_ns);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("end_frame: vkWaitForFences failed (VkResult=%d)",
+                  (int)vr);
+    }
+
+    lagfx_vk_cmdbuf_free(vk, vk->frame_cmdbuf);
+    vk->frame_cmdbuf = VK_NULL_HANDLE;
+    vk->frame_in_progress = false;
+    LAGFX_LOG("end_frame: submitted and waited");
+    return LAGFX_OK;
+}
+
+VkCommandBuffer lagfx_vk_get_cmd_buf(const struct lagfx_vk_state *vk) {
+    if (!vk || !vk->frame_in_progress) {
+        return VK_NULL_HANDLE;
+    }
+    return vk->frame_cmdbuf;
+}
+
 #else  /* !LAGFX_HAVE_VULKAN -------------------------------------- */
 
 /* No-vulkan stubs. Preserve the Darwin-no-ICD development path by
@@ -260,6 +363,16 @@ void lagfx_vk_command_pool_destroy(struct lagfx_vk_state *vk) {
 }
 
 lagfx_status_t lagfx_vk_submit_empty(struct lagfx_vk_state *vk) {
+    (void)vk;
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_vk_begin_frame(struct lagfx_vk_state *vk) {
+    (void)vk;
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_vk_end_frame(struct lagfx_vk_state *vk) {
     (void)vk;
     return LAGFX_OK;
 }

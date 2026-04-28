@@ -93,6 +93,22 @@ typedef struct lagfx_translate_render_state {
     /* Pipeline state — tracked, not yet resolved to a VkPipeline. */
     VkPipelineLayout layout;        /* from bind_pipeline */
     uint32_t         shader_kind;   /* lagfx_shader_kind_t cast to u32 */
+
+    /* Dynamic state — set by set_viewport / set_scissor /
+     * set_blend_color, applied into the command buffer immediately
+     * when a render pass is active. */
+    VkViewport viewport;
+    VkRect2D   scissor;
+    float      blend_color[4];
+    bool       viewport_set;
+    bool       scissor_set;
+    bool       blend_color_set;
+
+    /* Tracks whether vkCmdBeginRendering was actually called (vs
+     * in_pass which tracks logical lifecycle). When target_image is
+     * VK_NULL_HANDLE we skip the Vulkan render pass but still track
+     * state. */
+    bool render_pass_active;
 #else
     /* No-vulkan stub: a single field so sizeof(struct)>0 and callers
      * can still declare + zero-init. */
@@ -171,6 +187,23 @@ lagfx_status_t lagfx_translate_render_draw(
 lagfx_status_t lagfx_translate_render_end(
     lagfx_translate_render_state_t *state);
 
+/* Set the viewport. If a render pass is active and the command buffer
+ * is valid, records vkCmdSetViewport immediately. The viewport is
+ * also stored for replay if the render pass begins later. */
+lagfx_status_t lagfx_translate_render_set_viewport(
+    lagfx_translate_render_state_t *state,
+    const VkViewport *viewport);
+
+/* Set the scissor rectangle. Records vkCmdSetScissor if active. */
+lagfx_status_t lagfx_translate_render_set_scissor(
+    lagfx_translate_render_state_t *state,
+    const VkRect2D *scissor);
+
+/* Set the blend constants. Records vkCmdSetBlendConstants if active. */
+lagfx_status_t lagfx_translate_render_set_blend_color(
+    lagfx_translate_render_state_t *state,
+    const float rgba[4]);
+
 #else /* !LAGFX_HAVE_VULKAN ------------------------------------ */
 
 /* Forward-decl-only stubs so callers can compile on the no-vulkan
@@ -211,6 +244,18 @@ lagfx_status_t lagfx_translate_render_draw(
 
 lagfx_status_t lagfx_translate_render_end(
     lagfx_translate_render_state_t *state);
+
+lagfx_status_t lagfx_translate_render_set_viewport(
+    lagfx_translate_render_state_t *state,
+    const void *viewport);
+
+lagfx_status_t lagfx_translate_render_set_scissor(
+    lagfx_translate_render_state_t *state,
+    const void *scissor);
+
+lagfx_status_t lagfx_translate_render_set_blend_color(
+    lagfx_translate_render_state_t *state,
+    const float rgba[4]);
 
 #endif /* LAGFX_HAVE_VULKAN */
 

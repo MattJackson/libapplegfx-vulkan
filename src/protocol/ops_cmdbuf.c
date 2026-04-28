@@ -30,6 +30,7 @@
 #include "../common/log.h"
 #include "../device.h"
 #include "../vulkan/command.h"
+#include "../translate/render_encoder.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -62,27 +63,59 @@ static inline uint32_t lagfx_le32(const uint8_t *b) {
  *     own completion path is correctness-critical, not this.
  */
 static void lagfx_cmdbuf_commit_empty_vk_submit(lagfx_protocol_t *p,
-                                                uint16_t opcode,
-                                                uint32_t stamp) {
+                                                 uint16_t opcode,
+                                                 uint32_t stamp) {
     if (!p || !p->dev) {
-        /* Test fixture path — no device attached. Silent skip. */
         return;
     }
     struct lagfx_vk_state *vk = p->dev->vk;
     if (!vk) {
-        /* Should not happen post-1.B (device_new always populates vk)
-         * but be defensive. */
         return;
     }
     lagfx_status_t vst = lagfx_vk_submit_empty(vk);
     if (vst != LAGFX_OK) {
-        /* Not fatal for the guest-visible command completion. On Darwin
-         * dev hosts with no ICD this will fire on every empty-cmdbuf
-         * commit; LAGFX_LOG keeps it at the usual verbosity. */
         LAGFX_LOG("cmdbuf_commit_empty: vk submit skipped/failed "
                   "(opcode=0x%04x stamp=0x%08x status=%d)",
                   opcode, stamp, (int)vst);
     }
+}
+
+static void lagfx_render_encoder_try_begin(lagfx_protocol_t *p) {
+#ifdef LAGFX_HAVE_VULKAN
+    if (!p->dev || !p->dev->vk || !p->dev->vk->initialized) {
+        return;
+    }
+    struct lagfx_vk_state *vk = p->dev->vk;
+    lagfx_status_t st = lagfx_vk_begin_frame(vk);
+    if (st != LAGFX_OK) {
+        LAGFX_WARN("render_encoder_try_begin: begin_frame failed (%d)",
+                   (int)st);
+        return;
+    }
+    const lagfx_render_pass_desc_t *desc = lagfx_render_pass_desc_get();
+    if (!desc) {
+        LAGFX_WARN("render_encoder_try_begin: no render pass descriptor");
+        return;
+    }
+    float clear[4] = {0};
+    if (desc->color_attachment_count > 0) {
+        for (unsigned c = 0; c < 4; c++) {
+            clear[c] = (float)desc->colors[0].clear_color[c];
+        }
+    }
+    VkCommandBuffer cmd = lagfx_vk_get_cmd_buf(vk);
+    st = lagfx_translate_render_begin(vk, &p->render_enc,
+        cmd, VK_NULL_HANDLE,
+        (uint32_t)desc->render_target_width,
+        (uint32_t)desc->render_target_height,
+        clear, NULL, 0);
+    if (st != LAGFX_OK) {
+        LAGFX_WARN("render_encoder_try_begin: render_begin failed (%d)",
+                   (int)st);
+    }
+#else
+    (void)p;
+#endif
 }
 
 /* ===========================================================================
@@ -412,6 +445,8 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
 
             /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
              * then totalLength-8 bytes payload. */
+            bool render_begin_pending =
+                (encoder_type == 2u && !p->render_enc.in_pass);
             size_t ioff = soff + 16u;
             size_t iend = ioff + segment_size;
             unsigned inner_idx = 0;
@@ -737,6 +772,11 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                   "returned %d (continuing)",
                                   inner_idx, inner_opcode, rc);
                     }
+                    if (render_begin_pending
+                        && inner_opcode == 0x1au) {
+                        render_begin_pending = false;
+                        lagfx_render_encoder_try_begin(p);
+                    }
                 } else if (encoder_type == 0u) {
                     {
                         const uint8_t *bpl = cmdbuf + ioff + 8u;
@@ -759,8 +799,14 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             }
 
             if (final_flag == 0u && reuse_flag == 0u) {
-                /* End of encoder — drop and look for next encoder
-                 * segment. */
+                if (encoder_type == 2u && p->render_enc.in_pass) {
+                    lagfx_translate_render_end(&p->render_enc);
+#ifdef LAGFX_HAVE_VULKAN
+                    if (p->dev && p->dev->vk) {
+                        lagfx_vk_end_frame(p->dev->vk);
+                    }
+#endif
+                }
             }
 
             soff += 16u + segment_size;

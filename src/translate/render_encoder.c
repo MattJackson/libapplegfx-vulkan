@@ -114,7 +114,6 @@ lagfx_status_t lagfx_translate_render_begin(
     const VkRenderingAttachmentInfoKHR *color_attachments,
     uint32_t color_attachment_count) {
     if (!vk || !state || vk_cmdbuf == VK_NULL_HANDLE
-        || target == VK_NULL_HANDLE
         || target_width == 0u || target_height == 0u) {
         LAGFX_ERR("translate_render_begin: invalid arg");
         return LAGFX_ERR_INVALID_ARG;
@@ -125,30 +124,30 @@ lagfx_status_t lagfx_translate_render_begin(
     }
     if (!vk->have_dynamic_rendering) {
         LAGFX_ERR("translate_render_begin: VK_KHR_dynamic_rendering "
-                  "required by Phase 3.A encoder");
+                   "required by Phase 3.A encoder");
         return LAGFX_ERR_BACKEND;
     }
     if (state->in_pass) {
         LAGFX_ERR("translate_render_begin: already in pass "
-                  "(missing _end?)");
+                   "(missing _end?)");
         return LAGFX_ERR_INVALID_ARG;
     }
 
-    /* Reset the state struct fully — callers may be re-using a
-     * stack-allocated state across frames. */
     memset(state, 0, sizeof(*state));
 
-    /* Build the rendering info. Two code paths:
-     *   - caller-provided attachments: pass straight through.
-     *   - none: synthesise a single LOAD_OP_CLEAR attachment
-     *     over `target` with the given clear colour. Target
-     *     image view is NOT known here — for the Phase 3.A
-     *     scaffold we require the caller to hand in the view
-     *     via color_attachments[] for any non-clear case.
-     *     The fallback-clear path uses VK_NULL_HANDLE so tests
-     *     exercising the degenerate "no attachments" case can
-     *     at least validate the state machine. Phase 3.E turns
-     *     this into a real view-from-target lookup. */
+    state->cmdbuf         = vk_cmdbuf;
+    state->target_image   = target;
+    state->target_width   = target_width;
+    state->target_height  = target_height;
+    state->in_pass        = true;
+
+    if (target == VK_NULL_HANDLE) {
+        LAGFX_LOG("translate_render_begin: target=NULL, skipping "
+                  "vkCmdBeginRendering (state-only) %ux%u",
+                  target_width, target_height);
+        return LAGFX_OK;
+    }
+
     VkRenderingAttachmentInfoKHR fallback_att = {
         .sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView   = VK_NULL_HANDLE,
@@ -185,11 +184,7 @@ lagfx_status_t lagfx_translate_render_begin(
     };
     vkCmdBeginRendering(vk_cmdbuf, &ri);
 
-    state->cmdbuf         = vk_cmdbuf;
-    state->target_image   = target;
-    state->target_width   = target_width;
-    state->target_height  = target_height;
-    state->in_pass        = true;
+    state->render_pass_active = true;
 
     LAGFX_LOG("translate_render_begin: target=%p %ux%u atts=%u",
               (void *)target, target_width, target_height, n_atts);
@@ -321,14 +316,64 @@ lagfx_status_t lagfx_translate_render_end(
     if (!state_in_pass(state)) {
         return LAGFX_ERR_INVALID_ARG;
     }
-    vkCmdEndRendering(state->cmdbuf);
+    if (state->render_pass_active) {
+        vkCmdEndRendering(state->cmdbuf);
+    }
     LAGFX_LOG("translate_render_end");
-    /* Reset state for a subsequent _begin on the same struct.
-     * Leave the cmdbuf handle on the state in case the caller
-     * wants to introspect it post-end — no Vulkan object's
-     * lifetime is affected. */
-    state->in_pass        = false;
-    state->pipeline_bound = false;
+    state->in_pass           = false;
+    state->pipeline_bound    = false;
+    state->render_pass_active = false;
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_translate_render_set_viewport(
+    lagfx_translate_render_state_t *state,
+    const VkViewport *viewport) {
+    if (!state || !viewport) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    state->viewport     = *viewport;
+    state->viewport_set = true;
+    if (state->render_pass_active && state->cmdbuf != VK_NULL_HANDLE) {
+        vkCmdSetViewport(state->cmdbuf, 0, 1, viewport);
+    }
+    LAGFX_TRACE("translate_render_set_viewport: x=%g y=%g w=%g h=%g",
+                viewport->x, viewport->y,
+                viewport->width, viewport->height);
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_translate_render_set_scissor(
+    lagfx_translate_render_state_t *state,
+    const VkRect2D *scissor) {
+    if (!state || !scissor) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    state->scissor     = *scissor;
+    state->scissor_set = true;
+    if (state->render_pass_active && state->cmdbuf != VK_NULL_HANDLE) {
+        vkCmdSetScissor(state->cmdbuf, 0, 1, scissor);
+    }
+    LAGFX_TRACE("translate_render_set_scissor: x=%d y=%d %ux%u",
+                scissor->offset.x, scissor->offset.y,
+                scissor->extent.width, scissor->extent.height);
+    return LAGFX_OK;
+}
+
+lagfx_status_t lagfx_translate_render_set_blend_color(
+    lagfx_translate_render_state_t *state,
+    const float rgba[4]) {
+    if (!state || !rgba) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    memcpy(state->blend_color, rgba, sizeof(state->blend_color));
+    state->blend_color_set = true;
+    if (state->render_pass_active && state->cmdbuf != VK_NULL_HANDLE) {
+        vkCmdSetBlendConstants(state->cmdbuf, rgba);
+    }
+    LAGFX_TRACE("translate_render_set_blend_color: r=%g g=%g b=%g a=%g",
+                (double)rgba[0], (double)rgba[1],
+                (double)rgba[2], (double)rgba[3]);
     return LAGFX_OK;
 }
 
@@ -375,6 +420,27 @@ lagfx_status_t lagfx_translate_render_draw(
 lagfx_status_t lagfx_translate_render_end(
     lagfx_translate_render_state_t *state) {
     (void)state;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_render_set_viewport(
+    lagfx_translate_render_state_t *state,
+    const void *viewport) {
+    (void)state; (void)viewport;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_render_set_scissor(
+    lagfx_translate_render_state_t *state,
+    const void *scissor) {
+    (void)state; (void)scissor;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_render_set_blend_color(
+    lagfx_translate_render_state_t *state,
+    const float rgba[4]) {
+    (void)state; (void)rgba;
     return LAGFX_ERR_BACKEND;
 }
 

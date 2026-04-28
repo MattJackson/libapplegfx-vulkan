@@ -24,8 +24,10 @@
 
 #include "render_opcodes.h"
 #include "render_pass.h"
+#include "state.h"
 
 #include "../common/log.h"
+#include "../translate/render_encoder.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -72,9 +74,8 @@ bool lagfx_render_op_is_stub(uint32_t opcode) {
 }
 
 static int render_op_set_viewport(lagfx_protocol_t *p,
-                                  const uint8_t    *payload,
-                                  size_t            len) {
-    (void)p;
+                                   const uint8_t    *payload,
+                                   size_t            len) {
     if (len < 48) {
         LAGFX_WARN("SetViewport: payload too short (%zu < 48)", len);
         return 0;
@@ -87,13 +88,28 @@ static int render_op_set_viewport(lagfx_protocol_t *p,
     double zf = read_f64(payload + 40);
     LAGFX_TRACE("SetViewport: origin=(%g,%g) size=%gx%g znear=%g zfar=%g",
                 ox, oy, w, h, zn, zf);
+
+    if (p && p->render_enc.in_pass) {
+#ifdef LAGFX_HAVE_VULKAN
+        VkViewport vp = {
+            .x        = (float)ox,
+            .y        = (float)oy,
+            .width    = (float)w,
+            .height   = (float)h,
+            .minDepth = (float)zn,
+            .maxDepth = (float)zf,
+        };
+        lagfx_translate_render_set_viewport(&p->render_enc, &vp);
+#else
+        (void)ox; (void)oy; (void)w; (void)h; (void)zn; (void)zf;
+#endif
+    }
     return 0;
 }
 
 static int render_op_set_scissor_rect(lagfx_protocol_t *p,
-                                      const uint8_t    *payload,
-                                      size_t            len) {
-    (void)p;
+                                       const uint8_t    *payload,
+                                       size_t            len) {
     if (len < 32) {
         LAGFX_WARN("SetScissorRect: payload too short (%zu < 32)", len);
         return 0;
@@ -105,13 +121,22 @@ static int render_op_set_scissor_rect(lagfx_protocol_t *p,
     LAGFX_TRACE("SetScissorRect: x=%llu y=%llu w=%llu h=%llu",
                 (unsigned long long)x, (unsigned long long)y,
                 (unsigned long long)w, (unsigned long long)h);
+
+    if (p && p->render_enc.in_pass) {
+#ifdef LAGFX_HAVE_VULKAN
+        VkRect2D scissor = {
+            .offset = { (int32_t)x, (int32_t)y },
+            .extent = { (uint32_t)w, (uint32_t)h },
+        };
+        lagfx_translate_render_set_scissor(&p->render_enc, &scissor);
+#endif
+    }
     return 0;
 }
 
 static int render_op_set_blend_color(lagfx_protocol_t *p,
-                                     const uint8_t    *payload,
-                                     size_t            len) {
-    (void)p;
+                                      const uint8_t    *payload,
+                                      size_t            len) {
     if (len < 16) {
         LAGFX_WARN("SetBlendColor: payload too short (%zu < 16)", len);
         return 0;
@@ -122,6 +147,11 @@ static int render_op_set_blend_color(lagfx_protocol_t *p,
     float a = read_f32(payload + 12);
     LAGFX_TRACE("SetBlendColor: r=%g g=%g b=%g a=%g",
                 (double)r, (double)g, (double)b, (double)a);
+
+    if (p && p->render_enc.in_pass) {
+        float rgba[4] = { r, g, b, a };
+        lagfx_translate_render_set_blend_color(&p->render_enc, rgba);
+    }
     return 0;
 }
 

@@ -413,9 +413,14 @@ void lagfx_vk_shutdown(struct lagfx_vk_state *state) {
     if (!state) {
         return;
     }
-    /* Phase 1.B.2: tear down the command pool BEFORE the device —
-     * VkCommandPool is a device child object and its lifetime must
-     * end strictly before vkDestroyDevice. */
+    if (state->frame_in_progress) {
+        vkEndCommandBuffer(state->frame_cmdbuf);
+        state->frame_in_progress = false;
+    }
+    if (state->frame_fence != VK_NULL_HANDLE && state->device != VK_NULL_HANDLE) {
+        vkDestroyFence(state->device, state->frame_fence, NULL);
+        state->frame_fence = VK_NULL_HANDLE;
+    }
     lagfx_vk_command_pool_destroy(state);
     if (state->device != VK_NULL_HANDLE) {
         vkDestroyDevice(state->device, NULL);
