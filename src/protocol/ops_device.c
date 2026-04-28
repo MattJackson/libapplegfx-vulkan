@@ -154,9 +154,13 @@ lagfx_handler_status_t lagfx_op_get_device_info(lagfx_protocol_t *p,
  * Response: fill resp_pfn << 12 with key-tagged tuples
  *   struct { u32 key; u32 value; } pairs[<=resp_qwords]
  *
- * Keys 0..0x29 — parser at kext vmaddr 0x1455d41d. Minimum viable:
- * emit keys {0, 1, 4, 8, 0x10} with plausible defaults; kext tolerates
- * missing keys (unlisted fields stay at their memset-zero defaults).
+ * Keys 0x01..0x29 — parser at kext vmaddr 0x1455d41d. The struct is
+ * bulk-copied to userspace as the Metal dylib's _deviceInfo (216B).
+ * Field names from ObjC type encoding (authoritative source):
+ *   0x01=MSAASamples, 0x02=D24S8Supported, 0x03=MaxThreadsPerTG_W,
+ *   0x04=MaxThreadsPerTG_H, 0x05=MaxThreadsPerTG_D, ... see pairs[]
+ *   below for the full mapping. Key 0x01 MUST be >= 1 or
+ *   supportsRasterSampleCount:1 returns NO (M5-10% crash gate).
  * =========================================================================== */
 lagfx_handler_status_t
 lagfx_op_get_device_info_2(lagfx_protocol_t *p,
@@ -188,65 +192,71 @@ lagfx_op_get_device_info_2(lagfx_protocol_t *p,
     }
 
     /*
-     * Full TLV superset (A4a, 2026-04-24). The parser at 0x1455d41d
+     * Full TLV superset (M5, 2026-04-27). The parser at 0x1455d41d
      * dispatches tag in [0, 0x29] via a jump table; every handler is
      * a pure u32 store to [accel+0xe68 + (tag-1)*4] plus a presence
      * flag at [accel+0xe68 + 0xa4 + (tag-1)]. Missing tags leave
-     * their destination field as zero (harmless); invalid values
-     * pass through unchanged.
+     * their destination field as zero; invalid values pass unchanged.
      *
-     * Tag 0x12 is the only field with post-parse defaulting: the
-     * parser forces 0x20002 if the tag is missing, 0x20007 if the
-     * supplied value is < 0x20008. Emit 0x20008 so populateAccelConfig
-     * and similar downstream consumers see a "modern" version.
+     * The 216-byte APVDeviceInfoStruct is bulk-copied to userspace
+     * via AppleParavirtShared::getDeviceInfo (memcpy 0xd8 bytes) and
+     * becomes the Metal dylib's _deviceInfo struct. Field names below
+     * are from the ObjC type encoding of _deviceInfo (authoritative).
      *
-     * All other tags currently emit as 0 — semantically a no-op vs
-     * missing, but makes the tag list explicit in the request stream.
-     * If/when future RE assigns meaning to specific tags we'll fill
-     * them in. Host cost: 41 u32-pair writes = 328 bytes of DMA.
+     * Tag 0x12 has post-parse defaulting: the parser forces 0x20002
+     * if the tag is missing, 0x20007 if the supplied value < 0x20008.
+     * Emit 0x20008 so populateAccelConfig sees a "modern" version.
+     *
+     * M5-10% gate: tag 0x01 (MSAASamples) MUST be >= 1 or
+     * supportsRasterSampleCount:1 returns NO and CoreAnimation aborts.
+     * The method checks (MSAASamples.u >= sampleCount) after gating
+     * against bitmask 0x10116 (valid rates: 1,2,4,8,16). Value 4
+     * means supports {1x, 2x, 4x}.
+     *
+     * Host cost: 41 u32-pair writes = 328 bytes of DMA.
      */
     struct { uint32_t key; uint32_t value; } pairs[] = {
-        { 0x01, 0          },
-        { 0x02, 0          },
-        { 0x03, 0          },
-        { 0x04, 0          },
-        { 0x05, 0          },
-        { 0x06, 0          },
-        { 0x07, 0          },
-        { 0x08, 0          },
-        { 0x09, 0          },
-        { 0x0a, 0          },
-        { 0x0b, 0          },
-        { 0x0c, 0          },
-        { 0x0d, 0          },
-        { 0x0e, 0          },
-        { 0x0f, 0          },
-        { 0x10, 0          },
-        { 0x11, 0          },
-        { 0x12, 0x00020008 }, /* version — avoid parser's fallback */
-        { 0x13, 0          },
-        { 0x14, 0          },
-        { 0x15, 0          },
-        { 0x16, 0          },
-        { 0x17, 0          },
-        { 0x18, 0          },
-        { 0x19, 0          },
-        { 0x1a, 0          },
-        { 0x1b, 0          },
-        { 0x1c, 0          },
-        { 0x1d, 0          },
-        { 0x1e, 0          },
-        { 0x1f, 0          },
-        { 0x20, 0          },
-        { 0x21, 0          },
-        { 0x22, 0          },
-        { 0x23, 0          },
-        { 0x24, 0          },
-        { 0x25, 0          },
-        { 0x26, 0          },
-        { 0x27, 0          },
-        { 0x28, 0          },
-        { 0x29, 0          },
+        { 0x01, 4          }, /* MSAASamples: max MSAA rate 4x */
+        { 0x02, 1          }, /* D24S8Supported: depth24_stencil8 */
+        { 0x03, 1024       }, /* MaxThreadsPerThreadgroupW */
+        { 0x04, 1024       }, /* MaxThreadsPerThreadgroupH */
+        { 0x05, 1024       }, /* MaxThreadsPerThreadgroupD */
+        { 0x06, 32768      }, /* MaxThreadgroupMemoryLength */
+        { 0x07, 1          }, /* IsFramebufferReadSupported */
+        { 0x08, 1          }, /* IsRGB10A2GammaSupported */
+        { 0x09, 0          }, /* SupportsNativeHardwareFP16 */
+        { 0x0a, 0x00020008 }, /* DeserializerVersion */
+        { 0x0b, 0x7f       }, /* PrimitiveTypeSupport: all standard */
+        { 0x0c, 0          }, /* SupportsMultiplaneTextures */
+        { 0x0d, 256        }, /* LinearTextureAlignment */
+        { 0x0e, 1          }, /* HeapBuffers */
+        { 0x0f, 256        }, /* HeapBufferAlignment */
+        { 0x10, 1          }, /* HeapTextures */
+        { 0x11, 1          }, /* BufferFromIOSurface */
+        { 0x12, 0x00020008 }, /* MaxMetalShaderVersion — modern path */
+        { 0x13, 0          }, /* SupportsSharedTextures */
+        { 0x14, 1          }, /* MaxVertexAmplificationCount */
+        { 0x15, 0          }, /* SupportsProgrammableSamplePositions */
+        { 0x16, 0          }, /* RasterizationRateLayerCount */
+        { 0x17, 0          }, /* TileShaders */
+        { 0x18, 0          }, /* ImageBlocks */
+        { 0x19, 0          }, /* RasterOrderGroups */
+        { 0x1a, 0          }, /* MemoryOrderAtomics */
+        { 0x1b, 0          }, /* LargeMRT */
+        { 0x1c, 0          }, /* SupportFlags2023 */
+        { 0x1d, 1024       }, /* MaxTotalComputeThreadsPerThreadgroup */
+        { 0x1e, 32768      }, /* MaxComputeLocalMemorySizes */
+        { 0x1f, 32768      }, /* MaxComputeThreadgroupMemory */
+        { 0x20, 256        }, /* MaxComputeThreadgroupMemoryAlignmentBytes */
+        { 0x21, 0          }, /* SupportFlags2024 */
+        { 0x22, 1          }, /* GpuCoreCount */
+        { 0x23, 2048       }, /* MaxTextureLayers */
+        { 0x24, 0          }, /* MaxPredicatedNestingDepth */
+        { 0x25, 0x10005    }, /* HostGPUFamily: Apple5 (Intel-like) */
+        { 0x26, 1          }, /* ArgumentBuffersTier */
+        { 0x27, 1024       }, /* ArgumentBuffersMaxSamplerCount */
+        { 0x28, 256        }, /* MinimumLinearTextureAlignment */
+        { 0x29, 0          }, /* SupportedTextureWriteRoundingModes */
     };
     const size_t n_pairs = sizeof(pairs) / sizeof(pairs[0]);
 
