@@ -28,6 +28,8 @@
 #include "protocol.h"
 #include "render_decoder.h"
 #include "state.h"
+#include "render_opcodes.h"
+#include "render_pass.h"
 #include "../common/log.h"
 #include "../device.h"
 #include "../display.h"
