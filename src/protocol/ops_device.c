@@ -646,6 +646,7 @@ lagfx_handler_status_t lagfx_op_map_memory_immediate(
 
     {
         uint64_t new_end = va_base + va_len;
+        lagfx_va_interval_t *target_iv = NULL;
         bool merged = false;
         for (uint32_t i = 0; i < entry->va_interval_count; ++i) {
             lagfx_va_interval_t *iv = &entry->va_intervals[i];
@@ -656,20 +657,42 @@ lagfx_handler_status_t lagfx_op_map_memory_immediate(
                 iv->va_base  = mb;
                 iv->gpa_base = mb;
                 iv->length   = me - mb;
+                target_iv = iv;
                 merged = true;
                 break;
             }
         }
         if (!merged) {
             if (entry->va_interval_count < LAGFX_MAX_VA_INTERVALS) {
-                lagfx_va_interval_t *iv =
+                target_iv =
                     &entry->va_intervals[entry->va_interval_count++];
-                iv->va_base  = va_base;
-                iv->gpa_base = va_base;
-                iv->length   = va_len;
+                target_iv->va_base  = va_base;
+                target_iv->gpa_base = va_base;
+                target_iv->length   = va_len;
             } else {
                 LAGFX_WARN("CmdMapMemoryImmediate: taskID=%u va_interval table "
                            "full (max=%u)", task_id, LAGFX_MAX_VA_INTERVALS);
+            }
+        }
+
+        if (target_iv) {
+            uint64_t gpa = 0, run_len = 0;
+            bool ok = lagfx_task_translate(p, task_id,
+                                           target_iv->va_base,
+                                           &gpa, &run_len);
+            if (ok) {
+                target_iv->gpa_base = gpa;
+                LAGFX_LOG("CmdMapMemoryImmediate: taskID=%u translated "
+                          "vaBase=0x%llx -> gpa=0x%llx (run=0x%llx)",
+                          task_id,
+                            (unsigned long long)target_iv->va_base,
+                            (unsigned long long)gpa,
+                            (unsigned long long)run_len);
+            } else {
+                LAGFX_WARN("CmdMapMemoryImmediate: taskID=%u vaBase=0x%llx "
+                           "radix translate failed, keeping identity GPA",
+                           task_id,
+                           (unsigned long long)target_iv->va_base);
             }
         }
     }
