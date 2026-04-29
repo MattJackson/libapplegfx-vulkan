@@ -445,21 +445,23 @@ lagfx_handler_status_t lagfx_op_delete_task(lagfx_protocol_t *p,
 /* ===========================================================================
  * CmdDefineHostTask (0x38) — P0
  *
- * Wire format CONFIRMED via live capture of kext-side traffic
- * 2026-04-26 (RE captured from `dispatch: op=0x0038` hex-dumps):
+ * Wire format CONFIRMED via live capture + annotated disasm of
+ * AppleParavirtTask::defineHostTask (kext+0x14558dfa):
  *
- *   payload[0..3]   u32 task_id
- *   payload[4..7]   u32 reserved (zero in observed traffic)
- *   payload[8..11]  u32 flags     (=4 in observed traffic)
- *   payload[12..15] u32 root_page_pfn   (PFN of first-level PFN-array
- *                                        page; index by task-VA / 0x1000)
+ *   payload[0..3]   u32 slot_index      (= taskID << 1; bit 0 is a
+ *                      stamp-completion flag, always 0 on emit)
+ *   payload[4..11]  u64 taskHandleHint   (observed 0x0000000400000000)
+ *   payload[12..15] u32 root_page_pfn    (PFN of shared-header page)
  *
- * Semantics: register/refresh a task's host-side page-table root. The
- * PFN-array at (root_page_pfn << 12) maps task-virtual page numbers to
- * guest-physical PFNs. Used by the CmdExecIndirect2 segment walker to
- * translate `host_gpu_addr` (which is a task-VA, not a literal GPA)
- * to a real GPA before reading the cmdBuf.
+ * The shared-header page at (root_page_pfn << 12) contains:
+ *   +0x00  u32 L1_pfn  (PFN of radix-tree root interior node)
+ *   +0x04  u32 levels  (always 3 for typical tasks)
+ *   +0x08  u64 reserved0
+ *   +0x10  u32 reserved1
+ *   +0x14  u64 taskHandleHint
+ * See paravirt-re/library/state-machines/per-task-page-table.md.
  *
+ * Semantics: register/refresh a task's host-side radix page-table root.
  * The kext re-emits this opcode periodically (~320 fires per boot
  * observed); we treat each as authoritative — overwrite any prior
  * root_page_pfn for the same task_id. Allocate a task slot if the
@@ -531,9 +533,39 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
      * walk the new tree. No additional state to clear. */
     entry->root_page_pfn = root_page_pfn;
 
-    LAGFX_TRACE("CmdDefineHostTask: taskID=%u root_page_pfn=0x%x "
-              "flags=0x%x stamp=0x%08x",
-              task_id, root_page_pfn, flags, hdr->stamp);
+    LAGFX_LOG("CmdDefineHostTask: taskID=%u root_page_pfn=0x%x "
+              "handleHint=0x%llx stamp=0x%08x",
+              task_id, root_page_pfn,
+              (unsigned long long)((uint64_t)lagfx_le32(hdr->payload + 4)
+                                   | ((uint64_t)lagfx_le32(hdr->payload + 8) << 32)),
+              hdr->stamp);
+
+    if (p->dev && p->dev->desc.shell.read_memory) {
+        uint64_t hdr_gpa = ((uint64_t)root_page_pfn << 12);
+        uint8_t hdr[32] = {0};
+        if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                           hdr_gpa, sizeof(hdr), hdr)) {
+            char hex[32 * 3 + 1];
+            size_t pos = 0;
+            for (size_t i = 0; i < 28u; ++i) {
+                int w = snprintf(hex + pos, sizeof(hex) - pos, "%02x ",
+                                 (unsigned)hdr[i]);
+                if (w > 0) pos += (size_t)w;
+            }
+            uint32_t hdr_l1 = (uint32_t)hdr[0]
+                              | ((uint32_t)hdr[1] << 8)
+                              | ((uint32_t)hdr[2] << 16)
+                              | ((uint32_t)hdr[3] << 24);
+            uint32_t hdr_levels = (uint32_t)hdr[4]
+                                  | ((uint32_t)hdr[5] << 8)
+                                  | ((uint32_t)hdr[6] << 16)
+                                  | ((uint32_t)hdr[7] << 24);
+            LAGFX_LOG("  root header @0x%llx: %s l1=0x%x levels=%u",
+                      (unsigned long long)hdr_gpa, hex,
+                      hdr_l1, hdr_levels);
+        }
+    }
+
     return LAGFX_HANDLER_OK;
 }
 

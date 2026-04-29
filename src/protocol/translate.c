@@ -78,8 +78,13 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                                  | ((uint32_t)hdr_bytes[6] << 16)
                                  | ((uint32_t)hdr_bytes[7] << 24));
 
+    LAGFX_LOG("task_translate: taskID=%u dev_addr=0x%llx root_pfn=0x%x "
+              "l1_pfn=0x%x levels=%u",
+              task_id, (unsigned long long)dev_addr,
+              task->root_page_pfn, l1_pfn, levels);
+
     if (l1_pfn == 0u || levels == 0u || levels > 4u) {
-        LAGFX_TRACE("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
+        LAGFX_WARN("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
                     "header invalid (l1_pfn=0x%x levels=%u)",
                     task_id, (unsigned long long)dev_addr,
                     task->root_page_pfn, l1_pfn, levels);
@@ -98,9 +103,14 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                                             pte_gpa, sizeof(pte), &pte)) {
             return false;
         }
+        LAGFX_LOG("task_translate:   level shift=%d idx=%u "
+                  "node_pfn=0x%x pte=0x%08x pte_gpa=0x%llx",
+                  shift, (unsigned)idx, node_pfn, pte,
+                  (unsigned long long)pte_gpa);
+
         if (pte == 0u) {
-            LAGFX_TRACE("task_translate: taskID=%u dev=0x%llx root=0x%x "
-                        "l1=0x%x — unmapped at level shift=%d idx=%u "
+            LAGFX_WARN("task_translate: taskID=%u dev=0x%llx root=0x%x "
+                        "l1=0x%x — UNMAPPED at level shift=%d idx=%u "
                         "(node_pfn=0x%x pte_gpa=0x%llx)",
                         task_id, (unsigned long long)dev_addr,
                         task->root_page_pfn, l1_pfn, shift,
@@ -120,9 +130,14 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                                         &leaf_pte)) {
         return false;
     }
+    LAGFX_LOG("task_translate:   leaf node_pfn=0x%x leaf_idx=%u "
+              "leaf_pte_gpa=0x%llx",
+              node_pfn, (unsigned)leaf_idx,
+              (unsigned long long)leaf_pte_gpa);
+
     if (leaf_pte == 0u) {
-        LAGFX_TRACE("task_translate: taskID=%u dev=0x%llx root=0x%x l1=0x%x "
-                    "— leaf PTE zero (leaf_pte_gpa=0x%llx leaf_idx=%u "
+        LAGFX_WARN("task_translate: taskID=%u dev=0x%llx root=0x%x l1=0x%x "
+                    "— leaf PTE ZERO (leaf_pte_gpa=0x%llx leaf_idx=%u "
                     "leaf_node_pfn=0x%x)",
                     task_id, (unsigned long long)dev_addr,
                     task->root_page_pfn, l1_pfn,
@@ -132,17 +147,22 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
     }
     uint32_t data_pfn = leaf_pte & 0x7fffffffu;
 
+    LAGFX_LOG("task_translate:   leaf_pte=0x%08x data_pfn=0x%x "
+              "is_leaf=%u page_off=0x%llx",
+              leaf_pte, data_pfn, (leaf_pte >> 31) & 1,
+              (unsigned long long)(dev_addr & 0xfffu));
+
     uint64_t page_off = dev_addr & 0xfffu;
     *out_gpa = ((uint64_t)data_pfn << 12) + page_off;
     if (out_run_len) {
         *out_run_len = (uint64_t)0x1000u - page_off;
     }
-    LAGFX_TRACE("task_translate: taskID=%u dev=0x%llx root=0x%x l1=0x%x "
-                "levels=%u data_pfn=0x%x -> gpa=0x%llx run=%llu",
-                task_id, (unsigned long long)dev_addr,
-                task->root_page_pfn, l1_pfn, levels, data_pfn,
-                (unsigned long long)(*out_gpa),
-                (unsigned long long)((out_run_len) ? *out_run_len : 0));
+    LAGFX_LOG("task_translate: taskID=%u dev=0x%llx -> gpa=0x%llx "
+              "run=%llu (root=0x%x l1=0x%x levels=%u data_pfn=0x%x)",
+              task_id, (unsigned long long)dev_addr,
+              (unsigned long long)(*out_gpa),
+              (unsigned long long)((out_run_len) ? *out_run_len : 0),
+              task->root_page_pfn, l1_pfn, levels, data_pfn);
     return true;
 
 fallback:
@@ -153,7 +173,7 @@ fallback:
             if (out_run_len) {
                 *out_run_len = iv->va_base + iv->length - dev_addr;
             }
-            LAGFX_TRACE("task_translate: taskID=%u dev=0x%llx — interval "
+            LAGFX_LOG("task_translate: taskID=%u dev=0x%llx — interval "
                         "fallback hit [%u] va_base=0x%llx gpa_base=0x%llx "
                         "length=0x%llx -> gpa=0x%llx run=%llu",
                         task_id, (unsigned long long)dev_addr, i,
