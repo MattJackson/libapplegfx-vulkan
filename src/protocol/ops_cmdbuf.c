@@ -503,7 +503,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                     break;
                 }
                 size_t ipl_len = (size_t)inner_total - 8u;
-                LAGFX_TRACE("      inner[%u]: op=0x%04x totalLen=%u (encType=%u)",
+                LAGFX_WARN("      inner[%u]: op=0x%04x totalLen=%u (encType=%u)",
                           inner_idx, inner_opcode, inner_total,
                           (unsigned)encoder_type);
 
