@@ -146,6 +146,20 @@ lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(
               "(display_index=%u, 1920x1080, ss_gpa=0x%llx)",
               display_index, (unsigned long long)ss_gpa);
 
+    /* Set bit 2 (online) in pending_mask (ss[+0x100]). The guest's
+     * signalDisplay CAS loop will claim this once the guest enables
+     * the pipe (ss[+0x104] = 0xC), dispatching the online IES
+     * which tells WindowServer the display is ready. */
+    if (p->dev && p->dev->desc.shell.write_memory) {
+        uint32_t pending = 0x4u;
+        p->dev->desc.shell.write_memory(
+            p->dev->desc.shell.opaque, ss_gpa + 0x100u,
+            sizeof(pending), &pending);
+        LAGFX_LOG("vchan_setup_shared_state: wrote ss[+0x100]=0x4 "
+                  "(pending online bit) display_index=%u",
+                  display_index);
+    }
+
     p->pending_displays_bitmask |= (1u << display_index);
     if (p->dev->desc.shell.raise_interrupt) {
         p->dev->desc.shell.raise_interrupt(
