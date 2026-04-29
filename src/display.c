@@ -99,6 +99,19 @@ static void display_rt_create(lagfx_display_t *disp) { (void)disp; }
 static void display_rt_destroy(lagfx_display_t *disp) { (void)disp; }
 #endif
 
+static void notify_frame_ready(lagfx_display_t *display) {
+    if (display->new_frame_ready
+        && display->desc.callbacks.frame_ready) {
+        display->desc.callbacks.frame_ready(
+            display->desc.callbacks.opaque);
+    }
+}
+
+static void set_frame_ready(lagfx_display_t *display) {
+    display->new_frame_ready = true;
+    notify_frame_ready(display);
+}
+
 lagfx_display_t *lagfx_display_new(lagfx_device_t *device,
                                     const lagfx_display_descriptor_t *desc,
                                     uint32_t port, uint32_t serial_num,
@@ -270,7 +283,7 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
         /* Flag the new-frame state so read_frame doesn't silently hide
          * the absence of a backend — read_frame will clear it with
          * NO_FRAME and the shell sees the signal. */
-        display->new_frame_ready = true;
+        set_frame_ready(display);
         (void)scanout_gpa;
         (void)scanout_length;
         return LAGFX_OK;
@@ -419,7 +432,7 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
         return LAGFX_ERR_BACKEND;
     }
 
-    display->new_frame_ready = true;
+    set_frame_ready(display);
     LAGFX_LOG("display_submit_clear: %ux%u clear=(%.3f,%.3f,%.3f,%.3f) OK",
               display->rt_width, display->rt_height,
               (double)rgba_local[0], (double)rgba_local[1],
@@ -491,7 +504,7 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
     (void)scanout_length;
     /* No backend — just flip the flag so semantics stay uniform from
      * the protocol decoder's perspective. read_frame will clear it. */
-    display->new_frame_ready = true;
+    set_frame_ready(display);
     return LAGFX_OK;
 #endif
 }
@@ -730,7 +743,7 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
         }
     }
 
-    display->new_frame_ready = true;
+    set_frame_ready(display);
 
     {
         void *mapped = NULL;
@@ -772,7 +785,7 @@ cleanup_rendered:
 #else
     (void)scanout_gpa;
     (void)scanout_length;
-    display->new_frame_ready = true;
+    set_frame_ready(display);
     return LAGFX_OK;
 #endif
 }
