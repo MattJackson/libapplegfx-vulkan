@@ -266,61 +266,86 @@ static lagfx_status_t create_frame_image(struct lagfx_vk_state *vk) {
     const uint32_t h = 1080u;
     const VkFormat fmt = VK_FORMAT_B8G8R8A8_UNORM;
 
-    VkImageCreateInfo ici = {
-        .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType     = VK_IMAGE_TYPE_2D,
-        .format        = fmt,
-        .extent        = { w, h, 1u },
-        .mipLevels     = 1u,
-        .arrayLayers   = 1u,
-        .samples       = VK_SAMPLE_COUNT_1_BIT,
-        .tiling        = VK_IMAGE_TILING_OPTIMAL,
-        .usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-                       | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    struct {
+        VkImageTiling         tiling;
+        VkMemoryPropertyFlags mem_pref;
+    } const cfg[] = {
+        { VK_IMAGE_TILING_OPTIMAL, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT },
+        { VK_IMAGE_TILING_LINEAR,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+          | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT },
     };
-    VkResult vr = vkCreateImage(vk->device, &ici, NULL, &vk->frame_image);
-    if (vr != VK_SUCCESS) {
-        LAGFX_ERR("pipeline_init: vkCreateImage(frame) failed (%d)", (int)vr);
-        return LAGFX_ERR_BACKEND;
+    bool bound = false;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        VkImageCreateInfo ici = {
+            .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType     = VK_IMAGE_TYPE_2D,
+            .format        = fmt,
+            .extent        = { w, h, 1u },
+            .mipLevels     = 1u,
+            .arrayLayers   = 1u,
+            .samples       = VK_SAMPLE_COUNT_1_BIT,
+            .tiling        = cfg[attempt].tiling,
+            .usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                           | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        VkResult vr = vkCreateImage(vk->device, &ici, NULL, &vk->frame_image);
+        if (vr != VK_SUCCESS) {
+            LAGFX_WARN("create_frame_image: attempt %d vkCreateImage "
+                       "failed (%d)", attempt, (int)vr);
+            continue;
+        }
+
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(vk->device, vk->frame_image, &req);
+        uint32_t mtype = find_memory_type(vk->phys_device, req.memoryTypeBits,
+                                          cfg[attempt].mem_pref);
+        if (mtype == UINT32_MAX) {
+            mtype = find_memory_type(vk->phys_device, req.memoryTypeBits, 0u);
+        }
+        if (mtype == UINT32_MAX) {
+            LAGFX_WARN("create_frame_image: attempt %d no memory type", attempt);
+            vkDestroyImage(vk->device, vk->frame_image, NULL);
+            vk->frame_image = VK_NULL_HANDLE;
+            continue;
+        }
+
+        VkMemoryAllocateInfo mai = {
+            .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize  = req.size,
+            .memoryTypeIndex = mtype,
+        };
+        vr = vkAllocateMemory(vk->device, &mai, NULL, &vk->frame_image_mem);
+        if (vr != VK_SUCCESS) {
+            LAGFX_WARN("create_frame_image: attempt %d vkAllocateMemory "
+                       "failed (%d)", attempt, (int)vr);
+            vkDestroyImage(vk->device, vk->frame_image, NULL);
+            vk->frame_image = VK_NULL_HANDLE;
+            continue;
+        }
+        vr = vkBindImageMemory(vk->device, vk->frame_image,
+                               vk->frame_image_mem, 0);
+        if (vr != VK_SUCCESS) {
+            LAGFX_WARN("create_frame_image: attempt %d vkBindImageMemory "
+                       "failed (%d)", attempt, (int)vr);
+            vkFreeMemory(vk->device, vk->frame_image_mem, NULL);
+            vkDestroyImage(vk->device, vk->frame_image, NULL);
+            vk->frame_image     = VK_NULL_HANDLE;
+            vk->frame_image_mem = VK_NULL_HANDLE;
+            continue;
+        }
+
+        LAGFX_LOG("create_frame_image: bound on attempt %d "
+                  "(tiling=%d mtype=%u)", attempt,
+                  (int)cfg[attempt].tiling, mtype);
+        bound = true;
+        break;
     }
 
-    VkMemoryRequirements req;
-    vkGetImageMemoryRequirements(vk->device, vk->frame_image, &req);
-    uint32_t mtype = find_memory_type(vk->phys_device, req.memoryTypeBits,
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (mtype == UINT32_MAX) {
-        mtype = find_memory_type(vk->phys_device, req.memoryTypeBits, 0u);
-    }
-    if (mtype == UINT32_MAX) {
-        LAGFX_ERR("pipeline_init: no memory type for frame image");
-        vkDestroyImage(vk->device, vk->frame_image, NULL);
-        vk->frame_image = VK_NULL_HANDLE;
-        return LAGFX_ERR_BACKEND;
-    }
-
-    VkMemoryAllocateInfo mai = {
-        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize  = req.size,
-        .memoryTypeIndex = mtype,
-    };
-    vr = vkAllocateMemory(vk->device, &mai, NULL, &vk->frame_image_mem);
-    if (vr != VK_SUCCESS) {
-        LAGFX_ERR("pipeline_init: vkAllocateMemory(frame) failed (%d)",
-                  (int)vr);
-        vkDestroyImage(vk->device, vk->frame_image, NULL);
-        vk->frame_image = VK_NULL_HANDLE;
-        return LAGFX_ERR_BACKEND;
-    }
-    vr = vkBindImageMemory(vk->device, vk->frame_image, vk->frame_image_mem, 0);
-    if (vr != VK_SUCCESS) {
-        LAGFX_ERR("pipeline_init: vkBindImageMemory(frame) failed (%d)",
-                  (int)vr);
-        vkFreeMemory(vk->device, vk->frame_image_mem, NULL);
-        vkDestroyImage(vk->device, vk->frame_image, NULL);
-        vk->frame_image     = VK_NULL_HANDLE;
-        vk->frame_image_mem = VK_NULL_HANDLE;
+    if (!bound) {
+        LAGFX_ERR("create_frame_image: all configurations failed");
         return LAGFX_ERR_BACKEND;
     }
 
@@ -337,7 +362,7 @@ static lagfx_status_t create_frame_image(struct lagfx_vk_state *vk) {
             .layerCount     = 1,
         },
     };
-    vr = vkCreateImageView(vk->device, &vci, NULL, &vk->frame_image_view);
+    VkResult vr = vkCreateImageView(vk->device, &vci, NULL, &vk->frame_image_view);
     if (vr != VK_SUCCESS) {
         LAGFX_ERR("pipeline_init: vkCreateImageView(frame) failed (%d)",
                   (int)vr);
