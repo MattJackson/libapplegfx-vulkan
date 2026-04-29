@@ -43,6 +43,31 @@ static inline uint64_t vchan_le64(const uint8_t *b) {
 }
 
 /* ================================================================
+ * 0x02 display submit
+ *
+ * 8-byte payload: { u32 display_index, u32 arg2 }
+ * Sent by the guest after setupSharedState to trigger a display
+ * mode update or frame submission. For now we log and acknowledge.
+ * ================================================================ */
+
+lagfx_handler_status_t lagfx_op_vchan_display_submit(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    uint32_t display_index = 0u;
+    uint32_t arg2 = 0u;
+    if (hdr->payload && hdr->payload_size >= 8u) {
+        display_index = vchan_le32(hdr->payload + 0);
+        arg2 = vchan_le32(hdr->payload + 4);
+    }
+    LAGFX_LOG("vchan_display_submit: display_index=%u arg2=0x%08x "
+              "stamp=0x%08x",
+              display_index, arg2, hdr->stamp);
+    return LAGFX_HANDLER_OK;
+}
+
+/* ================================================================
  * 0x01 setupSharedState
  *
  * 8-byte payload: { u32 display_index, u32 ss_pfn }

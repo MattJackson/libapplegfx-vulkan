@@ -870,6 +870,10 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             lagfx_op_vchan_setup_shared_state(
                                 p, &parsed);
                             break;
+                        case 0x02u:
+                            lagfx_op_vchan_display_submit(
+                                p, &parsed);
+                            break;
                         case 0x06u:
                             lagfx_op_vchan_present(p, &parsed);
                             break;

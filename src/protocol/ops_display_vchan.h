@@ -10,6 +10,7 @@
  * doorbell loop in protocol.c, NOT through the root opcode table.
  *
  *   0x01  setupSharedState   8  bytes payload
+ *   0x02  display submit      8  bytes payload
  *   0x06  present            12 bytes payload
  *   0x07  present+gamma      36 bytes payload
  *
@@ -22,6 +23,9 @@
 #include "opcodes.h"
 
 lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+
+lagfx_handler_status_t lagfx_op_vchan_display_submit(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
 lagfx_handler_status_t lagfx_op_vchan_present(
