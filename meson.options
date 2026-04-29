@@ -1,5 +1,11 @@
 # libapplegfx-vulkan — meson options
 
+option('tests',
+  type        : 'boolean',
+  value       : true,
+  description : 'Build tests and examples. Disable for production/Docker builds.',
+)
+
 option('fuzz',
   type        : 'feature',
   value       : 'disabled',

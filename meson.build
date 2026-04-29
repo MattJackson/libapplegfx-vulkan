@@ -114,9 +114,11 @@ pkg.generate(libapplegfx_vulkan,
 install_headers('include/libapplegfx-vulkan.h')
 
 # --- Tests ---------------------------------------------------------------
-subdir('tests')
+if get_option('tests')
+  subdir('tests')
+endif
 
 # --- Examples (Phase 3.C.2 E2E) ------------------------------------------
-if fs.is_file(meson.current_source_dir() / 'examples' / 'meson.build')
+if get_option('tests') and fs.is_file(meson.current_source_dir() / 'examples' / 'meson.build')
   subdir('examples')
 endif
