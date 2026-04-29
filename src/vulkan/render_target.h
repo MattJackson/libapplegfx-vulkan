@@ -60,9 +60,8 @@ typedef struct lagfx_vk_render_target {
     uint32_t        height;
     VkFormat        format;
 
-    /* Current layout — mutated by the helpers. Starts at UNDEFINED and
-     * is transitioned to COLOR_ATTACHMENT_OPTIMAL on first clear. */
     VkImageLayout   layout;
+    bool            owns_resources;
 } lagfx_vk_render_target_t;
 
 /* Allocate a render target at (width,height,format). Memory backing is
@@ -77,8 +76,19 @@ lagfx_status_t lagfx_vk_render_target_create(struct lagfx_vk_state *vk,
                                              VkFormat format,
                                              lagfx_vk_render_target_t *out);
 
+/* Wrap an existing VkImage+view+memory into a render target struct without
+ * allocating new resources. The caller retains ownership of the Vulkan
+ * objects — destroy does NOT free them. Use this to share the pipeline's
+ * default frame image with a display render target, avoiding duplicate
+ * allocations on memory-constrained devices (lavapipe). */
+lagfx_status_t lagfx_vk_render_target_wrap(
+    VkImage image, VkImageView view, VkDeviceMemory memory,
+    uint32_t width, uint32_t height, VkFormat format,
+    lagfx_vk_render_target_t *out);
+
 /* Tear down: destroys view, image, memory (in that order). Safe on a
- * zeroed struct. */
+ * zeroed struct. If the render target was created via _wrap, this is a
+ * no-op (handles are not owned). */
 void lagfx_vk_render_target_destroy(struct lagfx_vk_state *vk,
                                     lagfx_vk_render_target_t *rt);
 

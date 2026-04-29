@@ -62,6 +62,7 @@ static void display_rt_create(lagfx_display_t *disp) {
         || !disp->device->vk->initialized) {
         return;
     }
+    struct lagfx_vk_state *vk = disp->device->vk;
     uint32_t w = LAGFX_DISPLAY_DEFAULT_W;
     uint32_t h = LAGFX_DISPLAY_DEFAULT_H;
     if (disp->desc.modes && disp->desc.mode_count > 0u) {
@@ -72,6 +73,23 @@ static void display_rt_create(lagfx_display_t *disp) {
         w = LAGFX_DISPLAY_DEFAULT_W;
         h = LAGFX_DISPLAY_DEFAULT_H;
     }
+
+    if (vk->frame_image != VK_NULL_HANDLE
+        && vk->frame_image_w == w && vk->frame_image_h == h) {
+        lagfx_status_t st = lagfx_vk_render_target_wrap(
+            vk->frame_image, vk->frame_image_view,
+            vk->frame_image_mem, w, h,
+            VK_FORMAT_B8G8R8A8_UNORM, &disp->rt);
+        if (st == LAGFX_OK) {
+            LAGFX_LOG("display_rt_create: wrapped pipeline frame image "
+                      "(%ux%u, no extra allocation)", w, h);
+            disp->rt_ready = true;
+            disp->rt_width = w;
+            disp->rt_height = h;
+            return;
+        }
+    }
+
     lagfx_status_t st = lagfx_vk_render_target_create(
         disp->device->vk, w, h, VK_FORMAT_B8G8R8A8_UNORM, &disp->rt);
     if (st != LAGFX_OK) {

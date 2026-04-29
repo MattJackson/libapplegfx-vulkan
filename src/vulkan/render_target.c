@@ -88,70 +88,106 @@ lagfx_status_t lagfx_vk_render_target_create(struct lagfx_vk_state *vk,
         return LAGFX_ERR_BACKEND;
     }
 
-    /* === Image ==================================================== */
-    VkImageCreateInfo ici = {
-        .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType     = VK_IMAGE_TYPE_2D,
-        .format        = format,
-        .extent        = { width, height, 1u },
-        .mipLevels     = 1u,
-        .arrayLayers   = 1u,
-        .samples       = VK_SAMPLE_COUNT_1_BIT,
-        .tiling        = VK_IMAGE_TILING_OPTIMAL,
-        .usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
-                       | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
-                       | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    /* === Image + Memory ============================================ */
+    /* Attempt 0: OPTIMAL tiling + DEVICE_LOCAL (real GPUs).
+     * Attempt 1: LINEAR tiling + HOST_VISIBLE|HOST_COHERENT (lavapipe).
+     *
+     * Lavapipe typically exposes one memory type: HOST_VISIBLE +
+     * HOST_COHERENT (no DEVICE_LOCAL).  An OPTIMAL-tiled image may fail
+     * to bind with VK_ERROR_OUT_OF_DEVICE_MEMORY because lavapipe
+     * cannot satisfy the internal resource for that tiling with
+     * host-visible memory.  LINEAR tiling works universally on software
+     * rasterisers. */
+    struct {
+        VkImageTiling         tiling;
+        VkMemoryPropertyFlags mem_pref;
+    } const rt_cfg[] = {
+        { VK_IMAGE_TILING_OPTIMAL, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT },
+        { VK_IMAGE_TILING_LINEAR,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+          | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT },
     };
-    VkResult vr = vkCreateImage(vk->device, &ici, NULL, &out->image);
-    if (vr != VK_SUCCESS) {
-        LAGFX_ERR("render_target_create: vkCreateImage failed (VkResult=%d)",
-                  (int)vr);
-        return LAGFX_ERR_BACKEND;
+    VkResult vr = VK_SUCCESS;
+    bool bound = false;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        VkImageCreateInfo ici = {
+            .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType     = VK_IMAGE_TYPE_2D,
+            .format        = format,
+            .extent        = { width, height, 1u },
+            .mipLevels     = 1u,
+            .arrayLayers   = 1u,
+            .samples       = VK_SAMPLE_COUNT_1_BIT,
+            .tiling        = rt_cfg[attempt].tiling,
+            .usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                           | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                           | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        vr = vkCreateImage(vk->device, &ici, NULL, &out->image);
+        if (vr != VK_SUCCESS) {
+            LAGFX_WARN("render_target_create: attempt %d vkCreateImage "
+                       "failed (tiling=%d VkResult=%d)",
+                       attempt, (int)rt_cfg[attempt].tiling, (int)vr);
+            continue;
+        }
+
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(vk->device, out->image, &req);
+
+        uint32_t mtype = find_memory_type(vk->phys_device,
+                                          req.memoryTypeBits,
+                                          rt_cfg[attempt].mem_pref);
+        if (mtype == UINT32_MAX) {
+            mtype = find_memory_type(vk->phys_device,
+                                     req.memoryTypeBits, 0u);
+        }
+        if (mtype == UINT32_MAX) {
+            LAGFX_WARN("render_target_create: attempt %d no memory type "
+                       "(typeBits=0x%x)", attempt, req.memoryTypeBits);
+            vkDestroyImage(vk->device, out->image, NULL);
+            out->image = VK_NULL_HANDLE;
+            continue;
+        }
+
+        VkMemoryAllocateInfo mai = {
+            .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize  = req.size,
+            .memoryTypeIndex = mtype,
+        };
+        vr = vkAllocateMemory(vk->device, &mai, NULL, &out->memory);
+        if (vr != VK_SUCCESS) {
+            LAGFX_WARN("render_target_create: attempt %d vkAllocateMemory "
+                       "failed (VkResult=%d)", attempt, (int)vr);
+            vkDestroyImage(vk->device, out->image, NULL);
+            out->image = VK_NULL_HANDLE;
+            continue;
+        }
+
+        vr = vkBindImageMemory(vk->device, out->image, out->memory, 0);
+        if (vr != VK_SUCCESS) {
+            LAGFX_WARN("render_target_create: attempt %d vkBindImageMemory "
+                       "failed (tiling=%d VkResult=%d)",
+                       attempt, (int)rt_cfg[attempt].tiling, (int)vr);
+            vkFreeMemory(vk->device, out->memory, NULL);
+            vkDestroyImage(vk->device, out->image, NULL);
+            out->image   = VK_NULL_HANDLE;
+            out->memory  = VK_NULL_HANDLE;
+            continue;
+        }
+
+        LAGFX_LOG("render_target_create: bound on attempt %d "
+                  "(tiling=%d mtype=%u size=%zu)",
+                  attempt, (int)rt_cfg[attempt].tiling, mtype,
+                  (size_t)req.size);
+        bound = true;
+        break;
     }
 
-    /* === Memory =================================================== */
-    VkMemoryRequirements req;
-    vkGetImageMemoryRequirements(vk->device, out->image, &req);
-
-    /* Prefer DEVICE_LOCAL. On lavapipe every type is both DEVICE_LOCAL
-     * and HOST_VISIBLE (unified heap per vulkaninfo); on a discrete GPU
-     * we just want DEVICE_LOCAL. No fallback needed. */
-    uint32_t mtype = find_memory_type(vk->phys_device, req.memoryTypeBits,
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (mtype == UINT32_MAX) {
-        /* Fallback: any memory type that satisfies the bits. */
-        mtype = find_memory_type(vk->phys_device, req.memoryTypeBits, 0u);
-    }
-    if (mtype == UINT32_MAX) {
-        LAGFX_ERR("render_target_create: no matching memory type "
-                  "(typeBits=0x%x)", req.memoryTypeBits);
-        vkDestroyImage(vk->device, out->image, NULL);
-        out->image = VK_NULL_HANDLE;
-        return LAGFX_ERR_BACKEND;
-    }
-    VkMemoryAllocateInfo mai = {
-        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize  = req.size,
-        .memoryTypeIndex = mtype,
-    };
-    vr = vkAllocateMemory(vk->device, &mai, NULL, &out->memory);
-    if (vr != VK_SUCCESS) {
-        LAGFX_ERR("render_target_create: vkAllocateMemory failed (VkResult=%d)",
-                  (int)vr);
-        vkDestroyImage(vk->device, out->image, NULL);
-        out->image = VK_NULL_HANDLE;
-        return LAGFX_ERR_BACKEND;
-    }
-    vr = vkBindImageMemory(vk->device, out->image, out->memory, 0);
-    if (vr != VK_SUCCESS) {
-        LAGFX_ERR("render_target_create: vkBindImageMemory failed (VkResult=%d)",
-                  (int)vr);
-        vkFreeMemory(vk->device, out->memory, NULL);
-        vkDestroyImage(vk->device, out->image, NULL);
-        out->image = VK_NULL_HANDLE;
-        out->memory = VK_NULL_HANDLE;
+    if (!bound) {
+        LAGFX_ERR("render_target_create: all image+memory configurations "
+                  "failed");
         return LAGFX_ERR_BACKEND;
     }
 
@@ -184,6 +220,7 @@ lagfx_status_t lagfx_vk_render_target_create(struct lagfx_vk_state *vk,
     out->height = height;
     out->format = format;
     out->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    out->owns_resources = true;
 
     LAGFX_LOG("render_target_create: %ux%u fmt=%d image=%p view=%p mem=%p",
               width, height, (int)format,
@@ -191,9 +228,33 @@ lagfx_status_t lagfx_vk_render_target_create(struct lagfx_vk_state *vk,
     return LAGFX_OK;
 }
 
+lagfx_status_t lagfx_vk_render_target_wrap(
+    VkImage image, VkImageView view, VkDeviceMemory memory,
+    uint32_t width, uint32_t height, VkFormat format,
+    lagfx_vk_render_target_t *out)
+{
+    if (!out || image == VK_NULL_HANDLE || view == VK_NULL_HANDLE) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    memset(out, 0, sizeof(*out));
+    out->image  = image;
+    out->view   = view;
+    out->memory = memory;
+    out->width  = width;
+    out->height = height;
+    out->format = format;
+    out->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    out->owns_resources = false;
+    return LAGFX_OK;
+}
+
 void lagfx_vk_render_target_destroy(struct lagfx_vk_state *vk,
                                     lagfx_vk_render_target_t *rt) {
     if (!vk || !rt) {
+        return;
+    }
+    if (!rt->owns_resources) {
+        memset(rt, 0, sizeof(*rt));
         return;
     }
     if (vk->device == VK_NULL_HANDLE) {
