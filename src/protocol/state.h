@@ -312,6 +312,13 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                           uint64_t dev_addr, uint64_t *out_gpa,
                           uint64_t *out_run_len);
 
+/* Radix-tree-only walk — skips interval table, used by
+ * CmdMapMemoryImmediate to resolve GPAs before the interval is
+ * populated. */
+bool lagfx_task_translate_radix(lagfx_protocol_t *p, uint32_t task_id,
+                                uint64_t dev_addr, uint64_t *out_gpa,
+                                uint64_t *out_run_len);
+
 /* === Task / FIFO table helpers =================================
  *
  * Tiny linear scans — the tables are small (16 and 8 entries) and

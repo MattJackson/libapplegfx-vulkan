@@ -44,9 +44,9 @@
 #include "../device.h"
 #include "../common/log.h"
 
-bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
-                          uint64_t dev_addr, uint64_t *out_gpa,
-                          uint64_t *out_run_len) {
+bool lagfx_task_translate_radix(lagfx_protocol_t *p, uint32_t task_id,
+                                uint64_t dev_addr, uint64_t *out_gpa,
+                                uint64_t *out_run_len) {
     if (!lagfx_protocol_is_valid(p) || !out_gpa) {
         return false;
     }
@@ -55,6 +55,80 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
         return false;
     }
     if (!p->dev || !p->dev->desc.shell.read_memory) {
+        return false;
+    }
+    if (task->root_page_pfn == 0u) {
+        return false;
+    }
+
+    uint64_t header_gpa = ((uint64_t)task->root_page_pfn << 12);
+    uint8_t hdr_bytes[8] = {0};
+    if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                        header_gpa, sizeof(hdr_bytes),
+                                        hdr_bytes)) {
+        return false;
+    }
+    uint32_t l1_pfn = (uint32_t)(hdr_bytes[0]
+                                 | ((uint32_t)hdr_bytes[1] << 8)
+                                 | ((uint32_t)hdr_bytes[2] << 16)
+                                 | ((uint32_t)hdr_bytes[3] << 24));
+    uint32_t levels = (uint32_t)(hdr_bytes[4]
+                                 | ((uint32_t)hdr_bytes[5] << 8)
+                                 | ((uint32_t)hdr_bytes[6] << 16)
+                                 | ((uint32_t)hdr_bytes[7] << 24));
+
+    if (l1_pfn == 0u || levels == 0u || levels > 4u) {
+        return false;
+    }
+
+    uint64_t page_idx = dev_addr >> 12;
+    uint32_t node_pfn = l1_pfn;
+    int32_t shift = (int32_t)((levels - 1u) * 10u);
+
+    while (shift > 0) {
+        uint64_t idx = (page_idx >> shift) & 0x3ffu;
+        uint64_t pte_gpa = ((uint64_t)node_pfn << 12) + idx * 4u;
+        uint32_t pte = 0u;
+        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                            pte_gpa, sizeof(pte), &pte)) {
+            return false;
+        }
+        if (pte == 0u) {
+            return false;
+        }
+        node_pfn = pte & 0x7fffffffu;
+        shift -= 10;
+    }
+
+    uint64_t leaf_idx = page_idx & 0x3ffu;
+    uint64_t leaf_pte_gpa = ((uint64_t)node_pfn << 12) + leaf_idx * 4u;
+    uint32_t leaf_pte = 0u;
+    if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                        leaf_pte_gpa, sizeof(leaf_pte),
+                                        &leaf_pte)) {
+        return false;
+    }
+    if (leaf_pte == 0u) {
+        return false;
+    }
+    uint32_t data_pfn = leaf_pte & 0x7fffffffu;
+
+    uint64_t page_off = dev_addr & 0xfffu;
+    *out_gpa = ((uint64_t)data_pfn << 12) + page_off;
+    if (out_run_len) {
+        *out_run_len = (uint64_t)0x1000u - page_off;
+    }
+    return true;
+}
+
+bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
+                          uint64_t dev_addr, uint64_t *out_gpa,
+                          uint64_t *out_run_len) {
+    if (!lagfx_protocol_is_valid(p) || !out_gpa) {
+        return false;
+    }
+    lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
+    if (!task) {
         return false;
     }
 
@@ -78,114 +152,5 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
         }
     }
 
-    if (task->root_page_pfn == 0u) {
-        return false;
-    }
-
-    uint64_t header_gpa = ((uint64_t)task->root_page_pfn << 12);
-    uint8_t hdr_bytes[8] = {0};
-    if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                        header_gpa, sizeof(hdr_bytes),
-                                        hdr_bytes)) {
-        return false;
-    }
-    uint32_t l1_pfn = (uint32_t)(hdr_bytes[0]
-                                 | ((uint32_t)hdr_bytes[1] << 8)
-                                 | ((uint32_t)hdr_bytes[2] << 16)
-                                 | ((uint32_t)hdr_bytes[3] << 24));
-    uint32_t levels = (uint32_t)(hdr_bytes[4]
-                                 | ((uint32_t)hdr_bytes[5] << 8)
-                                 | ((uint32_t)hdr_bytes[6] << 16)
-                                 | ((uint32_t)hdr_bytes[7] << 24));
-
-    LAGFX_LOG("task_translate: taskID=%u dev_addr=0x%llx root_pfn=0x%x "
-              "l1_pfn=0x%x levels=%u",
-              task_id, (unsigned long long)dev_addr,
-              task->root_page_pfn, l1_pfn, levels);
-
-    if (l1_pfn == 0u || levels == 0u || levels > 4u) {
-        LAGFX_WARN("task_translate: taskID=%u dev=0x%llx root_pfn=0x%x "
-                    "header invalid (l1_pfn=0x%x levels=%u)",
-                    task_id, (unsigned long long)dev_addr,
-                    task->root_page_pfn, l1_pfn, levels);
-        return false;
-    }
-
-    uint64_t page_idx = dev_addr >> 12;
-    uint32_t node_pfn = l1_pfn;
-    int32_t shift = (int32_t)((levels - 1u) * 10u);
-
-    while (shift > 0) {
-        uint64_t idx = (page_idx >> shift) & 0x3ffu;
-        uint64_t pte_gpa = ((uint64_t)node_pfn << 12) + idx * 4u;
-        uint32_t pte = 0u;
-        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                            pte_gpa, sizeof(pte), &pte)) {
-            return false;
-        }
-        LAGFX_LOG("task_translate:   level shift=%d idx=%u "
-                  "node_pfn=0x%x pte=0x%08x pte_gpa=0x%llx",
-                  shift, (unsigned)idx, node_pfn, pte,
-                  (unsigned long long)pte_gpa);
-
-        if (pte == 0u) {
-            LAGFX_WARN("task_translate: taskID=%u dev=0x%llx root=0x%x "
-                        "l1=0x%x — UNMAPPED at level shift=%d idx=%u "
-                        "(node_pfn=0x%x pte_gpa=0x%llx)",
-                        task_id, (unsigned long long)dev_addr,
-                        task->root_page_pfn, l1_pfn, shift,
-                        (unsigned)idx, node_pfn,
-                        (unsigned long long)pte_gpa);
-            return false;
-        }
-        node_pfn = pte & 0x7fffffffu;
-        shift -= 10;
-    }
-
-    uint64_t leaf_idx = page_idx & 0x3ffu;
-    uint64_t leaf_pte_gpa = ((uint64_t)node_pfn << 12) + leaf_idx * 4u;
-    uint32_t leaf_pte = 0u;
-    if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                        leaf_pte_gpa, sizeof(leaf_pte),
-                                        &leaf_pte)) {
-        return false;
-    }
-    LAGFX_LOG("task_translate:   leaf node_pfn=0x%x leaf_idx=%u "
-              "leaf_pte_gpa=0x%llx",
-              node_pfn, (unsigned)leaf_idx,
-              (unsigned long long)leaf_pte_gpa);
-
-    if (leaf_pte == 0u) {
-        LAGFX_WARN("task_translate: taskID=%u dev=0x%llx root=0x%x l1=0x%x "
-                    "— leaf PTE ZERO (leaf_pte_gpa=0x%llx leaf_idx=%u "
-                    "leaf_node_pfn=0x%x)",
-                    task_id, (unsigned long long)dev_addr,
-                    task->root_page_pfn, l1_pfn,
-                    (unsigned long long)leaf_pte_gpa,
-                    (unsigned)leaf_idx, node_pfn);
-        return false;
-    }
-    uint32_t data_pfn = leaf_pte & 0x7fffffffu;
-
-    LAGFX_LOG("task_translate:   leaf_pte=0x%08x data_pfn=0x%x "
-              "is_leaf=%u page_off=0x%llx",
-              leaf_pte, data_pfn, (leaf_pte >> 31) & 1,
-              (unsigned long long)(dev_addr & 0xfffu));
-
-    uint64_t page_off = dev_addr & 0xfffu;
-    *out_gpa = ((uint64_t)data_pfn << 12) + page_off;
-    if (out_run_len) {
-        *out_run_len = (uint64_t)0x1000u - page_off;
-    }
-    LAGFX_LOG("task_translate: taskID=%u dev=0x%llx -> gpa=0x%llx "
-              "run=%llu (root=0x%x l1=0x%x levels=%u data_pfn=0x%x)",
-              task_id, (unsigned long long)dev_addr,
-              (unsigned long long)(*out_gpa),
-              (unsigned long long)((out_run_len) ? *out_run_len : 0),
-              task->root_page_pfn, l1_pfn, levels, data_pfn);
-    return true;
-
-    LAGFX_WARN("task_translate: taskID=%u dev=0x%llx — no interval and "
-                "radix walk failed", task_id, (unsigned long long)dev_addr);
-    return false;
+    return lagfx_task_translate_radix(p, task_id, dev_addr, out_gpa, out_run_len);
 }

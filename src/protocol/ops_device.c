@@ -677,9 +677,9 @@ lagfx_handler_status_t lagfx_op_map_memory_immediate(
 
         if (target_iv) {
             uint64_t gpa = 0, run_len = 0;
-            bool ok = lagfx_task_translate(p, task_id,
-                                           target_iv->va_base,
-                                           &gpa, &run_len);
+            bool ok = lagfx_task_translate_radix(p, task_id,
+                                                  target_iv->va_base,
+                                                  &gpa, &run_len);
             if (ok) {
                 target_iv->gpa_base = gpa;
                 LAGFX_LOG("CmdMapMemoryImmediate: taskID=%u translated "
