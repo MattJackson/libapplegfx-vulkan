@@ -65,7 +65,11 @@ static void display_rt_create(lagfx_display_t *disp) {
     struct lagfx_vk_state *vk = disp->device->vk;
     uint32_t w = LAGFX_DISPLAY_DEFAULT_W;
     uint32_t h = LAGFX_DISPLAY_DEFAULT_H;
-    if (disp->desc.modes && disp->desc.mode_count > 0u) {
+    if (disp->desc.modes && disp->desc.mode_count > 0u
+        && disp->desc.modes[0].width_px > 0u
+        && disp->desc.modes[0].height_px > 0u
+        && disp->desc.modes[0].width_px <= 4096u
+        && disp->desc.modes[0].height_px <= 4096u) {
         w = disp->desc.modes[0].width_px;
         h = disp->desc.modes[0].height_px;
     }
@@ -73,9 +77,6 @@ static void display_rt_create(lagfx_display_t *disp) {
         w = LAGFX_DISPLAY_DEFAULT_W;
         h = LAGFX_DISPLAY_DEFAULT_H;
     }
-
-    LAGFX_LOG("display_rt_create: frame_image=%p w=%u h=%u target_w=%u target_h=%u",
-              (void*)vk->frame_image, vk->frame_image_w, vk->frame_image_h, w, h);
 
     if (vk->frame_image != VK_NULL_HANDLE
         && vk->frame_image_w == w && vk->frame_image_h == h) {
