@@ -133,7 +133,7 @@ static void lagfx_advance_stamp_cell(lagfx_protocol_t *p,
     if (p->dev->desc.shell.write_memory(
             p->dev->desc.shell.opaque,
             cell_gpa, sizeof(want), &want)) {
-        LAGFX_TRACE("stamp_cell[%u] := %u (was %u, target=%u, gpa=0x%llx)",
+                LAGFX_LOG("stamp_cell[%u] := %u (was %u, target=%u, gpa=0x%llx)",
                   slot, want, cur, target_stamp,
                   (unsigned long long)cell_gpa);
     }
@@ -543,6 +543,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 LAGFX_WARN("doorbell ch=%u: guard FAIL ring_pfn=0x%x "
                           "wp=%u rp=%u — skipping drain",
                           ch, ring_pfn, write_ptr, read_ptr);
+                return;
             }
 
             /* Per-channel ring drain for non-display channels (ch 1..4).
@@ -607,6 +608,8 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 uint32_t last_stamp = 0u;
                 uint32_t cur_rp = read_ptr;
                 unsigned cmd_idx = 0;
+                LAGFX_LOG("doorbell ch=%u drain start: read_ptr=%u write_ptr=%u",
+                          ch, read_ptr, write_ptr);
                 while (cur_rp + 12u <= write_ptr) {
                     uint8_t hdr_bytes[12];
                     {
@@ -721,9 +724,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     p->extra_stamp_advance = 0u;
                     int rc = lagfx_protocol_dispatch_one_no_stamp(
                         p, cmd, cmd_len, &parsed);
-                    LAGFX_TRACE("doorbell ch=%u cmd[%u]: opcode=0x%04x "
+                    LAGFX_LOG("doorbell ch=%u cmd[%u]: opcode=0x%04x "
                               "stamp=0x%08x len=%u rc=%d "
-                              "extra_stamp=%u "
+                              "extra_stamp_advance=%u "
                               "hdr_bytes=%02x %02x %02x %02x %02x %02x "
                               "%02x %02x %02x %02x %02x %02x",
                               ch, cmd_idx, parsed.opcode, parsed.stamp,
@@ -735,6 +738,8 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
                     uint32_t effective = parsed.stamp
                                          + p->extra_stamp_advance;
+                    LAGFX_LOG("doorbell ch=%u cmd[%u]: effective=0x%08x last_stamp=0x%08x",
+                              ch, cmd_idx, effective, last_stamp);
                     if (effective > last_stamp) {
                         last_stamp = effective;
                     }
@@ -744,8 +749,10 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     cmd_idx += 1;
                 }
 
-                /* Advance descr.read_ptr to write_ptr (drain done). */
-                uint32_t new_rp = write_ptr;
+                LAGFX_LOG("doorbell ch=%u drain done: %u cmd(s), final last_stamp=0x%08x",
+                          ch, cmd_idx, last_stamp);
+
+                uint32_t new_rp = cur_rp;
                 if (p->dev->desc.shell.write_memory) {
                     p->dev->desc.shell.write_memory(
                         p->dev->desc.shell.opaque,
@@ -886,7 +893,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     cmd_idx += 1;
                 }
 
-                uint32_t new_rp = write_ptr;
+                uint32_t new_rp = cur_rp;
                 if (p->dev->desc.shell.write_memory) {
                     p->dev->desc.shell.write_memory(
                         p->dev->desc.shell.opaque,
