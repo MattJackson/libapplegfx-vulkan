@@ -439,6 +439,24 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             continue;
         }
 
+        {
+            size_t dump_n = (length < 128u) ? length : 128u;
+            char dump_buf[1024];
+            size_t dpos = 0;
+            for (size_t di = 0; di < dump_n && dpos < 950; di++) {
+                int w = snprintf(dump_buf + dpos, sizeof(dump_buf) - dpos,
+                                 "%02x", cmdbuf[di]);
+                if (w > 0) dpos += (size_t)w;
+                if ((di & 15) == 15 && di + 1 < dump_n) {
+                    w = snprintf(dump_buf + dpos, sizeof(dump_buf) - dpos,
+                                 "\n              ");
+                    if (w > 0) dpos += (size_t)w;
+                }
+            }
+            LAGFX_WARN("  resource[%u] hexdump (first %zu/%u bytes):\n              %s",
+                       i, dump_n, length, dump_buf);
+        }
+
         size_t soff = 0;
         unsigned segment_idx = 0;
         while (soff + 16u <= (size_t)length) {
