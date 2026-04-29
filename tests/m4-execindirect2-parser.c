@@ -271,13 +271,12 @@ static size_t build_exec_indirect2_outer(uint8_t *out,
 static void put_segment_header(uint8_t *out, uint32_t inner_size,
                                 uint32_t prot_options, uint8_t enc_type,
                                 uint8_t final_flag, uint8_t reuse_flag) {
-    put_le32(out + 0, inner_size + 16u);
-    put_le32(out + 4, prot_options);
-    out[8]  = enc_type;
-    out[9]  = final_flag;
-    out[10] = reuse_flag;
-    out[11] = 0;
-    put_le32(out + 12, 0u);  /* reserved */
+    put_le32(out + 0, inner_size + 8u);
+    out[4]  = enc_type;
+    out[5]  = final_flag;
+    out[6]  = reuse_flag;
+    out[7]  = 0;
+    (void)prot_options;
 }
 
 /* Build an inner cmd header { u32 opcode; u32 totalLength } at `out`. */
@@ -465,20 +464,20 @@ static void test_walker_encType4_inner_0x1c9(void) {
     define_host_task(p, 77u, 0x40000u, 0xd0000001u);
 
     /* Build a cmdBuf:
-     *   [0..15]  segment header (encType=4, segment_size=24, final=1)
-     *   [16..23] inner cmd: opcode=0x1c9 RenderPipelineStateInfo,
+     *   [0..7]   segment header (encType=4, segment_size=32, final=1)
+     *   [8..15]  inner cmd: opcode=0x1c9 RenderPipelineStateInfo,
      *            totalLength=24
-     *   [24..39] inner payload: ref=0xaaaaaaaa, buffer_id=0,
+     *   [16..31] inner payload: ref=0xaaaaaaaa, buffer_id=0,
      *            reply_offset=0x40 (LE u64) */
     uint8_t cmdbuf[64];
     memset(cmdbuf, 0, sizeof(cmdbuf));
     put_segment_header(cmdbuf + 0,
                        /*size=*/24u, /*prot=*/0u, /*enc=*/4u,
                        /*final=*/1u, /*reuse=*/0u);
-    put_inner_cmd(cmdbuf + 16, /*op=*/0x1c9u, /*total_len=*/24u);
-    put_le32(cmdbuf + 24, /*ref=*/0xaaaaaaaau);
-    put_le32(cmdbuf + 28, /*buffer_id=*/0u);
-    put_le64(cmdbuf + 32, /*reply_offset=*/0x40ull);
+    put_inner_cmd(cmdbuf + 8, /*op=*/0x1c9u, /*total_len=*/24u);
+    put_le32(cmdbuf + 16, /*ref=*/0xaaaaaaaau);
+    put_le32(cmdbuf + 20, /*buffer_id=*/0u);
+    put_le64(cmdbuf + 24, /*reply_offset=*/0x40ull);
 
     uint8_t *res_page = shell.heap + 0x10000u;
     prep_resource_cmdbuf(&shell, res_page, cmdbuf, sizeof(cmdbuf));
@@ -542,10 +541,10 @@ static void test_walker_encType4_inner_0x1c2(void) {
     put_segment_header(cmdbuf + 0,
                         /*size=*/24u, /*prot=*/0u, /*enc=*/4u,
                         /*final=*/1u, /*reuse=*/0u);
-    put_inner_cmd(cmdbuf + 16, /*op=*/0x1c2u, /*total_len=*/24u);
-    put_le32(cmdbuf + 24, /*ref=*/0xbbbbbbbbu);
-    put_le32(cmdbuf + 28, /*buffer_id=*/0u);
-    put_le64(cmdbuf + 32, /*reply_offset=*/0x40ull);
+    put_inner_cmd(cmdbuf + 8, /*op=*/0x1c2u, /*total_len=*/24u);
+    put_le32(cmdbuf + 16, /*ref=*/0xbbbbbbbbu);
+    put_le32(cmdbuf + 20, /*buffer_id=*/0u);
+    put_le64(cmdbuf + 24, /*reply_offset=*/0x40ull);
 
     uint8_t *res_page = shell.heap + 0x10000u;
     prep_resource_cmdbuf(&shell, res_page, cmdbuf, sizeof(cmdbuf));
@@ -605,10 +604,10 @@ static void test_walker_encType2_no_reply(void) {
     uint8_t cmdbuf[64];
     memset(cmdbuf, 0, sizeof(cmdbuf));
     put_segment_header(cmdbuf + 0, 24u, 0u, /*enc=*/2u, 1u, 0u);
-    put_inner_cmd(cmdbuf + 16, 0x1ccu, 24u);
-    put_le32(cmdbuf + 24, 0xaaaaaaaau);
-    put_le32(cmdbuf + 28, 0u);
-    put_le64(cmdbuf + 32, 0x40ull);
+    put_inner_cmd(cmdbuf + 8, 0x1ccu, 24u);
+    put_le32(cmdbuf + 16, 0xaaaaaaaau);
+    put_le32(cmdbuf + 20, 0u);
+    put_le64(cmdbuf + 24, 0x40ull);
 
     uint8_t *res_page = shell.heap + 0x10000u;
     prep_resource_cmdbuf(&shell, res_page, cmdbuf, sizeof(cmdbuf));
@@ -664,15 +663,15 @@ static void test_walker_multi_segment(void) {
     /* Three segments back to back. Each segment_size=8 holds one inner
      * cmd of totalLength=8 (i.e. an inner header with no payload). The
      * walker must visit all three and return without crashing. */
-    uint8_t cmdbuf[3 * (16 + 8)];
+    uint8_t cmdbuf[3 * (8 + 8)];
     memset(cmdbuf, 0, sizeof(cmdbuf));
     for (unsigned s = 0; s < 3; ++s) {
-        uint8_t *seg = cmdbuf + s * (16 + 8);
+        uint8_t *seg = cmdbuf + s * (8 + 8);
         put_segment_header(seg, /*size=*/8u, /*prot=*/0u,
                            /*enc=*/(uint8_t)(2u + s),
                            /*final=*/(uint8_t)(s == 2 ? 1 : 0),
                            /*reuse=*/0u);
-        put_inner_cmd(seg + 16, /*op=*/0x1000u + s, /*total_len=*/8u);
+        put_inner_cmd(seg + 8, /*op=*/0x1000u + s, /*total_len=*/8u);
     }
 
     uint8_t *res_page = shell.heap + 0x10000u;
@@ -719,9 +718,8 @@ static void test_walker_bad_segment_size_bails(void) {
     uint8_t cmdbuf[64];
     memset(cmdbuf, 0, sizeof(cmdbuf));
     put_le32(cmdbuf + 0, 0xffffffffu);
-    put_le32(cmdbuf + 4, 0u);
-    cmdbuf[8] = 2u;
-    cmdbuf[9] = 1u;
+    cmdbuf[4] = 2u;
+    cmdbuf[5] = 1u;
 
     uint8_t *res_page = shell.heap + 0x10000u;
     prep_resource_cmdbuf(&shell, res_page, cmdbuf, sizeof(cmdbuf));
@@ -766,7 +764,7 @@ static void test_walker_inner_total_length_too_small(void) {
     memset(cmdbuf, 0, sizeof(cmdbuf));
     put_segment_header(cmdbuf + 0, /*size=*/16u, 0u,
                        /*enc=*/4u, /*final=*/1u, 0u);
-    put_inner_cmd(cmdbuf + 16, /*op=*/0x1ccu, /*total_len=*/4u);
+    put_inner_cmd(cmdbuf + 8, /*op=*/0x1ccu, /*total_len=*/4u);
 
     uint8_t *res_page = shell.heap + 0x10000u;
     prep_resource_cmdbuf(&shell, res_page, cmdbuf, sizeof(cmdbuf));
@@ -811,10 +809,10 @@ static void test_reply_offset_out_of_bounds(void) {
     memset(cmdbuf, 0, sizeof(cmdbuf));
     put_segment_header(cmdbuf + 0, /*size=*/24u, 0u,
                        /*enc=*/4u, /*final=*/1u, 0u);
-    put_inner_cmd(cmdbuf + 16, /*op=*/0x1ccu, /*total_len=*/24u);
-    put_le32(cmdbuf + 24, /*ref=*/0u);
-    put_le32(cmdbuf + 28, /*buffer_id=*/0u);
-    put_le64(cmdbuf + 32, /*reply_offset=*/8ull);
+    put_inner_cmd(cmdbuf + 8, /*op=*/0x1ccu, /*total_len=*/24u);
+    put_le32(cmdbuf + 16, /*ref=*/0u);
+    put_le32(cmdbuf + 20, /*buffer_id=*/0u);
+    put_le64(cmdbuf + 24, /*reply_offset=*/8ull);
 
     uint8_t *res_page = shell.heap + 0x10000u;
     prep_resource_cmdbuf(&shell, res_page, cmdbuf, sizeof(cmdbuf));
@@ -866,10 +864,10 @@ static void test_reply_buffer_id_out_of_range(void) {
     uint8_t cmdbuf[64];
     memset(cmdbuf, 0, sizeof(cmdbuf));
     put_segment_header(cmdbuf + 0, 24u, 0u, 4u, 1u, 0u);
-    put_inner_cmd(cmdbuf + 16, 0x1ccu, 24u);
-    put_le32(cmdbuf + 24, 0u);
-    put_le32(cmdbuf + 28, /*buffer_id=*/2u);  /* >= resource_count=1 */
-    put_le64(cmdbuf + 32, 0x40ull);
+    put_inner_cmd(cmdbuf + 8, 0x1ccu, 24u);
+    put_le32(cmdbuf + 16, 0u);
+    put_le32(cmdbuf + 20, /*buffer_id=*/2u);  /* >= resource_count=1 */
+    put_le64(cmdbuf + 24, 0x40ull);
 
     uint8_t *res_page = shell.heap + 0x10000u;
     prep_resource_cmdbuf(&shell, res_page, cmdbuf, sizeof(cmdbuf));

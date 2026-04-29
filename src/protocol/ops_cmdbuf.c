@@ -459,32 +459,25 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
 
         size_t soff = 0;
         unsigned segment_idx = 0;
-        while (soff + 16u <= (size_t)length) {
+        while (soff + 8u <= (size_t)length) {
             uint32_t segment_size =
                 lagfx_le32(cmdbuf + soff + 0);
-            uint32_t prot_options =
-                lagfx_le32(cmdbuf + soff + 4);
-            uint8_t  encoder_type = cmdbuf[soff + 8];
-            uint8_t  final_flag   = cmdbuf[soff + 9];
-            uint8_t  reuse_flag   = cmdbuf[soff + 10];
+            uint8_t  encoder_type = cmdbuf[soff + 4];
+            uint8_t  final_flag   = cmdbuf[soff + 5];
+            uint8_t  reuse_flag   = cmdbuf[soff + 6];
 
             if (segment_idx == 0u) {
-                LAGFX_LOG("    segment[%u]: size=%u prot=0x%x "
+                LAGFX_LOG("    segment[%u]: size=%u "
                           "encType=%u final=%u reuse=%u "
                           "hdr=%02x%02x%02x%02x %02x%02x%02x%02x "
-                          "%02x%02x%02x%02x %02x%02x%02x%02x "
                           "off=%zu taskID=%u",
-                          segment_idx, segment_size, prot_options,
+                          segment_idx, segment_size,
                           (unsigned)encoder_type, (unsigned)final_flag,
                           (unsigned)reuse_flag,
                           cmdbuf[soff+0], cmdbuf[soff+1],
                           cmdbuf[soff+2], cmdbuf[soff+3],
                           cmdbuf[soff+4], cmdbuf[soff+5],
                           cmdbuf[soff+6], cmdbuf[soff+7],
-                          cmdbuf[soff+8], cmdbuf[soff+9],
-                          cmdbuf[soff+10], cmdbuf[soff+11],
-                          cmdbuf[soff+12], cmdbuf[soff+13],
-                          cmdbuf[soff+14], cmdbuf[soff+15],
                           soff, task_id);
             }
 
@@ -498,7 +491,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
              * then totalLength-8 bytes payload. */
             bool render_begin_pending =
                 (encoder_type == 2u && !p->render_enc.in_pass);
-            size_t ioff = soff + 16u;
+            size_t ioff = soff + 8u;
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
             while (ioff + 8u <= iend) {
