@@ -64,6 +64,32 @@ lagfx_handler_status_t lagfx_op_vchan_display_submit(
     LAGFX_LOG("vchan_display_submit: display_index=%u arg2=0x%08x "
               "stamp=0x%08x",
               display_index, arg2, hdr->stamp);
+
+    /* Try to read a few bytes from the framebuffer to check if
+     * the guest has rendered any content. The framebuffer base
+     * is at (arg2 << 12) and the ss page itself is the first
+     * 4 KiB. Actual pixel data starts at ss_gpa + 0x400 (after
+     * the BMD header). For a quick probe, read 16 bytes from
+     * offset 0x400 and log if non-zero. */
+    if (arg2 != 0u && p->dev && p->dev->desc.shell.read_memory
+        && display_index < 8u) {
+        static unsigned probe_count;
+        probe_count++;
+        if (probe_count <= 4 || probe_count % 100 == 0) {
+            uint64_t fb_base = (uint64_t)arg2 << 12;
+            uint8_t probe[16] = {0};
+            bool ok = p->dev->desc.shell.read_memory(
+                p->dev->desc.shell.opaque,
+                fb_base + 0x400u, 16, probe);
+            uint32_t sum = 0;
+            for (int i = 0; i < 16; ++i) sum += probe[i];
+            LAGFX_LOG("vchan_display_submit: fb probe @0x%llx+0x400 "
+                      "ok=%d sum=%u bytes=%02x%02x%02x%02x...",
+                      (unsigned long long)fb_base, ok, sum,
+                      probe[0], probe[1], probe[2], probe[3]);
+        }
+    }
+
     return LAGFX_HANDLER_OK;
 }
 
