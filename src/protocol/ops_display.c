@@ -582,7 +582,14 @@ bool lagfx_display_tick_vblank(
     void *shell_opaque,
     bool (*write_memory)(void *, uint64_t, uint64_t, const void *)) {
     (void)dev;
-    return lagfx_ops_display_tick_vblank(shell_opaque, write_memory);
+    static unsigned tick_count;
+    tick_count++;
+    bool ok = lagfx_ops_display_tick_vblank(shell_opaque, write_memory);
+    if (tick_count % 600 == 0 || (!ok && tick_count <= 3)) {
+        LAGFX_LOG("display_tick_vblank: tick=%u ok=%d installed=%d",
+                  tick_count, ok, g_shared_state.installed);
+    }
+    return ok;
 }
 
 /* ----------------------------------------------------------------
