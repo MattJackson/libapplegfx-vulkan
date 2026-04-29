@@ -156,6 +156,11 @@ lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(
         p->dev->desc.shell.opaque, ss_gpa + 0x00u,
         sizeof(conn_id), &conn_id);
 
+    static const char mode_name[] = "1920x1080";
+    p->dev->desc.shell.write_memory(
+        p->dev->desc.shell.opaque, ss_gpa + 0x04u,
+        sizeof(mode_name), mode_name);
+
     uint16_t width  = 1920u;
     uint16_t height = 1080u;
     p->dev->desc.shell.write_memory(
@@ -188,10 +193,23 @@ lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(
         p->dev->desc.shell.opaque, ss_gpa + 0x200u,
         sizeof(fb_pfn), &fb_pfn);
 
-    uint16_t num_formats = 0u;
+    uint16_t num_formats = 1u;
     p->dev->desc.shell.write_memory(
         p->dev->desc.shell.opaque, ss_gpa + 0x208u,
         sizeof(num_formats), &num_formats);
+
+    uint16_t fmt_w = 1920u;
+    uint16_t fmt_h = 1080u;
+    uint32_t fmt_bpp = 4u;
+    p->dev->desc.shell.write_memory(
+        p->dev->desc.shell.opaque, ss_gpa + 0x210u,
+        sizeof(fmt_w), &fmt_w);
+    p->dev->desc.shell.write_memory(
+        p->dev->desc.shell.opaque, ss_gpa + 0x212u,
+        sizeof(fmt_h), &fmt_h);
+    p->dev->desc.shell.write_memory(
+        p->dev->desc.shell.opaque, ss_gpa + 0x214u,
+        sizeof(fmt_bpp), &fmt_bpp);
 
     LAGFX_LOG("vchan_setup_shared_state: populated ss for online "
               "(display_index=%u, 1920x1080, ss_gpa=0x%llx)",

@@ -602,6 +602,25 @@ bool lagfx_display_tick_vblank(
         LAGFX_LOG("display_tick_vblank: tick=%u kicked=%u/%u displays",
                   tick_count, kicked,
                   __builtin_popcount(dev->display_ss_installed));
+        if (dev->desc.shell.read_memory) {
+            for (unsigned i = 0; i < 8u && i < 16u; ++i) {
+                if (dev->display_ss_installed & (1u << i)) {
+                    uint32_t enabled_mask = 0u;
+                    uint32_t pending_mask = 0u;
+                    dev->desc.shell.read_memory(
+                        dev->desc.shell.opaque,
+                        dev->display_ss_gpa[i] + 0x104u,
+                        sizeof(enabled_mask), &enabled_mask);
+                    dev->desc.shell.read_memory(
+                        dev->desc.shell.opaque,
+                        dev->display_ss_gpa[i] + 0x100u,
+                        sizeof(pending_mask), &pending_mask);
+                    LAGFX_LOG("display_tick_vblank: display[%u] "
+                              "enabled_mask=0x%x pending_mask=0x%x",
+                              i, enabled_mask, pending_mask);
+                }
+            }
+        }
     }
     if (kicked > 0 && p) {
         p->pending_displays_bitmask |=
