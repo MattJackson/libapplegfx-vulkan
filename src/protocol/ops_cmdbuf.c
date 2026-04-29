@@ -306,8 +306,6 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                    "(continuing fail-open)", task_id);
     }
 
-    bool saw_render_encoder = false;
-
     LAGFX_TRACE("CmdExecIndirect2: taskID=%u descriptor_count=%u "
               "resource_count=%u payload_size=%u stamp=0x%08x",
               task_id, descriptor_count, resource_count,
@@ -341,8 +339,6 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
      * per-resource cmdBuf in IOAccelResource2 backing memory. For
      * each, read the cmdBuf via shell.read_memory and walk the
      * segment headers within. */
-    unsigned render_passes_completed = 0;
-    (void)render_passes_completed;
     for (uint32_t i = 0; i < resource_count; ++i) {
         const uint8_t *rec = hdr->payload + off_resources + (size_t)i * 16u;
         uint64_t host_gpu_addr =
@@ -854,7 +850,6 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             }
 
             if (encoder_type == 2u) {
-                saw_render_encoder = true;
                 if (p->render_enc.in_pass) {
                     lagfx_translate_render_end(&p->render_enc);
                 }
@@ -872,16 +867,12 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         free(cmdbuf);
     }
 
-    /* Signal extra stamp advancement for render pass completions.
-     * On real hardware the GPU advances its completion stamp for
-     * each render pass that finishes; the kext waits for this
-     * stamp (which is one more than the outer CmdExecIndirect2's
-     * stamp per render pass). Without this the guest sees
-     * gpu_stamp=N but expects N+render_passes. */
-    if (saw_render_encoder) {
-        p->extra_stamp_advance = 1u;
-        LAGFX_LOG("  render encoder seen: extra_stamp_advance=1");
-    }
+    /* Ack the stamp regardless. Per IOAccelChannel2::incrementStamp the
+     * kext bumps the per-slot counter by exactly +1 per submitCommands
+     * and writes that value as header.stamp. The host writes
+     * header.stamp back to the stamp cell via the monotonic floor
+     * max(target, cur+1), which naturally produces the correct sequence.
+     * No extra_stamp_advance is needed — one command = one stamp. */
 
     /* Ack the stamp regardless. Inner-opcode handlers will do their
      * actual work (when implemented) before this point — for now the
