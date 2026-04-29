@@ -581,15 +581,35 @@ bool lagfx_display_tick_vblank(
     lagfx_device_t *dev,
     void *shell_opaque,
     bool (*write_memory)(void *, uint64_t, uint64_t, const void *)) {
-    (void)dev;
     static unsigned tick_count;
     tick_count++;
-    bool ok = lagfx_ops_display_tick_vblank(shell_opaque, write_memory);
-    if (tick_count % 600 == 0 || (!ok && tick_count <= 3)) {
-        LAGFX_LOG("display_tick_vblank: tick=%u ok=%d installed=%d",
-                  tick_count, ok, g_shared_state.installed);
+    if (!dev || !write_memory) {
+        return false;
     }
-    return ok;
+    /* For each installed display, set VBL bit (bit 0) in the
+     * pending_mask at ss[+0x100]. This triggers signalDisplay
+     * in the guest which dispatches VBL IES, waking WindowServer
+     * to submit the next frame. */
+    unsigned kicked = 0;
+    for (unsigned i = 0; i < 16u && i < 32u; ++i) {
+        if (dev->display_ss_installed & (1u << i)) {
+            uint64_t ss_gpa = dev->display_ss_gpa[i];
+            uint32_t pending = 0x1u;
+            if (write_memory(shell_opaque, ss_gpa + 0x100u,
+                             sizeof(pending), &pending)) {
+                kicked++;
+            }
+        }
+    }
+    if (tick_count % 600 == 0 || tick_count <= 3) {
+        LAGFX_LOG("display_tick_vblank: tick=%u kicked=%u/%u displays",
+                  tick_count, kicked,
+                  __builtin_popcount(dev->display_ss_installed));
+    }
+    if (kicked > 0 && dev->desc.shell.raise_interrupt) {
+        dev->desc.shell.raise_interrupt(dev->desc.shell.opaque, 0u);
+    }
+    return kicked > 0;
 }
 
 /* ----------------------------------------------------------------

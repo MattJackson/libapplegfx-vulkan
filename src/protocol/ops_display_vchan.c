@@ -171,6 +171,12 @@ lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(
               "(display_index=%u, 1920x1080, ss_gpa=0x%llx)",
               display_index, (unsigned long long)ss_gpa);
 
+    /* Save ss_gpa for vblank timer access. */
+    if (p->dev && display_index < 16u) {
+        p->dev->display_ss_gpa[display_index] = ss_gpa;
+        p->dev->display_ss_installed |= (1u << display_index);
+    }
+
     /* Set bit 2 (online) in pending_mask (ss[+0x100]). The guest's
      * signalDisplay CAS loop will claim this once the guest enables
      * the pipe (ss[+0x104] = 0xC), dispatching the online IES

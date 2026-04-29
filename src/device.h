@@ -42,6 +42,11 @@ struct lagfx_device {
     lagfx_display_t *displays[LAGFX_MAX_DISPLAYS];
     size_t display_count;
 
+    /* Per-display shared-state page GPAs, set by vchan_setup_shared_state.
+     * Used by the vblank timer to write pending_mask bits. */
+    uint64_t display_ss_gpa[16];
+    uint32_t display_ss_installed;        /* bitmask of installed displays */
+
     /* Protocol state (Phase 1.A.2) and Vulkan state (Phase 1.B). */
     void *protocol_state;
     struct lagfx_vk_state *vk;
