@@ -33,6 +33,7 @@
 #include "../common/log.h"
 #include "../device.h"
 #include "../display.h"
+#include "../memory/task.h"
 #include "../vulkan/command.h"
 #include "../translate/render_encoder.h"
 
@@ -356,18 +357,19 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             continue;
         }
 
-        /* Read the entire cmdBuf into a per-iteration buffer. host_gpu_addr
-         * is a TASK-VIRTUAL address (not a literal GPA) — we translate
-         * each page through the task's root_page_pfn PFN-array (published
-         * by CmdDefineHostTask 0x38). Same pattern as the per-channel
-         * ring's PFN-array indirection. Reads page-by-page so that a
-         * cmdBuf spanning multiple non-contiguous physical pages still
-         * works.
+        /* Read the entire cmdBuf into a per-iteration buffer.
          *
-         * Falls back to treating host_gpu_addr as a literal GPA if no
-         * host-task is registered (defensive — covers the dylib-emitted
-         * 0x20 path on the RootChannel where host_gpu_addr might be a
-         * direct GPA). */
+         * host_gpu_addr is a TASK-VIRTUAL address. On real Apple hardware,
+         * the host reads this data from the task's mapped VA window (the
+         * zero-copy alias populated by mapMemory callbacks). We try that
+         * path first: if the task has a shell_task with a populated VA
+         * window, read directly from (base + host_gpu_addr) — no radix
+         * tree walk, no dma_memory_read, just a host-side memcpy from
+         * aliased pages that share physical backing with the guest.
+         *
+         * If the task VA window is not available (no shell_task, or the
+         * range hasn't been mapped yet), fall back to the radix-tree
+         * translate + dma_memory_read path. */
         uint8_t *cmdbuf = malloc(length);
         if (!cmdbuf) {
             LAGFX_WARN("  resource[%u]: malloc(%u) failed — skipping",
@@ -375,35 +377,62 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             continue;
         }
 
-        bool read_ok = true;
-        uint32_t bytes_read = 0;
-        while (bytes_read < length) {
-            uint64_t cur_dev_addr = host_gpu_addr + bytes_read;
-            uint64_t gpa = 0;
-            uint64_t run = 0;
-            bool translated = lagfx_task_translate(p, task_id, cur_dev_addr,
-                                                   &gpa, &run);
-            if (!translated) {
-                LAGFX_WARN("  resource[%u]: task-VA -> GPA translation failed "
-                           "(dev_addr=0x%llx taskID=%u) — skipping segment",
-                           i, (unsigned long long)cur_dev_addr, task_id);
-                read_ok = false;
-                break;
+        bool read_ok = false;
+        if (task && task->shell_task) {
+            void *task_base = lagfx_task_get_base_ptr(task->shell_task);
+            if (task_base
+                && host_gpu_addr + length <= task->length) {
+                const uint8_t *src =
+                    (const uint8_t *)task_base + host_gpu_addr;
+                memcpy(cmdbuf, src, length);
+                read_ok = true;
+                LAGFX_LOG("  resource[%u]: read %u bytes from task VA "
+                          "window (base=%p + offset=0x%llx)",
+                          i, length, task_base,
+                          (unsigned long long)host_gpu_addr);
+
+                uint32_t first_word = lagfx_le32(cmdbuf);
+                if (first_word == 0u) {
+                    LAGFX_WARN("  resource[%u]: task VA window read "
+                               "returned all-zero first word — pages "
+                               "may not be mapped yet, trying DMA "
+                               "fallback",
+                               i);
+                    read_ok = false;
+                }
             }
-            uint32_t this_chunk = (uint32_t)((run < (uint64_t)(length - bytes_read))
-                                             ? run : (length - bytes_read));
-            if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                                gpa, this_chunk,
-                                                cmdbuf + bytes_read)) {
-                LAGFX_TRACE("  resource[%u]: read_memory failed at gpa=0x%llx "
-                          "(dev=0x%llx, %u bytes, translated=%d) — skipping",
-                          i, (unsigned long long)gpa,
-                          (unsigned long long)cur_dev_addr, this_chunk,
-                          translated ? 1 : 0);
-                read_ok = false;
-                break;
+        }
+
+        if (!read_ok) {
+            read_ok = true;
+            uint32_t bytes_read = 0;
+            while (bytes_read < length) {
+                uint64_t cur_dev_addr = host_gpu_addr + bytes_read;
+                uint64_t gpa = 0;
+                uint64_t run = 0;
+                bool translated = lagfx_task_translate(p, task_id, cur_dev_addr,
+                                                       &gpa, &run);
+                if (!translated) {
+                    LAGFX_WARN("  resource[%u]: task-VA -> GPA translation failed "
+                               "(dev_addr=0x%llx taskID=%u) — skipping segment",
+                               i, (unsigned long long)cur_dev_addr, task_id);
+                    read_ok = false;
+                    break;
+                }
+                uint32_t this_chunk = (uint32_t)((run < (uint64_t)(length - bytes_read))
+                                                 ? run : (length - bytes_read));
+                if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                    gpa, this_chunk,
+                                                    cmdbuf + bytes_read)) {
+                    LAGFX_TRACE("  resource[%u]: read_memory failed at gpa=0x%llx "
+                              "(dev=0x%llx, %u bytes) — skipping",
+                              i, (unsigned long long)gpa,
+                              (unsigned long long)cur_dev_addr, this_chunk);
+                    read_ok = false;
+                    break;
+                }
+                bytes_read += this_chunk;
             }
-            bytes_read += this_chunk;
         }
         if (!read_ok) {
             free(cmdbuf);

@@ -186,4 +186,5 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
             return true;
         }
     }
+    return false;
 }

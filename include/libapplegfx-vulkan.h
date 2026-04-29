@@ -167,6 +167,13 @@ bool lagfx_task_map_host_memory(lagfx_task_t *task, uint64_t vm_offset,
 bool lagfx_task_unmap(lagfx_task_t *task, uint64_t vm_offset,
                       uint64_t len);
 
+/* Return the base host-virtual address of the task's reserved VA window.
+ * Returns NULL if the task is NULL or has no reservation. This is the
+ * pointer that map_memory aliases guest pages into; consumers can
+ * compute (base + virtual_offset) to get a host pointer to any
+ * mapped guest range. */
+void *lagfx_task_get_base_ptr(const lagfx_task_t *task);
+
 /* === Display descriptor =======================================
  * Per-display configuration + callbacks for display-plane events
  * (mode change, cursor movement, etc.)

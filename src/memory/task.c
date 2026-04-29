@@ -332,3 +332,10 @@ bool lagfx_task_unmap(lagfx_task_t *task, uint64_t vm_offset,
 
     return true;
 }
+
+void *lagfx_task_get_base_ptr(const lagfx_task_t *task) {
+    if (!task) {
+        return NULL;
+    }
+    return task->reserved_base;
+}

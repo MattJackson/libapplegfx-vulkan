@@ -697,6 +697,54 @@ lagfx_handler_status_t lagfx_op_map_memory_immediate(
         }
     }
 
+    if (p->dev && p->dev->desc.shell.map_memory && entry->shell_task
+        && va_len > 0) {
+        enum { MAX_RANGES = 64 };
+        lagfx_physical_range_t ranges[MAX_RANGES];
+        uint64_t cursor = va_base;
+        uint32_t ri = 0;
+        while (cursor < va_base + va_len && ri < MAX_RANGES) {
+            uint64_t gpa = 0, run = 0;
+            bool ok = lagfx_task_translate_radix(p, task_id, cursor,
+                                                  &gpa, &run);
+            if (!ok) {
+                LAGFX_WARN("CmdMapMemoryImmediate: taskID=%u scatter build "
+                           "failed at va=0x%llx — stopping map_memory call",
+                           task_id, (unsigned long long)cursor);
+                ri = 0;
+                break;
+            }
+            uint64_t remaining = (va_base + va_len) - cursor;
+            if (run > remaining) {
+                run = remaining;
+            }
+            ranges[ri].guest_physical_address = gpa;
+            ranges[ri].length = run;
+            ri++;
+            cursor += run;
+        }
+        if (ri > 0) {
+            bool mapped = p->dev->desc.shell.map_memory(
+                p->dev->desc.shell.opaque,
+                entry->shell_task,
+                va_base,
+                ranges,
+                (size_t)ri,
+                false);
+            if (mapped) {
+                LAGFX_LOG("CmdMapMemoryImmediate: taskID=%u mapped %u "
+                          "scatter ranges into task VA window at "
+                          "offset=0x%llx",
+                          task_id, ri,
+                          (unsigned long long)va_base);
+            } else {
+                LAGFX_WARN("CmdMapMemoryImmediate: taskID=%u "
+                           "shell.map_memory returned false for %u ranges",
+                           task_id, ri);
+            }
+        }
+    }
+
     lagfx_resource_register(&p->resources, 0u,
                             LAGFX_RESOURCE_TYPE_BUFFER,
                             task_id, va_base, va_len);
