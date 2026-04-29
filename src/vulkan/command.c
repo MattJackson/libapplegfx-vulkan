@@ -249,11 +249,14 @@ lagfx_status_t lagfx_vk_drain_pending(struct lagfx_vk_state *vk) {
         return LAGFX_OK;
     }
 
-    const uint64_t timeout_ns = 5ull * 1000ull * 1000ull * 1000ull;
-    VkResult vr = vkWaitForFences(vk->device, 1, &vk->pending_fence,
-                                   VK_TRUE, timeout_ns);
+    VkResult vr = vkGetFenceStatus(vk->device, vk->pending_fence);
+
+    if (vr == VK_NOT_READY) {
+        return LAGFX_ERR_BACKEND;
+    }
+
     if (vr != VK_SUCCESS) {
-        LAGFX_ERR("drain_pending: vkWaitForFences failed (VkResult=%d)",
+        LAGFX_ERR("drain_pending: vkGetFenceStatus failed (VkResult=%d)",
                   (int)vr);
     }
 
@@ -262,8 +265,9 @@ lagfx_status_t lagfx_vk_drain_pending(struct lagfx_vk_state *vk) {
         vk->pending_cmdbuf = VK_NULL_HANDLE;
     }
 
+    vkResetFences(vk->device, 1, &vk->pending_fence);
     vk->pending_fence_valid = false;
-    return (vr == VK_SUCCESS) ? LAGFX_OK : LAGFX_ERR_VULKAN_INIT;
+    return LAGFX_OK;
 }
 
 lagfx_status_t lagfx_vk_begin_frame(struct lagfx_vk_state *vk) {
@@ -278,7 +282,10 @@ lagfx_status_t lagfx_vk_begin_frame(struct lagfx_vk_state *vk) {
         return LAGFX_ERR_VULKAN_INIT;
     }
 
-    lagfx_vk_drain_pending(vk);
+    lagfx_status_t drain = lagfx_vk_drain_pending(vk);
+    if (drain != LAGFX_OK) {
+        return LAGFX_ERR_BACKEND;
+    }
 
     lagfx_status_t st = lagfx_vk_cmdbuf_alloc(vk, &vk->frame_cmdbuf);
     if (st != LAGFX_OK) {
