@@ -90,6 +90,7 @@ static void display_rt_create(lagfx_display_t *disp) {
             disp->rt_ready = true;
             disp->rt_width = w;
             disp->rt_height = h;
+            notify_mode_changed(disp);
             return;
         }
     }
@@ -105,6 +106,7 @@ static void display_rt_create(lagfx_display_t *disp) {
     disp->rt_ready = true;
     disp->rt_width = w;
     disp->rt_height = h;
+    notify_mode_changed(disp);
 }
 
 static void display_rt_destroy(lagfx_display_t *disp) {
@@ -120,6 +122,14 @@ static void display_rt_destroy(lagfx_display_t *disp) {
 static void display_rt_create(lagfx_display_t *disp) { (void)disp; }
 static void display_rt_destroy(lagfx_display_t *disp) { (void)disp; }
 #endif
+
+static void notify_mode_changed(lagfx_display_t *display) {
+    if (display->desc.callbacks.mode_changed) {
+        display->desc.callbacks.mode_changed(
+            display->desc.callbacks.opaque,
+            display->rt_width, display->rt_height);
+    }
+}
 
 static void notify_frame_ready(lagfx_display_t *display) {
     if (display->new_frame_ready
