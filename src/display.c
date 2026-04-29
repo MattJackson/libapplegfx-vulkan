@@ -74,6 +74,9 @@ static void display_rt_create(lagfx_display_t *disp) {
         h = LAGFX_DISPLAY_DEFAULT_H;
     }
 
+    LAGFX_LOG("display_rt_create: frame_image=%p w=%u h=%u target_w=%u target_h=%u",
+              (void*)vk->frame_image, vk->frame_image_w, vk->frame_image_h, w, h);
+
     if (vk->frame_image != VK_NULL_HANDLE
         && vk->frame_image_w == w && vk->frame_image_h == h) {
         lagfx_status_t st = lagfx_vk_render_target_wrap(
