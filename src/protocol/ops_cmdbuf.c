@@ -440,10 +440,10 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         }
 
         {
-            size_t dump_n = (length < 128u) ? length : 128u;
-            char dump_buf[1024];
+            size_t dump_n = (length < 512u) ? length : 512u;
+            char dump_buf[4096];
             size_t dpos = 0;
-            for (size_t di = 0; di < dump_n && dpos < 950; di++) {
+            for (size_t di = 0; di < dump_n && dpos < 3900; di++) {
                 int w = snprintf(dump_buf + dpos, sizeof(dump_buf) - dpos,
                                  "%02x", cmdbuf[di]);
                 if (w > 0) dpos += (size_t)w;
