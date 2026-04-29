@@ -116,7 +116,7 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                         task->root_page_pfn, l1_pfn, shift,
                         (unsigned)idx, node_pfn,
                         (unsigned long long)pte_gpa);
-            goto fallback;
+            return false;
         }
         node_pfn = pte & 0x7fffffffu;
         shift -= 10;
@@ -143,7 +143,7 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
                     task->root_page_pfn, l1_pfn,
                     (unsigned long long)leaf_pte_gpa,
                     (unsigned)leaf_idx, node_pfn);
-        goto fallback;
+        return false;
     }
     uint32_t data_pfn = leaf_pte & 0x7fffffffu;
 

@@ -384,9 +384,11 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             bool translated = lagfx_task_translate(p, task_id, cur_dev_addr,
                                                    &gpa, &run);
             if (!translated) {
-                /* Fallback: literal GPA. */
-                gpa = cur_dev_addr;
-                run = 0x1000u - (cur_dev_addr & 0xfffu);
+                LAGFX_WARN("  resource[%u]: task-VA -> GPA translation failed "
+                           "(dev_addr=0x%llx taskID=%u) — skipping segment",
+                           i, (unsigned long long)cur_dev_addr, task_id);
+                read_ok = false;
+                break;
             }
             uint32_t this_chunk = (uint32_t)((run < (uint64_t)(length - bytes_read))
                                              ? run : (length - bytes_read));
@@ -757,21 +759,19 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                     &target_gpa, &target_run);
 
                                 if (!translated) {
-                                    target_gpa = target_dev_addr;
                                     LAGFX_WARN("        %s reply: task-VA -> GPA "
                                                "translation failed "
                                                "(dev_addr=0x%llx taskID=%u "
                                                "buffer_id=%u reply_offset=0x%llx "
                                                "buffer_dev_addr=0x%llx "
-                                               "reply_size=%zu) — using literal GPA fallback",
+                                               "reply_size=%zu) — skipping reply",
                                                opname,
                                                (unsigned long long)target_dev_addr,
                                                task_id, buffer_id,
                                                (unsigned long long)reply_offset,
                                                (unsigned long long)buffer_dev_addr,
                                                reply_size);
-                                }
-                                if (translated && target_run < (uint64_t)reply_size) {
+                                } else if (target_run < (uint64_t)reply_size) {
                                     LAGFX_WARN("        %s reply: target run=%llu "
                                                "< %zu — would cross page (skip)",
                                                opname,
