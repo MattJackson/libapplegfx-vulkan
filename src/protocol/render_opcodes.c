@@ -211,10 +211,13 @@ static int render_op_set_render_pipeline_state(lagfx_protocol_t *p,
         return 0;
     }
     uint32_t reference = read_le32(payload);
-    LAGFX_TRACE("SetRenderPipelineState: reference=0x%08x", reference);
+    LAGFX_WARN("SetRenderPipelineState: reference=0x%08x", reference);
 
     if (p) {
         p->render_enc.bound_pipeline_ref = reference;
+        lagfx_translate_render_bind_pipeline(&p->render_enc,
+                                             LAGFX_SHADER_BLIT,
+                                             (lagfx_vk_layout_stub_t)0);
     }
     return 0;
 }
