@@ -135,12 +135,47 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
     for (uint32_t i = 0; i < task->va_interval_count; ++i) {
         const lagfx_va_interval_t *iv = &task->va_intervals[i];
         if (dev_addr >= iv->va_base && dev_addr < iv->va_base + iv->length) {
+            if (iv->gpa_base != iv->va_base) {
+                *out_gpa = iv->gpa_base + (dev_addr - iv->va_base);
+                if (out_run_len) {
+                    *out_run_len = iv->va_base + iv->length - dev_addr;
+                }
+                LAGFX_LOG("task_translate: taskID=%u dev=0x%llx — interval "
+                            "hit [%u] va_base=0x%llx gpa_base=0x%llx "
+                            "length=0x%llx -> gpa=0x%llx run=%llu",
+                            task_id, (unsigned long long)dev_addr, i,
+                            (unsigned long long)iv->va_base,
+                            (unsigned long long)iv->gpa_base,
+                            (unsigned long long)iv->length,
+                            (unsigned long long)(*out_gpa),
+                            (unsigned long long)(out_run_len ? *out_run_len : 0));
+                return true;
+            }
+            LAGFX_LOG("task_translate: taskID=%u dev=0x%llx — interval "
+                        "[%u] identity-mapped, trying radix tree",
+                        task_id, (unsigned long long)dev_addr, i);
+            break;
+        }
+    }
+
+    bool radix_ok = lagfx_task_translate_radix(p, task_id, dev_addr, out_gpa, out_run_len);
+    if (radix_ok) {
+        LAGFX_LOG("task_translate: taskID=%u dev=0x%llx -> radix gpa=0x%llx "
+                  "run=%llu", task_id, (unsigned long long)dev_addr,
+                  (unsigned long long)(*out_gpa),
+                  (unsigned long long)(out_run_len ? *out_run_len : 0));
+        return true;
+    }
+
+    for (uint32_t i = 0; i < task->va_interval_count; ++i) {
+        const lagfx_va_interval_t *iv = &task->va_intervals[i];
+        if (dev_addr >= iv->va_base && dev_addr < iv->va_base + iv->length) {
             *out_gpa = iv->gpa_base + (dev_addr - iv->va_base);
             if (out_run_len) {
                 *out_run_len = iv->va_base + iv->length - dev_addr;
             }
             LAGFX_LOG("task_translate: taskID=%u dev=0x%llx — interval "
-                        "hit [%u] va_base=0x%llx gpa_base=0x%llx "
+                        "fallback [%u] va_base=0x%llx gpa_base=0x%llx "
                         "length=0x%llx -> gpa=0x%llx run=%llu",
                         task_id, (unsigned long long)dev_addr, i,
                         (unsigned long long)iv->va_base,
@@ -151,6 +186,4 @@ bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
             return true;
         }
     }
-
-    return lagfx_task_translate_radix(p, task_id, dev_addr, out_gpa, out_run_len);
 }
