@@ -510,12 +510,14 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
-    uint32_t task_id        = lagfx_le32(hdr->payload + 0);
+    uint32_t slot_index      = lagfx_le32(hdr->payload + 0);
     uint32_t reserved       = lagfx_le32(hdr->payload + 4);
     uint32_t flags          = lagfx_le32(hdr->payload + 8);
     uint32_t root_page_pfn  = lagfx_le32(hdr->payload + 12);
     (void)reserved;
     (void)flags;
+
+    uint32_t task_id = slot_index >> 1;
 
     lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
     if (!entry) {

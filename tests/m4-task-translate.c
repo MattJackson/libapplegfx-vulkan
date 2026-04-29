@@ -237,7 +237,7 @@ static void define_host_task_via_dispatch(lagfx_protocol_t *p,
     uint8_t buf[28];
     build_header(buf, LAGFX_OP_DEFINE_HOST_TASK, /*arg_count_8b=*/0,
                  /*total_length=*/12 + 16u, stamp);
-    put_le32(buf + 12 + 0,  task_id);
+    put_le32(buf + 12 + 0,  task_id << 1);
     put_le32(buf + 12 + 4,  0u);     /* reserved */
     put_le32(buf + 12 + 8,  flags);
     put_le32(buf + 12 + 12, root_pfn);
