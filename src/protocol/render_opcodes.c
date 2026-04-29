@@ -217,7 +217,11 @@ static int render_op_set_render_pipeline_state(lagfx_protocol_t *p,
         p->render_enc.bound_pipeline_ref = reference;
         lagfx_translate_render_bind_pipeline(&p->render_enc,
                                              LAGFX_SHADER_BLIT,
+#ifdef LAGFX_HAVE_VULKAN
+                                             VK_NULL_HANDLE);
+#else
                                              (lagfx_vk_layout_stub_t)0);
+#endif
     }
     return 0;
 }
