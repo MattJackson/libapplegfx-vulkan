@@ -57,6 +57,15 @@ static void set_err(char **errp_out, const char *msg) {
 /* Phase 2.B render-target lifecycle helpers. Factored so the no-vulkan
  * build can stub them cleanly. */
 #ifdef LAGFX_HAVE_VULKAN
+
+static void notify_mode_changed(lagfx_display_t *display) {
+    if (display->desc.callbacks.mode_changed) {
+        display->desc.callbacks.mode_changed(
+            display->desc.callbacks.opaque,
+            display->rt_width, display->rt_height);
+    }
+}
+
 static void display_rt_create(lagfx_display_t *disp) {
     if (!disp || !disp->device || !disp->device->vk
         || !disp->device->vk->initialized) {
@@ -122,14 +131,6 @@ static void display_rt_destroy(lagfx_display_t *disp) {
 static void display_rt_create(lagfx_display_t *disp) { (void)disp; }
 static void display_rt_destroy(lagfx_display_t *disp) { (void)disp; }
 #endif
-
-static void notify_mode_changed(lagfx_display_t *display) {
-    if (display->desc.callbacks.mode_changed) {
-        display->desc.callbacks.mode_changed(
-            display->desc.callbacks.opaque,
-            display->rt_width, display->rt_height);
-    }
-}
 
 static void notify_frame_ready(lagfx_display_t *display) {
     if (display->new_frame_ready
