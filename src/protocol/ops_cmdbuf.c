@@ -490,7 +490,8 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
              * then totalLength-8 bytes payload. */
             bool render_begin_pending =
-                (encoder_type == 2u && !p->render_enc.in_pass);
+                ((encoder_type == 0u || encoder_type == 2u)
+                 && !p->render_enc.in_pass);
             size_t ioff = soff + 8u;
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
@@ -851,7 +852,8 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                        opname, buffer_id, resource_count);
                         }
                     }
-                } else if (encoder_type == 2u) {
+                } else if (encoder_type == 2u
+                           || encoder_type == 0u) {
                     const uint8_t *ipl = cmdbuf + ioff + 8u;
                     int rc = lagfx_render_decoder_dispatch(p, inner_opcode,
                                                           ipl, ipl_len);
@@ -893,7 +895,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                 inner_idx += 1;
             }
 
-            if (encoder_type == 2u) {
+            if (encoder_type == 2u || encoder_type == 0u) {
                 if (p->render_enc.in_pass) {
                     lagfx_translate_render_end(&p->render_enc);
                 }
