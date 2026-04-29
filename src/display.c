@@ -99,7 +99,6 @@ static void display_rt_create(lagfx_display_t *disp) {
             disp->rt_ready = true;
             disp->rt_width = w;
             disp->rt_height = h;
-            notify_mode_changed(disp);
             return;
         }
     }
@@ -115,7 +114,6 @@ static void display_rt_create(lagfx_display_t *disp) {
     disp->rt_ready = true;
     disp->rt_width = w;
     disp->rt_height = h;
-    notify_mode_changed(disp);
 }
 
 static void display_rt_destroy(lagfx_display_t *disp) {
