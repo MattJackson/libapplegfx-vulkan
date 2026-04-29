@@ -335,6 +335,14 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
                                          size_t *stride_out,
                                          bool *new_frame_out);
 
+/* Advance the display shared-state vblank counter and DMA-write it
+ * to the guest. The shell should call this at ~60 Hz from a timer.
+ * Returns false if the shared state hasn't been installed yet. */
+bool lagfx_display_tick_vblank(
+    lagfx_device_t *dev,
+    void *shell_opaque,
+    bool (*write_memory)(void *, uint64_t, uint64_t, const void *));
+
 /* === Shader catalog (Phase 3.C scaffold) ======================
  *
  * Enumerates the stock shaders libapplegfx-vulkan ships pre-built

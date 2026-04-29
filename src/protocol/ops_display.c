@@ -577,6 +577,14 @@ bool lagfx_ops_display_tick_vblank(
                         sizeof(buf), buf);
 }
 
+bool lagfx_display_tick_vblank(
+    lagfx_device_t *dev,
+    void *shell_opaque,
+    bool (*write_memory)(void *, uint64_t, uint64_t, const void *)) {
+    (void)dev;
+    return lagfx_ops_display_tick_vblank(shell_opaque, write_memory);
+}
+
 /* ----------------------------------------------------------------
  * 0x13 CmdDisplayCursorShow — §14.4
  *
