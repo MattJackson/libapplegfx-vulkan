@@ -586,15 +586,12 @@ bool lagfx_display_tick_vblank(
     if (!dev || !write_memory) {
         return false;
     }
-    /* For each installed display, set VBL bit (bit 0) in the
-     * pending_mask at ss[+0x100]. This triggers signalDisplay
-     * in the guest which dispatches VBL IES, waking WindowServer
-     * to submit the next frame. */
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
     unsigned kicked = 0;
     for (unsigned i = 0; i < 16u && i < 32u; ++i) {
         if (dev->display_ss_installed & (1u << i)) {
             uint64_t ss_gpa = dev->display_ss_gpa[i];
-            uint32_t pending = 0x1u;
+            uint32_t pending = 0x5u;
             if (write_memory(shell_opaque, ss_gpa + 0x100u,
                              sizeof(pending), &pending)) {
                 kicked++;
@@ -606,8 +603,13 @@ bool lagfx_display_tick_vblank(
                   tick_count, kicked,
                   __builtin_popcount(dev->display_ss_installed));
     }
-    if (kicked > 0 && dev->desc.shell.raise_interrupt) {
-        dev->desc.shell.raise_interrupt(dev->desc.shell.opaque, 0u);
+    if (kicked > 0 && p) {
+        p->pending_displays_bitmask |=
+            (0xFFu << 5); /* ch 5..12 */
+        if (dev->desc.shell.raise_interrupt) {
+            dev->desc.shell.raise_interrupt(
+                dev->desc.shell.opaque, 0u);
+        }
     }
     return kicked > 0;
 }
