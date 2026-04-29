@@ -268,10 +268,10 @@ static size_t build_exec_indirect2_outer(uint8_t *out,
 }
 
 /* Build a 16B segment header at `out`. */
-static void put_segment_header(uint8_t *out, uint32_t segment_size,
-                               uint32_t prot_options, uint8_t enc_type,
-                               uint8_t final_flag, uint8_t reuse_flag) {
-    put_le32(out + 0, segment_size);
+static void put_segment_header(uint8_t *out, uint32_t inner_size,
+                                uint32_t prot_options, uint8_t enc_type,
+                                uint8_t final_flag, uint8_t reuse_flag) {
+    put_le32(out + 0, inner_size + 16u);
     put_le32(out + 4, prot_options);
     out[8]  = enc_type;
     out[9]  = final_flag;
@@ -718,8 +718,10 @@ static void test_walker_bad_segment_size_bails(void) {
      * bails. */
     uint8_t cmdbuf[64];
     memset(cmdbuf, 0, sizeof(cmdbuf));
-    put_segment_header(cmdbuf + 0, /*size=*/0xffffffffu, 0u,
-                       /*enc=*/2u, /*final=*/1u, 0u);
+    put_le32(cmdbuf + 0, 0xffffffffu);
+    put_le32(cmdbuf + 4, 0u);
+    cmdbuf[8] = 2u;
+    cmdbuf[9] = 1u;
 
     uint8_t *res_page = shell.heap + 0x10000u;
     prep_resource_cmdbuf(&shell, res_page, cmdbuf, sizeof(cmdbuf));

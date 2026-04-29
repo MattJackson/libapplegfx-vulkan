@@ -471,7 +471,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             }
 
             if (segment_size == 0u
-                || segment_size > (uint32_t)((size_t)length - soff - 16u)) {
+                || segment_size > (uint32_t)((size_t)length - soff)) {
                 LAGFX_WARN("    segment[%u]: bad size — bailing out", segment_idx);
                 break;
             }
@@ -481,7 +481,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             bool render_begin_pending =
                 (encoder_type == 2u && !p->render_enc.in_pass);
             size_t ioff = soff + 16u;
-            size_t iend = ioff + segment_size;
+            size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
             while (ioff + 8u <= iend) {
                 uint32_t inner_opcode = lagfx_le32(cmdbuf + ioff + 0);
@@ -893,7 +893,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
 #endif
             }
 
-            soff += 16u + segment_size;
+            soff += segment_size;
             segment_idx += 1;
         }
 
