@@ -161,9 +161,15 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
     uint32_t count   = lagfx_le32(hdr->payload + 4);
 
     /* Overflow-safe size check: 8 + 4*count must fit within payload_size. */
-    if (count > ((uint32_t)hdr->payload_size - 8u) / 4u) {
+    if (count > 0u && count > ((uint32_t)hdr->payload_size - 8u) / 4u) {
+        char pay_hex[65];
+        for (unsigned i = 0; i < hdr->payload_size && i < 64u; ++i) {
+            snprintf(pay_hex + i*2, 3, "%02x", hdr->payload[i]);
+        }
+        pay_hex[hdr->payload_size < 64u ? hdr->payload_size * 2 : 128] = '\0';
         LAGFX_WARN("CmdSynchronizeResources: count=%u exceeds payload "
-                   "(size=%u)", count, (unsigned)hdr->payload_size);
+                   "(size=%u) taskID=%u hex=%s",
+                   count, (unsigned)hdr->payload_size, task_id, pay_hex);
         return LAGFX_HANDLER_ERR_SIZE;
     }
 

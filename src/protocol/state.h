@@ -25,7 +25,7 @@
  * phase-2-first-pixel-plan.md §4 (Phase 2.A display-path opcodes add
  * the displays[] table). */
 #define LAGFX_MAX_TASKS       16u
-#define LAGFX_MAX_CHILDFIFOS   8u
+#define LAGFX_MAX_CHILDFIFOS  16u
 #define LAGFX_MAX_INFLIGHT    32u
 #define LAGFX_PROTO_MAX_DISPLAYS 4u  /* tracks guest-visible displayID →
                                       * current mapping + last txn.
