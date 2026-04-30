@@ -774,43 +774,52 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             }
 
             /* Display channel opcode dispatch loop (ch >= 5).
-             * The display vchan uses a separate opcode namespace:
-             *   0x01 = setupSharedState  (8 bytes payload)
-             *   0x06 = present           (12 bytes payload)
-             *   0x07 = present+gamma     (36 bytes payload)
-             * Resolve data pages via page0[0] PFN-array indirection,
-             * then walk the ring dispatching each command. */
+             * Uses the same PFN-array scatter-gather as compute
+             * channels so ring offsets past 4096 resolve correctly
+             * instead of reading garbage from the single data page. */
             uint32_t last_stamp = 0u;
+            uint32_t child_ring_size = 0x10000u;
             if (ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
                 uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
-                uint32_t data_pfn = 0u;
-                p->dev->desc.shell.read_memory(
-                    p->dev->desc.shell.opaque,
-                    ring_gpa_base, sizeof(data_pfn), &data_pfn);
-                uint64_t ring_data_gpa;
-                if (data_pfn != 0u) {
-                    ring_data_gpa = (uint64_t)data_pfn << 12;
-                } else {
-                    ring_data_gpa = ring_gpa_base + 0x1000u;
-                }
-                LAGFX_TRACE("doorbell ch=%u: data via page0 PFN=0x%x "
-                          "(data_gpa=0x%llx)",
-                          ch, data_pfn,
-                          (unsigned long long)ring_data_gpa);
 
                 uint32_t cur_rp = read_ptr;
                 unsigned cmd_idx = 0;
                 while (cur_rp + 12u <= write_ptr) {
                     uint8_t hdr_bytes[12] = {0};
-                    if (!p->dev->desc.shell.read_memory(
-                            p->dev->desc.shell.opaque,
-                            ring_data_gpa + cur_rp, 12,
-                            hdr_bytes)) {
-                        LAGFX_WARN("doorbell ch=%u: read_memory failed "
-                                   "for cmd header at rp=%u",
-                                   ch, cur_rp);
-                        break;
+                    {
+                        bool ok = true;
+                        uint32_t off = cur_rp;
+                        size_t got = 0;
+                        while (got < 12u && ok) {
+                            uint32_t mod_off = off % child_ring_size;
+                            uint32_t page_idx = mod_off >> 12;
+                            uint32_t page_off = mod_off & 0xfffu;
+                            uint32_t can = 0x1000u - page_off;
+                            uint32_t want = (uint32_t)(12u - got);
+                            uint32_t take = (want < can) ? want : can;
+                            uint32_t pte_pfn = 0u;
+                            if (!p->dev->desc.shell.read_memory(
+                                    p->dev->desc.shell.opaque,
+                                    ring_gpa_base + (uint64_t)page_idx * 4u,
+                                    sizeof(pte_pfn), &pte_pfn)
+                                || pte_pfn == 0u) {
+                                ok = false; break;
+                            }
+                            if (!p->dev->desc.shell.read_memory(
+                                    p->dev->desc.shell.opaque,
+                                    ((uint64_t)pte_pfn << 12) + page_off,
+                                    take, hdr_bytes + got)) {
+                                ok = false; break;
+                            }
+                            off += take;
+                            got += take;
+                        }
+                        if (!ok) {
+                            LAGFX_WARN("doorbell ch=%u: header read "
+                                       "failed at rp=%u", ch, cur_rp);
+                            break;
+                        }
                     }
 
                     uint16_t opcode = (uint16_t)(hdr_bytes[0]
@@ -841,13 +850,36 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                                        "failed", ch, payload_len);
                             break;
                         }
-                        if (!p->dev->desc.shell.read_memory(
-                                p->dev->desc.shell.opaque,
-                                ring_data_gpa + cur_rp + 12u,
-                                payload_len, payload_buf)) {
-                            LAGFX_WARN("doorbell ch=%u: read_memory "
-                                       "failed for payload at rp=%u",
-                                       ch, cur_rp);
+                        bool ok = true;
+                        uint32_t off = cur_rp + 12u;
+                        size_t got = 0;
+                        while (got < payload_len && ok) {
+                            uint32_t mod_off = off % child_ring_size;
+                            uint32_t page_idx = mod_off >> 12;
+                            uint32_t page_off = mod_off & 0xfffu;
+                            uint32_t can = 0x1000u - page_off;
+                            uint32_t want = (uint32_t)(payload_len - got);
+                            uint32_t take = (want < can) ? want : can;
+                            uint32_t pte_pfn = 0u;
+                            if (!p->dev->desc.shell.read_memory(
+                                    p->dev->desc.shell.opaque,
+                                    ring_gpa_base + (uint64_t)page_idx * 4u,
+                                    sizeof(pte_pfn), &pte_pfn)
+                                || pte_pfn == 0u) {
+                                ok = false; break;
+                            }
+                            if (!p->dev->desc.shell.read_memory(
+                                    p->dev->desc.shell.opaque,
+                                    ((uint64_t)pte_pfn << 12) + page_off,
+                                    take, payload_buf + got)) {
+                                ok = false; break;
+                            }
+                            off += take;
+                            got += take;
+                        }
+                        if (!ok) {
+                            LAGFX_WARN("doorbell ch=%u: payload read "
+                                       "failed at rp=%u", ch, cur_rp);
                             free(payload_buf);
                             break;
                         }
