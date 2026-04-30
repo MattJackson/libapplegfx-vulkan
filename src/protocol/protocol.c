@@ -743,6 +743,17 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
                     lagfx_cmd_header_t parsed;
                     p->extra_stamp_advance = 0u;
+                    /* Kext-side vchan namespace remapping:
+                     *   0x39 = CmdMapMemoryImmediate (already handled)
+                     *   0x22 = CmdUnmapMemory (NOT CmdSynchronizeResources)
+                     *   0x37 = CmdExecIndirect2 (NOT a separate opcode)
+                     * Remap 0x22→0x03 so the dispatch routes to the
+                     * CmdUnmapMemory handler on compute channels. */
+                    uint16_t remapped_opcode = (uint16_t)(cmd[0]
+                        | ((uint16_t)cmd[1] << 8));
+                    if (remapped_opcode == 0x0022u) {
+                        cmd[0] = 0x03u; cmd[1] = 0x00u;
+                    }
                     int rc = lagfx_protocol_dispatch_one_no_stamp(
                         p, cmd, cmd_len, &parsed);
                     LAGFX_LOG("doorbell ch=%u cmd[%u]: opcode=0x%04x "
