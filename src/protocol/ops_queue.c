@@ -57,7 +57,12 @@ lagfx_handler_status_t lagfx_op_define_child_fifo(lagfx_protocol_t *p,
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
-    uint32_t fifo_id = lagfx_le32(hdr->payload + 0);
+    uint32_t fifo_id;
+    if (hdr->payload_size >= 8u) {
+        fifo_id = lagfx_le32(hdr->payload + 4);
+    } else {
+        fifo_id = lagfx_le32(hdr->payload + 0);
+    }
 
     lagfx_childfifo_entry_t *entry = lagfx_protocol_find_fifo(p, fifo_id);
     if (entry) {

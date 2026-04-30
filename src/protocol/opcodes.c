@@ -157,8 +157,10 @@ static const lagfx_op_descriptor_t g_op_table[] = {
      *     shapes are unknown, so min/max_payload=0 and handler=NULL
      *     (default stamp+log path). Names are per §13.5 where
      *     inferred, Unknown(0xNN) otherwise. */
+    /* Kext sends 0x400-byte payload with child_id at +4, not +0.
+     * max_payload=0 (unbounded) to accept the larger kext payload. */
     { LAGFX_OP_DEFINE_CHILD_CHANNEL,     "CmdDefineChildChannel",
-      LAGFX_PRIO_P0, 4,  4,  lagfx_op_define_child_fifo },
+      LAGFX_PRIO_P0, 4,  0,  lagfx_op_define_child_fifo },
     { LAGFX_OP_FREE_VIRTUAL_CHANNEL,     "VirtualChannelFree",
       LAGFX_PRIO_P2, 0,  0,  NULL },
     { LAGFX_OP_SET_RESOURCE_HEAP,        "CmdSetResourceHeap",
