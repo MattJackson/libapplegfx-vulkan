@@ -1077,9 +1077,15 @@ lagfx_handler_status_t lagfx_op_unmap_memory_immediate(
                    "(continuing fail-open)", task_id);
     }
 
+    lagfx_task_t *shell_task = task ? task->shell_task : NULL;
+    if (!shell_task) {
+        LAGFX_LOG("CmdUnmapMemoryImmediate: taskID=%u shell_task=NULL, "
+                  "skipping unmap (silent success)", task_id);
+        return LAGFX_HANDLER_OK;
+    }
+
     lagfx_handler_status_t status = LAGFX_HANDLER_OK;
     if (p->dev && p->dev->desc.shell.unmap_memory) {
-        lagfx_task_t *shell_task = task ? task->shell_task : NULL;
         bool ok = p->dev->desc.shell.unmap_memory(
             p->dev->desc.shell.opaque,
             shell_task,
