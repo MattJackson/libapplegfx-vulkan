@@ -745,17 +745,32 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     p->extra_stamp_advance = 0u;
                     /* Kext-side vchan namespace remapping:
                      *   0x39 = CmdMapMemoryImmediate (already handled)
-                     *   0x22 = CmdUnmapMemory (NOT CmdSynchronizeResources)
+                     *   0x22 = CmdUnmapMemoryImmediate (NOT CmdSynchronizeResources)
                      *   0x37 = CmdExecIndirect2 (NOT a separate opcode)
-                     * Remap 0x22→0x03 so the dispatch routes to the
-                     * CmdUnmapMemory handler on compute channels. */
-                    uint16_t remapped_opcode = (uint16_t)(cmd[0]
+                     *
+                     * 0x22 uses the same 20-byte trailer-at-end format as
+                     * 0x39, so we dispatch directly to the immediate
+                     * handler instead of remapping to 0x03 (which would
+                     * read from offset 0 and get scatter-descriptor garbage). */
+                    uint16_t raw_opcode = (uint16_t)(cmd[0]
                         | ((uint16_t)cmd[1] << 8));
-                    if (remapped_opcode == 0x0022u) {
-                        cmd[0] = 0x03u; cmd[1] = 0x00u;
+                    int rc;
+                    if (raw_opcode == 0x0022u) {
+                        if (!lagfx_fifo_parse_header(cmd, cmd_len,
+                                                     &parsed)) {
+                            LAGFX_WARN("doorbell ch=%u: header parse "
+                                       "failed for unmap-immediate "
+                                       "at rp=%u", ch, cur_rp);
+                            rc = LAGFX_HANDLER_ERR_SIZE;
+                        } else {
+                            p->total_cmds_seen += 1;
+                            rc = (int)lagfx_op_unmap_memory_immediate(
+                                p, &parsed);
+                        }
+                    } else {
+                        rc = lagfx_protocol_dispatch_one_no_stamp(
+                            p, cmd, cmd_len, &parsed);
                     }
-                    int rc = lagfx_protocol_dispatch_one_no_stamp(
-                        p, cmd, cmd_len, &parsed);
                     LAGFX_LOG("doorbell ch=%u cmd[%u]: opcode=0x%04x "
                               "stamp=0x%08x len=%u rc=%d "
                               "extra_stamp_advance=%u "

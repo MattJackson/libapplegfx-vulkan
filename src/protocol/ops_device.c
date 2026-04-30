@@ -1017,3 +1017,86 @@ lagfx_handler_status_t lagfx_op_unmap_memory(lagfx_protocol_t *p,
               (unsigned long long)length, hdr->stamp, (int)status);
     return status;
 }
+
+/* ===========================================================================
+ * CmdUnmapMemoryImmediate (kext opcode 0x22 on the Immediate vchan) — P1
+ *
+ * Same wire format as CmdMapMemoryImmediate (0x39): the kext places a
+ * 20-byte trailer at the END of the payload:
+ *
+ *   [scatter blocks][20-byte trailer:
+ *       +0x00  u32 task_id
+ *       +0x04  u64 vaBase
+ *       +0x0c  u64 vaLength
+ *   ]
+ *
+ * The vchan drain loop dispatches opcode 0x22 here directly (no remap
+ * to 0x03) so we read the trailer from the payload tail, not offset 0.
+ * =========================================================================== */
+
+lagfx_handler_status_t lagfx_op_unmap_memory_immediate(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 20u) {
+        LAGFX_WARN("CmdUnmapMemoryImmediate: payload missing or too small "
+                   "(size=%u, need >= 20)", (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    size_t off = (size_t)hdr->payload_size - 20u;
+    uint32_t task_id        = lagfx_le32(hdr->payload + off + 0);
+    uint64_t virtual_offset = (uint64_t)lagfx_le32(hdr->payload + off + 4)
+                              | ((uint64_t)lagfx_le32(hdr->payload + off + 8) << 32);
+    uint64_t length         = (uint64_t)lagfx_le32(hdr->payload + off + 12)
+                              | ((uint64_t)lagfx_le32(hdr->payload + off + 16) << 32);
+
+    if (off > 0) {
+        size_t n = (off < 64u) ? off : 64u;
+        char line[64 * 4 + 8];
+        size_t lpos = 0;
+        for (size_t i = 0; i < n; ++i) {
+            int x = snprintf(line + lpos, sizeof(line) - lpos, "%02x ",
+                             hdr->payload[i]);
+            if (x <= 0 || (size_t)x >= sizeof(line) - lpos) break;
+            lpos += (size_t)x;
+        }
+        LAGFX_TRACE("CmdUnmapMemoryImmediate: scatter prefix[%zu]: %s",
+                  off, line);
+    }
+
+    LAGFX_LOG("CmdUnmapMemoryImmediate: taskID=%u vaBase=0x%llx "
+              "vaLength=0x%llx stamp=0x%08x",
+              task_id, (unsigned long long)virtual_offset,
+              (unsigned long long)length, hdr->stamp);
+
+    lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
+    if (!task) {
+        LAGFX_WARN("CmdUnmapMemoryImmediate: taskID=%u not found "
+                   "(continuing fail-open)", task_id);
+    }
+
+    lagfx_handler_status_t status = LAGFX_HANDLER_OK;
+    if (p->dev && p->dev->desc.shell.unmap_memory) {
+        lagfx_task_t *shell_task = task ? task->shell_task : NULL;
+        bool ok = p->dev->desc.shell.unmap_memory(
+            p->dev->desc.shell.opaque,
+            shell_task,
+            virtual_offset,
+            length);
+        if (!ok) {
+            LAGFX_WARN("CmdUnmapMemoryImmediate: shell.unmap_memory returned false "
+                       "for taskID=%u vm_off=0x%llx length=%llu "
+                       "(completing stamp anyway — fail-open)",
+                       task_id, (unsigned long long)virtual_offset,
+                       (unsigned long long)length);
+            status = LAGFX_HANDLER_ERR_STATE;
+        }
+    } else {
+        LAGFX_WARN("CmdUnmapMemoryImmediate: no shell.unmap_memory callback; "
+                   "taskID=%u treated as success (scaffold)", task_id);
+    }
+
+    return status;
+}

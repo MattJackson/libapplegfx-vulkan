@@ -255,6 +255,8 @@ lagfx_handler_status_t lagfx_op_map_memory2(lagfx_protocol_t *p,
                                             const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_unmap_memory(lagfx_protocol_t *p,
                                              const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_unmap_memory_immediate(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_set_resource_heap(lagfx_protocol_t *p,
                                                   const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
