@@ -277,6 +277,23 @@ lagfx_op_get_device_info_2(lagfx_protocol_t *p,
 
     LAGFX_LOG("CmdGetDeviceInfo2: wrote %zu pairs to resp page", emit_pairs);
 
+    LAGFX_LOG("CmdGetDeviceInfo2: TLV pairs:");
+    for (size_t i = 0; i < emit_pairs; i++) {
+        LAGFX_LOG("  [%zu] tag=0x%02x value=0x%08x",
+                  i, pairs[i].key, pairs[i].value);
+    }
+    {
+        uint32_t metal_ver = 0;
+        for (size_t i = 0; i < emit_pairs; i++) {
+            if (pairs[i].key == 0x12) {
+                metal_ver = pairs[i].value;
+                break;
+            }
+        }
+        LAGFX_LOG("CmdGetDeviceInfo2: tag 0x12 (MaxMetalShaderVersion) = 0x%08x "
+                  "(need >= 0x00020008 for Metal)", metal_ver);
+    }
+
     /*
      * The kext's setupDeviceInfo reloads actual_count from the on-ring
      * header's length slot (+4) via `mov esi, [r13+4]` AFTER the stamp
