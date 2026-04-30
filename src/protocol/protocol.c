@@ -795,11 +795,10 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             }
 
             /* Display channel opcode dispatch loop (ch >= 5).
-             * Uses the same PFN-array scatter-gather as compute
-             * channels so ring offsets past 4096 resolve correctly
-             * instead of reading garbage from the single data page. */
+             * Display rings are 4 KiB (0x1000), not 64 KiB like compute
+             * channels. The PFN array has 1 entry — wraps within one page. */
             uint32_t last_stamp = 0u;
-            uint32_t child_ring_size = 0x10000u;
+            uint32_t child_ring_size = 0x1000u;
             if (ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
                 uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
@@ -962,7 +961,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             }
 
             lagfx_advance_stamp_cell(p, ch, last_stamp);
-            p->pending_displays_bitmask |= (1u << ch);
+            p->pending_displays_bitmask |= (1u << (ch - 5u));
             p->pending_stamps_bitmask |= (1u << ch);
             if (p->dev && p->dev->desc.shell.raise_interrupt) {
                 p->dev->desc.shell.raise_interrupt(

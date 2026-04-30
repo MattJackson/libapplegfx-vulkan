@@ -144,7 +144,10 @@ static const lagfx_op_descriptor_t g_op_table[] = {
      *     Init-phase P0 — 0x30/0x33/0x38/0x3a must ack for
      *     `registerService()` to fire (prerequisite for
      *     MTLCreateSystemDefaultDevice).
-     *     0x30/0x33/0x38 use the default stamp+log path (handler=NULL).
+     *     0x30 routes to lagfx_op_define_child_fifo (same as 0x04
+     *     CmdDefineChildFIFO — kext-side namespace equivalent).
+     *     0x33 routes to lagfx_op_set_resource_heap.
+     *     0x38 routes to lagfx_op_define_host_task.
      *     0x3a fills the guest-supplied response page with a minimum
      *     viable device-info tuple stream. See paravirt-re §13.
      *
@@ -155,7 +158,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
      *     (default stamp+log path). Names are per §13.5 where
      *     inferred, Unknown(0xNN) otherwise. */
     { LAGFX_OP_DEFINE_CHILD_CHANNEL,     "CmdDefineChildChannel",
-      LAGFX_PRIO_P0, 4,  4,  NULL },
+      LAGFX_PRIO_P0, 4,  4,  lagfx_op_define_child_fifo },
     { LAGFX_OP_FREE_VIRTUAL_CHANNEL,     "VirtualChannelFree",
       LAGFX_PRIO_P2, 0,  0,  NULL },
     { LAGFX_OP_SET_RESOURCE_HEAP,        "CmdSetResourceHeap",

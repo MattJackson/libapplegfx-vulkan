@@ -188,6 +188,15 @@ lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(
         p->dev->desc.shell.opaque, ss_gpa + 0x50u,
         sizeof(orient), &orient);
 
+    uint16_t hsync_total = 2200u;
+    uint16_t vsync_total = 1125u;
+    p->dev->desc.shell.write_memory(
+        p->dev->desc.shell.opaque, ss_gpa + 0x4cu,
+        sizeof(hsync_total), &hsync_total);
+    p->dev->desc.shell.write_memory(
+        p->dev->desc.shell.opaque, ss_gpa + 0x4eu,
+        sizeof(vsync_total), &vsync_total);
+
     uint32_t fb_pfn = ss_pfn;
     p->dev->desc.shell.write_memory(
         p->dev->desc.shell.opaque, ss_gpa + 0x200u,
