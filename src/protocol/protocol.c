@@ -282,18 +282,18 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
     }
 
     /*
-     * Secondary capability table (BAR0+0x1200..0x122c).
+     * Secondary capability / config bank (BAR0+0x1200..0x122c).
      *
-     * AppleParavirtGPUControl::start()+0x7c reads a u32 at BAR0+0x122c
-     * and branches on its value:
-     *   0       -> "no-caps" bail (silent no-op; M2 invisible)
-     *   1..8    -> legacy / pre-v9 shape
-     *   >=9     -> modern capability path (what we want)
-     * Disasm: paravirt-re/baselines/phase-1d4-disasm.txt:42-48.
+     * Per PROTOCOL.md §2.1, mmio-survival-recipe-v2.md, and
+     * graphics-attach.md:
+     *   0x122c is the CAPABILITY_GATE read by
+     *   AppleParavirtGPUControl::start()+0x7c. Must return >= 9 to
+     *   select the modern paravirt path. 0 = silent bail, 1..8 =
+     *   legacy. Verified RE + M2/M3/M4 live boots at value 9.
      *
-     * Return 9 to select the modern path. Rest of the 0x1200..0x1228
-     * block returns 0 (no optional features advertised); those aren't
-     * consumed by start() before +0x7c, so safe default for now.
+     * Other entries (per PROTOCOL.md §2.1 and re-followup-spec-gaps
+     * §5.2): _PGDevice ObjC getters backing individual MMIO offsets.
+     * Return 0 for unhandled; _PGDevice's ivars are zero-initialised.
      */
     if (offset == 0x122c) {
         return 9;
@@ -302,12 +302,15 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
         return 0;
     }
 
-    /* 0x100c is the guest-observable read pointer; return a live
-     * value so the kext can poll our drain progress. */
+    /* 0x100c — _rootFIFO.fifoFaultOffset.
+     *
+     * Per RE (BAR0-mmio-map.md): "last fault offset; infrequent read;
+     * host should hard-return 0." The kext's ISR reads this on
+     * fault-path walks; returning read_ptr (our previous behavior)
+     * could trigger spurious handleFaultInterrupt processing. */
     if (offset == LAGFX_REG_FIFO_FAULT_OFFSET) {
-        LAGFX_TRACE("mmio_read: FIFO_FAULT_OFFSET -> 0x%x (read_ptr)",
-                  p->read_ptr);
-        return p->read_ptr;
+        LAGFX_TRACE("mmio_read: FIFO_FAULT_OFFSET -> 0");
+        return 0u;
     }
 
     /*
@@ -375,6 +378,24 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
     }
 
     uint32_t value = p->reg[idx];
+
+    /*
+     * 0x1034 (BINARY_VERSION / idx 13) — version negotiation loopback.
+     *
+     * AppleParavirtAccelerator::setupVersion() (kext+0x314a) does:
+     *   1. Write preferred version (6) to BAR0+0x34.
+     *   2. Read BAR0+0x34 back immediately.
+     *   3. If read-back <= 6 and >= 1 → accept (decode cap flags).
+     *      If high bit (bit 31) set → "rejected"; retry with host's
+     *      max-supported version from low 31 bits.
+     *      If still invalid after retry → write 0x80000006 (abort).
+     *
+     * Our write handler (below) shadows the written value into
+     * reg[13], so reading it back returns what the kext wrote.
+     * With loopback: kext writes 6, reads 6, cap_a=1 cap_b=0
+     * cap_c=1 cap_d=1 subver=1 flag_e=1 flag_f=1 → version 6
+     * accepted. No action needed.
+     */
 
     LAGFX_TRACE("mmio_read: off=0x%llx -> 0x%08x",
               (unsigned long long)offset, value);

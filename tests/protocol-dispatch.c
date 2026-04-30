@@ -1624,7 +1624,7 @@ static void test_metal_clear_color_sequence(void) {
  *   - lagfx_fifo_drain ring-buffer read loop with wrap.
  *   - CmdGetDeviceInfo2 (0x3a) response-page DMA + actual_count
  *     writeback into the ring header +4.
- *   - MMIO read extension at 0x100c returning p->read_ptr.
+ *   - MMIO read extension at 0x100c returning 0 (fifoFaultOffset).
  */
 
 static void test_m3_mmio_setter_routing(void) {
@@ -1672,10 +1672,11 @@ static void test_m3_mmio_setter_routing(void) {
     CHECK(p->ring_base_gpa == ((uint64_t)0xabcdeu << 12) + 0x2000u,
           "m3: re-write 0x1010 recomputes ring_base_gpa");
 
-    /* 0x100c read returns the current read_ptr (live shadow). */
+    /* 0x100c read returns 0 (fifoFaultOffset — host must hard-return 0
+     * per RE to avoid spurious handleFaultInterrupt activation). */
     p->read_ptr = 0x2048u;
-    CHECK(lagfx_mmio_read(dev, LAGFX_REG_FIFO_FAULT_OFFSET) == 0x2048u,
-          "m3: 0x100c read returns p->read_ptr");
+    CHECK(lagfx_mmio_read(dev, LAGFX_REG_FIFO_FAULT_OFFSET) == 0u,
+          "m3: 0x100c read returns 0 (not read_ptr)");
 
     lagfx_device_free(dev);
 }

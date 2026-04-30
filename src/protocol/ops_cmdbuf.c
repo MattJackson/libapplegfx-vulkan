@@ -852,8 +852,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                        opname, buffer_id, resource_count);
                         }
                     }
-                } else if (encoder_type == 2u
-                           || encoder_type == 0u) {
+                } else if (encoder_type == 2u) {
                     const uint8_t *ipl = cmdbuf + ioff + 8u;
                     int rc = lagfx_render_decoder_dispatch(p, inner_opcode,
                                                           ipl, ipl_len);
@@ -868,15 +867,13 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                         lagfx_render_encoder_try_begin(p);
                     }
                 } else if (encoder_type == 0u) {
-                    {
-                        const uint8_t *bpl = cmdbuf + ioff + 8u;
-                        int rc = lagfx_blit_decoder_dispatch(p, inner_opcode,
-                                                             bpl, ipl_len);
-                        if (rc != 0) {
-                            LAGFX_TRACE("      inner[%u]: blit dispatch "
-                                      "op=0x%04x returned %d (continuing)",
-                                      inner_idx, inner_opcode, rc);
-                        }
+                    const uint8_t *bpl = cmdbuf + ioff + 8u;
+                    int rc = lagfx_blit_decoder_dispatch(p, inner_opcode,
+                                                         bpl, ipl_len);
+                    if (rc != 0) {
+                        LAGFX_TRACE("      inner[%u]: blit dispatch "
+                                  "op=0x%04x returned %d (continuing)",
+                                  inner_idx, inner_opcode, rc);
                     }
                 } else if (encoder_type == 1u) {
                     {
@@ -895,7 +892,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                 inner_idx += 1;
             }
 
-            if (encoder_type == 2u || encoder_type == 0u) {
+            if (encoder_type == 2u) {
                 if (p->render_enc.in_pass) {
                     lagfx_translate_render_end(&p->render_enc);
                 }
