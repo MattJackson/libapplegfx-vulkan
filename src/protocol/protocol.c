@@ -14,6 +14,7 @@
 #include "state.h"
 #include "opcodes.h"
 #include "fifo.h"
+#include "ops_display.h"
 #include "ops_display_vchan.h"
 #include "../device.h"
 #include "../common/log.h"
@@ -1173,22 +1174,20 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                               "opcode=0x%02x stamp=0x%08x len=%u",
                               ch, cmd_idx, opcode, stamp, cmd_len);
 
-                    /* Display vchan compact opcode namespace:
-                     *   {0x01, 0x02, 0x04, 0x06, 0x07}
-                     * (NOT the full PGFIFO 0x00..0x44 table).
-                     *
-                     * RE (PGFIFO-sub-channel-opcode-table.md):
-                     *   0x01 = setupSharedState (display init)
-                     *   0x02 = display_submit (triggers framebuffer work)
-                     *   0x04 = define_child_fifo (44-byte descriptor)
-                     *   0x06 = present-only (12 B, surface_id@+4)
-                     *   0x07 = present+gamma (36 B, plane_id@+4)
-                     *
-                     * Note: 0x13/0x14 (cursor) handlers exist in
-                     * ops_display.c but are NOT wired here yet
-                     * (see display-pipe-enable-online-sequence.md §Q6).
-                     */
-                    switch (opcode) {
+                     /* Display vchan compact opcode namespace:
+                      *   {0x01, 0x02, 0x04, 0x06, 0x07, 0x13, 0x14}
+                      * (NOT the full PGFIFO 0x00..0x44 table).
+                      *
+                      * RE (PGFIFO-sub-channel-opcode-table.md):
+                      *   0x01 = setupSharedState (display init)
+                      *   0x02 = display_submit (triggers framebuffer work)
+                      *   0x04 = define_child_fifo (44-byte descriptor)
+                      *   0x06 = present-only (12 B, surface_id@+4)
+                      *   0x07 = present+gamma (36 B, plane_id@+4)
+                      *   0x13 = cursor_show (visibility + position)
+                      *   0x14 = cursor_glyph (shape/bitmap)
+                      */
+                     switch (opcode) {
                         case 0x01u:
                             /* setupSharedState: writes ss[0x12]=fPort,
                              * then stamp ACK (see DisplayPipe-setupSharedState-summary.md) */
@@ -1217,13 +1216,25 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             lagfx_op_vchan_present(p, &parsed);
                             break;
                         case 0x07u:
-                            /* present+gamma: {display_idx, plane_id, surface_id, ...}
-                             * Field order: plane_id@+4, surface_id@+8
-                             * (swapped vs 0x06). gamma_phys@+12. */
-                            saw_non_setup = true;
-                            lagfx_op_vchan_present_gamma(p, &parsed);
-                            break;
-                        default:
+                             /* present+gamma: {display_idx, plane_id, surface_id, ...}
+                              * Field order: plane_id@+4, surface_id@+8
+                              * (swapped vs 0x06). gamma_phys@+12. */
+                             saw_non_setup = true;
+                             lagfx_op_vchan_present_gamma(p, &parsed);
+                             break;
+                         case 0x13u:
+                             /* cursor_show: visibility + position.
+                              * Invokes QEMU dpy_mouse_set callback
+                              * for noVNC cursor visibility. */
+                             lagfx_op_display_cursor_show(p, &parsed);
+                             break;
+                         case 0x14u:
+                             /* cursor_glyph: shape/bitmap.
+                              * Invokes QEMU dpy_cursor_define callback
+                              * for noVNC cursor rendering. */
+                             lagfx_op_display_cursor_glyph(p, &parsed);
+                             break;
+                         default:
                             LAGFX_WARN("doorbell ch=%u: unknown "
                                        "display vchan opcode 0x%02x "
                                        "at rp=%u len=%u",

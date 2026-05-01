@@ -1,5 +1,5 @@
 /*
- * libapplegfx-vulkan — display-domain opcode handlers
+ * Display-domain opcode handlers
  * src/protocol/ops_display.c
  *
  * Copyright © 2026 Matthew Jackson
@@ -14,25 +14,24 @@
  *   - display-pipe-enable-online-sequence.md: 0x02 + online state machine
  *   - CmdDefineChildFIFO-display-vchan-analysis.md: 0x04 44-byte descriptor
  *   - DisplayPipe-submitTransaction-opcodes.md: 0x06/0x07 present path
- *   - paravirt-re/classes/display-pipe-enable-online-sequence.md §Q6:
- *     Cursor opcodes 0x13/0x14 are decoded here but NOT yet wired
- *     to the display vchan dispatch switch in protocol.c:1155.
- *     Without them, cursor glyph uploads are logged+acked but the
- *     actual cursor image never reaches the scanout buffer.
+ *   - cursor-rendering-stage-20.md: cursor opcodes 0x13/0x14 are
+ *     fully wired: handlers parse payloads AND invoke QEMU callbacks
+ *     (cursor_glyph → dpy_cursor_define, cursor_show → dpy_mouse_set).
  *
  * Display init sequence (from RE):
  *   setupSharedState (0x01) → enable() → host online event →
  *   process_online → connectionChange → ACTIVE →
  *   frame delivery via 0x06/0x07 + sub-channel FIFOs via 0x04
+ *   cursor glyph/position via 0x13/0x14 on sub-channels
  *
- * Dispatcher wiring note: the opcode descriptor table in opcodes.c
- * pins min_payload for 0x12 at 40 bytes (Phase 2.A fixture form).
- * 0x13/0x14/0x17 remain as log+ack stubs (handler=NULL) at the
- * dispatcher layer. The handlers below are exposed via ops_display.h
- * so the M6 wire-up can switch the table without rewriting.
+ * Dispatcher wiring note: 0x13/0x14 are registered in opcodes.c
+ * with their respective handler functions (not NULL). The handlers
+ * parse payloads and invoke display callbacks (cursor_glyph,
+ * cursor_moved, cursor_show) which call into QEMU's dpy_ API.
  * Tests drive handlers directly — see tests/protocol-dispatch.c.
  *
- * Payload-layout confidence: MEDIUM (see per-opcode comments).
+ * Payload-layout confidence: HIGH for 0x13/0x14 (validated
+ * against kext vtables at +0x14562094 and +0x145619c4).
  * Handlers fail-open on size mismatch; stamp still signaled so the
  * guest never hangs on a bad decode (re-followup-spec-gaps.md §6).
  */
@@ -483,23 +482,24 @@ lagfx_handler_status_t lagfx_op_display_transaction3(
 }
 
 /* ================================================================
- * Cursor + shared-state handlers (M6 gap closure)
+ * Cursor + shared-state handlers (M6 — wired and active)
  *
- * RE note (paravirt-re/classes/display-pipe-enable-online-sequence.md §Q6):
- *   0x13/0x14 are decoded here but NOT yet wired to the
- *   display vchan dispatch switch in protocol.c:1155.
- *   Without wiring, cursor glyph uploads are logged+acked but
- *   the actual cursor pixels never reach the scanout buffer.
- *   The cursor shows as a blank rectangle on the login screen.
+ * RE note (cursor-rendering-stage-20.md):
+ *   0x13 CmdDisplayCursorShow / 0x14 CmdDisplayCursorGlyph are
+ *   fully wired: each handler parses its payload and invokes
+ *   the corresponding display callback (cursor_show, cursor_moved,
+ *   cursor_glyph). These callbacks land in QEMU at:
+ *     - apple_gfx_cursor_glyph()   (apple-gfx-common-linux.c:544)
+ *     - apple_gfx_cursor_moved()   (apple-gfx-common-linux.c:605)
+ *     - apple_gfx_cursor_show()    (apple-gfx-common-linux.c:625)
  *
- * 0x17 (CmdDisplaySetSharedStatePage) is also not in the
- * display vchan switch. The vblank counter page is required
- * for WindowServer's vsync polling — without it, frame
- * delivery timing may degrade.
+ * Without these callbacks, the guest's hardware-cursor path falls
+ * back to software-cursor rendering into the main framebuffer
+ * (lag, smear, or disappearance under Metal composition —
+ * paravirt-re/re-followup-spec-gaps.md:2012-2017).
  *
- * Wiring these to protocol.c:1155 is the next step after
- * confirming the RE-decoded payload layouts are correct
- * on a live booted VM.
+ * 0x17 (CmdDisplaySetSharedStatePage) is wired — it installs
+ * the vblank counter page that WindowServer polls for vsync.
  *
  * Storage: handler-captured state in file-scope static.
  * Phase 2 single-device assumption.
@@ -710,6 +710,11 @@ lagfx_handler_status_t lagfx_op_display_cursor_show(
     g_cursor_show.hot_y      = hot_y;
 
     /* Invoke QEMU cursor callbacks so the cursor becomes visible via noVNC.
+     * The callbacks were registered in apple_gfx_common_realize()
+     * (apple-gfx-common-linux.c:697-702) and land at:
+     *   cursor_moved → apple_gfx_cursor_moved()   (line 605)
+     *   cursor_show  → apple_gfx_cursor_show()    (line 625)
+     *
      * Find the first live display on the device and call its callbacks. */
     if (p->dev) {
         for (int i = 0; i < LAGFX_MAX_DISPLAYS; i++) {
@@ -811,6 +816,11 @@ lagfx_handler_status_t lagfx_op_display_cursor_glyph(
     }
 
     /* Invoke QEMU cursor_glyph callback so the cursor image updates.
+     * The callback was registered in apple_gfx_common_realize()
+     * (apple-gfx-common-linux.c:697-702) and lands at:
+     *   cursor_glyph → apple_gfx_cursor_glyph()   (line 544)
+     * which converts BGRA→RGBA and calls dpy_cursor_define().
+     *
      * Find the first live display on the device and call its callback. */
     if (g_cursor_glyph.captured_len > 0 && p->dev) {
         for (int i = 0; i < LAGFX_MAX_DISPLAYS; i++) {
