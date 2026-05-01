@@ -281,7 +281,7 @@ struct lagfx_protocol {
      * process_online and doSetDisplayMode. */
     uint32_t display_submit_count;
 
-#define DISPLAY_SUBMIT_THRESHOLD 5u
+#define DISPLAY_SUBMIT_THRESHOLD 1u
 };
 
 /* Internal helper — index into reg[] by MMIO offset. Returns -1 if
