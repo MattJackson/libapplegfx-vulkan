@@ -179,6 +179,206 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
     lagfx_protocol_complete_stamp_slot(p, 0u, stamp);
 }
 
+/* === Display sub-channel ring drain =========================
+ *
+ * After draining the parent display vchan ring, poll registered
+ * display child FIFO rings for pending commands. Each child ring
+ * has a baseNode at ring_base_gpa with produced/consumed indices
+ * (command counts). Commands start at ring_base_gpa + 0x40 in
+ * fixed-size entry slots.
+ *
+ * For now: polling implementation — checked every time the parent
+ * vchan doorbell fires. Logs all opcodes found for diagnostic
+ * purposes. */
+
+static void lagfx_drain_display_child_rings(lagfx_protocol_t *p,
+                                             uint32_t *io_last_stamp) {
+    if (!p || !p->dev || !p->dev->desc.shell.read_memory) {
+        return;
+    }
+
+    for (unsigned ri = 0; ri < LAGFX_MAX_DISPLAY_CHILD_RINGS; ++ri) {
+        lagfx_display_child_ring_t *ring = &p->display_child_rings[ri];
+        if (!ring->live || ring->ring_base_gpa == 0u) {
+            continue;
+        }
+
+        uint8_t basenode[64] = {0};
+        if (!p->dev->desc.shell.read_memory(
+                p->dev->desc.shell.opaque,
+                ring->ring_base_gpa, sizeof(basenode), basenode)) {
+            LAGFX_TRACE("child_ring[%u]: basenode read failed at "
+                       "gpa=0x%llx", ri,
+                       (unsigned long long)ring->ring_base_gpa);
+            continue;
+        }
+
+        uint32_t produced = (uint32_t)basenode[0]
+                          | ((uint32_t)basenode[1] << 8)
+                          | ((uint32_t)basenode[2] << 16)
+                          | ((uint32_t)basenode[3] << 24);
+        uint32_t consumed = (uint32_t)basenode[4]
+                          | ((uint32_t)basenode[5] << 8)
+                          | ((uint32_t)basenode[6] << 16)
+                          | ((uint32_t)basenode[7] << 24);
+        uint32_t fault    = (uint32_t)basenode[8]
+                          | ((uint32_t)basenode[9] << 8)
+                          | ((uint32_t)basenode[10] << 16)
+                          | ((uint32_t)basenode[11] << 24);
+
+        if (produced <= consumed) {
+            continue;
+        }
+
+        {
+            static unsigned log_suppress[LAGFX_MAX_DISPLAY_CHILD_RINGS];
+            if (ri < LAGFX_MAX_DISPLAY_CHILD_RINGS) {
+                log_suppress[ri]++;
+            }
+            if (log_suppress[ri] <= 4) {
+                LAGFX_WARN("child_ring[%u]: FIRST SEEN produced=%u "
+                           "consumed=%u fault=%u pending=%u "
+                           "ring_base=0x%llx ring_size=0x%llx "
+                           "entry_count=%u strides=(%u,%u) "
+                           "basenode_hex=%02x%02x%02x%02x %02x%02x%02x%02x "
+                           "%02x%02x%02x%02x %02x%02x%02x%02x "
+                           "%02x%02x%02x%02x %02x%02x%02x%02x",
+                           ri, produced, consumed, fault,
+                           produced - consumed,
+                           (unsigned long long)ring->ring_base_gpa,
+                           (unsigned long long)ring->ring_size,
+                           ring->entry_count,
+                           (unsigned)ring->read_stride,
+                           (unsigned)ring->write_stride,
+                           basenode[0], basenode[1], basenode[2],
+                           basenode[3], basenode[4], basenode[5],
+                           basenode[6], basenode[7], basenode[8],
+                           basenode[9], basenode[10], basenode[11],
+                           basenode[12], basenode[13], basenode[14],
+                           basenode[15], basenode[16], basenode[17],
+                           basenode[18], basenode[19], basenode[20],
+                           basenode[21], basenode[22], basenode[23]);
+            }
+        }
+
+        LAGFX_LOG("child_ring[%u]: produced=%u consumed=%u pending=%u",
+                 ri, produced, consumed, produced - consumed);
+
+        if (ring->entry_count == 0u || ring->ring_size <= 0x40u) {
+            LAGFX_WARN("child_ring[%u]: bad geometry entry_count=%u "
+                      "ring_size=0x%llx", ri, ring->entry_count,
+                      (unsigned long long)ring->ring_size);
+            continue;
+        }
+
+        uint64_t data_base = ring->ring_base_gpa + 0x40u;
+        uint64_t data_size = ring->ring_size - 0x40u;
+        uint32_t entry_size = (uint32_t)(data_size / ring->entry_count);
+        if (entry_size < 12u) {
+            LAGFX_WARN("child_ring[%u]: entry_size=%u too small "
+                      "(data_size=0x%llx entry_count=%u)",
+                      ri, entry_size,
+                      (unsigned long long)data_size,
+                      ring->entry_count);
+            continue;
+        }
+
+        uint32_t cur = consumed;
+        uint32_t drained = 0;
+        while (cur < produced && drained < 128u) {
+            uint32_t slot = cur % ring->entry_count;
+            uint64_t cmd_gpa = data_base
+                             + (uint64_t)slot * (uint64_t)entry_size;
+
+            uint8_t hdr_bytes[12] = {0};
+            if (!p->dev->desc.shell.read_memory(
+                    p->dev->desc.shell.opaque,
+                    cmd_gpa, 12, hdr_bytes)) {
+                LAGFX_WARN("child_ring[%u]: header read failed at "
+                          "gpa=0x%llx slot=%u cur=%u",
+                          ri, (unsigned long long)cmd_gpa, slot, cur);
+                break;
+            }
+
+            uint16_t opcode = (uint16_t)(hdr_bytes[0]
+                                         | (hdr_bytes[1] << 8));
+            uint32_t cmd_len = (uint32_t)(hdr_bytes[4]
+                                          | (hdr_bytes[5] << 8)
+                                          | (hdr_bytes[6] << 16)
+                                          | (hdr_bytes[7] << 24));
+            uint32_t stamp = (uint32_t)(hdr_bytes[8]
+                                        | (hdr_bytes[9] << 8)
+                                        | (hdr_bytes[10] << 16)
+                                        | (hdr_bytes[11] << 24));
+
+            if (cmd_len < 12u || cmd_len > entry_size) {
+                LAGFX_WARN("child_ring[%u]: bad cmd_len=%u at cur=%u "
+                          "slot=%u entry_size=%u "
+                          "hdr=[%02x %02x %02x %02x %02x %02x "
+                          "%02x %02x %02x %02x %02x %02x] — stopping",
+                          ri, cmd_len, cur, slot, entry_size,
+                          hdr_bytes[0], hdr_bytes[1], hdr_bytes[2],
+                          hdr_bytes[3], hdr_bytes[4], hdr_bytes[5],
+                          hdr_bytes[6], hdr_bytes[7], hdr_bytes[8],
+                          hdr_bytes[9], hdr_bytes[10], hdr_bytes[11]);
+                break;
+            }
+
+            uint8_t *cmd = (uint8_t *)malloc(cmd_len);
+            if (!cmd) {
+                LAGFX_WARN("child_ring[%u]: malloc(%u) failed",
+                          ri, cmd_len);
+                break;
+            }
+            if (!p->dev->desc.shell.read_memory(
+                    p->dev->desc.shell.opaque,
+                    cmd_gpa, cmd_len, cmd)) {
+                LAGFX_WARN("child_ring[%u]: cmd body read failed "
+                          "gpa=0x%llx len=%u",
+                          ri, (unsigned long long)cmd_gpa, cmd_len);
+                free(cmd);
+                break;
+            }
+
+            LAGFX_LOG("child_ring[%u] cmd[%u]: opcode=0x%04x (%s) "
+                     "len=%u stamp=0x%08x slot=%u cur=%u",
+                     ri, drained, opcode,
+                     lagfx_opcode_name(opcode),
+                     cmd_len, stamp, slot, cur);
+
+            lagfx_cmd_header_t parsed;
+            p->extra_stamp_advance = 0u;
+            int rc = lagfx_protocol_dispatch_one_no_stamp(
+                p, cmd, cmd_len, &parsed);
+            (void)rc;
+
+            LAGFX_LOG("child_ring[%u] cmd[%u]: dispatch rc=%d "
+                     "stamp=0x%08x",
+                     ri, drained, rc, parsed.stamp);
+
+            uint32_t effective = parsed.stamp
+                                 + p->extra_stamp_advance;
+            if (effective > *io_last_stamp) {
+                *io_last_stamp = effective;
+            }
+
+            free(cmd);
+            cur++;
+            drained++;
+        }
+
+        if (drained > 0 && p->dev->desc.shell.write_memory) {
+            p->dev->desc.shell.write_memory(
+                p->dev->desc.shell.opaque,
+                ring->ring_base_gpa + 4u,
+                sizeof(cur), &cur);
+            LAGFX_LOG("child_ring[%u]: consumed %u -> %u "
+                     "(%u cmd(s) drained)",
+                     ri, consumed, cur, drained);
+        }
+    }
+}
+
 /* === Dispatcher ============================================ */
 
 /* Internal: parse + run the handler. Caller decides what (if any)
@@ -1000,6 +1200,8 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                           "%u cmd(s), rp=%u->%u",
                           ch, cmd_idx, read_ptr, new_rp);
             }
+
+            lagfx_drain_display_child_rings(p, &last_stamp);
 
             lagfx_advance_stamp_cell(p, ch, last_stamp);
             if (saw_non_setup) {
