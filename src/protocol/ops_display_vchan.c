@@ -96,6 +96,7 @@ lagfx_handler_status_t lagfx_op_vchan_display_submit(
                            display_index, DISPLAY_SUBMIT_THRESHOLD);
                 p->display_defer_online_pending &= ~(1u << display_index);
                 p->pending_displays_bitmask |= (1u << display_index);
+                p->dev->display_ss_enabled |= (1u << display_index);
                 if (p->dev->desc.shell.raise_interrupt) {
                     p->dev->desc.shell.raise_interrupt(
                         p->dev->desc.shell.opaque, 0u);

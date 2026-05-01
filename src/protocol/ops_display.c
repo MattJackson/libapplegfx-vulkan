@@ -611,6 +611,7 @@ bool lagfx_display_tick_vblank(
                                       "signaling online now",
                                       i, DISPLAY_SUBMIT_THRESHOLD);
                             p->pending_displays_bitmask |= (1u << i);
+                            dev->display_ss_enabled |= (1u << i);
                         } else {
                             /* Wait for more display_submit. */
                             p->display_defer_online_pending |= (1u << i);
@@ -623,7 +624,6 @@ bool lagfx_display_tick_vblank(
                         }
                     }
                 }
-                dev->display_ss_enabled |= (1u << i);
             }
         }
     }
