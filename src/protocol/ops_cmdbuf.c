@@ -5,21 +5,31 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Phase 1.A.2 real handlers for the command-buffer submission path:
+ * Handles command-buffer submission opcodes:
+ *   - CmdExecIndirect2 (0x20): walks per-resource cmdBuf segments
+ *     containing inner render/blit/compute opcodes.
+ *   - CmdSynchronizeResources (0x22): marks resources synced.
  *
- *   CmdSynchronizeResources (0x22) P0 — implemented. Per
- *     re-followup-spec-gaps.md §4 (HIGH, 90%): payload is
- *     {u32 taskID, u32 count, u32 resource_ids[count]}, total 8+4N
- *     bytes. count=0 is the completion path for `[cmdbuf commit]` on
- *     an empty cmdbuf (plan §6.2).
+ * RE context (paravirt-re/classes/):
+ *   - M4-inner-opcode-implementation-guide.md: 0x20 outer payload
+ *     {task_id, descriptor_count, resource_count, ...}
+ *   - Each resource table entry points at a cmdBuf with
+ *     PGSerializerCommandSegmentHeader + inner PGCmdHeader streams.
+ *   - Inner opcodes dispatched to render/blit/compute decoders.
  *
- *   CmdExecIndirect2 (0x20) P1 — scaffolded. Per
- *     re-followup-spec-gaps.md R2 and phase-1a2-decoder-plan.md §6.2,
- *     empty-list case (count=0) is the alternate completion path for
- *     `[cmdbuf commit]` on an empty cmdbuf; count>0 path is scaffolded
- *     by walking the list and marking implicated child-FIFOs synced
- *     (mirroring CmdSynchronizeResources count>0 behaviour). Real
- *     indirect-exec dispatch is Phase 3.
+ * Stage 30%+ implementation status:
+ *   - InfoDecoder stubs (0x1c2..0x1d0): reply with sane defaults
+ *     so Metal clients (SkyLight) don't read zeros and abort.
+ *   - Render decoder (0x20 inner): PGDeserializerRenderDecoder
+ *     exists but all handlers return unimplemented.
+ *   - Blit/compute decoders: scaffolded, observation-only.
+ *
+ * Priority for stage 30%+:
+ *   1. Render opcodes (0x20 inner, encoder_type=2):
+ *      PGDeserializerRenderDecoder handlers — needed for actual drawing.
+ *   2. Blit opcodes (encoder_type=0): buffer copies, texture blits.
+ *   3. Compute opcodes (encoder_type=1): compute pipeline dispatch.
+ *   4. InfoDecoder replies: mostly done (stubs return defaults).
  */
 
 #include "blit_decoder.h"
@@ -217,32 +227,41 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
 /* ===========================================================================
  * CmdExecIndirect2 (0x20 / kext-side 0x37) — M4 segment walker.
  *
- * Outer payload layout (CONFIRMED from kext-side 0x37 ch=1 capture
- * 2026-04-26; see body comment below for details):
+ * RE confirmed (M4-inner-opcode-implementation-guide.md §1.1):
+ *   Kext emits 0x37 on per-channel rings (ch 1..4).
+ *   Dylib emits 0x20 on RootChannel.
+ *   Both carry the same outer payload format.
  *
+ * Outer payload (CONFIRMED from kext-side 0x37 ch=1 capture):
  *     payload[0..3]   u32 task_id
- *     payload[4..7]   u32 invalidate_count          (16B records)
+ *     payload[4..7]   u32 descriptor_count   (24 B records, NOT 16 B)
  *     payload[8..11]  u32 resource_count
- *     payload[12..]   invalidate_record[]           (16B each)
- *     ...             16B reserved/middle block
- *     ...             resource_table[]              (16B each:
- *                                                    {u64 host_gpu_addr,
- *                                                     u32 length, u32 _pad})
+ *     payload[12..]   descriptor[descriptor_count]  (24 B each:
+ *                      {u32 id, u32 flags, u64 reserved})
+ *     ...             resource_table[]  (16 B each:
+ *                      {u64 host_gpu_addr, u32 length, u32 _pad})
  *
  * Each resource_table entry's host_gpu_addr is a TASK-VIRTUAL address
- * (translated through the per-task PFN-array from CmdDefineHostTask 0x38)
- * pointing at a per-resource cmdBuf containing
- * PGSerializerCommandSegmentHeader records + nested PGCmdHeader streams.
+ * (translated through the per-task PFN-array from CmdDefineHostTask 0x38).
+ * It points at a per-resource cmdBuf containing:
+ *   - PGSerializerCommandSegmentHeader (8 B: size, encType, flags)
+ *   - Nested PGCmdHeader streams (8 B: opcode, totalLength)
  *
- * The handler walks each cmdBuf, decodes segment + inner-cmd headers,
- * and currently only emits a 12B PGReplyRenderPipelineStateInfo for
- * InfoDecoder opcode 0x1cc (decodeRenderPipelineStateInfo) so the dylib
- * can finish MetalShader::CopyPipelineState. All other inner opcodes
- * are observation-only (logged for RE follow-up).
+ * Inner opcode families by encoder_type:
+ *   - encType=0 (blit):  lagfx_blit_decoder_dispatch()
+ *   - encType=1 (compute): lagfx_compute_decoder_dispatch()
+ *   - encType=2 (render):  lagfx_render_decoder_dispatch()
+ *   - encType=4 (info):   InfoDecoder stubs (0x1c2..0x1d0)
  *
- * Empty-list / short-payload cases fall through to the metal-no-op
- * empty-cmdbuf completion path. The outer stamp is signalled
- * unconditionally by the dispatcher.
+ * Stage 30%+ work:
+ *   - Render opcodes (encType=2): PGDeserializerRenderDecoder
+ *     handlers are stubs — need real implementations for drawing.
+ *   - Blit opcodes (encType=0): buffer copies, texture blits.
+ *   - Compute opcodes (encType=1): compute pipeline dispatch.
+ *   - InfoDecoder (encType=4): mostly done (stubs return defaults).
+ *
+ * Empty-list case falls through to metal-no-op completion path.
+ * The outer stamp is signalled by the dispatcher.
  * =========================================================================== */
 
 lagfx_handler_status_t lagfx_op_exec_indirect2(
@@ -859,6 +878,15 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                         }
                     }
                 } else if (encoder_type == 2u) {
+                    /* Render encoder (encType=2): Metal drawing commands.
+                     * PGDeserializerRenderDecoder handlers are ALL STUBS
+                     * (stage 30%+ gap). Without real implementations,
+                     * the guest renders nothing — login screen shows
+                     * but no window content draws.
+                     *
+                     * 0x1a = beginRender (triggers render_encoder_try_begin)
+                     * All other render opcodes need real handlers.
+                     */
                     const uint8_t *ipl = cmdbuf + ioff + 8u;
                     int rc = lagfx_render_decoder_dispatch(p, inner_opcode,
                                                           ipl, ipl_len);
@@ -873,6 +901,10 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                         lagfx_render_encoder_try_begin(p);
                     }
                 } else if (encoder_type == 0u) {
+                    /* Blit encoder (encType=0): buffer copies,
+                     * texture blits. PGDeserializerBlitDecoder is
+                     * scaffolded — observation-only for now.
+                     */
                     const uint8_t *bpl = cmdbuf + ioff + 8u;
                     int rc = lagfx_blit_decoder_dispatch(p, inner_opcode,
                                                          bpl, ipl_len);
@@ -882,10 +914,14 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                   inner_idx, inner_opcode, rc);
                     }
                 } else if (encoder_type == 1u) {
+                    /* Compute encoder (encType=1): compute pipeline
+                     * dispatch. PGDeserializerComputeDecoder is
+                     * scaffolded — observation-only for now.
+                     */
                     {
                         const uint8_t *cpl = cmdbuf + ioff + 8u;
                         int rc = lagfx_compute_decoder_dispatch(p, inner_opcode,
-                                                                cpl, ipl_len);
+                                                                 cpl, ipl_len);
                         if (rc != 0) {
                             LAGFX_TRACE("      inner[%u]: compute dispatch "
                                       "op=0x%04x returned %d (continuing)",

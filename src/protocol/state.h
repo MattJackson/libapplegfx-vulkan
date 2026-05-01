@@ -272,12 +272,16 @@ struct lagfx_protocol {
      * when the online event is finally triggered. */
     uint32_t display_defer_online_pending;
 
-    /* Display submit seen bitmask. Bit i set when display_submit (0x02)
-     * is received before ss[0x104]==0xC was detected. This handles
-     * the race where display_submit comes before tick_vblank detects
-     * the enable. When tick_vblank later detects ss[0x104]==0xC and
-     * sees this bit set, it triggers the online event immediately. */
-    uint32_t display_submit_seen;
+    /* Display submit counter per display (bits 0-7: count for display 0,
+     * bits 8-15: count for display 1, etc.). Incremented each time
+     * display_submit (0x02) is received. The online event only fires
+     * once the count reaches a threshold (DISPLAY_SUBMIT_THRESHOLD),
+     * ensuring WindowServer has fully initialized and released the
+     * FB workloop gate, avoiding the ABBA deadlock between
+     * process_online and doSetDisplayMode. */
+    uint32_t display_submit_count;
+
+#define DISPLAY_SUBMIT_THRESHOLD 5u
 };
 
 /* Internal helper — index into reg[] by MMIO offset. Returns -1 if

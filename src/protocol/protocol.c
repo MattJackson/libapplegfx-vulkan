@@ -95,16 +95,27 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
 
 /* === Completion path ========================================
  *
- * Every command unconditionally signals its stamp when done. Per
- * A4d (2026-04-24): the kext's unified ISR on MSI-X vec 0 reads
- * BAR0+0x1018 as a stamp-completion bitmask and feeds it to
- * AppleParavirtEventMachine::signalStamps. Per-completion work:
- *   1. monotonically advance *stampBases[slot] in DMA-visible memory
- *      (see library/howto/how-to-host-stamp-completion.md),
- *   2. OR bit `slot` into pending_stamps_bitmask shadow,
- *   3. raise MSI vec 0.
- * The ISR loops set bits, calls commandWakeup(slot) per stamp, which
- * reads the cell via stampBases[slot] = u32 @ FIFO+slot*4. */
+ * Every command unconditionally signals its stamp when done.
+ *
+ * RE (waitForStamp-mechanism-summary.md):
+ *   - waitForStamp(slot, target) parks thread until
+ *     *stampBases[slot] >= target (bounded ~5 s total).
+ *   - stampBases[slot] lives in DMA-visible memory at
+ *     (ring_base_pfn << 12) + slot*4.
+ *   - Kext ISR reads BAR0+0x1018 (stamp bitmask), feeds to
+ *     signalStamps() which calls commandWakeup(slot) per bit.
+ *
+ * Per-completion work (A4d, 2026-04-24):
+ *   1. Monotonically advance *stampBases[slot] via
+ *      lagfx_advance_stamp_cell() — never regresses (floor=1).
+ *   2. OR bit `slot` into pending_stamps_bitmask.
+ *   3. Raise MSI vec 0 (unified ISR on vec 0).
+ *
+ * Slot mapping:
+ *     0 = RootChannel, 1..4 = compute vchans,
+ *     5..12 = display pipes (display_index + 5).
+ *     See waitForStamp-mechanism-summary.md for full table.
+ */
 
 /* Monotonic stamp-cell advance — never regresses. Reads current cell,
  * writes max(target, cur+1), with a 1 floor (never 0). All callers
@@ -181,15 +192,25 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
 
 /* === Display sub-channel ring drain =========================
  *
- * After draining the parent display vchan ring, poll registered
- * display child FIFO rings for pending commands. Each child ring
- * has a baseNode at ring_base_gpa with produced/consumed indices
- * (command counts). Commands start at ring_base_gpa + 0x40 in
- * fixed-size entry slots.
+ * Display vchan (ch 5..12) acts as a parent ring. After draining
+ * it, we poll any registered child FIFO rings for pending work.
  *
- * For now: polling implementation — checked every time the parent
- * vchan doorbell fires. Logs all opcodes found for diagnostic
- * purposes. */
+ * RE (PGFIFO-sub-channel-opcode-table.md, CmdDefineChildFIFO-*.md):
+ *   - Child rings use FULL PGFIFO dispatch (opcodes 0x00..0x44),
+ *     NOT the display vchan's compact namespace {0x01,0x02,0x04,0x06,0x07}.
+ *   - baseNode is 24 bytes at ring start (offset 0x00).
+ *     Commands start at ring_base_gpa + 0x40.
+ *   - produced/consumed indices (u32 at baseNode+0/+4) are
+ *     command counts, NOT byte offsets.
+ *
+ * WindowServer creates 5 sub-channels per display (Display0)
+ * via opcode 0x04 (44-byte descriptor). These carry the actual
+ * rendering commands (0x20 ExecIndirect2, 0x22 SynchronizeResources,
+ * 0x12 DisplaySwapMapping, etc.).
+ *
+ * Implemented in commit b7f36bb. Uses lagfx_dispatch_inner()
+ * for full PGFIFO dispatch per command.
+ */
 
 static void lagfx_drain_display_child_rings(lagfx_protocol_t *p,
                                              uint32_t *io_last_stamp) {
@@ -1152,24 +1173,53 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                               "opcode=0x%02x stamp=0x%08x len=%u",
                               ch, cmd_idx, opcode, stamp, cmd_len);
 
+                    /* Display vchan compact opcode namespace:
+                     *   {0x01, 0x02, 0x04, 0x06, 0x07}
+                     * (NOT the full PGFIFO 0x00..0x44 table).
+                     *
+                     * RE (PGFIFO-sub-channel-opcode-table.md):
+                     *   0x01 = setupSharedState (display init)
+                     *   0x02 = display_submit (triggers framebuffer work)
+                     *   0x04 = define_child_fifo (44-byte descriptor)
+                     *   0x06 = present-only (12 B, surface_id@+4)
+                     *   0x07 = present+gamma (36 B, plane_id@+4)
+                     *
+                     * Note: 0x13/0x14 (cursor) handlers exist in
+                     * ops_display.c but are NOT wired here yet
+                     * (see display-pipe-enable-online-sequence.md §Q6).
+                     */
                     switch (opcode) {
                         case 0x01u:
+                            /* setupSharedState: writes ss[0x12]=fPort,
+                             * then stamp ACK (see DisplayPipe-setupSharedState-summary.md) */
                             lagfx_op_vchan_setup_shared_state(
                                 p, &parsed);
                             break;
                         case 0x04u:
+                            /* define_child_fifo: 44-byte descriptor.
+                             * Registers sub-channel ring for PGFIFO dispatch.
+                             * See CmdDefineChildFIFO-display-vchan-analysis.md */
                             lagfx_op_display_define_child_fifo(p, &parsed);
                             break;
                         case 0x02u:
+                            /* display_submit: triggers framebuffer work.
+                             * When seen, we can fire deferred online
+                             * events (see display_tick_vblank above). */
                             saw_non_setup = true;
                             lagfx_op_vchan_display_submit(
                                 p, &parsed);
                             break;
                         case 0x06u:
+                            /* present-only: {display_idx, surface_id, plane_id}
+                             * Field order: surface_id@+4, plane_id@+8
+                             * (swapped vs 0x07). See DisplayPipe-submitTransaction-opcodes.md */
                             saw_non_setup = true;
                             lagfx_op_vchan_present(p, &parsed);
                             break;
                         case 0x07u:
+                            /* present+gamma: {display_idx, plane_id, surface_id, ...}
+                             * Field order: plane_id@+4, surface_id@+8
+                             * (swapped vs 0x06). gamma_phys@+12. */
                             saw_non_setup = true;
                             lagfx_op_vchan_present_gamma(p, &parsed);
                             break;

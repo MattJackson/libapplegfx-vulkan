@@ -5,49 +5,36 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Real handlers for the display-pipe opcodes needed by M6 (login
- * screen render). Originally landed as Phase 2.A scaffolds; this
- * revision closes the M6-library gaps called out in
- * mos/paravirt-re/re-followup-spec-gaps.md §14:
+ * Display-pipe opcodes for the Apple Paravirt GPU protocol.
+ * These are sent on the per-display VirtualChannel rings (ch 5..12)
+ * using the compact opcode namespace {0x01, 0x02, 0x04, 0x06, 0x07}.
  *
- *   0x10 CmdDisplayAck            unchanged.
- *   0x12 CmdDisplaySwapMapping    decoder now accepts both the
- *                                 §14.3.2 32-byte wire form
- *                                 {displayID, bufferVA, stride, width,
- *                                  height, pixel_format, flags} and
- *                                 the Phase 2.A 40-byte fixture form.
- *                                 Shape chosen by payload_size.
- *   0x13 CmdDisplayCursorShow     NEW. §14.4 payload decode.
- *   0x14 CmdDisplayCursorGlyph    NEW. §14.4 payload decode; pixels
- *                                 captured via shell.read_memory.
- *   0x16 CmdDisplayTransaction3   decoder now accepts both the
- *                                 §14.3.3 variable-length layer list
- *                                 (16-byte header + 0x2c-per-layer)
- *                                 and the Phase 2.A legacy attachment
- *                                 fixture form (12-byte header +
- *                                 0x20-per-attachment). Shape chosen
- *                                 by payload_size.
- *   0x17 CmdDisplaySetSharedStatePage NEW. §14.6 — mailbox page for
- *                                 vblank counter + frame sequence.
- *                                 First tick DMAs 1 to u32@+0 so
- *                                 WindowServer never polls a zero
- *                                 counter after attach.
+ * RE context (paravirt-re/classes/):
+ *   - DisplayPipe-setupSharedState-summary.md: opcode 0x01 flow
+ *   - display-pipe-enable-online-sequence.md: 0x02 + online state machine
+ *   - CmdDefineChildFIFO-display-vchan-analysis.md: 0x04 44-byte descriptor
+ *   - DisplayPipe-submitTransaction-opcodes.md: 0x06/0x07 present path
+ *   - paravirt-re/classes/display-pipe-enable-online-sequence.md §Q6:
+ *     Cursor opcodes 0x13/0x14 are decoded here but NOT yet wired
+ *     to the display vchan dispatch switch in protocol.c:1155.
+ *     Without them, cursor glyph uploads are logged+acked but the
+ *     actual cursor image never reaches the scanout buffer.
+ *
+ * Display init sequence (from RE):
+ *   setupSharedState (0x01) → enable() → host online event →
+ *   process_online → connectionChange → ACTIVE →
+ *   frame delivery via 0x06/0x07 + sub-channel FIFOs via 0x04
  *
  * Dispatcher wiring note: the opcode descriptor table in opcodes.c
- * pins min_payload for 0x12 at 40 bytes (Phase 2.A fixture form) and
+ * pins min_payload for 0x12 at 40 bytes (Phase 2.A fixture form).
  * 0x13/0x14/0x17 remain as log+ack stubs (handler=NULL) at the
- * dispatcher layer. The §14 handlers below are exposed via
- * ops_display.h so the M6 wire-up (re-followup-spec-gaps.md §14.7
- * punch list) can switch the table to them without re-writing the
- * decoder. Tests drive the new handlers directly through the exposed
- * symbols rather than via the dispatcher — see
- * tests/protocol-dispatch.c.
+ * dispatcher layer. The handlers below are exposed via ops_display.h
+ * so the M6 wire-up can switch the table without rewriting.
+ * Tests drive handlers directly — see tests/protocol-dispatch.c.
  *
- * Payload-layout confidence: MEDIUM across all §14 opcodes (see
- * source comments per opcode). Runtime capture on a booted VM
- * remains the gating evidence. Handlers fail-open on size mismatch;
- * the dispatcher still signals the stamp so the guest never hangs on
- * a bad decode (re-followup-spec-gaps.md §6).
+ * Payload-layout confidence: MEDIUM (see per-opcode comments).
+ * Handlers fail-open on size mismatch; stamp still signaled so the
+ * guest never hangs on a bad decode (re-followup-spec-gaps.md §6).
  */
 
 #include "opcodes.h"
@@ -102,7 +89,15 @@ static inline void lagfx_put_le32(uint8_t *b, uint32_t v) {
 }
 
 /* ================================================================
- * CmdDisplayAck (0x10) — unchanged
+ * CmdDisplayAck (0x10) — present completion signal
+ *
+ * Guest sends this after a frame present (opcode 0x06/0x07) completes.
+ * The kext's IOAccelEventFence waits for the stamp signal via
+ * the waitForStamp mechanism (paravirt-re/classes/waitForStamp-mechanism-summary.md).
+ * Without acking this stamp, the present loop deadlocks.
+ *
+ * display_acks_received is diagnostic only; real matching uses
+ * the transaction_pending flag + pending_transaction_id.
  * ================================================================ */
 
 lagfx_handler_status_t lagfx_op_display_ack(lagfx_protocol_t *p,
@@ -149,30 +144,22 @@ lagfx_handler_status_t lagfx_op_display_ack(lagfx_protocol_t *p,
 }
 
 /* ================================================================
- * CmdDisplaySwapMapping (0x12)
+ * CmdDisplaySwapMapping (0x12) — scanout buffer install
  *
- * §14.3.2 wire form (32 B total) — predicted real emission:
- *   +0x00  u32 displayID
- *   +0x04  u64 bufferVA
- *   +0x0c  u32 stride
- *   +0x10  u32 width
- *   +0x14  u32 height
- *   +0x18  u32 pixel_format   (MTLPixelFormat; 80 = BGRA8Unorm)
- *   +0x1c  u32 flags          (double-buffered? sRGB?)
+ * Sent by WindowServer during IOFBSetDisplayModeAndDepth to bind
+ * an IOSurface's GPU VA as the active scanout buffer.
+ * DisplayPipe::submitTransaction() emits this on the display vchan.
  *
- * Phase 2.A fixture form (40 B total) — retained for back-compat
- *   +0x00  u32 displayID
- *   +0x04  u32 mappingID
- *   +0x08  u64 bufferVA
- *   +0x10  u64 length
- *   +0x18  u32 width
- *   +0x1c  u32 height
- *   +0x20  u32 stride
- *   +0x24  u32 format
+ * RE confirmed (DisplayPipe-submitTransaction-opcodes.md):
+ *   Wire form (32 B): {displayID, bufferVA, stride, w, h, fmt, flags}
+ *   Fixture form (40 B): adds mappingID + explicit length
  *
- * The handler picks a shape by payload_size. Both decode into the
- * same lagfx_display_entry_t fields. `length` is derived as
- * stride*height when the wire doesn't carry it.
+ * The host must capture bufferVA+length and use them for subsequent
+ * present calls (opcode 0x06/0x07). Without this handler,
+ * the framebuffer has no backing store → black screen.
+ *
+ * Shape discrimination by payload_size: ≥40 = fixture, else wire.
+ * Both decode into lagfx_display_entry_t.
  * ================================================================ */
 
 #define LAGFX_DISPLAY_SWAP_V2_BYTES 32u
@@ -266,37 +253,25 @@ lagfx_handler_status_t lagfx_op_display_swap_mapping(
 }
 
 /* ================================================================
- * CmdDisplayTransaction3 (0x16)
+ * CmdDisplayTransaction3 (0x16) — present/commit trigger
  *
- * §14.3.3 layer-list wire form (16 B header + 0x2c B per layer):
- *   +0x00  u32 transactionID
- *   +0x04  u32 displayID
- *   +0x08  u32 layerCount
- *   +0x0c  u32 flags
- *   +0x10  LayerDescriptor[layerCount]
- *     +0x00  u32 surface_or_bufferVA
- *     +0x04  u32 src_x, src_y, src_w, src_h
- *     +0x14  u32 dst_x, dst_y, dst_w, dst_h
- *     +0x24  u32 pixel_format / blend_mode
- *     +0x28  u32 z_order
- *      0x2c total per layer
+ * Sent by WindowServer to commit a frame's layer list or attachment
+ * list to the display pipe. This is the primary frame-present
+ * path: after IOSurface swaps are mapped (0x12), the transaction
+ * lists which surfaces go to which screen planes.
  *
- * Phase 2.A fixture form (12 B header + 0x20 B per attachment):
- *   +0x00  u32 displayID
- *   +0x04  u32 transactionID
- *   +0x08  u32 attachmentCount
- *   +0x0c  Attachment[attachmentCount]
- *     +0x00  u32 attachmentIndex
- *     +0x04  u32 loadAction (0=dontcare,1=load,2=clear)
- *     +0x08  u32 storeAction
- *     +0x0c  u32 flags
- *     +0x10  f32 clearR,clearG,clearB,clearA
- *      0x20 total per attachment
+ * RE confirmed (DisplayPipe-submitTransaction-opcodes.md):
+ *   Layer-list form (§14.3.3): 16 B header + 0x2c B/layer
+ *     Used by modern WindowServer for multi-plane compositing.
+ *   Legacy form (Phase 2.A): 12 B header + 0x20 B/attachment
+ *     Clear-color attachment form used by older paths.
  *
- * Shape discrimination: match payload_size against both formats
- * exactly (header + n*entry). If only one matches, take it. Ambiguous
- * sizes (e.g. count=0 payload of 12 bytes vs layer-header-only at
- * 16 bytes) differ by header bytes so they never collide.
+ * Shape discrimination by payload_size: the two forms have
+ * different header sizes (16 vs 12) so they never collide.
+ * count=0 is valid for both (empty transaction / no-op present).
+ *
+ * The transaction_pending flag gates the subsequent CmdDisplayAck (0x10)
+ * which fires when the guest-side framebuffer work completes.
  * ================================================================ */
 
 #define LAGFX_DISPLAY_TX_HEADER_LEGACY   12u
@@ -508,21 +483,26 @@ lagfx_handler_status_t lagfx_op_display_transaction3(
 }
 
 /* ================================================================
- * §14.4 / §14.6 — Cursor + shared-state page handlers (M6 gap closure)
+ * Cursor + shared-state handlers (M6 gap closure)
  *
- * Dispatcher wiring note (repeated): opcodes.c currently has
- * handler=NULL for 0x13 / 0x14 / 0x17, so the default log+ack path
- * runs when they land via the ring. The real decoders below are
- * exposed via ops_display.h and exercised by tests directly; the
- * opcode-table promotion is a follow-up punch-list item
- * (re-followup-spec-gaps.md §14.7).
+ * RE note (paravirt-re/classes/display-pipe-enable-online-sequence.md §Q6):
+ *   0x13/0x14 are decoded here but NOT yet wired to the
+ *   display vchan dispatch switch in protocol.c:1155.
+ *   Without wiring, cursor glyph uploads are logged+acked but
+ *   the actual cursor pixels never reach the scanout buffer.
+ *   The cursor shows as a blank rectangle on the login screen.
  *
- * Storage: handler-captured state (last cursor show, last cursor
- * glyph, shared-state page) lives in file-scope static. Phase 2
- * single-device assumption matches the rest of the protocol layer;
- * extending state.h would violate the write-set for this gap-
- * closure drop (state.h lives under src/protocol/ and is touched
- * by other agents for different concerns).
+ * 0x17 (CmdDisplaySetSharedStatePage) is also not in the
+ * display vchan switch. The vblank counter page is required
+ * for WindowServer's vsync polling — without it, frame
+ * delivery timing may degrade.
+ *
+ * Wiring these to protocol.c:1155 is the next step after
+ * confirming the RE-decoded payload layouts are correct
+ * on a live booted VM.
+ *
+ * Storage: handler-captured state in file-scope static.
+ * Phase 2 single-device assumption.
  * ================================================================ */
 
 static lagfx_cursor_show_state_t       g_cursor_show        = {0};
@@ -600,15 +580,26 @@ bool lagfx_display_tick_vblank(
             }
             if (enabled_mask == 0xCu) {
                 if (!(dev->display_ss_enabled & (1u << i))) {
-                    /* Handle deferred online event.
-                     * If display_submit (0x02) was already seen for
-                     * this display (race: submit arrived before
-                     * vblank tick detected ss[+0x104]==0xC), fire
-                     * the online event immediately. Otherwise, set
-                     * the pending flag and wait for display_submit. */
+                    /* Deferred online event: ss[0x104]==0xC detected.
+                     *
+                     * RE (display-pipe-enable-online-sequence.md):
+                     *   ss[0x104]=0xC means enable() ran (pipe enabled).
+                     *   ss[0x100] & ss[0x104] gate in signalDisplay():
+                     *     events = ss[0x100] & ss[0x104]
+                     *   If host writes ss[0x100]|=0x4 before enable(),
+                     *   the AND-gate yields 0 (ss[0x104]=0) → event LOST.
+                     *
+                     * This deferred path waits until we've seen enough
+                     * display_submit (0x02) commands (threshold) before
+                     * firing the online event, ensuring WindowServer has
+                     * finished init and released the FB workloop gate
+                     * (avoids ABBA deadlock). */
                     if (p) {
-                        if (p->display_submit_seen & (1u << i)) {
-                            /* Already saw display_submit, fire now. */
+                        uint32_t submit_count =
+                            (p->display_submit_count >> (i * 8)) & 0xffu;
+                        if (submit_count >= DISPLAY_SUBMIT_THRESHOLD) {
+                            /* Enough display_submit commands seen,
+                             * fire now. */
                             uint32_t pending = 0x5u;
                             if (write_memory(shell_opaque,
                                             ss_gpa + 0x100u,
@@ -616,15 +607,19 @@ bool lagfx_display_tick_vblank(
                                 kicked++;
                             }
                             LAGFX_LOG("display_tick_vblank: display[%u] "
-                                      "ss[+0x104]==0xC + submit already "
-                                      "seen, signaling online now", i);
+                                      "ss[+0x104]==0xC + %u submits, "
+                                      "signaling online now",
+                                      i, DISPLAY_SUBMIT_THRESHOLD);
                             p->pending_displays_bitmask |= (1u << i);
                         } else {
-                            /* Wait for display_submit. */
+                            /* Wait for more display_submit. */
                             p->display_defer_online_pending |= (1u << i);
                             LAGFX_LOG("display_tick_vblank: display[%u] "
                                       "ss[+0x104]==0xC seen, deferring "
-                                      "online event until display_submit", i);
+                                      "online event until %u submits "
+                                      "(have %u)",
+                                      i, DISPLAY_SUBMIT_THRESHOLD,
+                                      submit_count);
                         }
                     }
                 }

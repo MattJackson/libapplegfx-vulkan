@@ -65,36 +65,43 @@ lagfx_handler_status_t lagfx_op_vchan_display_submit(
               "stamp=0x%08x",
               display_index, arg2, hdr->stamp);
 
-    /* Trigger deferred online event if pending for this display.
-     * The online event (writing ss[+0x100]) is deferred until
-     * display_submit arrives, ensuring WindowServer has finished
-     * IOFramebufferOpen before process_online fires. */
-    if (p->dev && display_index < 16u
-        && (p->display_defer_online_pending & (1u << display_index))) {
-        uint64_t ss_gpa = p->dev->display_ss_gpa[display_index];
-        if (ss_gpa != 0u && p->dev->desc.shell.write_memory) {
-            uint32_t pending = 0x5u;
-            p->dev->desc.shell.write_memory(
-                p->dev->desc.shell.opaque, ss_gpa + 0x100u,
-                sizeof(pending), &pending);
-            LAGFX_LOG("vchan_display_submit: display[%u] "
-                      "triggering deferred online event "
-                      "(ss[+0x100] := 0x5)", display_index);
-            p->display_defer_online_pending &= ~(1u << display_index);
-            p->pending_displays_bitmask |= (1u << display_index);
-            if (p->dev->desc.shell.raise_interrupt) {
-                p->dev->desc.shell.raise_interrupt(
-                    p->dev->desc.shell.opaque, 0u);
+    /* Track display_submit commands per display. The online event
+     * only fires once we've seen DISPLAY_SUBMIT_THRESHOLD submits,
+     * ensuring WindowServer has fully initialized and released the
+     * FB workloop gate (avoids ABBA deadlock). */
+    if (display_index < 4u) {
+        uint32_t shift = display_index * 8u;
+        uint32_t count = (p->display_submit_count >> shift) & 0xffu;
+        if (count < 0xffu) {
+            count++;
+            p->display_submit_count =
+                (p->display_submit_count & ~(0xffu << shift))
+                | (count << shift);
+        }
+
+        /* Trigger deferred online event if pending for this display
+         * and we've reached the threshold. */
+        if (count >= DISPLAY_SUBMIT_THRESHOLD
+            && (p->display_defer_online_pending & (1u << display_index))) {
+            uint64_t ss_gpa = p->dev->display_ss_gpa[display_index];
+            if (p->dev && ss_gpa != 0u
+                && p->dev->desc.shell.write_memory) {
+                uint32_t pending = 0x5u;
+                p->dev->desc.shell.write_memory(
+                    p->dev->desc.shell.opaque, ss_gpa + 0x100u,
+                    sizeof(pending), &pending);
+                LAGFX_LOG("vchan_display_submit: display[%u] "
+                          "triggering deferred online event after "
+                          "%u submits (ss[+0x100] := 0x5)",
+                          display_index, DISPLAY_SUBMIT_THRESHOLD);
+                p->display_defer_online_pending &= ~(1u << display_index);
+                p->pending_displays_bitmask |= (1u << display_index);
+                if (p->dev->desc.shell.raise_interrupt) {
+                    p->dev->desc.shell.raise_interrupt(
+                        p->dev->desc.shell.opaque, 0u);
+                }
             }
         }
-    }
-
-    /* Mark that we've seen display_submit for this display.
-     * If ss[0x104]==0xC hasn't been detected yet (race:
-     * display_submit arrives before vblank tick sees enable),
-     * the vblank tick will check this bit and fire immediately. */
-    if (display_index < 16u) {
-        p->display_submit_seen |= (1u << display_index);
     }
 
     /* Try to read a few bytes from the framebuffer to check if
