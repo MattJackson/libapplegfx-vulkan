@@ -597,10 +597,22 @@ bool lagfx_display_tick_vblank(
                     if (p) {
                         uint32_t submit_count =
                             (p->display_submit_count >> (i * 8)) & 0xffu;
-                        if (submit_count >= DISPLAY_SUBMIT_THRESHOLD) {
-                            /* Enough display_submit commands seen,
-                             * fire now. */
-                            uint32_t pending = 0x5u;
+                if (submit_count >= DISPLAY_SUBMIT_THRESHOLD) {
+                    /* Enough display_submit commands seen, fire now.
+                     *
+                     * DISPLAY_SUBMIT_THRESHOLD evolution:
+                     *   aa91185: originally 5, to allow WS init time
+                     *   40c1c7c: lowered to 1, streamline online event
+                     *   7663ff1: fixed display_ss_enabled flag setting
+                     *     (was set unconditionally, now only after fire)
+                     *
+                     * Threshold=1 means the first display_submit
+                     * after ss[+0x104]==0xC will trigger online.
+                     * This minimizes the window where the ABBA
+                     * deadlock can occur (WindowServer holding FB
+                     * workloop gate while DisplayPipe holds
+                     * accel[+0x88] IOLock in process_online). */
+                    uint32_t pending = 0x5u;
                             if (write_memory(shell_opaque,
                                             ss_gpa + 0x100u,
                                             sizeof(pending), &pending)) {

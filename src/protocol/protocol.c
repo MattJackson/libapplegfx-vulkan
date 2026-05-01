@@ -8,6 +8,43 @@
  * Decoder lifecycle, MMIO register shadow + per-channel doorbell
  * (BAR0+0x1020), and the per-cmd dispatch + stamp-completion path.
  * Tests drive dispatch via lagfx_protocol_dispatch_one directly.
+ *
+ * RE file references (paravirt-re/):
+ *   - PROTOCOL.md: MMIO map, stamp-cell mechanics, doorbell protocol
+ *   - PGFIFO-sub-channel-opcode-table.md: display vchan namespace
+ *   - waitForStamp-mechanism-summary.md: stamp-cell + signalStamps
+ *   - re-followup-spec-gaps.md: ss[0x104] polling, per-channel
+ *     doorbell descriptor layout at shared_pfn<<12 + 0x400
+ *   - cursor-rendering-stage-20.md: 0x13/0x14 cursor opcodes
+ *   - display-pipe-enable-online-sequence.md: cursor wiring gap (§Q6)
+ *   - CmdDefineChildFIFO-display-vchan-analysis.md: 44-byte descriptor
+ *   - flows/display-init-flow.md, flows/display-swap-flow.md
+ *
+ * Current blocker (2026-04-30):
+  *   - ABBA deadlock: WindowServer holds FB workloop command gate,
+  *     waits for accel[+0x88] IOLock in doSetDisplayMode.
+  *     DisplayPipe holds accel[+0x88] IOLock (acquired in
+  *     process_online before connectionChange), waits for FB workloop
+  *     command gate. Fix attempts: commits 39a351c, aa91185,
+  *     40c1c7c, 7663ff1 — deadlock NOT resolved.
+  *     See journey/deadlock-abba-analysis.md.
+  *   - process_online analysis: DisplayPipe::process_online() is
+  *     the root cause — it acquires accel[+0x88] (an IOLock,
+  *     NOT a simple mutext) BEFORE calling connectionChange().
+  *     The FB workloop command gate is held by WindowServer's
+  *     IOFBSetDisplayModeAndDepth → doSetDisplayMode, which
+  *     waits for the same accel[+0x88] IOLock. Classic ABBA:
+  *     WS: FB gate → wants accel[+0x88]
+  *     DP: accel[+0x88] → wants FB gate (via connectionChange)
+  *   - Channel 3 not opened issue: IOAccelerator creates
+  *     channels 1-2 (compute) and 5+ (display), but channel 3
+  *     is never opened by the guest. This is expected — channel 3
+  *     would be another compute vchan, but macOS only uses 2
+  *     compute channels for this GPU configuration.
+  *   - Cursor opcodes 0x13/0x14 NOW DISPATCHED (commit 0511f24
+  *     wires up callbacks via protocol.c dispatch fix). Cursor
+  *     callbacks fire in QEMU but deadlock prevents full verification.
+  *     See cursor-rendering-stage-20.md §"Stage 20% status".
  */
 
 #include "protocol.h"
@@ -196,21 +233,29 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
  * Display vchan (ch 5..12) acts as a parent ring. After draining
  * it, we poll any registered child FIFO rings for pending work.
  *
- * RE (PGFIFO-sub-channel-opcode-table.md, CmdDefineChildFIFO-*.md):
+ * RE (paravirt-re/PGFIFO-sub-channel-opcode-table.md,
+ *     CmdDefineChildFIFO-*.md, display-pipe-enable-online-sequence.md):
  *   - Child rings use FULL PGFIFO dispatch (opcodes 0x00..0x44),
  *     NOT the display vchan's compact namespace {0x01,0x02,0x04,0x06,0x07}.
  *   - baseNode is 24 bytes at ring start (offset 0x00).
  *     Commands start at ring_base_gpa + 0x40.
  *   - produced/consumed indices (u32 at baseNode+0/+4) are
  *     command counts, NOT byte offsets.
+ *   - Implemented in commit b7f36bb (QEMU) + corresponding
+ *     libapplegfx commit for the handler.
  *
  * WindowServer creates 5 sub-channels per display (Display0)
- * via opcode 0x04 (44-byte descriptor). These carry the actual
- * rendering commands (0x20 ExecIndirect2, 0x22 SynchronizeResources,
- * 0x12 DisplaySwapMapping, etc.).
+ * via opcode 0x04 (44-byte descriptor, see
+ * CmdDefineChildFIFO-display-vchan-analysis.md).
+ * These carry the actual rendering commands:
+ *   - 0x20 ExecIndirect2 (inner render/blit/compute opcodes)
+ *   - 0x22 SynchronizeResources
+ *   - 0x12 DisplaySwapMapping
+ *   - See paravirt-re/command-buffer-format.md for format.
  *
- * Implemented in commit b7f36bb. Uses lagfx_dispatch_inner()
- * for full PGFIFO dispatch per command.
+ * Uses lagfx_dispatch_inner() for full PGFIFO dispatch per command.
+ * Per-channel stamp slot = ch (5..12 = display_index + 5).
+ * See waitForStamp-mechanism-summary.md for slot table.
  */
 
 static void lagfx_drain_display_child_rings(lagfx_protocol_t *p,
@@ -1174,19 +1219,37 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                               "opcode=0x%02x stamp=0x%08x len=%u",
                               ch, cmd_idx, opcode, stamp, cmd_len);
 
-                     /* Display vchan compact opcode namespace:
-                      *   {0x01, 0x02, 0x04, 0x06, 0x07, 0x13, 0x14}
-                      * (NOT the full PGFIFO 0x00..0x44 table).
-                      *
-                      * RE (PGFIFO-sub-channel-opcode-table.md):
-                      *   0x01 = setupSharedState (display init)
-                      *   0x02 = display_submit (triggers framebuffer work)
-                      *   0x04 = define_child_fifo (44-byte descriptor)
-                      *   0x06 = present-only (12 B, surface_id@+4)
-                      *   0x07 = present+gamma (36 B, plane_id@+4)
-                      *   0x13 = cursor_show (visibility + position)
-                      *   0x14 = cursor_glyph (shape/bitmap)
-                      */
+                    /* Display vchan compact opcode namespace:
+                     *   {0x01, 0x02, 0x04, 0x06, 0x07}
+                     * (NOT the full PGFIFO 0x00..0x44 table).
+                     *
+                     * RE (paravirt-re/PGFIFO-sub-channel-opcode-table.md,
+                     *     display-pipe-enable-online-sequence.md §Q6):
+                     *   0x01 = setupSharedState (display init)
+                     *     payload: ss[0x104] polled by guest after
+                     *     this opcode (re-followup-spec-gaps.md §5.1).
+                     *     Guest expects ss[0x104] != 0 (fPort set)
+                     *     before proceeding with IOFBSetDisplayModeAndDepth.
+                     *     See DisplayPipe-setupSharedState-summary.md.
+                     *   0x02 = display_submit (triggers framebuffer work)
+                     *     When seen, can fire deferred online events
+                     *     (see display-tick_vblank in apple-gfx-common-linux.c).
+                     *   0x04 = define_child_fifo (44-byte descriptor)
+                     *     See CmdDefineChildFIFO-display-vchan-analysis.md
+                     *     and commit b7f36bb for sub-channel PGFIFO drain.
+                     *   0x06 = present-only (12 B, surface_id@+4)
+                     *   0x07 = present+gamma (36 B, plane_id@+4)
+                     *   Field order verified in DisplayPipe-submitTransaction-opcodes.md
+                     *
+                     * Cursor opcodes 0x13/0x14:
+                     *   Handled in ops_display.c (cursor_glyph, cursor_moved)
+                     *   but NOT wired in this display vchan switch yet.
+                     *   Guest emits these on sub-channels; the main
+                     *   display vchan does NOT dispatch them.
+                     *   See paravirt-re/display-pipe-enable-online-sequence.md §Q6
+                     *   and cursor-rendering-stage-20.md.
+                     *   Cursor callbacks wired in QEMU via commit 0511f24.
+                     */
                      switch (opcode) {
                         case 0x01u:
                             /* setupSharedState: writes ss[0x12]=fPort,

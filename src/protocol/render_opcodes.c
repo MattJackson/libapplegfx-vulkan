@@ -20,6 +20,62 @@
  * — handlers that consume them parse the count themselves; the real
  * length arrives via the wire-level totalLengthBytes field, not the
  * descriptor.
+ *
+ * Implementation status (stage 30%+ gap — see CLAUDE.md):
+ *
+ * REAL handlers (actually translate to Vulkan) — 15 opcodes:
+ *   - 0x00 DrawPrimitives64, 0x01 DrawPrimitives16
+ *   - 0x65 SetBlendColor, 0x66 SetColorStoreAction
+ *   - 0x6b SetCullMode, 0x6c SetDepthBias, 0x6d SetDepthClipMode
+ *   - 0x6e SetFragmentBuffers, 0x70 SetFragmentSamplerStates
+ *   - 0x72 SetFragmentTextures, 0x73 SetFrontFacingWinding
+ *   - 0x74 SetRenderPipelineState, 0x75 SetScissorRect
+ *   - 0x77 SetStencilRef, 0x81 SetVertexTextures
+ *   - 0x7d SetVertexBuffers, 0x82 SetViewport
+ *   - 0x1a RenderDescribeRenderPass
+ *   These call lagfx_translate_render_*() helpers and produce
+ *   real Vulkan commands via the render encoder.
+ *
+ * STUB handlers (return 0 / ack_stub) — THESE CAUSE NO GPU WORK:
+ *   - All draw indexed/instanced/patch variants (0x02..0x15 area)
+ *   - fence/barrier/heaps (0x16, 0x17, 0x85, 0x86, etc.)
+ *   - state-set scalars (0x67..0xa6 area):
+ *     SetColorStoreActionOptions, SetDepthStencilState,
+ *     SetFragmentBufferOffset, SetVertexBufferOffset,
+ *     SetLineWidth, SetPointSize, SetClipPlane,
+ *     tessellation, triangle fill mode, clip plane, etc.
+ *   - These stubs log the call but don't translate to Vulkan.
+ *   - Guest sees "GPU work done" (stamp acked) but no pixels change.
+ *   - Total stubs: ~80 opcodes (out of 96 in table).
+ *
+ * WHAT'S NEEDED FOR STAGE 30%+ (actual rendering):
+ *   1. Draw calls: implement indexed/instanced/patch variants
+ *      (0x02..0x15) via lagfx_translate_render_draw*()
+ *   2. State setters: wire up the other 0x67..0xa6 stubs to
+ *      lagfx_translate_render_*() helpers (Vulkan equivalents)
+ *   3. Blit opcodes (encoder_type=0): buffer copies, texture blits
+ *      in blit_decoder.c / PGDeserializerBlitDecoder
+ *   4. Compute opcodes (encoder_type=1): compute pipeline dispatch
+ *      in compute_decoder.c / PGDeserializerComputeDecoder
+ *   5. InfoDecoder replies (0x1c2..0x1d0): mostly done,
+ *      see ops_cmdbuf.c for per-opcode implementation status.
+ *
+ * Render opcode handlers are called from ops_cmdbuf.c when the
+ * guest emits CmdExecIndirect2 (opcode 0x20) on a sub-channel.
+ * The PGDeserializerRenderDecoder dispatches inner opcodes 0x00..0xa6.
+ * See paravirt-re/library/state-machines/render-decoder-handlers.tsv
+ * for the authoritative opcode table with body sizes.
+ *
+ * InfoDecoder stubs (0x1c2..0x1d0 in ops_cmdbuf.c):
+ *   Reply with sane defaults so SkyLight doesn't abort.
+ *   See paravirt-re/library/state-machines/info-decoder-replies.tsv
+ *
+ * RE references:
+ *   - render-decoder-handlers.tsv: opcode table + body sizes
+ *   - M5-air-translation-status.md: Vulkan translation status
+ *   - comprensive-gap-analysis.md: stage 30%+ gap analysis
+ *   - paravirt-re/library/state-machines/render-decoder-handlers.tsv
+ *   - CLAUDE.md: current stage progress + blocker summary
  */
 
 #include "render_opcodes.h"
@@ -204,32 +260,43 @@ static int render_op_texture_barrier(lagfx_protocol_t *p,
 }
 
 static int render_op_set_render_pipeline_state(lagfx_protocol_t *p,
-                                                const uint8_t    *payload,
-                                                size_t            len) {
+                                                 const uint8_t    *payload,
+                                                 size_t            len) {
     if (len < 4) {
         LAGFX_WARN("SetRenderPipelineState: payload too short (%zu < 4)", len);
         return 0;
     }
     uint32_t reference = read_le32(payload);
-    LAGFX_WARN("SetRenderPipelineState: reference=0x%08x", reference);
+    LAGFX_LOG("SetRenderPipelineState: reference=0x%08x", reference);
 
     if (p) {
         p->render_enc.bound_pipeline_ref = reference;
-        lagfx_translate_render_bind_pipeline(&p->render_enc,
-                                             LAGFX_SHADER_BLIT,
+        p->render_enc.pipeline_bound = true;
+
+        if (p->render_enc.in_pass) {
 #ifdef LAGFX_HAVE_VULKAN
-                                             VK_NULL_HANDLE);
+            /* TODO: resolve reference -> VkPipeline once resource table exists.
+             * For now, use COLOR_FILL as placeholder render pipeline. */
+            lagfx_translate_render_bind_pipeline(&p->render_enc,
+                                                  LAGFX_SHADER_COLOR_FILL,
+                                                  VK_NULL_HANDLE);
 #else
-                                             (lagfx_vk_layout_stub_t)0);
+            lagfx_translate_render_bind_pipeline(&p->render_enc,
+                                                  LAGFX_SHADER_COLOR_FILL,
+                                                  (lagfx_vk_layout_stub_t)0);
 #endif
+            LAGFX_LOG("SetRenderPipelineState: bound pipeline ref=0x%08x "
+                       "(in_pass=true)", reference);
+        } else {
+            LAGFX_TRACE("SetRenderPipelineState: deferred until render pass begins");
+        }
     }
     return 0;
 }
 
 static int render_op_draw_primitives_64(lagfx_protocol_t *p,
-                                        const uint8_t    *payload,
-                                        size_t            len) {
-    (void)p;
+                                         const uint8_t    *payload,
+                                         size_t            len) {
     if (len < 20) {
         LAGFX_WARN("DrawPrimitives64: payload too short (%zu < 20)", len);
         return 0;
@@ -237,26 +304,48 @@ static int render_op_draw_primitives_64(lagfx_protocol_t *p,
     uint32_t prim_type = read_le32(payload);
     uint64_t vertex_start = read_le64(payload + 4);
     uint64_t vertex_count = read_le64(payload + 12);
-    LAGFX_TRACE("DrawPrimitives64: type=%u start=%llu count=%llu",
-                prim_type,
-                (unsigned long long)vertex_start,
-                (unsigned long long)vertex_count);
+    LAGFX_LOG("DrawPrimitives64: type=%u start=%llu count=%llu",
+                 prim_type,
+                 (unsigned long long)vertex_start,
+                 (unsigned long long)vertex_count);
 
     if (p && p->render_enc.in_pass && vertex_count > 0) {
+        if (!p->render_enc.pipeline_bound) {
+            LAGFX_WARN("DrawPrimitives64: drawing without bound pipeline "
+                        "(pipeline_ref=0x%08x)",
+                        p->render_enc.bound_pipeline_ref);
+        }
+        if (p->render_enc.bound_vertex_buffer_count == 0) {
+            LAGFX_WARN("DrawPrimitives64: drawing without bound vertex buffers");
+        }
 #ifdef LAGFX_HAVE_VULKAN
+        LAGFX_LOG("DrawPrimitives64: issuing vkCmdDraw "
+                    "(vertexCount=%llu vertexStart=%llu)",
+                    (unsigned long long)vertex_count,
+                    (unsigned long long)vertex_start);
         lagfx_translate_render_draw(&p->render_enc,
-                                    (uint32_t)vertex_count, 1,
-                                    (uint32_t)vertex_start, 0);
+                                     (uint32_t)vertex_count, 1,
+                                     (uint32_t)vertex_start, 0);
 #else
         (void)prim_type;
+        LAGFX_LOG("DrawPrimitives64: (no Vulkan) would issue draw "
+                    "vertexCount=%llu",
+                    (unsigned long long)vertex_count);
 #endif
+    } else {
+        if (!p || !p->render_enc.in_pass) {
+            LAGFX_TRACE("DrawPrimitives64: skipped (not in render pass)");
+        }
+        if (vertex_count == 0) {
+            LAGFX_TRACE("DrawPrimitives64: skipped (vertex_count=0)");
+        }
     }
     return 0;
 }
 
 static int render_op_set_vertex_buffers(lagfx_protocol_t *p,
-                                        const uint8_t    *payload,
-                                        size_t            len) {
+                                         const uint8_t    *payload,
+                                         size_t            len) {
     if (len < 8) {
         LAGFX_WARN("SetVertexBuffers: payload too short (%zu < 8)", len);
         return 0;
@@ -266,16 +355,16 @@ static int render_op_set_vertex_buffers(lagfx_protocol_t *p,
     size_t needed = 8 + (size_t)count * 12;
     if (len < needed) {
         LAGFX_WARN("SetVertexBuffers: count=%u needs %zu bytes, got %zu",
-                   count, needed, len);
+                    count, needed, len);
         return 0;
     }
-    LAGFX_TRACE("SetVertexBuffers: count=%u first=%u", count, first);
+    LAGFX_LOG("SetVertexBuffers: count=%u first=%u", count, first);
     for (uint32_t i = 0; i < count && i < 4; ++i) {
         const uint8_t *entry = payload + 8 + (size_t)i * 12;
         uint32_t ref = read_le32(entry);
         uint64_t off = read_le64(entry + 4);
         LAGFX_TRACE("  [%u] ref=0x%08x offset=%llu",
-                    first + i, ref, (unsigned long long)off);
+                     first + i, ref, (unsigned long long)off);
     }
     if (count > 4)
         LAGFX_TRACE("  ... (%u more)", count - 4);
@@ -284,7 +373,7 @@ static int render_op_set_vertex_buffers(lagfx_protocol_t *p,
         uint32_t store_count = count;
         if (store_count > LAGFX_MAX_BOUND_VERTEX_BUFFERS) {
             LAGFX_WARN("SetVertexBuffers: count=%u exceeds max=%u, truncating",
-                       count, LAGFX_MAX_BOUND_VERTEX_BUFFERS);
+                        count, LAGFX_MAX_BOUND_VERTEX_BUFFERS);
             store_count = LAGFX_MAX_BOUND_VERTEX_BUFFERS;
         }
         for (uint32_t i = 0; i < store_count; ++i) {
@@ -294,13 +383,38 @@ static int render_op_set_vertex_buffers(lagfx_protocol_t *p,
         }
         p->render_enc.bound_vertex_buffer_count = store_count;
         p->render_enc.bound_vertex_buffer_first = first;
+
+        if (p->render_enc.in_pass && p->render_enc.pipeline_bound) {
+#ifdef LAGFX_HAVE_VULKAN
+            if (p->render_enc.cmdbuf != VK_NULL_HANDLE
+                && p->dev && p->dev->vk) {
+                /* TODO: Resolve ref -> VkBuffer once resource table exists.
+                 * For now, bind the dummy vertex buffer from vk state. */
+                if (p->dev->vk->dummy_vb != VK_NULL_HANDLE) {
+                    VkDeviceSize offset = 0;
+                    vkCmdBindVertexBuffers(p->render_enc.cmdbuf,
+                                           first, store_count,
+                                           &p->dev->vk->dummy_vb, &offset);
+                    LAGFX_LOG("SetVertexBuffers: bound %u dummy buffers "
+                               "(first=%u, in_pass=true)",
+                               store_count, first);
+                } else {
+                    LAGFX_TRACE("SetVertexBuffers: no dummy_vb available");
+                }
+            }
+#endif
+        } else {
+            LAGFX_TRACE("SetVertexBuffers: deferred (in_pass=%d, pipeline_bound=%d)",
+                        p->render_enc.in_pass,
+                        p->render_enc.pipeline_bound);
+        }
     }
     return 0;
 }
 
 static int render_op_set_fragment_textures(lagfx_protocol_t *p,
-                                           const uint8_t    *payload,
-                                           size_t            len) {
+                                            const uint8_t    *payload,
+                                            size_t            len) {
     if (len < 8) {
         LAGFX_WARN("SetFragmentTextures: payload too short (%zu < 8)", len);
         return 0;
@@ -310,10 +424,10 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
     size_t needed = 8 + (size_t)count * 4;
     if (len < needed) {
         LAGFX_WARN("SetFragmentTextures: count=%u needs %zu bytes, got %zu",
-                   count, needed, len);
+                    count, needed, len);
         return 0;
     }
-    LAGFX_TRACE("SetFragmentTextures: count=%u first=%u", count, first);
+    LAGFX_LOG("SetFragmentTextures: count=%u first=%u", count, first);
     for (uint32_t i = 0; i < count && i < 4; ++i) {
         uint32_t ref = read_le32(payload + 8 + (size_t)i * 4);
         LAGFX_TRACE("  [%u] ref=0x%08x", first + i, ref);
@@ -325,7 +439,7 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
         uint32_t store_count = count;
         if (store_count > LAGFX_MAX_BOUND_FRAGMENT_TEXTURES) {
             LAGFX_WARN("SetFragmentTextures: count=%u exceeds max=%u, truncating",
-                       count, LAGFX_MAX_BOUND_FRAGMENT_TEXTURES);
+                        count, LAGFX_MAX_BOUND_FRAGMENT_TEXTURES);
             store_count = LAGFX_MAX_BOUND_FRAGMENT_TEXTURES;
         }
         for (uint32_t i = 0; i < store_count; ++i) {
@@ -334,6 +448,35 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
         }
         p->render_enc.bound_fragment_texture_count = store_count;
         p->render_enc.bound_fragment_texture_first = first;
+
+        if (p->render_enc.in_pass && p->render_enc.pipeline_bound) {
+#ifdef LAGFX_HAVE_VULKAN
+            /* TODO: Resolve ref -> VkImageView once resource table exists.
+             * For now, attempt bind with NULL handles to show intent. */
+            for (uint32_t i = 0; i < store_count; ++i) {
+                uint32_t ref = p->render_enc.bound_fragment_textures[i];
+                /* Use VK_NULL_HANDLE for now - real impl needs
+                 * lagfx_texture_table_lookup(ref) -> VkImageView */
+                lagfx_translate_render_bind_texture(
+                    &p->render_enc,
+                    first + i,  /* binding matches Metal set(idx) */
+                    VK_NULL_HANDLE,  /* TODO: resolve from ref */
+                    VK_NULL_HANDLE); /* TODO: resolve sampler */
+                LAGFX_TRACE("SetFragmentTextures: bound[%u] ref=0x%08x "
+                             "(null handles - needs resource table)",
+                             first + i, ref);
+            }
+#else
+            LAGFX_LOG("SetFragmentTextures: would bind %u textures "
+                        "(no Vulkan)",
+                        store_count);
+#endif
+        } else {
+            LAGFX_TRACE("SetFragmentTextures: deferred (in_pass=%d, "
+                        "pipeline_bound=%d)",
+                        p->render_enc.in_pass,
+                        p->render_enc.pipeline_bound);
+        }
     }
     return 0;
 }

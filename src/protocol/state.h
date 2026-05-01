@@ -282,6 +282,17 @@ struct lagfx_protocol {
     uint32_t display_submit_count;
 
 #define DISPLAY_SUBMIT_THRESHOLD 300u
+
+    /* Delayed stamp ACK for process_online kind=2 command.
+     * When we see kind=2 (arg2==2) in display_submit (0x02),
+     * we delay the stamp ACK to keep process_online blocked in
+     * waitForStamp while WindowServer completes doSetDisplayMode.
+     * After delayed_ack_ticks reaches DELAYED_ACK_THRESHOLD,
+     * the stamp is ACK'd (cell advanced + IRQ raised). */
+    uint32_t delayed_ack_ch;        /* channel (0 = no pending) */
+    uint32_t delayed_ack_stamp;     /* stamp value to ACK */
+    uint32_t delayed_ack_ticks;     /* vblank tick counter */
+#define DELAYED_ACK_THRESHOLD 300u  /* ~5 seconds at 60Hz */
 };
 
 /* Internal helper — index into reg[] by MMIO offset. Returns -1 if

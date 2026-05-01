@@ -68,7 +68,21 @@ lagfx_handler_status_t lagfx_op_vchan_display_submit(
     /* Track display_submit commands per display. The online event
      * only fires once we've seen DISPLAY_SUBMIT_THRESHOLD submits,
      * ensuring WindowServer has fully initialized and released the
-     * FB workloop gate (avoids ABBA deadlock). */
+     * FB workloop gate (avoids ABBA deadlock).
+     *
+     * ABBA deadlock analysis (journey/deadlock-abba-analysis.md):
+     *   Thread 1 (WindowServer): holds FB workloop command gate,
+     *     waits for accel[+0x88] IOLock in doSetDisplayMode.
+     *   Thread 2 (DisplayPipe process_online): holds accel[+0x88]
+     *     IOLock (acquired before connectionChange), waits for FB
+     *     workloop command gate.
+     *   Fix attempts: 39a351c (defer online), aa91185 (wait 5
+     *     submits), 40c1c7c (threshold=1), 7663ff1 (fix enabled
+     *     flag) — deadlock NOT resolved.
+     *
+     * Stamp ACK for kind=2 (process_online) is delayed until the
+     * threshold is met; this prevents the guest from proceeding
+     * with doSetDisplayMode while the lock is still held. */
     if (display_index < 4u) {
         uint32_t shift = display_index * 8u;
         uint32_t count = (p->display_submit_count >> shift) & 0xffu;

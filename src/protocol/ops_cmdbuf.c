@@ -10,26 +10,57 @@
  *     containing inner render/blit/compute opcodes.
  *   - CmdSynchronizeResources (0x22): marks resources synced.
  *
- * RE context (paravirt-re/classes/):
+ * RE context (paravirt-re/):
  *   - M4-inner-opcode-implementation-guide.md: 0x20 outer payload
  *     {task_id, descriptor_count, resource_count, ...}
- *   - Each resource table entry points at a cmdBuf with
- *     PGSerializerCommandSegmentHeader + inner PGCmdHeader streams.
- *   - Inner opcodes dispatched to render/blit/compute decoders.
- *
- * Stage 30%+ implementation status:
- *   - InfoDecoder stubs (0x1c2..0x1d0): reply with sane defaults
- *     so Metal clients (SkyLight) don't read zeros and abort.
- *   - Render decoder (0x20 inner): PGDeserializerRenderDecoder
- *     exists but all handlers return unimplemented.
+ *     CONFIRMED 2026-04-28 from live kext-side 0x37 capture.
+ *   - classes/ directory: PGSerializerCommandSegmentHeader format
+ *   - Inner opcodes: render_opcodes.c dispatch table + RE analysis
+ *     in library/state-machines/render-decoder-handlers.tsv
+ *   - InfoDecoder opcodes (0x1c2..0x1d0):
+ *     library/state-machines/info-decoder-replies.tsv
+ *     library/journey/info-decoder-opcodes.md
+ *   - Render decoder (encType=2): stage 30%+ gap — all handlers
+ *     in render_opcodes.c are stubs (return 0) except viewport,
+ *     scissor, blend_color, pipeline_state, draw_primitives.
  *   - Blit/compute decoders: scaffolded, observation-only.
+ *
+ * Stage 30%+ implementation status (see CLAUDE.md):
+ *   - Stage 10% blocked by ABBA deadlock (WindowServer vs DisplayPipe)
+ *   - Stage 20% (cursor + static UI): cursor wired but deadlock blocks
+ *   - Stage 30%+ (actual rendering): render opcodes need real impl
+ *
+ * WindowServer command buffer hang (BLOCKER):
+ *   - After deadlock resolved, WS may hang in command buffer submission
+ *     via IOAccelClient2::commit_commands().
+ *   - Guest expects GPU work to complete + stamp to advance.
+ *   - If render opcodes are stubs (return 0), the guest's
+ *     MTLCommandBuffer waitUntilCompleted may never return because
+ *     the GPU "work" never actually runs — but stamps DO signal.
+ *   - The real issue: guest may poll on IOAccelShared2 completion
+ *     tokens that require actual GPU progress (not just stamp ack).
+ *   - See journey/opcodes-0x35-0x36-0x39.md for related
+ *     opcodes that fire during command buffer submission.
+ *
+ * CmdExecIndirect2: what the guest expects:
+ *   - Guest sends cmdBuf segments with inner render/blit/compute opcodes.
+ *   - Each segment's work should execute on the GPU (via Vulkan).
+ *   - When complete: stamp advances + IRQ fires.
+ *   - With stub handlers: stamps still signal, but no GPU work occurs.
+ *   - Guest may detect "GPU hang" if work doesn't visibly progress.
  *
  * Priority for stage 30%+:
  *   1. Render opcodes (0x20 inner, encoder_type=2):
  *      PGDeserializerRenderDecoder handlers — needed for actual drawing.
+ *      See render_opcodes.c for stub vs real status per opcode.
  *   2. Blit opcodes (encoder_type=0): buffer copies, texture blits.
  *   3. Compute opcodes (encoder_type=1): compute pipeline dispatch.
  *   4. InfoDecoder replies: mostly done (stubs return defaults).
+ *
+ * RE references:
+ *   - paravirt-re/journey/opcodes-0x35-0x36-0x39.md
+ *   - paravirt-re/library/state-machines/render-decoder-handlers.tsv
+ *   - paravirt-re/M4-inner-opcode-implementation-guide.md
  */
 
 #include "blit_decoder.h"
@@ -227,10 +258,19 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
 /* ===========================================================================
  * CmdExecIndirect2 (0x20 / kext-side 0x37) — M4 segment walker.
  *
- * RE confirmed (M4-inner-opcode-implementation-guide.md §1.1):
+ * WHY THIS MATTERS FOR WS HANG:
+ *   WindowServer sends these to submit GPU work (rendering/blits/compute).
+ *   If the guest's IOAccelClient2::commit_commands() waits for
+ *   completion tokens that require actual GPU progress (not just
+ *   stamp acks), the guest will hang here. Stage 30%+ render
+ *   opcode implementations are needed so the GPU actually does work.
+ *
+ * RE confirmed (paravirt-re/M4-inner-opcode-implementation-guide.md §1.1,
+ *     command-buffer-format.md):
  *   Kext emits 0x37 on per-channel rings (ch 1..4).
  *   Dylib emits 0x20 on RootChannel.
  *   Both carry the same outer payload format.
+ *   CONFIRMED 2026-04-28 from live kext-side 0x37 ch=1 capture.
  *
  * Outer payload (CONFIRMED from kext-side 0x37 ch=1 capture):
  *     payload[0..3]   u32 task_id
@@ -238,6 +278,7 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
  *     payload[8..11]  u32 resource_count
  *     payload[12..]   descriptor[descriptor_count]  (24 B each:
  *                      {u32 id, u32 flags, u64 reserved})
+ *                      flags: 0x100=invalidate, 1=sync, 0=reference
  *     ...             resource_table[]  (16 B each:
  *                      {u64 host_gpu_addr, u32 length, u32 _pad})
  *
@@ -245,20 +286,29 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
  * (translated through the per-task PFN-array from CmdDefineHostTask 0x38).
  * It points at a per-resource cmdBuf containing:
  *   - PGSerializerCommandSegmentHeader (8 B: size, encType, flags)
+ *     encType: 0=blit, 1=compute, 2=render, 4=info
  *   - Nested PGCmdHeader streams (8 B: opcode, totalLength)
+ *   See paravirt-re/classes/ for segment header format.
  *
  * Inner opcode families by encoder_type:
  *   - encType=0 (blit):  lagfx_blit_decoder_dispatch()
+ *     Scaffolded in blit_decoder.c — observation-only for now.
+ *     See paravirt-re/M5-air-translation-status.md.
  *   - encType=1 (compute): lagfx_compute_decoder_dispatch()
+ *     Scaffolded in compute_decoder.c — observation-only for now.
  *   - encType=2 (render):  lagfx_render_decoder_dispatch()
+ *     PGDeserializerRenderDecoder in render_opcodes.c.
+ *     Most handlers are STUBS (return 0) — stage 30%+ gap.
+ *     See render_opcodes.c header comment for stub vs real status.
  *   - encType=4 (info):   InfoDecoder stubs (0x1c2..0x1d0)
+ *     Reply with sane defaults so SkyLight doesn't abort.
+ *     See paravirt-re/library/state-machines/info-decoder-replies.tsv
  *
- * Stage 30%+ work:
- *   - Render opcodes (encType=2): PGDeserializerRenderDecoder
- *     handlers are stubs — need real implementations for drawing.
+ * Stage 30%+ work (see CLAUDE.md):
+ *   - Render opcodes (encType=2): Need real implementations
+ *     for actual Metal drawing to appear.
  *   - Blit opcodes (encType=0): buffer copies, texture blits.
  *   - Compute opcodes (encType=1): compute pipeline dispatch.
- *   - InfoDecoder (encType=4): mostly done (stubs return defaults).
  *
  * Empty-list case falls through to metal-no-op completion path.
  * The outer stamp is signalled by the dispatcher.
