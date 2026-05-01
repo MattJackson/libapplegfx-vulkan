@@ -709,10 +709,33 @@ lagfx_handler_status_t lagfx_op_display_cursor_show(
     g_cursor_show.hot_x      = hot_x;
     g_cursor_show.hot_y      = hot_y;
 
+    /* Invoke QEMU cursor callbacks so the cursor becomes visible via noVNC.
+     * Find the first live display on the device and call its callbacks. */
+    if (p->dev) {
+        for (int i = 0; i < LAGFX_MAX_DISPLAYS; i++) {
+            if (p->dev->displays[i]) {
+                lagfx_display_t *disp = p->dev->displays[i];
+                if (disp->desc.callbacks.cursor_moved) {
+                    /* Update cursor position in display state */
+                    disp->cursor_pos.x = (uint16_t)(int)x;
+                    disp->cursor_pos.y = (uint16_t)(int)y;
+                    disp->desc.callbacks.cursor_moved(
+                        disp->desc.callbacks.opaque);
+                }
+                if (disp->desc.callbacks.cursor_show) {
+                    disp->desc.callbacks.cursor_show(
+                        disp->desc.callbacks.opaque,
+                        visible ? true : false);
+                }
+                break;
+            }
+        }
+    }
+
     LAGFX_LOG("CmdDisplayCursorShow: displayID=%u pos=(%d,%d) visible=%u "
-              "hot=(%u,%u) stamp=0x%08x",
-              display_id, (int)x, (int)y, visible,
-              (unsigned)hot_x, (unsigned)hot_y, hdr->stamp);
+               "hot=(%u,%u) stamp=0x%08x",
+               display_id, (int)x, (int)y, visible,
+               (unsigned)hot_x, (unsigned)hot_y, hdr->stamp);
     return LAGFX_HANDLER_OK;
 }
 
@@ -787,12 +810,33 @@ lagfx_handler_status_t lagfx_op_display_cursor_glyph(
         }
     }
 
+    /* Invoke QEMU cursor_glyph callback so the cursor image updates.
+     * Find the first live display on the device and call its callback. */
+    if (g_cursor_glyph.captured_len > 0 && p->dev) {
+        for (int i = 0; i < LAGFX_MAX_DISPLAYS; i++) {
+            if (p->dev->displays[i]) {
+                lagfx_display_t *disp = p->dev->displays[i];
+                if (disp->desc.callbacks.cursor_glyph) {
+                    lagfx_coord_t hotspot = {
+                        .x = (uint16_t)hot_x,
+                        .y = (uint16_t)hot_y
+                    };
+                    disp->desc.callbacks.cursor_glyph(
+                        disp->desc.callbacks.opaque,
+                        g_cursor_glyph.bytes,
+                        width, height, hotspot);
+                }
+                break;
+            }
+        }
+    }
+
     LAGFX_LOG("CmdDisplayCursorGlyph: displayID=%u glyphVA=0x%llx %ux%u "
-              "bpr=%u hot=(%u,%u) captured=%zu bytes stamp=0x%08x",
-              display_id,
-              (unsigned long long)glyph_va,
-              width, height, bytes_per_row, hot_x, hot_y,
-              g_cursor_glyph.captured_len, hdr->stamp);
+               "bpr=%u hot=(%u,%u) captured=%zu bytes stamp=0x%08x",
+               display_id,
+               (unsigned long long)glyph_va,
+               width, height, bytes_per_row, hot_x, hot_y,
+               g_cursor_glyph.captured_len, hdr->stamp);
     return LAGFX_HANDLER_OK;
 }
 

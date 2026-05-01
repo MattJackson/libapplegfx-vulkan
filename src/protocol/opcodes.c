@@ -1,23 +1,41 @@
 /*
- * libapplegfx-vulkan — opcode descriptor table (Phase 1.A.2)
+ * libapplegfx-vulkan — opcode descriptor table
  * src/protocol/opcodes.c
  *
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * All 36 named opcodes from command-buffer-format.md §3 are recognized
- * by name. Handlers are wired to the real implementations in
- * ops_misc.c (NOP, Debug) and stubs in ops_device.c / ops_queue.c /
- * ops_cmdbuf.c for P0/P1 that the next agent will fill in. P2 entries
- * have handler=NULL; the dispatcher falls through to the default
- * log+ack handler, matching the dylib's fail-open semantics
- * (command-buffer-format.md §6).
+ * All opcodes from command-buffer-format.md §3 + kext extended
+ * range (0x30..0x41) are recognized by name.
  *
- * min_payload for the three gap-closed opcodes (0x04, 0x0a, 0x22) was
- * corrected against re-followup-spec-gaps.md:
- *   0x04 CmdDefineChildFIFO   — 4 bytes (§3.3); was 16 in the scaffold
+ * Handler status (RE from paravirt-re/classes/):
+ *   - Real handlers: ops that do actual work (P0/P1 in table).
+ *   - Log+ack stubs (handler=NULL): P2 entries, dispatcher
+ *     falls through to lagfx_op_default_handler which
+ *     logs the opcode + hex dump and returns OK (stamp acked).
+ *     This matches the dylib's fail-open semantics.
+ *
+ * Priority order for implementing new handlers (P2 → real):
+ *   HIGH (blocking M6, RE confirmed):
+ *     0x11 DisplaySetProperties (mode/EDID commit)
+ *     0x20/0x21 ExecIndirect2/3 (render commands)
+ *     0x13/0x14 CursorShow/CursorGlyph (login screen cursor)
+ *   MEDIUM (frame delivery, not blocking):
+ *     0x22 SynchronizeResources (post-render fence)
+ *     0x06/0x07 Present/present+gamma (display vchan)
+ *     0x10 DisplayAck (present completion)
+ *   LOW (cosmetic, M6+):
+ *     0x19 CompositorParameters (gamma/blend)
+ *     0x1a SetGuestICCProfile (color management)
+ *     0x27..0x29 IOSurface family (backing lifecycle)
+ *
+ * See PGFIFO-sub-channel-opcode-table.md for full table with
+ * kext emitters and sub-channel likelihood.
+ *
+ * min_payload corrections (re-followup-spec-gaps.md):
+ *   0x04 CmdDefineChildFIFO   — 4 bytes (§3.3)
  *   0x0a CmdGetDeviceInfo     — 12 bytes (§2.2)
- *   0x22 CmdSynchronizeResources — 8 bytes minimum (empty list) (§4.3)
+ *   0x22 CmdSynchronizeResources — 8 bytes minimum (§4.3)
  */
 
 #include "opcodes.h"

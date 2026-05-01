@@ -91,9 +91,9 @@ lagfx_handler_status_t lagfx_op_vchan_display_submit(
                     p->dev->desc.shell.opaque, ss_gpa + 0x100u,
                     sizeof(pending), &pending);
                 LAGFX_LOG("vchan_display_submit: display[%u] "
-                          "triggering deferred online event after "
-                          "%u submits (ss[+0x100] := 0x5)",
-                          display_index, DISPLAY_SUBMIT_THRESHOLD);
+                           "triggering deferred online event after "
+                           "%u submits (ss[+0x100] := 0x5)",
+                           display_index, DISPLAY_SUBMIT_THRESHOLD);
                 p->display_defer_online_pending &= ~(1u << display_index);
                 p->pending_displays_bitmask |= (1u << display_index);
                 if (p->dev->desc.shell.raise_interrupt) {
