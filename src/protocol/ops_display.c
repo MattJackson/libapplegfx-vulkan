@@ -599,12 +599,12 @@ bool lagfx_display_tick_vblank(
                     sizeof(enabled_mask), &enabled_mask);
             }
             if (enabled_mask == 0xCu) {
-                uint32_t pending = 0x5u;
-                if (write_memory(shell_opaque, ss_gpa + 0x100u,
-                                 sizeof(pending), &pending)) {
-                    kicked++;
-                }
                 if (!(dev->display_ss_enabled & (1u << i))) {
+                    uint32_t pending = 0x5u;
+                    if (write_memory(shell_opaque, ss_gpa + 0x100u,
+                                     sizeof(pending), &pending)) {
+                        kicked++;
+                    }
                     LAGFX_LOG("display_tick_vblank: display[%u] "
                               "ss[+0x104] transitioned to 0xC (enable), "
                               "signaling display-online", i);
