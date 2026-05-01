@@ -159,4 +159,9 @@ void lagfx_protocol_stats(const lagfx_protocol_t *p,
 /* Query the last completed stamp (tests + observability). */
 uint32_t lagfx_protocol_last_completed_stamp(const lagfx_protocol_t *p);
 
+/* Process the delayed stamp ACK tick (called from display_tick_vblank).
+ * If a delayed ACK is pending and the threshold is reached, advances
+ * the stamp cell and raises IRQ to unblock process_online. */
+void lagfx_protocol_process_delayed_ack(lagfx_protocol_t *p);
+
 #endif /* LIBAPPLEGFX_PROTOCOL_H */

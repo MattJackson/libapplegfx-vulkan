@@ -1327,19 +1327,27 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
             lagfx_drain_display_child_rings(p, &last_stamp);
 
-            lagfx_advance_stamp_cell(p, ch, last_stamp);
+            /* Skip stamp ACK if delayed ACK is pending for this channel.
+             * The stamp will be ACK'd later by vblank tick when the
+             * threshold is reached. */
+            if (p->delayed_ack_ch != 0u && p->delayed_ack_ch == ch) {
+                LAGFX_LOG("doorbell ch=%u: stamp ACK delayed, "
+                           "process_online blocked in waitForStamp", ch);
+            } else {
+                lagfx_advance_stamp_cell(p, ch, last_stamp);
+                p->pending_stamps_bitmask |= (1u << ch);
+            }
             if (saw_non_setup) {
                 p->pending_displays_bitmask |= (1u << (ch - 5u));
             }
-            p->pending_stamps_bitmask |= (1u << ch);
             if (p->dev && p->dev->desc.shell.raise_interrupt) {
                 p->dev->desc.shell.raise_interrupt(
                     p->dev->desc.shell.opaque, 0u);
                 p->interrupts_raised += 1;
                 LAGFX_TRACE("doorbell ch=%u: display+stamp bit+IRQ "
-                          "(disp_mask=0x%08x stamp_mask=0x%08x)",
-                          ch, p->pending_displays_bitmask,
-                          p->pending_stamps_bitmask);
+                           "(disp_mask=0x%08x stamp_mask=0x%08x)",
+                           ch, p->pending_displays_bitmask,
+                           p->pending_stamps_bitmask);
             }
             return;
         }
@@ -1366,4 +1374,46 @@ void lagfx_protocol_stats(const lagfx_protocol_t *p,
 
 uint32_t lagfx_protocol_last_completed_stamp(const lagfx_protocol_t *p) {
     return lagfx_protocol_is_valid(p) ? p->last_completed_stamp : 0u;
+}
+
+/* Process the delayed stamp ACK tick (called from display_tick_vblank).
+ * If a delayed ACK is pending and the threshold is reached, advances
+ * the stamp cell and raises IRQ to unblock process_online. */
+void lagfx_protocol_process_delayed_ack(lagfx_protocol_t *p) {
+    if (!lagfx_protocol_is_valid(p)) {
+        return;
+    }
+    if (p->delayed_ack_ch == 0u) {
+        return;  /* no pending delayed ACK */
+    }
+
+    p->delayed_ack_ticks += 1u;
+    LAGFX_LOG("delayed_ack: tick %u/%u ch=%u stamp=0x%08x",
+               p->delayed_ack_ticks, DELAYED_ACK_THRESHOLD,
+               p->delayed_ack_ch, p->delayed_ack_stamp);
+
+    if (p->delayed_ack_ticks >= DELAYED_ACK_THRESHOLD) {
+        LAGFX_LOG("delayed_ack: THRESHOLD REACHED, ACKing stamp "
+                   "for ch=%u stamp=0x%08x",
+                   p->delayed_ack_ch, p->delayed_ack_stamp);
+
+        /* Advance the stamp cell for this channel. */
+        lagfx_advance_stamp_cell(p, p->delayed_ack_ch,
+                                 p->delayed_ack_stamp);
+
+        /* Set the stamp bitmask bit for this channel. */
+        p->pending_stamps_bitmask |= (1u << p->delayed_ack_ch);
+
+        /* Raise IRQ to wake up process_online. */
+        if (p->dev && p->dev->desc.shell.raise_interrupt) {
+            p->dev->desc.shell.raise_interrupt(
+                p->dev->desc.shell.opaque, 0u);
+            p->interrupts_raised += 1;
+        }
+
+        /* Clear the delayed ACK state. */
+        p->delayed_ack_ch = 0u;
+        p->delayed_ack_stamp = 0u;
+        p->delayed_ack_ticks = 0u;
+    }
 }

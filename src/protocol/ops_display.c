@@ -567,6 +567,12 @@ bool lagfx_display_tick_vblank(
         return false;
     }
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* Process delayed stamp ACK for process_online kind=2.
+     * This ticks the counter and ACKs the stamp when the
+     * threshold is reached, unblocking process_online. */
+    lagfx_protocol_process_delayed_ack(p);
+
     unsigned kicked = 0;
     for (unsigned i = 0; i < 16u && i < 32u; ++i) {
         if (dev->display_ss_installed & (1u << i)) {

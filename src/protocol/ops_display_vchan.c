@@ -65,6 +65,16 @@ lagfx_handler_status_t lagfx_op_vchan_display_submit(
               "stamp=0x%08x",
               display_index, arg2, hdr->stamp);
 
+    /* Check if this is kind=2 (from process_online).
+     * If yes, delay the stamp ACK to keep process_online blocked
+     * in waitForStamp while WindowServer completes init. */
+    if (arg2 == 2u) {
+        LAGFX_LOG("vchan_display_submit: DETECTED kind=2, delaying stamp ACK");
+        p->delayed_ack_ch = display_index + 5;  /* approximate channel */
+        p->delayed_ack_stamp = hdr->stamp;
+        p->delayed_ack_ticks = 0u;
+    }
+
     /* Track display_submit commands per display. The online event
      * only fires once we've seen DISPLAY_SUBMIT_THRESHOLD submits,
      * ensuring WindowServer has fully initialized and released the
