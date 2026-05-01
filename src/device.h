@@ -46,6 +46,7 @@ struct lagfx_device {
      * Used by the vblank timer to write pending_mask bits. */
     uint64_t display_ss_gpa[16];
     uint32_t display_ss_installed;        /* bitmask of installed displays */
+    uint32_t display_ss_enabled;          /* bitmask of displays where ss[+0x104]==0xC (enable() called) */
 
     /* Protocol state (Phase 1.A.2) and Vulkan state (Phase 1.B). */
     void *protocol_state;

@@ -591,10 +591,25 @@ bool lagfx_display_tick_vblank(
     for (unsigned i = 0; i < 16u && i < 32u; ++i) {
         if (dev->display_ss_installed & (1u << i)) {
             uint64_t ss_gpa = dev->display_ss_gpa[i];
-            uint32_t pending = 0x5u;
-            if (write_memory(shell_opaque, ss_gpa + 0x100u,
-                             sizeof(pending), &pending)) {
-                kicked++;
+            uint32_t enabled_mask = 0u;
+            if (dev->desc.shell.read_memory) {
+                dev->desc.shell.read_memory(
+                    dev->desc.shell.opaque,
+                    ss_gpa + 0x104u,
+                    sizeof(enabled_mask), &enabled_mask);
+            }
+            if (enabled_mask == 0xCu) {
+                uint32_t pending = 0x5u;
+                if (write_memory(shell_opaque, ss_gpa + 0x100u,
+                                 sizeof(pending), &pending)) {
+                    kicked++;
+                }
+                if (!(dev->display_ss_enabled & (1u << i))) {
+                    LAGFX_LOG("display_tick_vblank: display[%u] "
+                              "ss[+0x104] transitioned to 0xC (enable), "
+                              "signaling display-online", i);
+                }
+                dev->display_ss_enabled |= (1u << i);
             }
         }
     }
@@ -624,7 +639,7 @@ bool lagfx_display_tick_vblank(
     }
     if (kicked > 0 && p) {
         p->pending_displays_bitmask |=
-            0xFFu; /* display_index 0..7 */
+            dev->display_ss_enabled;
         if (dev->desc.shell.raise_interrupt) {
             dev->desc.shell.raise_interrupt(
                 dev->desc.shell.opaque, 0u);

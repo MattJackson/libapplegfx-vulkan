@@ -434,11 +434,12 @@ static void test_doorbell_ch5_keeps_setupSharedState_path(void) {
     uint32_t new_rp = get_le32(shell.heap + (descr_gpa - shell.heap_gpa) + 4u);
     CHECK(new_rp == 20u, "ch=5 doorbell: descr.read_ptr advanced 0->20");
 
-    /* Display bitmask bit (ch-5)=0 set. */
+    /* Display bitmask bit (ch-5)=0 should NOT be set for setupSharedState
+     * (opcode 0x01) — display-online is deferred to the vblank timer. */
     uint32_t disp_mask = lagfx_mmio_read(dev, 0x1014u);
-    CHECK((disp_mask & 0x1u) != 0u,
-          "ch=5 doorbell: pending_displays_bitmask bit 0 set "
-          "(display_index=0)");
+    CHECK((disp_mask & 0x1u) == 0u,
+          "ch=5 doorbell: pending_displays_bitmask bit 0 NOT set "
+          "(deferred to vblank timer for setupSharedState)");
 
     lagfx_device_free(dev);
     db_shell_free(&shell);
@@ -475,9 +476,9 @@ static void test_doorbell_ch6_keeps_ss_path(void) {
     lagfx_mmio_write(dev, 0x1020u, 6u);
 
     uint32_t disp_mask = lagfx_mmio_read(dev, 0x1014u);
-    CHECK((disp_mask & (1u << 1)) != 0u,
-          "ch=6 doorbell: pending_displays_bitmask bit 1 set "
-          "(display_index=1)");
+    CHECK((disp_mask & (1u << 1)) == 0u,
+          "ch=6 doorbell: pending_displays_bitmask bit 1 NOT set "
+          "(deferred to vblank timer for setupSharedState)");
 
     lagfx_device_free(dev);
     db_shell_free(&shell);

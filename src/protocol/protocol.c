@@ -825,6 +825,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
              * channels. The PFN array has 1 entry — wraps within one page. */
             uint32_t last_stamp = 0u;
             uint32_t child_ring_size = 0x1000u;
+            bool saw_non_setup = false;
             if (ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
                 uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
@@ -949,13 +950,16 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                                 p, &parsed);
                             break;
                         case 0x02u:
+                            saw_non_setup = true;
                             lagfx_op_vchan_display_submit(
                                 p, &parsed);
                             break;
                         case 0x06u:
+                            saw_non_setup = true;
                             lagfx_op_vchan_present(p, &parsed);
                             break;
                         case 0x07u:
+                            saw_non_setup = true;
                             lagfx_op_vchan_present_gamma(p, &parsed);
                             break;
                         default:
@@ -987,7 +991,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             }
 
             lagfx_advance_stamp_cell(p, ch, last_stamp);
-            p->pending_displays_bitmask |= (1u << (ch - 5u));
+            if (saw_non_setup) {
+                p->pending_displays_bitmask |= (1u << (ch - 5u));
+            }
             p->pending_stamps_bitmask |= (1u << ch);
             if (p->dev && p->dev->desc.shell.raise_interrupt) {
                 p->dev->desc.shell.raise_interrupt(

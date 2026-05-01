@@ -244,16 +244,6 @@ lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(
                   display_index);
     }
 
-    p->pending_displays_bitmask |= (1u << display_index);
-    if (p->dev->desc.shell.raise_interrupt) {
-        p->dev->desc.shell.raise_interrupt(
-            p->dev->desc.shell.opaque, 0u);
-        p->interrupts_raised += 1;
-        LAGFX_TRACE("vchan_setup_shared_state: display-online bit+IRQ "
-                    "(display_index=%u, display_pending_mask=0x%08x)",
-                    display_index, p->pending_displays_bitmask);
-    }
-
     return LAGFX_HANDLER_OK;
 }
 
