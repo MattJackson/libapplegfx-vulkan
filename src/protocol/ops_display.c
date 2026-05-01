@@ -600,14 +600,33 @@ bool lagfx_display_tick_vblank(
             }
             if (enabled_mask == 0xCu) {
                 if (!(dev->display_ss_enabled & (1u << i))) {
-                    uint32_t pending = 0x5u;
-                    if (write_memory(shell_opaque, ss_gpa + 0x100u,
-                                     sizeof(pending), &pending)) {
-                        kicked++;
+                    /* Handle deferred online event.
+                     * If display_submit (0x02) was already seen for
+                     * this display (race: submit arrived before
+                     * vblank tick detected ss[+0x104]==0xC), fire
+                     * the online event immediately. Otherwise, set
+                     * the pending flag and wait for display_submit. */
+                    if (p) {
+                        if (p->display_submit_seen & (1u << i)) {
+                            /* Already saw display_submit, fire now. */
+                            uint32_t pending = 0x5u;
+                            if (write_memory(shell_opaque,
+                                            ss_gpa + 0x100u,
+                                            sizeof(pending), &pending)) {
+                                kicked++;
+                            }
+                            LAGFX_LOG("display_tick_vblank: display[%u] "
+                                      "ss[+0x104]==0xC + submit already "
+                                      "seen, signaling online now", i);
+                            p->pending_displays_bitmask |= (1u << i);
+                        } else {
+                            /* Wait for display_submit. */
+                            p->display_defer_online_pending |= (1u << i);
+                            LAGFX_LOG("display_tick_vblank: display[%u] "
+                                      "ss[+0x104]==0xC seen, deferring "
+                                      "online event until display_submit", i);
+                        }
                     }
-                    LAGFX_LOG("display_tick_vblank: display[%u] "
-                              "ss[+0x104] transitioned to 0xC (enable), "
-                              "signaling display-online", i);
                 }
                 dev->display_ss_enabled |= (1u << i);
             }

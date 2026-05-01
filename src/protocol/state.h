@@ -265,6 +265,19 @@ struct lagfx_protocol {
     uint64_t display_swaps_applied;
     uint64_t display_transactions_submitted;
     uint64_t display_acks_received;
+
+    /* Deferred online pending bitmask. Bit i set when ss[0x104]==0xC
+     * detected but we're waiting for the first display_submit (0x02)
+     * to ensure WindowServer has finished framebuffer init. Cleared
+     * when the online event is finally triggered. */
+    uint32_t display_defer_online_pending;
+
+    /* Display submit seen bitmask. Bit i set when display_submit (0x02)
+     * is received before ss[0x104]==0xC was detected. This handles
+     * the race where display_submit comes before tick_vblank detects
+     * the enable. When tick_vblank later detects ss[0x104]==0xC and
+     * sees this bit set, it triggers the online event immediately. */
+    uint32_t display_submit_seen;
 };
 
 /* Internal helper — index into reg[] by MMIO offset. Returns -1 if
