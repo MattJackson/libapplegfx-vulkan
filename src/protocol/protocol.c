@@ -303,7 +303,7 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
      * Return 0 for unhandled; _PGDevice's ivars are zero-initialised.
      */
     if (offset == 0x122c) {
-        return 9;
+        return 1;
     }
     if (offset >= 0x1200 && offset < 0x122c) {
         return 0;
