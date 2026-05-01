@@ -207,11 +207,11 @@ static int lagfx_dispatch_inner(lagfx_protocol_t *p,
         p->unknown_opcode_count += 1;
     }
 
-    LAGFX_TRACE("dispatch: op=0x%04x (%s) stamp=0x%08x arg_count_8b=%u "
-                "length=%u payload=%u",
-                out_hdr->opcode, lagfx_opcode_name(out_hdr->opcode),
-                out_hdr->stamp, (unsigned)out_hdr->arg_count_8b,
-                (unsigned)out_hdr->length, (unsigned)out_hdr->payload_size);
+    LAGFX_LOG("dispatch: op=0x%04x (%s) stamp=0x%08x arg_count_8b=%u "
+              "length=%u payload=%u",
+              out_hdr->opcode, lagfx_opcode_name(out_hdr->opcode),
+              out_hdr->stamp, (unsigned)out_hdr->arg_count_8b,
+              (unsigned)out_hdr->length, (unsigned)out_hdr->payload_size);
 
     if (desc) {
         if (out_hdr->payload_size < desc->min_payload) {
@@ -229,7 +229,14 @@ static int lagfx_dispatch_inner(lagfx_protocol_t *p,
     }
 
     *did_run_handler = 1;
-    return (int)fn(p, out_hdr);
+    int handler_rc = (int)fn(p, out_hdr);
+    if (handler_rc != 0) {
+        LAGFX_WARN("dispatch: op=0x%04x (%s) handler returned error %d "
+                   "(stamp=0x%08x)",
+                   out_hdr->opcode, lagfx_opcode_name(out_hdr->opcode),
+                   handler_rc, out_hdr->stamp);
+    }
+    return handler_rc;
 }
 
 int lagfx_protocol_dispatch_one(lagfx_protocol_t *p,
@@ -460,7 +467,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
         case 0x1008u: {
             uint32_t old_wp = p->write_ptr;
             p->write_ptr = value;
-            LAGFX_TRACE("mmio_write: doorbell wp=0x%x (was 0x%x)",
+            LAGFX_LOG("doorbell: primary ring wp=0x%x (was 0x%x)",
                       value, old_wp);
             if (p->ring_armed && p->write_ptr != p->read_ptr) {
                 size_t drained = lagfx_fifo_drain(p);
@@ -513,8 +520,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
              *
              * Display0 = ch_id 5 (per A10a: display_index+5). */
             unsigned ch = value;
+            LAGFX_LOG("doorbell: per-channel ring ch=%u", ch);
             if (ch == 0u || ch >= 32u) {
-                LAGFX_TRACE("doorbell ch=%u: out of range", ch);
+                LAGFX_WARN("doorbell ch=%u: out of range", ch);
                 return;
             }
             if (p->ring_shared_page_pfn == 0u
@@ -548,7 +556,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             uint32_t chan_id   = ((uint32_t *)descr)[3];
             uint32_t ring_pfn  = ((uint32_t *)descr)[4];
 
-            LAGFX_TRACE("doorbell ch=%u: descr wr=%u rd=%u mid=0x%x "
+            LAGFX_LOG("doorbell ch=%u: descr wr=%u rd=%u mid=0x%x "
                       "chan_id=%u ring_pfn=0x%x",
                       ch, write_ptr, read_ptr, mid, chan_id, ring_pfn);
 
@@ -940,7 +948,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     parsed.payload_size = (uint16_t)payload_len;
                     parsed.payload      = payload_buf;
 
-                    LAGFX_TRACE("doorbell ch=%u vchan cmd[%u]: "
+                    LAGFX_LOG("doorbell ch=%u vchan cmd[%u]: "
                               "opcode=0x%02x stamp=0x%08x len=%u",
                               ch, cmd_idx, opcode, stamp, cmd_len);
 
@@ -985,7 +993,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         p->dev->desc.shell.opaque,
                         descr_gpa + 4u, sizeof(new_rp), &new_rp);
                 }
-                LAGFX_TRACE("doorbell ch=%u: display vchan drained "
+                LAGFX_LOG("doorbell ch=%u: display vchan drained "
                           "%u cmd(s), rp=%u->%u",
                           ch, cmd_idx, read_ptr, new_rp);
             }
