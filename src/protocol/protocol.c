@@ -958,7 +958,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                                 p, &parsed);
                             break;
                         case 0x04u:
-                            lagfx_op_define_child_fifo(p, &parsed);
+                            lagfx_op_display_define_child_fifo(p, &parsed);
                             break;
                         case 0x02u:
                             saw_non_setup = true;

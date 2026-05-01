@@ -139,6 +139,24 @@ typedef struct {
     uint32_t last_pipeline;
 } lagfx_display_entry_t;
 
+/* Display-vchan sub-ring registered by opcode 0x04 (CmdDefineChildFIFO)
+ * on display virtual channels (ch >= 5). Unlike compute channels where
+ * 0x04 carries just a 4-byte fifoID, the display variant carries the
+ * full ring geometry inline in a 44-byte descriptor.
+ *
+ * Up to 5 sub-rings are registered per display vchan during init. */
+#define LAGFX_MAX_DISPLAY_CHILD_RINGS 8u
+
+typedef struct {
+    uint64_t ring_base_gpa;
+    uint64_t ring_size;
+    uint32_t entry_count;
+    uint16_t read_stride;
+    uint16_t write_stride;
+    uint32_t ring_index;
+    bool     live;
+} lagfx_display_child_ring_t;
+
 struct lagfx_protocol {
     uint32_t magic;                 /* LAGFX_PROTOCOL_MAGIC */
     struct lagfx_device *dev;       /* back-pointer for shell callbacks */
@@ -224,6 +242,7 @@ struct lagfx_protocol {
     lagfx_childfifo_entry_t fifos[LAGFX_MAX_CHILDFIFOS];
     lagfx_inflight_entry_t  inflight[LAGFX_MAX_INFLIGHT];
     lagfx_display_entry_t   displays[LAGFX_PROTO_MAX_DISPLAYS];
+    lagfx_display_child_ring_t display_child_rings[LAGFX_MAX_DISPLAY_CHILD_RINGS];
 
     /* Resource reference registry — maps (ref, task_id) to host-side
      * resource metadata. Populated by outer opcodes and IOUserClient

@@ -248,6 +248,94 @@ lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(
 }
 
 /* ================================================================
+ * 0x04 CmdDefineChildFIFO (display vchan variant)
+ *
+ * Display virtual channels (ch >= 5) send a 44-byte ring buffer
+ * descriptor, unlike compute channels which send only a 4-byte
+ * fifoID. Up to 5 sub-rings are registered per display vchan.
+ *
+ * Wire layout (44 bytes total):
+ *   +0x00  u64 reserved       (zeros)
+ *   +0x08  u64 ring_base_gpa  (PFN-array base for the sub-ring)
+ *   +0x10  u64 ring_size      (e.g., 0x4000 = 16 KiB)
+ *   +0x18  u32 entry_count    (e.g., 32, 128)
+ *   +0x1c  u16 read_stride    (bytes between read-pointer slots)
+ *   +0x1e  u16 write_stride   (bytes between write-pointer slots)
+ *   +0x20  u16 field1         (e.g., 4)
+ *   +0x22  u16 field2         (e.g., 4)
+ *   +0x24  u8  remaining[8]
+ * ================================================================ */
+
+#define LAGFX_DISPLAY_CHILD_FIFO_PAYLOAD 44u
+
+lagfx_handler_status_t lagfx_op_display_define_child_fifo(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < LAGFX_DISPLAY_CHILD_FIFO_PAYLOAD) {
+        LAGFX_WARN("display CmdDefineChildFIFO: payload too small "
+                   "(size=%u, need %u)",
+                   (unsigned)hdr->payload_size,
+                   LAGFX_DISPLAY_CHILD_FIFO_PAYLOAD);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint64_t reserved     = vchan_le64(hdr->payload + 0);
+    uint64_t ring_base    = vchan_le64(hdr->payload + 8);
+    uint64_t ring_size    = vchan_le64(hdr->payload + 16);
+    uint32_t entry_count  = vchan_le32(hdr->payload + 24);
+    uint16_t read_stride  = (uint16_t)(vchan_le32(hdr->payload + 28) & 0xffffu);
+    uint16_t write_stride = (uint16_t)(vchan_le32(hdr->payload + 30) & 0xffffu);
+    uint16_t field1       = (uint16_t)(vchan_le32(hdr->payload + 32) & 0xffffu);
+    uint16_t field2       = (uint16_t)(vchan_le32(hdr->payload + 34) & 0xffffu);
+
+    LAGFX_LOG("display CmdDefineChildFIFO: ring_base=0x%llx "
+              "ring_size=0x%llx entry_count=%u "
+              "strides=(%u,%u) fields=(%u,%u) reserved=0x%llx "
+              "stamp=0x%08x",
+              (unsigned long long)ring_base,
+              (unsigned long long)ring_size,
+              entry_count,
+              (unsigned)read_stride, (unsigned)write_stride,
+              (unsigned)field1, (unsigned)field2,
+              (unsigned long long)reserved,
+              hdr->stamp);
+
+    {
+        unsigned dump_n = hdr->payload_size > 64 ? 64 : hdr->payload_size;
+        char hex[200];
+        for (unsigned i = 0; i < dump_n; i++) {
+            snprintf(hex + i * 3, 4, "%02x ", hdr->payload[i]);
+        }
+        LAGFX_LOG("display CmdDefineChildFIFO: raw payload: [%s]", hex);
+    }
+
+    lagfx_display_child_ring_t *slot = NULL;
+    for (unsigned i = 0; i < LAGFX_MAX_DISPLAY_CHILD_RINGS; ++i) {
+        if (!p->display_child_rings[i].live) {
+            slot = &p->display_child_rings[i];
+            break;
+        }
+    }
+    if (!slot) {
+        LAGFX_WARN("display CmdDefineChildFIFO: child ring table full "
+                   "(max=%u)", LAGFX_MAX_DISPLAY_CHILD_RINGS);
+        return LAGFX_HANDLER_ERR_STATE;
+    }
+
+    slot->ring_base_gpa = ring_base;
+    slot->ring_size     = ring_size;
+    slot->entry_count   = entry_count;
+    slot->read_stride   = read_stride;
+    slot->write_stride  = write_stride;
+    slot->ring_index    = 0;
+    slot->live          = true;
+
+    return LAGFX_HANDLER_OK;
+}
+
+/* ================================================================
  * 0x06 present
  *
  * 12-byte payload: { u32 display_index, u32 surface_id, u32 plane_id }
