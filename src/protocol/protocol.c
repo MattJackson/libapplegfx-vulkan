@@ -957,6 +957,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             lagfx_op_vchan_setup_shared_state(
                                 p, &parsed);
                             break;
+                        case 0x04u:
+                            lagfx_op_define_child_fifo(p, &parsed);
+                            break;
                         case 0x02u:
                             saw_non_setup = true;
                             lagfx_op_vchan_display_submit(
