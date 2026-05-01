@@ -60,8 +60,8 @@ lagfx_handler_status_t lagfx_op_define_child_fifo(lagfx_protocol_t *p,
     LAGFX_WARN("CmdDefineChildFIFO: payload_size=%u first32_bytes:",
                (unsigned)hdr->payload_size);
     {
-        unsigned dump_n = hdr->payload_size > 32 ? 32 : hdr->payload_size;
-        char hex[128];
+        unsigned dump_n = hdr->payload_size > 64 ? 64 : hdr->payload_size;
+        char hex[200];
         for (unsigned i = 0; i < dump_n; i++) {
             snprintf(hex + i * 3, 4, "%02x ", hdr->payload[i]);
         }
