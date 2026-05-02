@@ -5,8 +5,12 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
+ * Last updated: 2026-05-01
+ *
  * Handlers for display vchan opcodes 0x01, 0x06, 0x07.  Dispatched by
  * the per-channel doorbell loop in protocol.c (ch >= 5).
+ *
+ * Online event fires immediately — no delay/delayed ACK.
  */
 
 #include "ops_display_vchan.h"

@@ -5,6 +5,11 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
+ * Last updated: 2026-05-01
+ *
+ * TOP 5 IMPLEMENTED ✅ (commit 701956a)
+ * Next: 90+ opcodes remaining for stage 30%+
+ *
  * Populates the 96-entry descriptor table for the Render inner-opcode
  * decoder. Most entries point at `render_op_ack_stub`; real handlers
  * land one-by-one as M5 progresses. Entries are listed in numerical

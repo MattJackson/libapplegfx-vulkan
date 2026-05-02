@@ -5,6 +5,8 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
+ * Last updated: 2026-05-01
+ *
  * Display-pipe opcodes for the Apple Paravirt GPU protocol.
  * These are sent on the per-display VirtualChannel rings (ch 5..12)
  * using the compact opcode namespace {0x01, 0x02, 0x04, 0x06, 0x07}.
@@ -557,11 +559,13 @@ bool lagfx_ops_display_tick_vblank(
                         sizeof(buf), buf);
 }
 
-/* Simplified 2026-05-01: fire online IMMEDIATELY when ss[0x104]==0xC.
+/* ONLINE EVENT SIMPLIFIED 2026-05-01: fires immediately when ss[0x104]==0xC.
  * Previous deferred approaches (39a351c, aa91185, 91e8f50) caused
  * the online event to never fire — the chicken-and-egg problem:
  * display_submit counter stuck at 1 because the threshold could
- * never be reached until after online fired. */
+ * never be reached until after online fired.
+ *
+ * Current state: Docker host DOWN, can't deploy 3fbe7db */
 bool lagfx_display_tick_vblank(
     lagfx_device_t *dev,
     void *shell_opaque,

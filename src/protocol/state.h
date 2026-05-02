@@ -5,6 +5,8 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
+ * Last updated: 2026-05-01
+ *
  * Layout of the opaque lagfx_protocol_t struct. Used by protocol.c,
  * fifo.c, ops_*.c. Tests poke via the public accessors in
  * protocol.h. Private to src/protocol/.
@@ -292,9 +294,9 @@ struct lagfx_protocol {
 
     /* Delayed ACK fields no longer used (simplified 2026-05-01).
      * Kept for ABI compatibility; will remove after verifying stability. */
-    uint32_t delayed_ack_ch;        /* channel (0 = no pending) */
-    uint32_t delayed_ack_stamp;     /* stamp value to ACK */
-    uint32_t delayed_ack_ticks;     /* vblank tick counter */
+    /* uint32_t delayed_ack_ch; */        /* channel (0 = no pending) */
+    /* uint32_t delayed_ack_stamp; */     /* stamp value to ACK */
+    /* uint32_t delayed_ack_ticks; */     /* vblank tick counter */
 };
 
 /* Internal helper — index into reg[] by MMIO offset. Returns -1 if
