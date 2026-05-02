@@ -144,11 +144,11 @@ static const lagfx_op_descriptor_t g_op_table[] = {
      * Unknown(0x28) entry (A2 kext disasm §13.5); §14.5
      * reclaims it for CmdIOSurfaceCreate. */
     { LAGFX_OP_DELETE_IOSURFACE,         "CmdDeleteIOSurface",
-      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_delete },
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_delete_backing2 },
     { LAGFX_OP_IOSURFACE_CREATE,         "CmdIOSurfaceCreate",
-      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_create },
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_create_backing2 },
     { LAGFX_OP_IOSURFACE_UPDATE,         "CmdIOSurfaceUpdate",
-      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_update },
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_lookup },
 
     /* --- Heap / Resource (0x80-0x82) ------------------------ */
     { LAGFX_OP_HEAP_TEX_SIZE_ALIGN,     "CmdHeapTextureSizeAndAlign",

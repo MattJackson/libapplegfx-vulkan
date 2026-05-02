@@ -282,9 +282,19 @@ struct lagfx_protocol {
     uint64_t display_acks_received;
 
     /* Online event fires immediately when ss[0x104]==0xC is detected.
-     * Previous deferred approaches (39a351c, aa91185, 91e8f50)
-     * caused the online event to never fire (counter stall). */
+     * Previous deferred approaches caused the counter to stick. */
     uint32_t display_online_fired;
+
+    /* Display submit counter per display (bits 0-7: count for display 0,
+     * bits 8-15: count for display 1, etc.). Used for diagnostics only;
+     * online event now fires immediately when ss[0x104]==0xC. */
+    uint32_t display_submit_count;
+
+    /* Delayed ACK fields no longer used (simplified 2026-05-01).
+     * Kept for ABI compatibility; will remove after verifying stability. */
+    uint32_t delayed_ack_ch;        /* channel (0 = no pending) */
+    uint32_t delayed_ack_stamp;     /* stamp value to ACK */
+    uint32_t delayed_ack_ticks;     /* vblank tick counter */
 };
 
 /* Internal helper — index into reg[] by MMIO offset. Returns -1 if

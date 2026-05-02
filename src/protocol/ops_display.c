@@ -640,14 +640,6 @@ bool lagfx_display_tick_vblank(
             }
         }
     }
-    if (kicked > 0 && p) {
-        p->pending_displays_bitmask |=
-            dev->display_ss_enabled;
-        if (dev->desc.shell.raise_interrupt) {
-            dev->desc.shell.raise_interrupt(
-                dev->desc.shell.opaque, 0u);
-        }
-    }
     return kicked > 0;
 }
 

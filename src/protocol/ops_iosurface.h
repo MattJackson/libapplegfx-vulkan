@@ -91,11 +91,11 @@ const lagfx_iosurface_capture_t *lagfx_ops_iosurface_last_update(void);
 void lagfx_ops_iosurface_reset(void);
 
 /* Handler forward declarations — registered in the opcode table. */
-lagfx_handler_status_t lagfx_op_iosurface_delete(
+lagfx_handler_status_t lagfx_op_iosurface_delete_backing2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_op_iosurface_create(
+lagfx_handler_status_t lagfx_op_iosurface_create_backing2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_op_iosurface_update(
+lagfx_handler_status_t lagfx_op_iosurface_lookup(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
 #endif /* LIBAPPLEGFX_PROTOCOL_OPS_IOSURFACE_H */

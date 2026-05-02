@@ -83,6 +83,7 @@
 #include "state.h"
 
 #include "../common/log.h"
+#include "../device.h"
 #include "../translate/render_encoder.h"
 
 #include <stddef.h>
