@@ -5,6 +5,20 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
+ * IMPLEMENTATION STATUS (2026-05-01):
+ *   ✅ lagfx_fifo_parse_header: decodes 12-byte header (unit-tested)
+ *   ✅ lagfx_fifo_drain: ring-buffer walk for root channel (ch 0)
+ *   ✅ Sub-channel PGFIFO drain (commit b7f36bb) for display vchans
+ *   🟡 Per-channel doorbell at BAR0+0x1020 (MMIO offset 0x1004..0x1034)
+ *   🟡 Display vchan rings: PGFIFO dispatch with baseNode at ring start
+ *   ❌ Channel 3 rings: BLOCKED (channel never opens due to deadlock)
+ *
+ * RE references:
+ *   - re-followup-spec-gaps.md §5.1: 12-byte command header
+ *   - PGFIFO-sub-channel-opcode-table.md: display vchan namespace
+ *   - display-sub-channel-ring-drain-analysis.md: PGFIFO dispatch
+ *   - sub-channel-baseNode-ring-tracking.md: baseNode at offset 0x00
+ *
  * The command header is 12 bytes (see opcodes.h and
  * re-followup-spec-gaps.md §5.1). The doorbell is a write-pointer
  * update, not a stamp, and lives at an MMIO offset in the
@@ -14,6 +28,8 @@
  *   - lagfx_fifo_parse_header: decodes the 12-byte on-wire header
  *     into lagfx_cmd_header_t. Unit-tested.
  *   - lagfx_fifo_drain: ring-buffer walk driven by the 0x1008 doorbell.
+ *
+ * Last updated: 2026-05-01
  */
 
 #include "fifo.h"

@@ -255,6 +255,21 @@ struct lagfx_protocol {
      * ops_cmdbuf.c and the render opcode handlers in render_opcodes.c. */
     lagfx_translate_render_state_t render_enc;
 
+    /* Compute encoder state — tracks pipeline and resource bindings for
+     * the current MTLComputeCommandEncoder session (encoder_type=1).
+     * Zeroed at protocol init; managed by the segment walker in
+     * ops_cmdbuf.c and the compute opcode handlers in compute_opcodes.c. */
+    uint32_t compute_pipeline_ref;       /* current compute pipeline */
+    uint32_t compute_buffer_refs[32];   /* bound buffer refs */
+    uint32_t compute_buffer_count;
+    uint32_t compute_buffer_first;
+    uint32_t compute_texture_refs[32];  /* bound texture refs */
+    uint32_t compute_texture_count;
+    uint32_t compute_texture_first;
+    uint32_t compute_sampler_refs[32];  /* bound sampler refs */
+    uint32_t compute_sampler_count;
+    uint32_t compute_sampler_first;
+
     /* Stats / observability. */
     uint64_t total_cmds_seen;
     uint64_t total_cmds_completed;
@@ -266,33 +281,10 @@ struct lagfx_protocol {
     uint64_t display_transactions_submitted;
     uint64_t display_acks_received;
 
-    /* Deferred online pending bitmask. Bit i set when ss[0x104]==0xC
-     * detected but we're waiting for the first display_submit (0x02)
-     * to ensure WindowServer has finished framebuffer init. Cleared
-     * when the online event is finally triggered. */
-    uint32_t display_defer_online_pending;
-
-    /* Display submit counter per display (bits 0-7: count for display 0,
-     * bits 8-15: count for display 1, etc.). Incremented each time
-     * display_submit (0x02) is received. The online event only fires
-     * once the count reaches a threshold (DISPLAY_SUBMIT_THRESHOLD),
-     * ensuring WindowServer has fully initialized and released the
-     * FB workloop gate, avoiding the ABBA deadlock between
-     * process_online and doSetDisplayMode. */
-    uint32_t display_submit_count;
-
-#define DISPLAY_SUBMIT_THRESHOLD 300u
-
-    /* Delayed stamp ACK for process_online kind=2 command.
-     * When we see kind=2 (arg2==2) in display_submit (0x02),
-     * we delay the stamp ACK to keep process_online blocked in
-     * waitForStamp while WindowServer completes doSetDisplayMode.
-     * After delayed_ack_ticks reaches DELAYED_ACK_THRESHOLD,
-     * the stamp is ACK'd (cell advanced + IRQ raised). */
-    uint32_t delayed_ack_ch;        /* channel (0 = no pending) */
-    uint32_t delayed_ack_stamp;     /* stamp value to ACK */
-    uint32_t delayed_ack_ticks;     /* vblank tick counter */
-#define DELAYED_ACK_THRESHOLD 300u  /* ~5 seconds at 60Hz */
+    /* Online event fires immediately when ss[0x104]==0xC is detected.
+     * Previous deferred approaches (39a351c, aa91185, 91e8f50)
+     * caused the online event to never fire (counter stall). */
+    uint32_t display_online_fired;
 };
 
 /* Internal helper — index into reg[] by MMIO offset. Returns -1 if

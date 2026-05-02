@@ -5,10 +5,23 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
+ * IMPLEMENTATION STATUS (2026-05-01):
+ *   🟡 Blit decoder: scaffolded, observation-only (M5)
+ *   🟡 All blit opcodes are stubs (return 0, no Vulkan translation)
+ *   ❌ No GPU work occurring (stubs don't translate to Vulkan)
+ *   ❌ Channel 3 never opens (blocked by ABBA deadlock)
+ *
+ * RE references:
+ *   - M5-air-translation-status.md: Vulkan translation status
+ *   - PGDeserializerBlitDecoder: kext handler class
+ *   - state-machines/blit-decoder-handlers.tsv: opcode table
+ *
  * Implements `lagfx_blit_decoder_dispatch()` — looks the opcode up in
  * the table populated by blit_opcodes.c, prints the canonical
  * "[lagfx blit] op=0xNNN (name) — ack-only stub" trace, and forwards
  * to the descriptor's handler. Unknown opcodes are logged and absorbed.
+ *
+ * Last updated: 2026-05-01
  */
 
 #include "blit_decoder.h"

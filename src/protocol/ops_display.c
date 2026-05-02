@@ -557,6 +557,11 @@ bool lagfx_ops_display_tick_vblank(
                         sizeof(buf), buf);
 }
 
+/* Simplified 2026-05-01: fire online IMMEDIATELY when ss[0x104]==0xC.
+ * Previous deferred approaches (39a351c, aa91185, 91e8f50) caused
+ * the online event to never fire — the chicken-and-egg problem:
+ * display_submit counter stuck at 1 because the threshold could
+ * never be reached until after online fired. */
 bool lagfx_display_tick_vblank(
     lagfx_device_t *dev,
     void *shell_opaque,
@@ -566,12 +571,6 @@ bool lagfx_display_tick_vblank(
     if (!dev || !write_memory) {
         return false;
     }
-    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-
-    /* Process delayed stamp ACK for process_online kind=2.
-     * This ticks the counter and ACKs the stamp when the
-     * threshold is reached, unblocking process_online. */
-    lagfx_protocol_process_delayed_ack(p);
 
     unsigned kicked = 0;
     for (unsigned i = 0; i < 16u && i < 32u; ++i) {
@@ -586,63 +585,35 @@ bool lagfx_display_tick_vblank(
             }
             if (enabled_mask == 0xCu) {
                 if (!(dev->display_ss_enabled & (1u << i))) {
-                    /* Deferred online event: ss[0x104]==0xC detected.
+                    /* ss[0x104]==0xC detected and online event not yet sent.
+                     * Fire online event immediately.
                      *
                      * RE (display-pipe-enable-online-sequence.md):
                      *   ss[0x104]=0xC means enable() ran (pipe enabled).
-                     *   ss[0x100] & ss[0x104] gate in signalDisplay():
-                     *     events = ss[0x100] & ss[0x104]
-                     *   If host writes ss[0x100]|=0x4 before enable(),
-                     *   the AND-gate yields 0 (ss[0x104]=0) → event LOST.
-                     *
-                     * This deferred path waits until we've seen enough
-                     * display_submit (0x02) commands (threshold) before
-                     * firing the online event, ensuring WindowServer has
-                     * finished init and released the FB workloop gate
-                     * (avoids ABBA deadlock). */
-                    if (p) {
-                        uint32_t submit_count =
-                            (p->display_submit_count >> (i * 8)) & 0xffu;
-                if (submit_count >= DISPLAY_SUBMIT_THRESHOLD) {
-                    /* Enough display_submit commands seen, fire now.
-                     *
-                     * DISPLAY_SUBMIT_THRESHOLD evolution:
-                     *   aa91185: originally 5, to allow WS init time
-                     *   40c1c7c: lowered to 1, streamline online event
-                     *   7663ff1: fixed display_ss_enabled flag setting
-                     *     (was set unconditionally, now only after fire)
-                     *
-                     * Threshold=1 means the first display_submit
-                     * after ss[+0x104]==0xC will trigger online.
-                     * This minimizes the window where the ABBA
-                     * deadlock can occur (WindowServer holding FB
-                     * workloop gate while DisplayPipe holds
-                     * accel[+0x88] IOLock in process_online). */
+                     *   Write ss[0x100]|=0x4 to signal pending online. */
                     uint32_t pending = 0x5u;
-                            if (write_memory(shell_opaque,
-                                            ss_gpa + 0x100u,
-                                            sizeof(pending), &pending)) {
-                                kicked++;
-                            }
-                            LAGFX_LOG("display_tick_vblank: display[%u] "
-                                      "ss[+0x104]==0xC + %u submits, "
-                                      "signaling online now",
-                                      i, DISPLAY_SUBMIT_THRESHOLD);
-                            p->pending_displays_bitmask |= (1u << i);
-                            dev->display_ss_enabled |= (1u << i);
-                        } else {
-                            /* Wait for more display_submit. */
-                            p->display_defer_online_pending |= (1u << i);
-                            LAGFX_LOG("display_tick_vblank: display[%u] "
-                                      "ss[+0x104]==0xC seen, deferring "
-                                      "online event until %u submits "
-                                      "(have %u)",
-                                      i, DISPLAY_SUBMIT_THRESHOLD,
-                                      submit_count);
-                        }
+                    if (write_memory(shell_opaque,
+                                    ss_gpa + 0x100u,
+                                    sizeof(pending), &pending)) {
+                        kicked++;
                     }
+                    LAGFX_LOG("display_tick_vblank: display[%u] "
+                              "ss[+0x104]==0xC, signaling online now",
+                              i);
+                    dev->display_ss_enabled |= (1u << i);
                 }
             }
+        }
+    }
+    if (kicked > 0) {
+        lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+        if (p) {
+            p->pending_displays_bitmask |= dev->display_ss_enabled;
+            p->display_online_fired++;
+        }
+        if (dev->desc.shell.raise_interrupt) {
+            dev->desc.shell.raise_interrupt(
+                dev->desc.shell.opaque, 0u);
         }
     }
     if (tick_count % 600 == 0 || tick_count <= 3) {

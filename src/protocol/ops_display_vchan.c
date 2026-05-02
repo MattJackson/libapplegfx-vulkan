@@ -62,72 +62,8 @@ lagfx_handler_status_t lagfx_op_vchan_display_submit(
         arg2 = vchan_le32(hdr->payload + 4);
     }
     LAGFX_LOG("vchan_display_submit: display_index=%u arg2=0x%08x "
-              "stamp=0x%08x",
-              display_index, arg2, hdr->stamp);
-
-    /* Check if this is kind=2 (from process_online).
-     * If yes, delay the stamp ACK to keep process_online blocked
-     * in waitForStamp while WindowServer completes init. */
-    if (arg2 == 2u) {
-        LAGFX_LOG("vchan_display_submit: DETECTED kind=2, delaying stamp ACK");
-        p->delayed_ack_ch = display_index + 5;  /* approximate channel */
-        p->delayed_ack_stamp = hdr->stamp;
-        p->delayed_ack_ticks = 0u;
-    }
-
-    /* Track display_submit commands per display. The online event
-     * only fires once we've seen DISPLAY_SUBMIT_THRESHOLD submits,
-     * ensuring WindowServer has fully initialized and released the
-     * FB workloop gate (avoids ABBA deadlock).
-     *
-     * ABBA deadlock analysis (journey/deadlock-abba-analysis.md):
-     *   Thread 1 (WindowServer): holds FB workloop command gate,
-     *     waits for accel[+0x88] IOLock in doSetDisplayMode.
-     *   Thread 2 (DisplayPipe process_online): holds accel[+0x88]
-     *     IOLock (acquired before connectionChange), waits for FB
-     *     workloop command gate.
-     *   Fix attempts: 39a351c (defer online), aa91185 (wait 5
-     *     submits), 40c1c7c (threshold=1), 7663ff1 (fix enabled
-     *     flag) — deadlock NOT resolved.
-     *
-     * Stamp ACK for kind=2 (process_online) is delayed until the
-     * threshold is met; this prevents the guest from proceeding
-     * with doSetDisplayMode while the lock is still held. */
-    if (display_index < 4u) {
-        uint32_t shift = display_index * 8u;
-        uint32_t count = (p->display_submit_count >> shift) & 0xffu;
-        if (count < 0xffu) {
-            count++;
-            p->display_submit_count =
-                (p->display_submit_count & ~(0xffu << shift))
-                | (count << shift);
-        }
-
-        /* Trigger deferred online event if pending for this display
-         * and we've reached the threshold. */
-        if (count >= DISPLAY_SUBMIT_THRESHOLD
-            && (p->display_defer_online_pending & (1u << display_index))) {
-            uint64_t ss_gpa = p->dev->display_ss_gpa[display_index];
-            if (p->dev && ss_gpa != 0u
-                && p->dev->desc.shell.write_memory) {
-                uint32_t pending = 0x5u;
-                p->dev->desc.shell.write_memory(
-                    p->dev->desc.shell.opaque, ss_gpa + 0x100u,
-                    sizeof(pending), &pending);
-                LAGFX_LOG("vchan_display_submit: display[%u] "
-                           "triggering deferred online event after "
-                           "%u submits (ss[+0x100] := 0x5)",
-                           display_index, DISPLAY_SUBMIT_THRESHOLD);
-                p->display_defer_online_pending &= ~(1u << display_index);
-                p->pending_displays_bitmask |= (1u << display_index);
-                p->dev->display_ss_enabled |= (1u << display_index);
-                if (p->dev->desc.shell.raise_interrupt) {
-                    p->dev->desc.shell.raise_interrupt(
-                        p->dev->desc.shell.opaque, 0u);
-                }
-            }
-        }
-    }
+               "stamp=0x%08x",
+               display_index, arg2, hdr->stamp);
 
     /* Try to read a few bytes from the framebuffer to check if
      * the guest has rendered any content. The framebuffer base
