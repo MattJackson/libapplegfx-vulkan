@@ -90,6 +90,7 @@
 #include "../common/log.h"
 #include "../device.h"
 #include "../translate/render_encoder.h"
+#include "../vulkan/instance.h"
 
 #include <stddef.h>
 #include <stdio.h>
