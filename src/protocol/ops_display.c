@@ -591,8 +591,9 @@ bool lagfx_display_tick_vblank(
      *
      * We track the highest stamp seen per channel in
      * per_channel_highest_stamp[ch], updated by the per-channel doorbell
-     * handler. If the stamp cell has fallen behind by more than 1, we
-     * advance it to the highest seen value. */
+     * handler. The guest's stamp cell may be ahead of our tracked highest
+     * (the guest tracks stamps independently), so we advance the cell to
+     * max(cur, highest + 1) to always give the guest room to progress. */
     {
         lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
         if (p && p->ring_base_pfn != 0u) {
@@ -607,17 +608,18 @@ bool lagfx_display_tick_vblank(
                         dev->desc.shell.opaque,
                         cell_gpa, sizeof(cur), &cur);
                 }
-                /* Advance if cell has fallen behind by more than 1.
-                 * A gap of 1 is acceptable (command in flight). */
-                if (highest > cur + 1u) {
-                    uint32_t want = (highest > cur + 1u) ? highest : (cur + 1u);
-                    if (want == 0u) {
-                        want = 1u;
-                    }
+                /* Advance cell to max(cur, highest + 1). This ensures the
+                 * stamp cell is always ahead of what we've processed, giving
+                 * the guest room to progress without parking in waitForStamp. */
+                uint32_t want = (highest + 1u > cur) ? (highest + 1u) : cur;
+                if (want == 0u) {
+                    want = 1u;
+                }
+                if (want != cur) {
                     if (dev->desc.shell.write_memory(
                             shell_opaque, cell_gpa, sizeof(want), &want)) {
                         LAGFX_LOG("ch=1 stamp safety: cell[%u] %u -> %u "
-                                  "(highest_seen=0x%08x)",
+                                  "(highest=0x%08x)",
                                   ch, cur, want, highest);
                     }
                 }
