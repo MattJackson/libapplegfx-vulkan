@@ -582,6 +582,49 @@ bool lagfx_display_tick_vblank(
         return false;
     }
 
+    /* M5 ch=1 stamp safety: if EventMachine is stuck in waitForStamp
+     * on slot 1 (ch=1 compute channel), proactively advance the stamp
+     * cell to unblock it. This breaks the deadlock chain:
+     *   1. kext's waitForStamp on slot 1 sees stamp advance -> unblocks
+     *   2. EventMachine releases busy lock at accel[0x158]
+     *   3. Metal plugin can create user clients (IOServiceOpen type=5)
+     *
+     * We track the highest stamp seen per channel in
+     * per_channel_highest_stamp[ch], updated by the per-channel doorbell
+     * handler. If the stamp cell has fallen behind by more than 1, we
+     * advance it to the highest seen value. */
+    {
+        lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+        if (p && p->ring_base_pfn != 0u) {
+            uint32_t ch = 1u;
+            uint32_t highest = p->per_channel_highest_stamp[ch];
+            if (highest > 0u) {
+                uint64_t cell_gpa = ((uint64_t)p->ring_base_pfn << 12)
+                                    + (uint64_t)ch * 4u;
+                uint32_t cur = 0u;
+                if (dev->desc.shell.read_memory) {
+                    dev->desc.shell.read_memory(
+                        dev->desc.shell.opaque,
+                        cell_gpa, sizeof(cur), &cur);
+                }
+                /* Advance if cell has fallen behind by more than 1.
+                 * A gap of 1 is acceptable (command in flight). */
+                if (highest > cur + 1u) {
+                    uint32_t want = (highest > cur + 1u) ? highest : (cur + 1u);
+                    if (want == 0u) {
+                        want = 1u;
+                    }
+                    if (dev->desc.shell.write_memory(
+                            shell_opaque, cell_gpa, sizeof(want), &want)) {
+                        LAGFX_LOG("ch=1 stamp safety: cell[%u] %u -> %u "
+                                  "(highest_seen=0x%08x)",
+                                  ch, cur, want, highest);
+                    }
+                }
+            }
+        }
+    }
+
     unsigned kicked = 0;
     for (unsigned i = 0u; i < 16u && i < 32u; ++i) {
         if (dev->display_ss_installed & (1u << i)) {

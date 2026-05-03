@@ -1082,6 +1082,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 }
                 /* Advance stamp_cell[ch] (slot=ch). */
                 lagfx_advance_stamp_cell(p, ch, last_stamp);
+                p->per_channel_highest_stamp[ch] = last_stamp;
                 p->pending_stamps_bitmask |= (1u << ch);
                 if (p->dev->desc.shell.raise_interrupt) {
                     p->dev->desc.shell.raise_interrupt(
@@ -1089,9 +1090,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     p->interrupts_raised += 1;
                 }
                 LAGFX_TRACE("doorbell ch=%u: drained %u cmd(s), rp=%u->%u, "
-                          "stamp_cell+IRQ (pending_mask=0x%08x)",
+                          "stamp_cell+IRQ (pending_mask=0x%08x, highest=0x%08x)",
                           ch, cmd_idx, read_ptr, new_rp,
-                          p->pending_stamps_bitmask);
+                          p->pending_stamps_bitmask, last_stamp);
                 return;
             }
 

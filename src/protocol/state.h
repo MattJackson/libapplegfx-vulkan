@@ -292,6 +292,16 @@ struct lagfx_protocol {
      * online event now fires immediately when ss[0x104]==0xC. */
     uint32_t display_submit_count;
 
+    /* Per-channel highest stamp seen — used by the display tick handler
+     * to detect when a compute channel (ch=1) stamp cell has fallen
+     * behind and needs proactive advancement. Breaks the waitForStamp
+     * deadlock on slot 1 where EventMachine parks waiting for a stamp
+     * that never arrives because no doorbell fires on ch=1.
+     *
+     * Index is channel (1..4 for compute vchans). Updated in the
+     * per-channel doorbell handler in protocol.c. */
+    uint32_t per_channel_highest_stamp[32];
+
     /* Delayed ACK fields no longer used (simplified 2026-05-01).
      * Kept for ABI compatibility; will remove after verifying stability. */
     /* uint32_t delayed_ack_ch; */        /* channel (0 = no pending) */
