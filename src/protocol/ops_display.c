@@ -591,9 +591,10 @@ bool lagfx_display_tick_vblank(
      *
      * We track the highest stamp seen per channel in
      * per_channel_highest_stamp[ch], updated by the per-channel doorbell
-     * handler. The guest's stamp cell may be ahead of our tracked highest
-     * (the guest tracks stamps independently), so we advance the cell to
-     * max(cur, highest + 1) to always give the guest room to progress. */
+     * handler. The guest's stamp cell value may be ahead of our tracked
+     * highest (guest tracks stamps independently with its own counter).
+     * We advance the cell to cur + N (where N=16) to give the guest room
+     * to progress without parking in waitForStamp. */
     {
         lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
         if (p && p->ring_base_pfn != 0u) {
@@ -608,10 +609,11 @@ bool lagfx_display_tick_vblank(
                         dev->desc.shell.opaque,
                         cell_gpa, sizeof(cur), &cur);
                 }
-                /* Advance cell to max(cur, highest + 1). This ensures the
-                 * stamp cell is always ahead of what we've processed, giving
-                 * the guest room to progress without parking in waitForStamp. */
-                uint32_t want = (highest + 1u > cur) ? (highest + 1u) : cur;
+                /* Advance cell by 16 from current value. This gives the
+                 * guest enough room to progress without parking in
+                 * waitForStamp, regardless of where the guest's stamp
+                 * counter is relative to our tracked highest. */
+                uint32_t want = cur + 16u;
                 if (want == 0u) {
                     want = 1u;
                 }
