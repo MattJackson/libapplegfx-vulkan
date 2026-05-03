@@ -559,20 +559,19 @@ bool lagfx_ops_display_tick_vblank(
                         sizeof(buf), buf);
 }
 
-/* ONLINE EVENT WITH HANDSHAKE 2026-05-02: fires when ss[0x104]==0xC AND ss[0x108]!=0.
+/* ONLINE EVENT 2026-05-02: fires when ss[0x104]==0xC.
  *
  * DEADLOCK ROOT CAUSE (confirmed via RE):
  *   Thread 1 (WindowServer): holds FB workloop command gate, waits for accel[+0x88] IOLock
  *   Thread 2 (DisplayPipe): holds accel[+0x88] IOLock (in process_online), waits for FB gate
  *   accel[+0x88] is IOWorkLoop*, IOLock acquired implicitly via runActionBlock()
  *
- * FIX: Poll ss[0x108] (WindowServer-ready flag) before firing online event.
+ * FIX: Fire online event IMMEDIATELY when ss[0x104]==0xC.
  *   ss[0x104]==0xC means enable() ran (pipe enabled)
- *   ss[0x108]!=0 means WindowServer has completed framebuffer init
- *   Only fire online event when BOTH conditions are true
+ *   ss[0x108] handshake was never implemented in the kext (not in protocol spec)
+ *   Waiting for ss[0x108] caused deadlock because it never gets set
  *
- * This prevents the ABBA deadlock by ensuring WindowServer is ready
- * to handle the online event before we signal it. */
+ * This breaks the deadlock by not waiting for a non-existent handshake. */
 bool lagfx_display_tick_vblank(
     lagfx_device_t *dev,
     void *shell_opaque,
@@ -584,7 +583,7 @@ bool lagfx_display_tick_vblank(
     }
 
     unsigned kicked = 0;
-    for (unsigned i = 0; i < 16u && i < 32u; ++i) {
+    for (unsigned i = 0u; i < 16u && i < 32u; ++i) {
         if (dev->display_ss_installed & (1u << i)) {
             uint64_t ss_gpa = dev->display_ss_gpa[i];
             uint32_t enabled_mask = 0u;
@@ -596,41 +595,23 @@ bool lagfx_display_tick_vblank(
             }
             if (enabled_mask == 0xCu) {
                 if (!(dev->display_ss_enabled & (1u << i))) {
-                    /* Check handshake: ss[0x108] != 0 (WindowServer ready) */
-                    uint32_t ws_ready = 0u;
-                    dev->desc.shell.read_memory(
-                        dev->desc.shell.opaque,
-                        ss_gpa + 0x108u,
-                        sizeof(ws_ready), &ws_ready);
-                    
-                    if (ws_ready != 0u) {
-                        /* ss[0x104]==0xC AND ss[0x108]!=0 — WindowServer is ready.
-                         * Fire online event.
-                         *
-                         * RE (display-pipe-enable-online-sequence.md):
-                         *   ss[0x104]=0xC means enable() ran (pipe enabled).
-                         *   ss[0x108]!=0 means WindowServer completed framebuffer init.
-                         *   Write ss[0x100]|=0x4 to signal pending online. */
-                        uint32_t pending = 0x5u;
-                        if (write_memory(shell_opaque,
-                                        ss_gpa + 0x100u,
-                                        sizeof(pending), &pending)) {
-                            kicked++;
-                        }
-                        LAGFX_LOG("display_tick_vblank: display[%u] "
-                                  "ss[+0x104]==0xC AND ss[+0x108]=0x%x, "
-                                  "signaling online now (handshake OK)",
-                                  i, ws_ready);
-                        dev->display_ss_enabled |= (1u << i);
-                    } else {
-                        /* WindowServer not ready yet — wait for ss[0x108] to be set.
-                         * ss[0x108] should be set by WindowServer after it completes
-                         * framebuffer initialization (IOFBSetDisplayModeAndDepth). */
-                        LAGFX_LOG("display_tick_vblank: display[%u] "
-                                  "ss[+0x104]==0xC but ss[+0x108]=0x0, "
-                                  "WindowServer not ready yet (handshake pending)",
-                                  i);
+                    /* ss[0x104]==0xC — WindowServer enable() ran.
+                     * Fire online event immediately.
+                     *
+                     * RE (display-pipe-enable-online-sequence.md):
+                     *   ss[0x104]=0xC means enable() ran (pipe enabled).
+                     *   ss[0x108] handshake is NOT in protocol spec, never set by kext.
+                     *   Write ss[0x100]|=0x5 to signal pending online. */
+                    uint32_t pending = 0x5u;
+                    if (write_memory(shell_opaque,
+                                    ss_gpa + 0x100u,
+                                    sizeof(pending), &pending)) {
+                        kicked++;
                     }
+                    LAGFX_LOG("display_tick_vblank: display[%u] "
+                              "ss[+0x104]==0xC, signaling online now",
+                              i);
+                    dev->display_ss_enabled |= (1u << i);
                 }
             }
         }
