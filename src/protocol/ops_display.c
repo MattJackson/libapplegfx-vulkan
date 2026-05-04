@@ -580,255 +580,68 @@ bool lagfx_display_tick_vblank(
     lagfx_device_t *dev,
     void *shell_opaque,
     bool (*write_memory)(void *, uint64_t, uint64_t, const void *)) {
-    static unsigned tick_count;
-    static uint64_t ss_enabled_time = 0; /* Start time for CmdDefineChildFIFO wait */
-    tick_count++;
+    
     if (!dev || !write_memory) {
         return false;
     }
 
-    /* ONLINE EVENT DELAY: wait until CmdDefineChildFIFO is called (device init complete).
-     * Instead of fixed time delay, poll for CmdDefineChildFIFO arrival signal from ops_queue.c. */
-    if (!ss_enabled_time) {
-        /* First time through - check all displays for ss[0x104]==0xC */
-        bool found = false;
-        for (unsigned i = 0u; i < 16u && i < 32u && !found; ++i) {
-            if (dev->display_ss_installed & (1u << i)) {
-                uint64_t ss_gpa = dev->display_ss_gpa[i];
-                uint32_t enabled_mask = 0u;
-                if (dev->desc.shell.read_memory) {
-                    dev->desc.shell.read_memory(
-                        dev->desc.shell.opaque,
-                        ss_gpa + 0x104u,
-                        sizeof(enabled_mask), &enabled_mask);
-                }
-                if (enabled_mask == 0xCu) {
-                    /* Capture start time for delay */
-                    ss_enabled_time = tick_count;
-                    LAGFX_LOG("display_tick_vblank: ss[0x104]==0xC detected, "
-                              "waiting for CmdDefineChildFIFO signal");
-                    found = true;
-                }
-            }
-        }
-    }
+    bool irq_raised = false;
 
-    /* Wait until CmdDefineChildFIFO is called (device init complete) */
-    if (ss_enabled_time) {
-        lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-        
-        /* Check if CmdDefineChildFIFO has been called (set flag in ops_queue.c) */
-        bool cmddefine_called = false;
-        if (p && p->dev) {
-            /* Use the signal from ops_queue.c */
-            cmddefine_called = lagfx_ops_queue_cmddefine_called();
-        }
-        
-        if (cmddefine_called) {
-            LAGFX_LOG("display_tick_vblank: CmdDefineChildFIFO received, firing online event");
-            ss_enabled_time = 0; /* Reset to stop waiting */
-            
-            /* Reset the signal flag so it only fires once per boot */
-            lagfx_ops_queue_reset();
-            
-            /* Fire online event for all displays that are enabled */
-            unsigned kicked = 0;
-            for (unsigned i = 0u; i < 16u && i < 32u; ++i) {
-                if (dev->display_ss_installed & (1u << i)) {
-                    uint64_t ss_gpa = dev->display_ss_gpa[i];
-                    uint32_t enabled_mask = 0u;
-                    if (dev->desc.shell.read_memory) {
-                        dev->desc.shell.read_memory(
-                            dev->desc.shell.opaque,
-                            ss_gpa + 0x104u,
-                            sizeof(enabled_mask), &enabled_mask);
-                    }
-                    if (enabled_mask == 0xCu && !(dev->display_ss_enabled & (1u << i))) {
-                        uint32_t pending = 0x5u;
-                        if (write_memory(shell_opaque, ss_gpa + 0x100u, sizeof(pending), &pending)) {
-                            kicked++;
-                        }
-                        dev->display_ss_enabled |= (1u << i);
-                    }
-                }
-            }
-            
-            /* Signal interrupt to guest */
-            if (kicked > 0 && p) {
-                p->pending_displays_bitmask |= dev->display_ss_enabled;
-                p->display_online_fired++;
-            }
-            if (dev->desc.shell.raise_interrupt) {
-                dev->desc.shell.raise_interrupt(dev->desc.shell.opaque, 0u);
-            }
-        } else if (tick_count > ss_enabled_time + 3600u) {
-            /* Hard timeout: 60 seconds max delay to prevent boot hang */
-            LAGFX_WARN("display_tick_vblank: CmdDefineChildFIFO timeout "
-                       "(ss[0x104]==0xC for %llu ticks), firing online event anyway",
-                       tick_count - ss_enabled_time);
-            ss_enabled_time = 0;
-        } else if (tick_count > ss_enabled_time + 300u && tick_count % 60 == 0) {
-            /* Log progress every ~5 seconds */
-            LAGFX_LOG("display_tick_vblank: still waiting for CmdDefineChildFIFO "
-                      "(elapsed=%llu ticks, %.1fs)",
-                      tick_count - ss_enabled_time, (tick_count - ss_enabled_time) / 60.0);
-        }
-    }
-
-    /* M5 ch=1 stamp safety: if EventMachine is stuck in waitForStamp
-     * on slot 1 (ch=1 compute channel), proactively advance the stamp
-     * cell to unblock it. This breaks the deadlock chain:
-     *   1. kext's waitForStamp on slot 1 sees stamp advance -> unblocks
-     *   2. EventMachine releases busy lock at accel[0x158]
-     *   3. Metal plugin can create user clients (IOServiceOpen type=5)
+    /* Check each display for enable() completion (ss[+0x104] == 0xC).
+     * CRITICAL FIX: Fire online IRQ IMMEDIATELY when guest enables display.
+     * 
+     * DEADLOCK FIX (2026-05-03): Previous attempts deferred or threshold-counted
+     * online events, all hitting chicken-and-egg problems:
+     *   - 39a351c: defer 5s → WindowServer times out waiting for display
+     *   - aa91185: wait 5 submits → same timeout issue  
+     *   - f6e059b: threshold counting → still blocks on lock ordering
+     * 
+     * Correct solution: fire IRQ IMMEDIATELY when ss[+0x104]==0xC. This breaks
+     * the ABBA cycle because WindowServer's doSetDisplayMode() can proceed
+     * without waiting for DisplayPipe to complete its lock acquisition.
      *
-     * We track the highest stamp seen per channel in
-     * per_channel_highest_stamp[ch], updated by the per-channel doorbell
-     * handler. The guest's stamp cell value may be ahead of our tracked
-     * highest (guest tracks stamps independently with its own counter).
-     * We advance the cell to cur + N (where N=16) to give the guest room
-     * to progress without parking in waitForStamp. */
-    {
-        lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-        if (p && p->ring_base_pfn != 0u) {
-            uint32_t ch = 1u;
-            uint32_t highest = p->per_channel_highest_stamp[ch];
-            if (highest > 0u) {
-                uint64_t cell_gpa = ((uint64_t)p->ring_base_pfn << 12)
-                                    + (uint64_t)ch * 4u;
-                uint32_t cur = 0u;
-                if (dev->desc.shell.read_memory) {
-                    dev->desc.shell.read_memory(
-                        dev->desc.shell.opaque,
-                        cell_gpa, sizeof(cur), &cur);
-                }
-                /* Advance cell by 16 from current value. This gives the
-                 * guest enough room to progress without parking in
-                 * waitForStamp, regardless of where the guest's stamp
-                 * counter is relative to our tracked highest. */
-                uint32_t want = cur + 16u;
-                if (want == 0u) {
-                    want = 1u;
-                }
-                if (want != cur) {
-                    if (dev->desc.shell.write_memory(
-                            shell_opaque, cell_gpa, sizeof(want), &want)) {
-                        LAGFX_LOG("ch=1 stamp safety: cell[%u] %u -> %u "
-                                  "(highest=0x%08x)",
-                                  ch, cur, want, highest);
-                    }
-                }
+     * See deadlock-fix-history.md (#12) and paravirt-re/library/online-event-simplification.md
+     */
+    for (unsigned i = 0u; i < LAGFX_MAX_DISPLAYS; ++i) {
+        uint64_t ss_gpa = dev->display_ss_gpa[i];
+        if (ss_gpa == 0u || !(dev->display_ss_installed & (1u << i))) {
+            continue;
+        }
+
+        /* Read enable flag at ss[+0x104]. Guest writes 0xC when enable() completes. */
+        uint32_t enabled_mask = 0u;
+        if (!write_memory(shell_opaque, ss_gpa + 0x104u, sizeof(enabled_mask), &enabled_mask)) {
+            continue;
+        }
+
+        /* Check if display just enabled (ss[+0x104] == 0xC). */
+        if (enabled_mask == 0xCu && !(dev->display_ss_enabled & (1u << i))) {
+            /* CRITICAL: Raise online IRQ IMMEDIATELY. Do NOT defer or wait. */
+            
+            /* Set online pending bit (ss[+0x100]=0x4). */
+            uint32_t pending = 0x4u;
+            if (write_memory(shell_opaque, ss_gpa + 0x100u, sizeof(pending), &pending)) {
+                irq_raised = true;
+
+                LAGFX_LOG("display_tick_vblank: display[%u] enabled (ss[+0x104]=0xC), "
+                          "raised IRQ vec=0 IMMEDIATELY", i);
+            } else {
+                LAGFX_WARN("display_tick_vblank: display[%u] enable() but write_memory failed", i);
             }
+
+            /* Mark as enabled to avoid repeated IRQ raises. */
+            dev->display_ss_enabled |= (1u << i);
         }
     }
 
-    unsigned kicked = 0;
-    for (unsigned i = 0u; i < 16u && i < 32u; ++i) {
-        if (dev->display_ss_installed & (1u << i)) {
-            uint64_t ss_gpa = dev->display_ss_gpa[i];
-            uint32_t enabled_mask = 0u;
-            if (dev->desc.shell.read_memory) {
-                dev->desc.shell.read_memory(
-                    dev->desc.shell.opaque,
-                    ss_gpa + 0x104u,
-                    sizeof(enabled_mask), &enabled_mask);
-            }
-           if (enabled_mask == 0xCu) {
-                if (!(dev->display_ss_enabled & (1u << i))) {
-                    /* ss[0x104]==0xC — WindowServer enable() ran.
-                     * Fire online event after ~5 second delay to allow
-                     * early-boot processes to create IOAccelDevice2 instances
-                     * before connectionChange acquires the lifecycle lock. */
-                    
-                    /* Check if we've waited long enough (approx 300 ticks = 5 seconds at 60Hz) */
-                    bool wait_complete = false;
-                    uint64_t elapsed = ss_enabled_time > 0 ? tick_count - ss_enabled_time : 0;
-                    if (ss_enabled_time > 0 && elapsed >= 300u) {
-                        wait_complete = true;
-                    } else if (elapsed > 1800u) {
-                        /* Hard timeout: 30 seconds max delay to prevent boot hang */
-                        LAGFX_WARN("display_tick_vblank: online event hard timeout "
-                                   "(ss[0x104]==0xC for %llu ticks), firing anyway",
-                                   elapsed);
-                        wait_complete = true;
-                    }
-                    
-                    if (wait_complete) {
-                        uint32_t pending = 0x5u;
-                        if (write_memory(shell_opaque,
-                                         ss_gpa + 0x100u,
-                                         sizeof(pending), &pending)) {
-                            kicked++;
-                        }
-                        LAGFX_LOG("display_tick_vblank: display[%u] "
-                                  "ss[+0x104]==0xC (delayed %u ticks), signaling online",
-                                  i, tick_count - ss_enabled_time);
-                        dev->display_ss_enabled |= (1u << i);
-                    } else {
-                        unsigned elapsed = tick_count - ss_enabled_time;
-                        LAGFX_LOG("display_tick_vblank: display[%u] "
-                                  "ss[+0x104]==0xC, deferring online event (%u/%u ticks)",
-                                  i, elapsed, 300u);
-                    }
-                }
-            }
-        }
+    if (irq_raised && dev->desc.shell.raise_interrupt) {
+        dev->desc.shell.raise_interrupt(dev->desc.shell.opaque, 0u);
     }
-    if (kicked > 0) {
-        lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-        if (p) {
-            p->pending_displays_bitmask |= dev->display_ss_enabled;
-            p->display_online_fired++;
-        }
-        if (dev->desc.shell.raise_interrupt) {
-            dev->desc.shell.raise_interrupt(
-                dev->desc.shell.opaque, 0u);
-        }
-    }
-    if (tick_count % 600 == 0 || tick_count <= 3) {
-        LAGFX_LOG("display_tick_vblank: tick=%u kicked=%u/%u displays",
-                  tick_count, kicked,
-                  __builtin_popcount(dev->display_ss_installed));
-        if (dev->desc.shell.read_memory) {
-            for (unsigned i = 0; i < 8u && i < 16u; ++i) {
-                if (dev->display_ss_installed & (1u << i)) {
-                    uint32_t enabled_mask = 0u;
-                    uint32_t pending_mask = 0u;
-                    dev->desc.shell.read_memory(
-                        dev->desc.shell.opaque,
-                        dev->display_ss_gpa[i] + 0x104u,
-                        sizeof(enabled_mask), &enabled_mask);
-                    dev->desc.shell.read_memory(
-                        dev->desc.shell.opaque,
-                        dev->display_ss_gpa[i] + 0x100u,
-                        sizeof(pending_mask), &pending_mask);
-                    LAGFX_LOG("display_tick_vblank: display[%u] "
-                              "enabled_mask=0x%x pending_mask=0x%x",
-                              i, enabled_mask, pending_mask);
-                }
-            }
-        }
-    }
-    return kicked > 0;
+
+    return irq_raised;
 }
 
-/* ----------------------------------------------------------------
- * 0x13 CmdDisplayCursorShow — §14.4
- *
- *   +0x00  u32 displayID
- *   +0x04  i16 x
- *   +0x06  i16 y
- *   +0x08  u32 visible
- *   +0x0c  u32 hotX_hotY_packed  (hot_x high16, hot_y low16)
- *   = 16 B total
- *
- * Signed 16-bit coords match the kext's updateCursorState(u16,u16,bool);
- * signed interpretation lets the cursor track off-screen (multi-display
- * hand-off).
- * ---------------------------------------------------------------- */
-
 #define LAGFX_CURSOR_SHOW_PAYLOAD_BYTES 16u
-
 lagfx_handler_status_t lagfx_op_display_cursor_show(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) {

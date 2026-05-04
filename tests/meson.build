@@ -133,6 +133,19 @@ if fs.is_file(meson.current_source_dir() / 'm4-task-translate.c')
   test('m4 task translate', m4_task_translate_test)
 endif
 
+# M5 deadlock detection tests. Regression suite for ABBA deadlock between
+# WindowServer and DisplayPipe. Tests online event timing (must be IMMEDIATE,
+# not deferred), stamp ACK latency (<10ms), and device creation timeout (<5s).
+if fs.is_file(meson.current_source_dir() / 'm5-deadlock-detect.c')
+  m5_deadlock_detect_test = executable('m5-deadlock-detect',
+    'm5-deadlock-detect.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m5 deadlock detection', m5_deadlock_detect_test)
+endif
+
 # M4 ExecIndirect2 outer-payload parser, segment walker, and 0x1cc reply
 # writer tests. Confirms the kext-side 0x37 layout (12B header + 16B
 # invalidates + 16B reserved + 16B resources), the encType=4/0x1cc reply
