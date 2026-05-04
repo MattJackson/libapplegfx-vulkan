@@ -628,6 +628,9 @@ bool lagfx_display_tick_vblank(
             LAGFX_LOG("display_tick_vblank: CmdDefineChildFIFO received, firing online event");
             ss_enabled_time = 0; /* Reset to stop waiting */
             
+            /* Reset the signal flag so it only fires once per boot */
+            lagfx_ops_queue_reset();
+            
             /* Fire online event for all displays that are enabled */
             unsigned kicked = 0;
             for (unsigned i = 0u; i < 16u && i < 32u; ++i) {
