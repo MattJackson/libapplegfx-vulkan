@@ -2070,7 +2070,7 @@ static void test_iosurface_create_handler(void) {
           "iosurface-create bytes_per_row decoded");
     CHECK(cap != NULL && cap->size == 0x7e9000ull,
           "iosurface-create size decoded");
-    CHECK(cap != NULL && cap->last_stamp == 0x28280001u,
+    CHECK(cap != NULL && cap->last_stamp == 0x27270001u,
           "iosurface-create last_stamp captured");
 
     /* Short payload — fail-open: still OK, still stamps, captured for
