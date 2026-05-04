@@ -504,6 +504,7 @@ lagfx_handler_status_t lagfx_op_vchan_present(
                     p->dev->desc.shell.write_memory);
             }
         }
+        }   /* closes if (p->dev->vk->initialized ...) */
     }
 #endif
 
