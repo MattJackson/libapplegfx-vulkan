@@ -80,16 +80,10 @@ typedef enum {
     LAGFX_OP_SYNCHRONIZE_DISCARD      = 0x23,
     LAGFX_OP_SET_OBJECT_LIST          = 0x24,
     LAGFX_OP_SET_OBJECT_PLACEMENT     = 0x25,
-    LAGFX_OP_DELETE_IOSURFACE_BACKING = 0x26,
-
-    /* --- IOSurface family (0x27-0x29) ---------------------------
-     * Conjectured opcode numbers + payload layouts per
-     * re-followup-spec-gaps.md §14.5 and phase-4-iosurface-
-     * videotoolbox-plan.md §3.3/§3.4. WindowServer emits these
-     * during M6 startup for its back-buffer pool; log+ack stubs for
-     * bring-up, real VkImage-backed lifecycle lands in Phase 4. */
-    LAGFX_OP_DELETE_IOSURFACE         = 0x27,
-    LAGFX_OP_IOSURFACE_CREATE         = 0x28,
+   LAGFX_OP_DELETE_IOSURFACE_BACKING = 0x26,
+    /* --- IOSurface family (0x27-0x29) ---------------------- */
+    LAGFX_OP_IOSURFACE_CREATE         = 0x27,
+    LAGFX_OP_IOSURFACE_LOOKUP         = 0x28,
     LAGFX_OP_IOSURFACE_UPDATE         = 0x29,
 
     /* --- M2+ extended range (0x30-0x41) -------------------------

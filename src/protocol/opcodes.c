@@ -143,9 +143,15 @@ static const lagfx_op_descriptor_t g_op_table[] = {
      * command). Note: 0x28 previously carried the unused
      * Unknown(0x28) entry (A2 kext disasm §13.5); §14.5
      * reclaims it for CmdIOSurfaceCreate. */
-    { LAGFX_OP_DELETE_IOSURFACE,         "CmdDeleteIOSurface",
-      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_delete_backing2 },
-    { LAGFX_OP_IOSURFACE_CREATE,         "CmdLookupIOSurface",
+    /* --- IOSurface family (0x27-0x29) ----------------------
+     * Conjectured opcode numbers + payload layouts (§14.5 /
+     * phase-4-iosurface-videotoolbox-plan §3.3). Log+ack only
+     * for now; full surface lifecycle not yet wired to render path.
+     * Guest sends 0x27 (create) before 0x28 (lookup), but logs show
+     * only 0x28 repeating with "surface not found" errors. */
+    { LAGFX_OP_IOSURFACE_CREATE,         "CmdCreateIOSurfaceBacking2",
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_create_backing2 },
+    { LAGFX_OP_IOSURFACE_LOOKUP,         "CmdLookupIOSurface",
       LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_lookup },
     { LAGFX_OP_IOSURFACE_UPDATE,         "CmdIOSurfaceUpdate",
       LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_lookup },
