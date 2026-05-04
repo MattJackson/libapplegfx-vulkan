@@ -593,9 +593,10 @@ bool lagfx_display_tick_vblank(
      * pipeline becomes active and holds the lifecycle lock (accel[+0x88]).
      * Without this delay, connectionChange acquires the lock immediately,
      * blocking new device creation from metal-test/system_profiler. */
-    if (!ss_enabled_time && tick_count > 1) {
-        /* First time through after init - check if any display enabled */
-        for (unsigned i = 0u; i < 16u && i < 32u; ++i) {
+    if (!ss_enabled_time) {
+        /* First time through - check all displays for ss[0x104]==0xC */
+        bool found = false;
+        for (unsigned i = 0u; i < 16u && i < 32u && !found; ++i) {
             if (dev->display_ss_installed & (1u << i)) {
                 uint64_t ss_gpa = dev->display_ss_gpa[i];
                 uint32_t enabled_mask = 0u;
@@ -611,7 +612,7 @@ bool lagfx_display_tick_vblank(
                     LAGFX_LOG("display_tick_vblank: ss[0x104]==0xC detected, "
                               "deferring online event for ~5 seconds (tick=%u)",
                               tick_count);
-                    break;
+                    found = true;
                 }
             }
         }
@@ -684,13 +685,14 @@ bool lagfx_display_tick_vblank(
                     
                     /* Check if we've waited long enough (approx 300 ticks = 5 seconds at 60Hz) */
                     bool wait_complete = false;
-                    if (ss_enabled_time > 0 && tick_count >= ss_enabled_time + 300u) {
+                    uint64_t elapsed = ss_enabled_time > 0 ? tick_count - ss_enabled_time : 0;
+                    if (ss_enabled_time > 0 && elapsed >= 300u) {
                         wait_complete = true;
-                    } else if (tick_count > 1800u) {
+                    } else if (elapsed > 1800u) {
                         /* Hard timeout: 30 seconds max delay to prevent boot hang */
                         LAGFX_WARN("display_tick_vblank: online event hard timeout "
-                                   "(ss[0x104]==0xC for %u ticks), firing anyway",
-                                   tick_count);
+                                   "(ss[0x104]==0xC for %llu ticks), firing anyway",
+                                   elapsed);
                         wait_complete = true;
                     }
                     
