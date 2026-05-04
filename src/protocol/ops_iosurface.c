@@ -186,23 +186,31 @@ lagfx_handler_status_t lagfx_op_iosurface_create_backing2(
         g_cap_create.surface_id = surface_id;
     }
 
-    if (!hdr->payload || hdr->payload_size < 28) {
-        LAGFX_WARN("CmdCreateIOSurfaceBacking2: payload too small (%u < 28)",
-                    (unsigned)hdr->payload_size);
-        return LAGFX_HANDLER_OK;
+    /* If payload is at least 28 bytes, parse full dimensions.
+     * Otherwise use placeholder values and register with minimal info. */
+    uint32_t width = 1920u;   /* default fallback */
+    uint32_t height = 1080u;  /* default fallback */
+    uint32_t pixel_format = 1145644410u; /* kCVPixelFormatType_32BGRA */
+    uint32_t bytes_per_row = 1920u * 4u; /* width * 4 bytes per pixel */
+    uint64_t size = (uint64_t)bytes_per_row * (uint64_t)height;
+
+    if (hdr->payload && hdr->payload_size >= 28) {
+        width = le32(hdr->payload + 4);
+        height = le32(hdr->payload + 8);
+        pixel_format = le32(hdr->payload + 12);
+        bytes_per_row = le32(hdr->payload + 16);
+        size = le64(hdr->payload + 20);
+
+        g_cap_create.width = width;
+        g_cap_create.height = height;
+        g_cap_create.pixel_format = pixel_format;
+        g_cap_create.bytes_per_row = bytes_per_row;
+        g_cap_create.size = size;
+    } else {
+        LAGFX_WARN("CmdCreateIOSurfaceBacking2: payload too small (%u < 28), "
+                   "using defaults for surface_id=0x%x",
+                   (unsigned)hdr->payload_size, surface_id);
     }
-
-    uint32_t width = le32(hdr->payload + 4);
-    uint32_t height = le32(hdr->payload + 8);
-    uint32_t pixel_format = le32(hdr->payload + 12);
-    uint32_t bytes_per_row = le32(hdr->payload + 16);
-    uint64_t size = le64(hdr->payload + 20);
-
-    g_cap_create.width = width;
-    g_cap_create.height = height;
-    g_cap_create.pixel_format = pixel_format;
-    g_cap_create.bytes_per_row = bytes_per_row;
-    g_cap_create.size = size;
 
     LAGFX_LOG("CmdCreateIOSurfaceBacking2: surface_id=0x%x %ux%u fmt=0x%x "
                "bpr=%u size=%llu", surface_id, width, height, pixel_format,
