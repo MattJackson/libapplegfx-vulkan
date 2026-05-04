@@ -449,12 +449,17 @@ lagfx_handler_status_t lagfx_op_vchan_present(
     }
 
     if (surf && surf->host_handle && p->dev && p->dev->vk) {
-        LAGFX_LOG("vchan_present: checking Vulkan present, vk=%p initialized=%d device=%p",
-                   (void*)p->dev->vk, p->dev->vk->initialized, (void*)p->dev->vk->device);
+        LAGFX_LOG("vchan_present: checking Vulkan present, vk=%p initialized=%d device=%p host_handle=%p",
+                   (void*)p->dev->vk, p->dev->vk->initialized, (void*)p->dev->vk->device, surf->host_handle);
         
         if (p->dev->vk->initialized && p->dev->vk->device != VK_NULL_HANDLE) {
             lagfx_vk_iosurface_t *ios =
                 (lagfx_vk_iosurface_t *)surf->host_handle;
+            LAGFX_LOG("vchan_present: ios=%p", (void*)ios);
+            
+            /* Debug: check if we're actually here */
+            LAGFX_LOG("vchan_present: INSIDE VULKAN PATH, surf->host_handle=%p", (void*)surf->host_handle);
+            
         lagfx_display_t *disp = NULL;
         for (size_t i = 0; i < LAGFX_MAX_DISPLAYS; ++i) {
             if (p->dev->displays[i] != NULL
