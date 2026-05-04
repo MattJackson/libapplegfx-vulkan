@@ -23,7 +23,7 @@
 #include <string.h>
 
 /* Flag set when CmdDefineChildFIFO is called, signaling device creation complete.
- * Used by ops_display.c to wait for WindowServer display init before firing online event. */
+ * Used by ops_display.c and ops_display_vchan.c to wait for WindowServer display init before firing online event. */
 static bool g_cmd_define_fifo_called = false;
 
 bool lagfx_ops_queue_cmddefine_called(void) {
@@ -32,6 +32,11 @@ bool lagfx_ops_queue_cmddefine_called(void) {
 
 void lagfx_ops_queue_reset(void) {
     g_cmd_define_fifo_called = false;
+}
+
+/* Setter function for display vchan handler to signal device creation complete */
+void lagfx_ops_queue_set_cmddefine_called(void) {
+    g_cmd_define_fifo_called = true;
 }
 
 static inline uint32_t lagfx_le32(const uint8_t *b) {

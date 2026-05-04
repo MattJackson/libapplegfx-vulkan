@@ -19,6 +19,12 @@
 #include "../device.h"
 #include "../display.h"
 #include "../common/log.h"
+#include "opcodes.h"
+#include "state.h"
+#include "resource_registry.h"
+#include "../device.h"
+#include "../display.h"
+#include "../common/log.h"
 
 #ifdef LAGFX_HAVE_VULKAN
 #include "../vulkan/iosurface.h"
@@ -357,8 +363,18 @@ lagfx_handler_status_t lagfx_op_display_define_child_fifo(
     slot->entry_count   = entry_count;
     slot->read_stride   = read_stride;
     slot->write_stride  = write_stride;
-    slot->ring_index    = 0;
+   slot->ring_index    = 0;
     slot->live          = true;
+
+    /* Signal that device creation is complete - WindowServer has started display init */
+    if (p && p->dev) {
+        lagfx_ops_queue_set_cmddefine_called();
+        
+        LAGFX_LOG("display CmdDefineChildFIFO: ring_base=0x%llx stamp=0x%08x "
+                  "(device creation complete)",
+                  (unsigned long long)ring_base, hdr->stamp);
+    }
+
     return LAGFX_HANDLER_OK;
 }
 /* ================================================================
