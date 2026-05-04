@@ -315,19 +315,43 @@ lagfx_handler_status_t lagfx_op_display_define_child_fifo(
         LAGFX_LOG("display CmdDefineChildFIFO: raw payload: [%s]", hex);
     }
 
+
+    // When we find an empty slot, use it; otherwise deallocate oldest and reuse
     lagfx_display_child_ring_t *slot = NULL;
+    
+    // First try to find a free slot
     for (unsigned i = 0; i < LAGFX_MAX_DISPLAY_CHILD_RINGS; ++i) {
         if (!p->display_child_rings[i].live) {
             slot = &p->display_child_rings[i];
             break;
         }
     }
+    
+    // If no free slot, deallocate the oldest one (ring_index 0) and reuse it
     if (!slot) {
-        LAGFX_WARN("display CmdDefineChildFIFO: child ring table full "
-                   "(max=%u)", LAGFX_MAX_DISPLAY_CHILD_RINGS);
+        LAGFX_WARN("display CmdDefineChildFIFO: child ring table full, "
+                   "deallocating oldest ring to make room");
+        
+        // Find the first live entry and mark it dead
+        for (unsigned i = 0; i < LAGFX_MAX_DISPLAY_CHILD_RINGS; ++i) {
+            if (p->display_child_rings[i].live) {
+                LAGFX_LOG("display CmdDefineChildFIFO: deallocating ring[%u] "
+                          "(ring_base=0x%llx) to make room",
+                          i, (unsigned long long)p->display_child_rings[i].ring_base_gpa);
+                memset(&p->display_child_rings[i], 0, sizeof(p->display_child_rings[i]));
+                slot = &p->display_child_rings[i];
+                break;
+            }
+        }
+    }
+    
+    if (!slot) {
+        LAGFX_ERR("display CmdDefineChildFIFO: failed to allocate ring slot "
+                  "(all slots busy and deallocation failed)");
         return LAGFX_HANDLER_ERR_STATE;
     }
 
+    // Populate the slot with new ring geometry
     slot->ring_base_gpa = ring_base;
     slot->ring_size     = ring_size;
     slot->entry_count   = entry_count;
@@ -335,10 +359,8 @@ lagfx_handler_status_t lagfx_op_display_define_child_fifo(
     slot->write_stride  = write_stride;
     slot->ring_index    = 0;
     slot->live          = true;
-
     return LAGFX_HANDLER_OK;
 }
-
 /* ================================================================
  * 0x06 present
  *
