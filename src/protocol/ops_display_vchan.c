@@ -448,10 +448,13 @@ lagfx_handler_status_t lagfx_op_vchan_present(
         }
     }
 
-    if (surf && surf->host_handle && p->dev && p->dev->vk
-        && p->dev->vk->initialized) {
-        lagfx_vk_iosurface_t *ios =
-            (lagfx_vk_iosurface_t *)surf->host_handle;
+    if (surf && surf->host_handle && p->dev && p->dev->vk) {
+        LAGFX_LOG("vchan_present: checking Vulkan present, vk=%p initialized=%d device=%p",
+                   (void*)p->dev->vk, p->dev->vk->initialized, (void*)p->dev->vk->device);
+        
+        if (p->dev->vk->initialized && p->dev->vk->device != VK_NULL_HANDLE) {
+            lagfx_vk_iosurface_t *ios =
+                (lagfx_vk_iosurface_t *)surf->host_handle;
         lagfx_display_t *disp = NULL;
         for (size_t i = 0; i < LAGFX_MAX_DISPLAYS; ++i) {
             if (p->dev->displays[i] != NULL
@@ -485,6 +488,7 @@ lagfx_handler_status_t lagfx_op_vchan_present(
                 scanout_gpa, scanout_len,
                 p->dev->desc.shell.opaque,
                 p->dev->desc.shell.write_memory);
+            }
         }
     }
 #endif
