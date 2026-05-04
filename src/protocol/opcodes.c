@@ -146,7 +146,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_DELETE_IOSURFACE,         "CmdDeleteIOSurface",
       LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_delete_backing2 },
     { LAGFX_OP_IOSURFACE_CREATE,         "CmdIOSurfaceCreate",
-      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_create_backing2 },
+      LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_lookup },
     { LAGFX_OP_IOSURFACE_UPDATE,         "CmdIOSurfaceUpdate",
       LAGFX_PRIO_P2, 0, 0, lagfx_op_iosurface_lookup },
 
