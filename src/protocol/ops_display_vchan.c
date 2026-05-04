@@ -461,10 +461,12 @@ lagfx_handler_status_t lagfx_op_vchan_present(
             LAGFX_LOG("vchan_present: INSIDE VULKAN PATH, surf->host_handle=%p", (void*)surf->host_handle);
             
         lagfx_display_t *disp = NULL;
+        LAGFX_LOG("vchan_present: starting display lookup, disp=0x0");
         for (size_t i = 0; i < LAGFX_MAX_DISPLAYS; ++i) {
             if (p->dev->displays[i] != NULL
                 && p->dev->displays[i]->port == display_index) {
                 disp = p->dev->displays[i];
+                LAGFX_LOG("vchan_present: found disp by port, disp=%p rt_ready=%d", (void*)disp, disp->rt_ready);
                 break;
             }
         }
@@ -472,27 +474,34 @@ lagfx_handler_status_t lagfx_op_vchan_present(
             for (size_t i = 0; i < LAGFX_MAX_DISPLAYS; ++i) {
                 if (p->dev->displays[i] != NULL) {
                     disp = p->dev->displays[i];
+                    LAGFX_LOG("vchan_present: found disp by fallback, disp=%p rt_ready=%d", (void*)disp, disp->rt_ready);
                     break;
                 }
             }
         }
-        if (disp && disp->rt_ready) {
-            uint64_t scanout_gpa = 0;
-            uint64_t scanout_len = 0;
-            lagfx_display_entry_t *pe =
-                lagfx_protocol_find_display(p, display_index);
-            if (pe && pe->mapped) {
-                scanout_gpa = pe->buffer_va;
-                scanout_len = pe->length;
-            }
-            lagfx_vk_display_present_surface(
-                p->dev->vk, &disp->rt,
-                ios->image, &ios->layout,
-                ios->width, ios->height,
-                disp->rt_width, disp->rt_height,
-                scanout_gpa, scanout_len,
-                p->dev->desc.shell.opaque,
-                p->dev->desc.shell.write_memory);
+        if (!disp) {
+            LAGFX_WARN("vchan_present: NO DISPLAY FOUND for display_index=%u", display_index);
+        } else if (!disp->rt_ready) {
+            LAGFX_LOG("vchan_present: disp found but rt_ready=0");
+        } else {
+            LAGFX_LOG("vchan_present: about to call lagfx_vk_display_present_surface, disp=%p", (void*)disp);
+            {
+                uint64_t scanout_gpa = 0;
+                uint64_t scanout_len = 0;
+                lagfx_display_entry_t *pe =
+                    lagfx_protocol_find_display(p, display_index);
+                if (pe && pe->mapped) {
+                    scanout_gpa = pe->buffer_va;
+                    scanout_len = pe->length;
+                }
+                lagfx_vk_display_present_surface(
+                    p->dev->vk, &disp->rt,
+                    ios->image, &ios->layout,
+                    ios->width, ios->height,
+                    disp->rt_width, disp->rt_height,
+                    scanout_gpa, scanout_len,
+                    p->dev->desc.shell.opaque,
+                    p->dev->desc.shell.write_memory);
             }
         }
     }
