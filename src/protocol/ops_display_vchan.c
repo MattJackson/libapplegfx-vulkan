@@ -415,6 +415,39 @@ lagfx_handler_status_t lagfx_op_vchan_present(
               hdr->stamp);
 
 #ifdef LAGFX_HAVE_VULKAN
+    /* Auto-create surface if not found (guest may not send CmdLookupIOSurface). */
+    if (!surf || !surf->host_handle) {
+        if (p->dev && p->dev->vk && p->dev->vk->initialized) {
+            LAGFX_LOG("vchan_present: auto-creating surface 0x%x for display %u",
+                       surface_id, display_index);
+            
+            /* Use reasonable default dimensions. */
+            uint32_t width = 1920;
+            uint32_t height = 1080;
+            lagfx_vk_iosurface_t *ios = NULL;
+            lagfx_status_t st = lagfx_vk_iosurface_create(p->dev->vk, width, height,
+                                                          0x24u, &ios);
+            if (st == LAGFX_OK && ios) {
+                /* Register auto-created surface. */
+                lagfx_resource_register(&p->resources, surface_id,
+                                         LAGFX_RESOURCE_TYPE_TEXTURE,
+                                         0u, 0ull,
+                                         ((uint64_t)width * height * 4));
+                surf = lagfx_resource_lookup(&p->resources, surface_id, 0u);
+                if (surf) {
+                    surf->host_handle = ios;
+                    LAGFX_LOG("vchan_present: auto-created VkImage for surface 0x%x",
+                               surface_id);
+                } else {
+                    lagfx_vk_iosurface_destroy(p->dev->vk, ios);
+                }
+            } else {
+                LAGFX_WARN("vchan_present: failed to auto-create surface 0x%x",
+                           surface_id);
+            }
+        }
+    }
+
     if (surf && surf->host_handle && p->dev && p->dev->vk
         && p->dev->vk->initialized) {
         lagfx_vk_iosurface_t *ios =
