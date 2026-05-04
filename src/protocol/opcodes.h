@@ -274,6 +274,10 @@ lagfx_handler_status_t lagfx_op_define_child_fifo(lagfx_protocol_t *p,
 lagfx_handler_status_t lagfx_op_delete_child_fifo(lagfx_protocol_t *p,
                                                   const lagfx_cmd_header_t *hdr);
 
+/* ops_queue.c - signaling for adaptive online event delay */
+bool lagfx_ops_queue_cmddefine_called(void);
+void lagfx_ops_queue_reset(void);
+
 /* ops_cmdbuf.c — stubs (P0/P1 TODO). */
 lagfx_handler_status_t lagfx_op_synchronize_resources(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);

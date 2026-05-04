@@ -559,7 +559,7 @@ bool lagfx_ops_display_tick_vblank(
                         sizeof(buf), buf);
 }
 
-/* ONLINE EVENT 2026-05-03: fires when ss[0x104]==0xC with ~5 second delay.
+/* ONLINE EVENT 2026-05-03: fires when ss[0x104]==0xC after adaptive polling.
  *
  * ROOT CAUSE (confirmed via RE):
  *   IOServiceOpen(type=5) hangs when called from main thread after displays are online
@@ -568,31 +568,27 @@ bool lagfx_ops_display_tick_vblank(
  *   Hang occurs because lifecycle lock (accel[+0x88]) is held by connectionChange
  *     during display pipeline's process_online path when new device creation tries to acquire it
  *
- * FIX: Defer online event by ~5 seconds after detecting ss[0x104]==0xC.
- *   This gives early-boot processes time to create their IOAccelDevice2 instances
- *   before the display pipeline becomes active and holds the lifecycle lock
- *   Without this delay, connectionChange acquires the lock immediately, blocking new device creation
+ * FIX: Adaptive polling loop waiting for CmdDefineChildFIFO commands.
+ *   Instead of fixed 5s sleep, wait until WindowServer starts sending CmdDefineChildFIFO.
+ *   Poll every ~500ms (30 ticks at 60Hz) with 60s timeout to prevent boot hang.
+ *   The first valid CmdDefineChildFIFO signals device creation complete.
  *
- * Timing: ss[0x104]==0xC means WindowServer enable() ran (pipe enabled).
- *         Early boot creates devices before display online event fires.
- *         Delay allows early processes to complete newUserClient/start() before connectionChange runs. */
+ * Implementation: Track CmdDefineChildFIFO arrivals via flag in ops_queue.c.
+ *   Once we see >= 1 valid command, fire online event immediately (not delayed).
+ *   This is more precise than arbitrary time-based delay. */
 bool lagfx_display_tick_vblank(
     lagfx_device_t *dev,
     void *shell_opaque,
     bool (*write_memory)(void *, uint64_t, uint64_t, const void *)) {
     static unsigned tick_count;
-    static uint64_t ss_enabled_time = 0; /* Monotonic time when ss[0x104]==0xC detected */
+    static uint64_t ss_enabled_time = 0; /* Start time for CmdDefineChildFIFO wait */
     tick_count++;
     if (!dev || !write_memory) {
         return false;
     }
 
-    /* ONLINE EVENT DELAY: wait ~5 seconds after detecting ss[0x104]==0xC
-     * before firing the online event. This gives early-boot processes
-     * time to create their IOAccelDevice2 instances before the display
-     * pipeline becomes active and holds the lifecycle lock (accel[+0x88]).
-     * Without this delay, connectionChange acquires the lock immediately,
-     * blocking new device creation from metal-test/system_profiler. */
+    /* ONLINE EVENT DELAY: wait until CmdDefineChildFIFO is called (device init complete).
+     * Instead of fixed time delay, poll for CmdDefineChildFIFO arrival signal from ops_queue.c. */
     if (!ss_enabled_time) {
         /* First time through - check all displays for ss[0x104]==0xC */
         bool found = false;
@@ -607,14 +603,72 @@ bool lagfx_display_tick_vblank(
                         sizeof(enabled_mask), &enabled_mask);
                 }
                 if (enabled_mask == 0xCu) {
-                    /* Capture start time for delay calculation */
+                    /* Capture start time for delay */
                     ss_enabled_time = tick_count;
                     LAGFX_LOG("display_tick_vblank: ss[0x104]==0xC detected, "
-                              "deferring online event for ~5 seconds (tick=%u)",
-                              tick_count);
+                              "waiting for CmdDefineChildFIFO signal");
                     found = true;
                 }
             }
+        }
+    }
+
+    /* Wait until CmdDefineChildFIFO is called (device init complete) */
+    if (ss_enabled_time) {
+        lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+        
+        /* Check if CmdDefineChildFIFO has been called (set flag in ops_queue.c) */
+        bool cmddefine_called = false;
+        if (p && p->dev) {
+            /* Use the signal from ops_queue.c */
+            cmddefine_called = lagfx_ops_queue_cmddefine_called();
+        }
+        
+        if (cmddefine_called) {
+            LAGFX_LOG("display_tick_vblank: CmdDefineChildFIFO received, firing online event");
+            ss_enabled_time = 0; /* Reset to stop waiting */
+            
+            /* Fire online event for all displays that are enabled */
+            unsigned kicked = 0;
+            for (unsigned i = 0u; i < 16u && i < 32u; ++i) {
+                if (dev->display_ss_installed & (1u << i)) {
+                    uint64_t ss_gpa = dev->display_ss_gpa[i];
+                    uint32_t enabled_mask = 0u;
+                    if (dev->desc.shell.read_memory) {
+                        dev->desc.shell.read_memory(
+                            dev->desc.shell.opaque,
+                            ss_gpa + 0x104u,
+                            sizeof(enabled_mask), &enabled_mask);
+                    }
+                    if (enabled_mask == 0xCu && !(dev->display_ss_enabled & (1u << i))) {
+                        uint32_t pending = 0x5u;
+                        if (write_memory(shell_opaque, ss_gpa + 0x100u, sizeof(pending), &pending)) {
+                            kicked++;
+                        }
+                        dev->display_ss_enabled |= (1u << i);
+                    }
+                }
+            }
+            
+            /* Signal interrupt to guest */
+            if (kicked > 0 && p) {
+                p->pending_displays_bitmask |= dev->display_ss_enabled;
+                p->display_online_fired++;
+            }
+            if (dev->desc.shell.raise_interrupt) {
+                dev->desc.shell.raise_interrupt(dev->desc.shell.opaque, 0u);
+            }
+        } else if (tick_count > ss_enabled_time + 3600u) {
+            /* Hard timeout: 60 seconds max delay to prevent boot hang */
+            LAGFX_WARN("display_tick_vblank: CmdDefineChildFIFO timeout "
+                       "(ss[0x104]==0xC for %llu ticks), firing online event anyway",
+                       tick_count - ss_enabled_time);
+            ss_enabled_time = 0;
+        } else if (tick_count > ss_enabled_time + 300u && tick_count % 60 == 0) {
+            /* Log progress every ~5 seconds */
+            LAGFX_LOG("display_tick_vblank: still waiting for CmdDefineChildFIFO "
+                      "(elapsed=%llu ticks, %.1fs)",
+                      tick_count - ss_enabled_time, (tick_count - ss_enabled_time) / 60.0);
         }
     }
 

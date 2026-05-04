@@ -22,6 +22,18 @@
 
 #include <string.h>
 
+/* Flag set when CmdDefineChildFIFO is called, signaling device creation complete.
+ * Used by ops_display.c to wait for WindowServer display init before firing online event. */
+static bool g_cmd_define_fifo_called = false;
+
+bool lagfx_ops_queue_cmddefine_called(void) {
+    return g_cmd_define_fifo_called;
+}
+
+void lagfx_ops_queue_reset(void) {
+    g_cmd_define_fifo_called = false;
+}
+
 static inline uint32_t lagfx_le32(const uint8_t *b) {
     return (uint32_t)b[0]
          | ((uint32_t)b[1] << 8)
@@ -89,6 +101,8 @@ lagfx_handler_status_t lagfx_op_define_child_fifo(lagfx_protocol_t *p,
     entry->synced    = false;
     entry->live      = true;
 
+    /* Signal that device creation is complete - WindowServer has started display init */
+    g_cmd_define_fifo_called = true;
     LAGFX_LOG("CmdDefineChildFIFO: fifoID=%u stamp=0x%08x (ring geometry "
               "registered via MMIO setters, not payload)",
               fifo_id, hdr->stamp);
