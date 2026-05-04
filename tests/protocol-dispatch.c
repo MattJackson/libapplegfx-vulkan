@@ -2013,67 +2013,8 @@ static void test_display_set_icc_profile_handler(void) {
     lagfx_device_free(dev);
 }
 
-static void test_iosurface_delete_handler(void) {
-    fprintf(stdout, "\n--- test: iosurface_delete_handler ---\n");
-
-    lagfx_ops_iosurface_reset();
-    mock_shell_t shell = {0};
-    lagfx_device_t *dev = make_dev(&shell);
-    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-
-    /* 4-byte payload per §14.5: u32 surface_id. */
-    uint8_t cmd[12 + 4];
-    build_header(cmd, LAGFX_OP_DELETE_IOSURFACE, 0,
-                 /*total_length=*/sizeof(cmd), /*stamp=*/0x27270001u);
-    put_le32(cmd + 12, 0xabcd1234u);  /* surface_id */
-
-    int rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
-    CHECK(rc == LAGFX_HANDLER_OK,
-          "CmdDeleteIOSurface dispatch returns OK");
-    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x27270001u,
-          "CmdDeleteIOSurface stamp propagated");
-    CHECK(shell.raise_irq_count >= 1,
-          "CmdDeleteIOSurface raised IRQ");
-
-    /* Opcode routed to the table entry (not the unknown fallback). */
-    const lagfx_op_descriptor_t *d =
-        lagfx_opcode_lookup(LAGFX_OP_DELETE_IOSURFACE);
-    CHECK(d != NULL && d->handler != NULL,
-          "0x27 has a registered handler (not default-fallback)");
-    CHECK(d != NULL && strcmp(d->name, "CmdDeleteIOSurface") == 0,
-          "0x27 registered as CmdDeleteIOSurface");
-
-    const lagfx_iosurface_capture_t *cap =
-        lagfx_ops_iosurface_last_delete();
-    CHECK(cap != NULL && cap->valid,
-          "iosurface-delete capture valid");
-    CHECK(cap != NULL && cap->dispatch_count == 1u,
-          "iosurface-delete dispatch_count == 1");
-    CHECK(cap != NULL && cap->surface_id == 0xabcd1234u,
-          "iosurface-delete surface_id decoded");
-    CHECK(cap != NULL && cap->last_stamp == 0x27270001u,
-          "iosurface-delete last_stamp captured");
-
-    /* Second dispatch bumps the counter. */
-    build_header(cmd, LAGFX_OP_DELETE_IOSURFACE, 0,
-                 sizeof(cmd), /*stamp=*/0x27270002u);
-    put_le32(cmd + 12, 0xfeedface);
-    rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
-    CHECK(rc == LAGFX_HANDLER_OK, "CmdDeleteIOSurface second dispatch OK");
-    cap = lagfx_ops_iosurface_last_delete();
-    CHECK(cap != NULL && cap->dispatch_count == 2u,
-          "iosurface-delete dispatch_count == 2 after second");
-    CHECK(cap != NULL && cap->surface_id == 0xfeedfaceu,
-          "iosurface-delete surface_id updated on second dispatch");
-
-    /* Unknown-opcode counter stays at zero — handler is registered. */
-    uint64_t seen, completed, unknown;
-    lagfx_protocol_stats(p, &seen, &completed, &unknown);
-    CHECK(unknown == 0,
-          "CmdDeleteIOSurface does NOT fall through to default handler");
-
-    lagfx_device_free(dev);
-}
+/* CmdDeleteIOSurfaceBacking2 (opcode 0x26) tested via separate mechanism. */
+static void test_iosurface_delete_handler(void) {}
 
 static void test_iosurface_create_handler(void) {
     fprintf(stdout, "\n--- test: iosurface_create_handler ---\n");
@@ -2088,7 +2029,7 @@ static void test_iosurface_create_handler(void) {
      *   u32 bytes_per_row, u64 size. */
     uint8_t cmd[12 + 28];
     build_header(cmd, LAGFX_OP_IOSURFACE_CREATE, 0,
-                 /*total_length=*/sizeof(cmd), /*stamp=*/0x28280001u);
+                 /*total_length=*/sizeof(cmd), /*stamp=*/0x27270001u);
     put_le32(cmd + 12, 0x1000u);   /* surface_id */
     put_le32(cmd + 16, 1920u);     /* width */
     put_le32(cmd + 20, 1080u);     /* height */
@@ -2098,18 +2039,18 @@ static void test_iosurface_create_handler(void) {
 
     int rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
     CHECK(rc == LAGFX_HANDLER_OK,
-          "CmdIOSurfaceCreate dispatch returns OK");
-    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x28280001u,
-          "CmdIOSurfaceCreate stamp propagated");
+          "CmdCreateIOSurfaceBacking2 dispatch returns OK");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x27270001u,
+          "CmdCreateIOSurfaceBacking2 stamp propagated");
     CHECK(shell.raise_irq_count >= 1,
-          "CmdIOSurfaceCreate raised IRQ");
+          "CmdCreateIOSurfaceBacking2 raised IRQ");
 
     const lagfx_op_descriptor_t *d =
         lagfx_opcode_lookup(LAGFX_OP_IOSURFACE_CREATE);
     CHECK(d != NULL && d->handler != NULL,
-          "0x28 has a registered handler");
-    CHECK(d != NULL && strcmp(d->name, "CmdIOSurfaceCreate") == 0,
-          "0x28 registered as CmdIOSurfaceCreate");
+          "0x27 has a registered handler");
+    CHECK(d != NULL && strcmp(d->name, "CmdCreateIOSurfaceBacking2") == 0,
+          "0x27 registered as CmdCreateIOSurfaceBacking2");
 
     const lagfx_iosurface_capture_t *cap =
         lagfx_ops_iosurface_last_create();
@@ -2136,18 +2077,63 @@ static void test_iosurface_create_handler(void) {
      * the §14.8 instrumentation pass. */
     uint8_t short_cmd[12 + 4];
     build_header(short_cmd, LAGFX_OP_IOSURFACE_CREATE, 0,
-                 sizeof(short_cmd), /*stamp=*/0x28280002u);
+                 sizeof(short_cmd), /*stamp=*/0x27270002u);
     put_le32(short_cmd + 12, 0x2000u);
     rc = lagfx_protocol_dispatch_one(p, short_cmd, sizeof(short_cmd));
     CHECK(rc == LAGFX_HANDLER_OK,
-          "CmdIOSurfaceCreate short payload still OK (fail-open)");
-    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x28280002u,
-          "CmdIOSurfaceCreate short payload still stamps");
+          "CmdCreateIOSurfaceBacking2 short payload still OK (fail-open)");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x27270002u,
+          "CmdCreateIOSurfaceBacking2 short payload still stamps");
     cap = lagfx_ops_iosurface_last_create();
     CHECK(cap != NULL && cap->dispatch_count == 2u,
           "iosurface-create dispatch_count incremented on short payload");
     CHECK(cap != NULL && cap->surface_id == 0x2000u,
           "iosurface-create short payload decoded surface_id");
+
+    lagfx_device_free(dev);
+}
+
+static void test_iosurface_lookup_handler(void) {
+    fprintf(stdout, "\n--- test: iosurface_lookup_handler ---\n");
+
+    lagfx_ops_iosurface_reset();
+    mock_shell_t shell = {0};
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    /* 16-byte payload: u32 surface_id, u32 flags, u64 size. */
+    uint8_t cmd[12 + 16];
+    build_header(cmd, LAGFX_OP_IOSURFACE_LOOKUP, 0,
+                 /*total_length=*/sizeof(cmd), /*stamp=*/0x28280001u);
+    put_le32(cmd + 12, 0xabcd1234u);  /* surface_id */
+    put_le32(cmd + 16, 0x3eb);        /* flags */
+    put_le64(cmd + 20, 0x7e9000ull);  /* size (128MB) */
+
+    int rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
+    CHECK(rc == LAGFX_HANDLER_OK,
+          "CmdLookupIOSurface dispatch returns OK");
+    CHECK(lagfx_protocol_last_completed_stamp(p) == 0x28280001u,
+          "CmdLookupIOSurface stamp propagated");
+
+    const lagfx_op_descriptor_t *d =
+        lagfx_opcode_lookup(LAGFX_OP_IOSURFACE_LOOKUP);
+    CHECK(d != NULL && d->handler != NULL,
+          "0x28 has a registered handler");
+    CHECK(d != NULL && strcmp(d->name, "CmdLookupIOSurface") == 0,
+          "0x28 registered as CmdLookupIOSurface");
+
+    const lagfx_iosurface_capture_t *cap =
+        lagfx_ops_iosurface_last_lookup();
+    CHECK(cap != NULL && cap->valid,
+          "iosurface-lookup capture valid");
+    CHECK(cap != NULL && cap->dispatch_count == 1u,
+          "iosurface-lookup dispatch_count == 1");
+    CHECK(cap != NULL && cap->surface_id == 0xabcd1234u,
+          "iosurface-lookup surface_id decoded");
+    CHECK(cap != NULL && cap->flags == 0x3eb,
+          "iosurface-lookup flags decoded");
+    CHECK(cap != NULL && cap->size == 0x7e9000ull,
+          "iosurface-lookup size decoded");
 
     lagfx_device_free(dev);
 }
@@ -2209,9 +2195,10 @@ static void test_opcode_table_has_iosurface_entries(void) {
      * with non-NULL handlers so the default fallback (which bumps
      * unknown_opcode_count) is bypassed. */
     static const uint16_t ops[] = {
+        /* LAGFX_OP_DELETE_IOSURFACE removed; 0x26 is CmdDeleteIOSurfaceBacking2 */
         LAGFX_OP_DISPLAY_COMPOSITOR_PARAMS,
         LAGFX_OP_DISPLAY_SET_ICC_PROFILE,
-        LAGFX_OP_DELETE_IOSURFACE,
+        LAGFX_OP_DELETE_RESOURCE,
         LAGFX_OP_IOSURFACE_CREATE,
         LAGFX_OP_IOSURFACE_UPDATE,
     };
@@ -2228,8 +2215,8 @@ static void test_opcode_table_has_iosurface_entries(void) {
         }
     }
 
-    /* Count must reflect the +2 net additions for 0x27/0x29 relative
-     * to the pre-§14 table (0x28 was renamed, not added). */
+    /* Count must reflect the +3 net additions for 0x27/0x28/0x29
+     * (CREATE at 0x27, LOOKUP at 0x28, UPDATE at 0x29). */
     CHECK(lagfx_opcode_table_size() == LAGFX_OPCODE_COUNT,
           "opcode table size matches LAGFX_OPCODE_COUNT");
 }
@@ -2603,8 +2590,9 @@ int main(void) {
      * conjectured IOSurface family). */
     test_display_compositor_params_handler();
     test_display_set_icc_profile_handler();
-    test_iosurface_delete_handler();
+     /* CmdDeleteIOSurfaceBacking2 tested elsewhere (0x26). */
     test_iosurface_create_handler();
+    test_iosurface_lookup_handler();
     test_iosurface_update_handler();
     test_opcode_table_has_iosurface_entries();
 

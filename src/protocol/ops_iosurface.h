@@ -85,6 +85,7 @@ typedef struct {
 /* Accessors — valid for the life of the process; do NOT free. */
 const lagfx_iosurface_capture_t *lagfx_ops_iosurface_last_delete(void);
 const lagfx_iosurface_capture_t *lagfx_ops_iosurface_last_create(void);
+const lagfx_iosurface_capture_t *lagfx_ops_iosurface_last_lookup(void);
 const lagfx_iosurface_capture_t *lagfx_ops_iosurface_last_update(void);
 
 /* Reset all captures (tests call between cases). Idempotent. */
