@@ -115,6 +115,7 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     memset(p->fifos,    0, sizeof(p->fifos));
     memset(p->inflight, 0, sizeof(p->inflight));
     memset(p->displays, 0, sizeof(p->displays));
+    memset(p->display_child_rings, 0, sizeof(p->display_child_rings));
     memset(&p->resources, 0, sizeof(p->resources));
 
     p->total_cmds_seen      = 0;
