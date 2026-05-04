@@ -213,6 +213,50 @@ if fs.is_file(meson.current_source_dir() / 'm4-doorbell-drain.c')
   test('m4 doorbell drain', m4_doorbell_drain_test)
 endif
 
+# M1 shader catalog unit tests - LRU eviction and lookup.
+if fs.is_file(meson.current_source_dir() / 'm1-shader-catalog.c')
+  m1_shader_catalog_test = executable('m1-shader-catalog',
+    'm1-shader-catalog.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m1 shader catalog', m1_shader_catalog_test)
+endif
+
+# M4 render opcode tests - drawPrimitives family (most used opcodes).
+if fs.is_file(meson.current_source_dir() / 'm4-render-opcode-draw.c')
+  m4_render_draw_test = executable('m4-render-opcode-draw',
+    'm4-render-opcode-draw.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m4 render opcode draw', m4_render_draw_test)
+endif
+
+# M4 render opcode tests - pipeline state setup (setPipelineState, blend constants).
+if fs.is_file(meson.current_source_dir() / 'm4-render-opcode-pipeline.c')
+  m4_render_pipeline_test = executable('m4-render-opcode-pipeline',
+    'm4-render-opcode-pipeline.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m4 render opcode pipeline', m4_render_pipeline_test)
+endif
+
+# M5 display vchan tests - CmdDefineChildFIFO/CmdDisplayTransaction3 (M5 Stage 10%).
+if fs.is_file(meson.current_source_dir() / 'm5-display-vchan.c')
+  m5_display_vchan_test = executable('m5-display-vchan',
+    'm5-display-vchan.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m5 display vchan', m5_display_vchan_test)
+endif
+
 # Optional lavapipe smoke test — only built when vulkan is present.
 if fs.is_file(meson.current_source_dir() / 'lavapipe-smoke.c') \
    and vulkan_dep.found()
