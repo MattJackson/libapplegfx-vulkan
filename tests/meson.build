@@ -146,6 +146,44 @@ if fs.is_file(meson.current_source_dir() / 'm5-deadlock-detect.c')
   test('m5 deadlock detection', m5_deadlock_detect_test)
 endif
 
+# M4 Render opcode unit tests. Covers top 10 most-used render opcodes:
+# CmdDrawIndexedPrimitive (0x08), CmdSetPrimitiveTopology (0x14),
+# CmdBindIndexBuffer (0x24), CmdDrawInstanced (0x28), CmdSetViewport (0x34),
+# CmdBindPipeline (0x3C), plus edge cases (invalid payload, cross-page VA).
+if fs.is_file(meson.current_source_dir() / 'm4-render-opcodes.c')
+  m4_render_opcodes_test = executable('m4-render-opcodes',
+    'm4-render-opcodes.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m4 render opcodes (top 10)', m4_render_opcodes_test)
+endif
+
+# M4 Blit operation unit tests. Covers CmdCopyImage, CmdResolveImage,
+# CmdClearColorImage with various source/dest combinations and edge cases.
+if fs.is_file(meson.current_source_dir() / 'm4-blit-opcodes.c')
+  m4_blit_opcodes_test = executable('m4-blit-opcodes',
+    'm4-blit-opcodes.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m4 blit opcodes (basic)', m4_blit_opcodes_test)
+endif
+
+# M4 Compute shader dispatch tests. Covers CmdDispatch, CmdDispatchIndirect
+# with various workgroup sizes and resource bindings.
+if fs.is_file(meson.current_source_dir() / 'm4-compute-opcodes.c')
+  m4_compute_opcodes_test = executable('m4-compute-opcodes',
+    'm4-compute-opcodes.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+  test('m4 compute opcodes (basic)', m4_compute_opcodes_test)
+endif
+
 # M4 ExecIndirect2 outer-payload parser, segment walker, and 0x1cc reply
 # writer tests. Confirms the kext-side 0x37 layout (12B header + 16B
 # invalidates + 16B reserved + 16B resources), the encType=4/0x1cc reply

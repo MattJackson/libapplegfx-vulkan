@@ -219,7 +219,7 @@ static const lagfx_op_descriptor_t g_op_table[] = {
       LAGFX_PRIO_P0, 20, 0,  lagfx_op_map_memory_immediate },
     { LAGFX_OP_GET_DEVICE_INFO_2,        "CmdGetDeviceInfo2",
       LAGFX_PRIO_P0, 12, 12, lagfx_op_get_device_info_2 },
-    { LAGFX_OP_UNKNOWN_3B,               "Unknown(0x3b)",
+    { LAGFX_OP_NEW_USER_CLIENT,               "Unknown(0x3b)",
       LAGFX_PRIO_P2, 0,  0,  NULL },
     { LAGFX_OP_UNKNOWN_3C,               "Unknown(0x3c)",
       LAGFX_PRIO_P2, 0,  0,  NULL },

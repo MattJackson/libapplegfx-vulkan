@@ -99,7 +99,7 @@ typedef enum {
     LAGFX_OP_DEFINE_HOST_TASK         = 0x38,
     LAGFX_OP_MAP_MEMORY_IMMEDIATE     = 0x39, /* CmdMapMemoryImmediate, Immediate vchan; opcodes-0x35-0x36-0x39.md */
     LAGFX_OP_GET_DEVICE_INFO_2        = 0x3a,
-    LAGFX_OP_UNKNOWN_3B               = 0x3b,
+    LAGFX_OP_NEW_USER_CLIENT          = 0x3b,
     LAGFX_OP_UNKNOWN_3C               = 0x3c,
     LAGFX_OP_EXEC_INDIRECT_EXT_41     = 0x41, /* highest; near exec-indirect bucket */
 
@@ -239,6 +239,9 @@ lagfx_handler_status_t lagfx_op_debug(lagfx_protocol_t *p,
 /* ops_device.c — stubs (P0/P1 TODO). */
 lagfx_handler_status_t lagfx_op_get_device_info(lagfx_protocol_t *p,
                                                 const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_new_user_client(lagfx_protocol_t *p,
+                                                const lagfx_cmd_header_t *hdr);
+
 lagfx_handler_status_t lagfx_op_get_device_info_2(lagfx_protocol_t *p,
                                                   const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_define_task2(lagfx_protocol_t *p,

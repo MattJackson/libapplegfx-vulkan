@@ -1123,3 +1123,66 @@ lagfx_handler_status_t lagfx_op_unmap_memory_immediate(
 
     return status;
 }
+
+/* ===========================================================================
+ * CmdNewUserClient (0x3b) — P2
+ *
+ * Emitted by AppleParavirtAccelerator::newUserClient() during Metal device
+ * creation. The kext expects a handle back that it stores at [accel+0x8c].
+ * We return a stub handle (always 1) since we don't actually track userclients.
+ *
+ * Payload layout (observed):
+ *   +0  u32 options (usually 0)
+ *   +4  u64 provider_gpa (GPA of the IOService provider — not used by us)
+ *   +c  u32 resp_pfn (page number where we write the handle response)
+ *
+ * Response: write u64 handle to resp_pfn << 12. Handle is consumed by kext's
+ * AppleParavirtAccelerator::newUserClient at offset +0x8c from accel base.
+ * =========================================================================== */
+
+lagfx_handler_status_t lagfx_op_new_user_client(lagfx_protocol_t *p,
+                                                const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 12u) {
+        LAGFX_WARN("CmdNewUserClient: payload too small (%u)",
+                   (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint32_t options       = lagfx_le32(hdr->payload + 0);
+    uint64_t provider_gpa  = lagfx_le64(hdr->payload + 8);
+    uint32_t resp_pfn      = lagfx_le32(hdr->payload + 16);
+    uint64_t resp_gpa      = (uint64_t)resp_pfn << 12;
+
+    LAGFX_LOG("CmdNewUserClient: options=0x%x provider_gpa=0x%llx "
+              "resp_pfn=0x%x -> gpa=0x%llx stamp=0x%08x",
+              options, (unsigned long long)provider_gpa,
+              resp_pfn, (unsigned long long)resp_gpa, hdr->stamp);
+
+    if (!p->dev || !p->dev->desc.shell.write_memory || resp_pfn == 0u) {
+        LAGFX_WARN("CmdNewUserClient: no write_memory or resp_pfn=0; "
+                   "stamping with stub handle");
+        return LAGFX_HANDLER_OK;
+    }
+
+    /* Stub handle: always return 1. The kext stores this at [accel+0x8c].
+     * Real implementation would allocate a userclient structure and return
+     * its pointer, but for M3 we just need something non-zero. */
+    uint64_t stub_handle = 1;
+    if (!p->dev->desc.shell.write_memory(p->dev->desc.shell.opaque,
+                                          resp_gpa,
+                                          sizeof(stub_handle),
+                                          &stub_handle)) {
+        LAGFX_WARN("CmdNewUserClient: failed to write handle response "
+                   "to gpa=0x%llx", (unsigned long long)resp_gpa);
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+
+    LAGFX_LOG("CmdNewUserClient: wrote stub handle 0x%llx to gpa=0x%llx",
+              (unsigned long long)stub_handle, (unsigned long long)resp_gpa);
+
+    return LAGFX_HANDLER_OK;
+}
+
