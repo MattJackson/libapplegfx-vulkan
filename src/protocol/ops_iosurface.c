@@ -293,15 +293,70 @@ lagfx_handler_status_t lagfx_op_iosurface_lookup(
     uint32_t task_id = 0;
     lagfx_resource_entry_t *e = lagfx_resource_lookup(&p->resources,
                                                       surface_id, task_id);
+    
+    /* Guest may not send CmdCreateIOSurfaceBacking2 (0x27). Auto-create
+     * VkImage on first lookup when size > 0 to enable rendering. */
     if (!e || !e->host_handle) {
-        LAGFX_WARN("CmdLookupIOSurface: surface 0x%x not found", surface_id);
+        if (g_cap_lookup.size > 0 && p->dev && p->dev->vk) {
+            LAGFX_LOG("CmdLookupIOSurface: auto-creating surface 0x%x "
+                       "size=%llu (guest did not send CmdCreateIOSurfaceBacking2)",
+                       surface_id, (unsigned long long)g_cap_lookup.size);
+            
+#ifdef LAGFX_HAVE_VULKAN
+            /* Estimate dimensions from size (assume BGRA8Unorm, 1920x1080 target) */
+            uint32_t width = 1920;
+            uint32_t height = (uint32_t)(g_cap_lookup.size / width / 4);
+            if (height == 0) {
+                height = 1080;  /* Default fallback */
+            }
+            
+            lagfx_vk_iosurface_t *ios = NULL;
+            lagfx_status_t st = lagfx_vk_iosurface_create(p->dev->vk, width, height,
+                                                          0x24u, &ios);
+            if (st == LAGFX_OK && ios) {
+                /* Register auto-created surface */
+                lagfx_resource_register(&p->resources, surface_id,
+                                         LAGFX_RESOURCE_TYPE_TEXTURE,
+                                         task_id, 0u, g_cap_lookup.size);
+                e = lagfx_resource_lookup(&p->resources, surface_id, task_id);
+                if (e) {
+                    e->host_handle = ios;
+                    LAGFX_LOG("CmdLookupIOSurface: auto-created surface 0x%x",
+                               surface_id);
+                } else {
+                    /* Free created image if registration failed */
+                    lagfx_vk_iosurface_destroy(p->dev->vk, ios);
+                }
+            } else {
+                LAGFX_WARN("CmdLookupIOSurface: failed to auto-create surface 0x%x",
+                           surface_id);
+            }
+#else
+            /* Non-Vulkan build: just register placeholder */
+            lagfx_resource_register(&p->resources, surface_id,
+                                     LAGFX_RESOURCE_TYPE_TEXTURE,
+                                     task_id, 0u, g_cap_lookup.size);
+            e = lagfx_resource_lookup(&p->resources, surface_id, task_id);
+            if (e) {
+                /* Placeholder handle - no VkImage in non-Vulkan mode */
+                LAGFX_LOG("CmdLookupIOSurface: registered placeholder for surface 0x%x",
+                           surface_id);
+            }
+#endif
+        } else if (g_cap_lookup.size == 0) {
+            /* Size field is garbage when payload < 16 bytes. Don't auto-create. */
+            LAGFX_WARN("CmdLookupIOSurface: surface 0x%x not found, size=0 "
+                       "(possibly short payload), skipping auto-create",
+                       surface_id);
+        } else {
+            LAGFX_WARN("CmdLookupIOSurface: surface 0x%x not found", surface_id);
+        }
         return LAGFX_HANDLER_OK;
     }
 
     lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)e->host_handle;
 #ifdef LAGFX_HAVE_VULKAN
-    LAGFX_LOG("CmdLookupIOSurface: found VkImage=%p view=%p",
-               (void *)ios->image, (void *)ios->view);
+    LAGFX_LOG("CmdLookupIOSurface: found surface 0x%x", surface_id);
 #else
     LAGFX_LOG("CmdLookupIOSurface: found surface");
 #endif
