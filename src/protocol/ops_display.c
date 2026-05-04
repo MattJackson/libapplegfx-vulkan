@@ -559,27 +559,62 @@ bool lagfx_ops_display_tick_vblank(
                         sizeof(buf), buf);
 }
 
-/* ONLINE EVENT 2026-05-02: fires when ss[0x104]==0xC.
+/* ONLINE EVENT 2026-05-03: fires when ss[0x104]==0xC with ~5 second delay.
  *
- * DEADLOCK ROOT CAUSE (confirmed via RE):
- *   Thread 1 (WindowServer): holds FB workloop command gate, waits for accel[+0x88] IOLock
- *   Thread 2 (DisplayPipe): holds accel[+0x88] IOLock (in process_online), waits for FB gate
- *   accel[+0x88] is IOWorkLoop*, IOLock acquired implicitly via runActionBlock()
+ * ROOT CAUSE (confirmed via RE):
+ *   IOServiceOpen(type=5) hangs when called from main thread after displays are online
+ *   Early boot processes (WindowServer, SecurityAgent, BluetoothSetupAs) succeed
+ *   Post-boot processes (metal-test, system_profiler) hang at mach_msg2_trap
+ *   Hang occurs because lifecycle lock (accel[+0x88]) is held by connectionChange
+ *     during display pipeline's process_online path when new device creation tries to acquire it
  *
- * FIX: Fire online event IMMEDIATELY when ss[0x104]==0xC.
- *   ss[0x104]==0xC means enable() ran (pipe enabled)
- *   ss[0x108] handshake was never implemented in the kext (not in protocol spec)
- *   Waiting for ss[0x108] caused deadlock because it never gets set
+ * FIX: Defer online event by ~5 seconds after detecting ss[0x104]==0xC.
+ *   This gives early-boot processes time to create their IOAccelDevice2 instances
+ *   before the display pipeline becomes active and holds the lifecycle lock
+ *   Without this delay, connectionChange acquires the lock immediately, blocking new device creation
  *
- * This breaks the deadlock by not waiting for a non-existent handshake. */
+ * Timing: ss[0x104]==0xC means WindowServer enable() ran (pipe enabled).
+ *         Early boot creates devices before display online event fires.
+ *         Delay allows early processes to complete newUserClient/start() before connectionChange runs. */
 bool lagfx_display_tick_vblank(
     lagfx_device_t *dev,
     void *shell_opaque,
     bool (*write_memory)(void *, uint64_t, uint64_t, const void *)) {
     static unsigned tick_count;
+    static uint64_t ss_enabled_time = 0; /* Monotonic time when ss[0x104]==0xC detected */
     tick_count++;
     if (!dev || !write_memory) {
         return false;
+    }
+
+    /* ONLINE EVENT DELAY: wait ~5 seconds after detecting ss[0x104]==0xC
+     * before firing the online event. This gives early-boot processes
+     * time to create their IOAccelDevice2 instances before the display
+     * pipeline becomes active and holds the lifecycle lock (accel[+0x88]).
+     * Without this delay, connectionChange acquires the lock immediately,
+     * blocking new device creation from metal-test/system_profiler. */
+    if (!ss_enabled_time && tick_count > 1) {
+        /* First time through after init - check if any display enabled */
+        for (unsigned i = 0u; i < 16u && i < 32u; ++i) {
+            if (dev->display_ss_installed & (1u << i)) {
+                uint64_t ss_gpa = dev->display_ss_gpa[i];
+                uint32_t enabled_mask = 0u;
+                if (dev->desc.shell.read_memory) {
+                    dev->desc.shell.read_memory(
+                        dev->desc.shell.opaque,
+                        ss_gpa + 0x104u,
+                        sizeof(enabled_mask), &enabled_mask);
+                }
+                if (enabled_mask == 0xCu) {
+                    /* Capture start time for delay calculation */
+                    ss_enabled_time = tick_count;
+                    LAGFX_LOG("display_tick_vblank: ss[0x104]==0xC detected, "
+                              "deferring online event for ~5 seconds (tick=%u)",
+                              tick_count);
+                    break;
+                }
+            }
+        }
     }
 
     /* M5 ch=1 stamp safety: if EventMachine is stuck in waitForStamp
@@ -640,25 +675,42 @@ bool lagfx_display_tick_vblank(
                     ss_gpa + 0x104u,
                     sizeof(enabled_mask), &enabled_mask);
             }
-            if (enabled_mask == 0xCu) {
+           if (enabled_mask == 0xCu) {
                 if (!(dev->display_ss_enabled & (1u << i))) {
                     /* ss[0x104]==0xC — WindowServer enable() ran.
-                     * Fire online event immediately.
-                     *
-                     * RE (display-pipe-enable-online-sequence.md):
-                     *   ss[0x104]=0xC means enable() ran (pipe enabled).
-                     *   ss[0x108] handshake is NOT in protocol spec, never set by kext.
-                     *   Write ss[0x100]|=0x5 to signal pending online. */
-                    uint32_t pending = 0x5u;
-                    if (write_memory(shell_opaque,
-                                    ss_gpa + 0x100u,
-                                    sizeof(pending), &pending)) {
-                        kicked++;
+                     * Fire online event after ~5 second delay to allow
+                     * early-boot processes to create IOAccelDevice2 instances
+                     * before connectionChange acquires the lifecycle lock. */
+                    
+                    /* Check if we've waited long enough (approx 300 ticks = 5 seconds at 60Hz) */
+                    bool wait_complete = false;
+                    if (ss_enabled_time > 0 && tick_count >= ss_enabled_time + 300u) {
+                        wait_complete = true;
+                    } else if (tick_count > 1800u) {
+                        /* Hard timeout: 30 seconds max delay to prevent boot hang */
+                        LAGFX_WARN("display_tick_vblank: online event hard timeout "
+                                   "(ss[0x104]==0xC for %u ticks), firing anyway",
+                                   tick_count);
+                        wait_complete = true;
                     }
-                    LAGFX_LOG("display_tick_vblank: display[%u] "
-                              "ss[+0x104]==0xC, signaling online now",
-                              i);
-                    dev->display_ss_enabled |= (1u << i);
+                    
+                    if (wait_complete) {
+                        uint32_t pending = 0x5u;
+                        if (write_memory(shell_opaque,
+                                         ss_gpa + 0x100u,
+                                         sizeof(pending), &pending)) {
+                            kicked++;
+                        }
+                        LAGFX_LOG("display_tick_vblank: display[%u] "
+                                  "ss[+0x104]==0xC (delayed %u ticks), signaling online",
+                                  i, tick_count - ss_enabled_time);
+                        dev->display_ss_enabled |= (1u << i);
+                    } else {
+                        unsigned elapsed = tick_count - ss_enabled_time;
+                        LAGFX_LOG("display_tick_vblank: display[%u] "
+                                  "ss[+0x104]==0xC, deferring online event (%u/%u ticks)",
+                                  i, elapsed, 300u);
+                    }
                 }
             }
         }
