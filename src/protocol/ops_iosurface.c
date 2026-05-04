@@ -303,11 +303,24 @@ lagfx_handler_status_t lagfx_op_iosurface_lookup(
                        surface_id, (unsigned long long)g_cap_lookup.size);
             
 #ifdef LAGFX_HAVE_VULKAN
-            /* Estimate dimensions from size (assume BGRA8Unorm, 1920x1080 target) */
+            /* Estimate dimensions from size (assume BGRA8Unorm).
+             * Sanity check: reject implausibly large sizes (likely garbage). */
             uint32_t width = 1920;
-            uint32_t height = (uint32_t)(g_cap_lookup.size / width / 4);
-            if (height == 0) {
-                height = 1080;  /* Default fallback */
+            uint64_t max_area = ((uint64_t)width * 4320u) / 4; /* 1920x4320 @ 4B/pixel */
+            
+            uint32_t height;
+            if (g_cap_lookup.size > max_area) {
+                LAGFX_LOG("CmdLookupIOSurface: size %llu exceeds max %lu, using default "
+                           "dimensions",
+                           (unsigned long long)g_cap_lookup.size, max_area);
+                width = 1920;
+                height = 1080;
+            } else {
+                height = (uint32_t)(g_cap_lookup.size / width / 4);
+                if (height == 0 || height > 4320) {
+                    width = 1920;
+                    height = 1080;
+                }
             }
             
             lagfx_vk_iosurface_t *ios = NULL;
