@@ -43,18 +43,49 @@ Match the existing `src/`:
 
 The public C API uses `lagfx_*` to avoid trademark friction with Apple's PG brand. Repository-level documentation, README keywords, and commit messages may reference "ParavirtualizedGraphics", "PGDevice", etc. for discoverability — that's intentional. Do not rename exported API symbols to `pg_*`.
 
-## Phase-based development
+## Milestones
 
-Work is scoped into phases following the broader mos suite's implementation plan:
+Work is gated by the M-series milestones tracked in
+[mos-docs/overview/project-status.md](https://github.com/MattJackson/mos-docs/blob/main/overview/project-status.md):
 
-- Phase 0 — protocol reverse-engineering (complete)
-- Phase 1 — Linux device + decoder skeleton + Vulkan init
-- Phase 2 — clear-color → first pixel on screen
-- Phase 3 — Metal → Vulkan translation, shader catalog
-- Phase 4 — IOSurface paravirt + VideoToolbox
-- Phase 5 — performance (conditional)
+- M1 — build green + kext attaches (closed 2026-04-21)
+- M2 — IOAccelerator class tree visible (closed 2026-04-21)
+- M3 — `MTLCreateSystemDefaultDevice` non-nil (closed 2026-05-03)
+- M4 — `CmdExecIndirect2` inner parsing + 3-level radix VA→GPA (closed 2026-04-26)
+- **M5** — first visible pixel via Vulkan/lavapipe (stage 20% in progress)
+- M6 — multi-display
+- M7 — compute pipeline
+- M8 — full Metal feature compatibility
 
-Map new work items to a phase. Don't introduce features that cross-cut multiple phases without discussion.
+Each stage of M5 has a single binary gate and a single test (see
+[whitepaper 04](https://github.com/MattJackson/mos-docs/blob/main/whitepapers/04-m5-first-pixel.md)).
+Map new work items to a milestone; if a change cross-cuts
+multiple, flag it for discussion before landing.
+
+## Reverse-engineering conventions
+
+This project relies heavily on RE of Apple's macOS-host PVG
+implementation. To keep the work clean-room and the codebase
+defensible:
+
+- **Cite the artifact, not the disassembler output.** When a
+  comment or commit explains *why* a constant or layout is what it
+  is, cite the binary it came from (e.g. "from
+  `IOAccelerator2.kext` in macOS 15.6.1 build 24G90,
+  `__DATA_CONST` vtable at `+0x8a40`"), not the decompiler's
+  reconstruction. The artifact identity is reproducible; the
+  decompilation is not.
+- **No decompiled Apple source in the tree or in commit messages.**
+  Behavioral observations, byte-exact field layouts, and dispatch
+  tables read from `__DATA_CONST` are fine. Pasted decompiler-
+  reconstructed C is not. When in doubt, paraphrase.
+- **Primary RE notes belong in `../mos/paravirt-re/library/`.**
+  Code comments may summarize and link; do not duplicate the full
+  RE narrative inline.
+- **Trademark caution.** Public symbols use `lagfx_*`. Repo prose
+  may say "ParavirtualizedGraphics" / "PGDevice" / "PVG" for
+  discoverability — that's intentional. Do not rename exported
+  symbols.
 
 ## Commit discipline
 
@@ -62,7 +93,8 @@ Map new work items to a phase. Don't introduce features that cross-cut multiple 
 - Commit subject: imperative, under 70 characters, prefixed by subsystem (`protocol:`, `vulkan:`, `translate:`, `air2spirv:`, `shaders:`, `docs:`, `tests:`).
 - Body: explain the *why* and, where relevant, cite the re-engineering evidence (disassembly offsets, commit hashes in related mos repos) that motivates the change.
 - No personal paths, no credentials, no internal domain references.
-- `Co-Authored-By:` trailers welcome.
+- No AI-attribution trailers (`Co-Authored-By: Claude` and the
+  like). Commits go out under the contributor's own name.
 
 ## Upstream-PR staging
 

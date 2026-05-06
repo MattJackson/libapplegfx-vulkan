@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+builddir/
 _build/
 *.o
 *.so

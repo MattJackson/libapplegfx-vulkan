@@ -1,9 +1,15 @@
 # Memory coherence audit — `lagfx_task_map_host_memory`
 
-**Date:** 2026-04-20
-**Auditor:** Phase 1.C coherence audit (Phase 2 gate per
-`<repo>/paravirt-re/phase-2-first-pixel-plan.md` §8 item 4
-and §R7).
+**Status:** RESOLVED. Option C (Linux `mremap` alias, Darwin
+copy fallback) landed in Phase 1.C and is exercised by
+`tests/memory-coherence.c`. The audit below is preserved for the
+historical record — it captures *why* the fix is what it is and
+which alternatives were rejected. The active behaviour now lives
+in `src/memory/task.c`; the test enforces it on every Linux CI run.
+
+**Date of audit:** 2026-04-20
+**Auditor:** Phase 1.C coherence audit (Phase 2 gate per the
+implementation plan, items 4 and R7).
 **File audited:** `src/memory/task.c` — function
 `lagfx_task_map_host_memory` (lines 141–190 as of commit ab1070d).
 
