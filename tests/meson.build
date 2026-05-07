@@ -2,20 +2,28 @@
 
 # Header syntax check — always runnable; also smoke-tests version.c
 # via libapplegfx_vulkan_dep.
+header_deps = [libapplegfx_vulkan_dep]
+if vulkan_dep.found()
+  header_deps += [vulkan_dep]
+endif
 header_test = executable('header-syntax-check',
   'header-syntax-check.c',
   include_directories : include_dir,
-  dependencies : libapplegfx_vulkan_dep,
+  dependencies : header_deps,
   build_by_default : true,
 )
 test('header syntax', header_test)
 
 # Lifecycle smoke — covers device + display + mmio stubs.
 if fs.is_file(meson.current_source_dir() / 'lifecycle-smoke.c')
+  lifecycle_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    lifecycle_deps += [vulkan_dep]
+  endif
   lifecycle_test = executable('lifecycle-smoke',
     'lifecycle-smoke.c',
     include_directories : include_dir,
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : lifecycle_deps,
     build_by_default : true,
   )
   test('lifecycle smoke', lifecycle_test)
@@ -27,10 +35,14 @@ endif
 # on other hosts we still BUILD it to catch syntax regressions.
 if fs.is_file(meson.current_source_dir() / 'memory-task.c') and \
    fs.is_file(meson.project_source_root() / 'src' / 'memory' / 'task.c')
+  memory_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    memory_deps += [vulkan_dep]
+  endif
   memory_test = executable('memory-task-test',
     'memory-task.c',
     include_directories : include_dir,
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : memory_deps,
     build_by_default : true,
   )
   if host_machine.system() == 'linux'
@@ -53,10 +65,14 @@ endif
 # kernel lacks memfd_create, keeping CI green on very old Linux.
 if fs.is_file(meson.current_source_dir() / 'memory-coherence.c') and \
    fs.is_file(meson.project_source_root() / 'src' / 'memory' / 'task.c')
+  memory_coherence_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    memory_coherence_deps += [vulkan_dep]
+  endif
   memory_coherence_test = executable('memory-coherence',
     'memory-coherence.c',
     include_directories : include_dir,
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : memory_coherence_deps,
     build_by_default : true,
   )
   if host_machine.system() == 'linux'
@@ -71,10 +87,14 @@ endif
 # LP_NUM_THREADS env var by lagfx_device_new, per the spec at
 # paravirt-re/gpu-cores-implementation-spec.md.
 if fs.is_file(meson.current_source_dir() / 'gpu-cores.c')
+  gpu_cores_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    gpu_cores_deps += [vulkan_dep]
+  endif
   gpu_cores_test = executable('gpu-cores',
     'gpu-cores.c',
     include_directories : include_dir,
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : gpu_cores_deps,
     build_by_default : true,
   )
   test('gpu cores', gpu_cores_test)
@@ -83,10 +103,14 @@ endif
 # Protocol dispatch tests (Phase 1.A.2). Reaches into src/ for
 # internal protocol headers, so it needs internal_include_dir too.
 if fs.is_file(meson.current_source_dir() / 'protocol-dispatch.c')
+  protocol_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    protocol_deps += [vulkan_dep]
+  endif
   protocol_dispatch_test = executable('protocol-dispatch',
     'protocol-dispatch.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : protocol_deps,
     build_by_default : true,
   )
   test('protocol dispatch', protocol_dispatch_test)
@@ -96,10 +120,14 @@ endif
 # clear_task, plus opcode wiring (MapMemoryImmediate, DeleteTask,
 # DeleteResource, SetObjectPlacement).
 if fs.is_file(meson.current_source_dir() / 'resource-registry.c')
+  resource_registry_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    resource_registry_deps += [vulkan_dep]
+  endif
   resource_registry_test = executable('resource-registry',
     'resource-registry.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : resource_registry_deps,
     build_by_default : true,
   )
   test('resource registry', resource_registry_test)
@@ -110,10 +138,14 @@ endif
 # lagfx_protocol_complete_stamp_slot, and the slot=0 wrapper
 # lagfx_protocol_complete_stamp. See tests/m3-stamp-helpers.c header.
 if fs.is_file(meson.current_source_dir() / 'm3-stamp-helpers.c')
+  m3_stamp_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    m3_stamp_deps += [vulkan_dep]
+  endif
   m3_stamp_helpers_test = executable('m3-stamp-helpers',
     'm3-stamp-helpers.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : m3_stamp_deps,
     build_by_default : true,
   )
   test('m3 stamp helpers', m3_stamp_helpers_test)
@@ -124,10 +156,14 @@ endif
 # data_pfn, page-cross run_len, read_memory failure) and
 # lagfx_op_define_host_task (allocate, update-existing, min-payload).
 if fs.is_file(meson.current_source_dir() / 'm4-task-translate.c')
+  m4_translate_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    m4_translate_deps += [vulkan_dep]
+  endif
   m4_task_translate_test = executable('m4-task-translate',
     'm4-task-translate.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : m4_translate_deps,
     build_by_default : true,
   )
   test('m4 task translate', m4_task_translate_test)
@@ -137,10 +173,14 @@ endif
 # WindowServer and DisplayPipe. Tests online event timing (must be IMMEDIATE,
 # not deferred), stamp ACK latency (<10ms), and device creation timeout (<5s).
 if fs.is_file(meson.current_source_dir() / 'm5-deadlock-detect.c')
+  m5_deadlock_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    m5_deadlock_deps += [vulkan_dep]
+  endif
   m5_deadlock_detect_test = executable('m5-deadlock-detect',
     'm5-deadlock-detect.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : m5_deadlock_deps,
     build_by_default : true,
   )
   test('m5 deadlock detection', m5_deadlock_detect_test)
@@ -151,10 +191,14 @@ endif
 # CmdBindIndexBuffer (0x24), CmdDrawInstanced (0x28), CmdSetViewport (0x34),
 # CmdBindPipeline (0x3C), plus edge cases (invalid payload, cross-page VA).
 if fs.is_file(meson.current_source_dir() / 'm4-render-opcodes.c')
+  render_op_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    render_op_deps += [vulkan_dep]
+  endif
   m4_render_opcodes_test = executable('m4-render-opcodes',
     'm4-render-opcodes.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : render_op_deps,
     build_by_default : true,
   )
   test('m4 render opcodes (top 10)', m4_render_opcodes_test)
@@ -163,10 +207,14 @@ endif
 # M4 Blit operation unit tests. Covers CmdCopyImage, CmdResolveImage,
 # CmdClearColorImage with various source/dest combinations and edge cases.
 if fs.is_file(meson.current_source_dir() / 'm4-blit-opcodes.c')
+  blit_op_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    blit_op_deps += [vulkan_dep]
+  endif
   m4_blit_opcodes_test = executable('m4-blit-opcodes',
     'm4-blit-opcodes.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : blit_op_deps,
     build_by_default : true,
   )
   test('m4 blit opcodes (basic)', m4_blit_opcodes_test)
@@ -175,10 +223,14 @@ endif
 # M4 Compute shader dispatch tests. Covers CmdDispatch, CmdDispatchIndirect
 # with various workgroup sizes and resource bindings.
 if fs.is_file(meson.current_source_dir() / 'm4-compute-opcodes.c')
+  compute_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    compute_deps += [vulkan_dep]
+  endif
   m4_compute_opcodes_test = executable('m4-compute-opcodes',
     'm4-compute-opcodes.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : compute_deps,
     build_by_default : true,
   )
   test('m4 compute opcodes (basic)', m4_compute_opcodes_test)
@@ -190,10 +242,14 @@ endif
 # path, and the corner cases (offset oob, buffer_id oob, encType=2 no
 # reply, multi-segment, bad segment_size, inner totalLength<8).
 if fs.is_file(meson.current_source_dir() / 'm4-execindirect2-parser.c')
+  execind_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    execind_deps += [vulkan_dep]
+  endif
   m4_execindirect2_test = executable('m4-execindirect2-parser',
     'm4-execindirect2-parser.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : execind_deps,
     build_by_default : true,
   )
   test('m4 execindirect2 parser', m4_execindirect2_test)
@@ -204,10 +260,14 @@ endif
 # setupSharedState branch, the page0[0] PFN-array indirection vs the
 # +0x1000 fallback, and multi-cmd drain w/ last_stamp capture.
 if fs.is_file(meson.current_source_dir() / 'm4-doorbell-drain.c')
+  doorbell_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    doorbell_deps += [vulkan_dep]
+  endif
   m4_doorbell_drain_test = executable('m4-doorbell-drain',
     'm4-doorbell-drain.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : doorbell_deps,
     build_by_default : true,
   )
   test('m4 doorbell drain', m4_doorbell_drain_test)
@@ -215,10 +275,14 @@ endif
 
 # M1 shader catalog unit tests - LRU eviction and lookup.
 if fs.is_file(meson.current_source_dir() / 'm1-shader-catalog.c')
+  shader_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    shader_deps += [vulkan_dep]
+  endif
   m1_shader_catalog_test = executable('m1-shader-catalog',
     'm1-shader-catalog.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : shader_deps,
     build_by_default : true,
   )
   test('m1 shader catalog', m1_shader_catalog_test)
@@ -226,10 +290,14 @@ endif
 
 # M4 render opcode tests - drawPrimitives family (most used opcodes).
 if fs.is_file(meson.current_source_dir() / 'm4-render-opcode-draw.c')
+  render_draw_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    render_draw_deps += [vulkan_dep]
+  endif
   m4_render_draw_test = executable('m4-render-opcode-draw',
     'm4-render-opcode-draw.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : render_draw_deps,
     build_by_default : true,
   )
   test('m4 render opcode draw', m4_render_draw_test)
@@ -237,10 +305,14 @@ endif
 
 # M4 render opcode tests - pipeline state setup (setPipelineState, blend constants).
 if fs.is_file(meson.current_source_dir() / 'm4-render-opcode-pipeline.c')
+  render_pipe_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    render_pipe_deps += [vulkan_dep]
+  endif
   m4_render_pipeline_test = executable('m4-render-opcode-pipeline',
     'm4-render-opcode-pipeline.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : render_pipe_deps,
     build_by_default : true,
   )
   test('m4 render opcode pipeline', m4_render_pipeline_test)
@@ -248,10 +320,14 @@ endif
 
 # M5 display vchan tests - CmdDefineChildFIFO/CmdDisplayTransaction3 (M5 Stage 10%).
 if fs.is_file(meson.current_source_dir() / 'm5-display-vchan.c')
+  vchan_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    vchan_deps += [vulkan_dep]
+  endif
   m5_display_vchan_test = executable('m5-display-vchan',
     'm5-display-vchan.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : libapplegfx_vulkan_dep,
+    dependencies : vchan_deps,
     build_by_default : true,
   )
   test('m5 display vchan', m5_display_vchan_test)
