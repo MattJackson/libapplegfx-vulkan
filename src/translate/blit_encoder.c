@@ -33,11 +33,21 @@
 #  include <vulkan/vulkan.h>
 #endif
 
-/* Forward declaration — display_find_memory_type is static in display.c,
- * so we redeclare it here for use in blit_encoder.c */
-static uint32_t display_find_memory_type(VkPhysicalDevice phys,
-                                         uint32_t typeBits,
-                                         VkMemoryPropertyFlags want);
+/* ================================================================
+ * Helper lookup — find memory type index (inlined from display.c pattern)
+ * ================================================================ */
+
+static uint32_t blit_find_memory_type(VkPhysicalDevice phys,
+                                      uint32_t typeBits,
+                                      VkMemoryPropertyFlags want) {
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+    for (uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+        if ((typeBits & (1u << i)) == 0) continue;
+        if ((mp.memoryTypes[i].propertyFlags & want) == want) return i;
+    }
+    return UINT32_MAX;
+}
 
 /* ================================================================
  * Internal helpers — staging buffer management
@@ -65,7 +75,7 @@ static VkBuffer create_staging_buffer(struct lagfx_vk_state *vk_impl,
     VkMemoryAllocateInfo mai = {
         .sType         = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = mem_reqs.size,
-        .memoryTypeIndex = display_find_memory_type(vk_impl->phys_device,
+        .memoryTypeIndex = blit_find_memory_type(vk_impl->phys_device,
                                                     mem_reqs.memoryTypeBits,
                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
