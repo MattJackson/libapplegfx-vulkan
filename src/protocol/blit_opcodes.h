@@ -68,6 +68,12 @@ typedef enum {
 #define LAGFX_BLIT_OPCODE_MIN    0x12cu
 #define LAGFX_BLIT_OPCODE_MAX    0x143u
 
+/* Extended blit opcode range for low-range opcodes that appear in Blit
+ * encoder streams (encType=4) but are normally Render decoder ops.
+ * These are ack-only stubs to prevent "bad totalLength" errors. */
+#define LAGFX_BLIT_OPCODE_EXT_MIN  0x001u
+#define LAGFX_BLIT_OPCODE_EXT_MAX  0x07du
+
 typedef int (*lagfx_blit_op_handler_fn)(lagfx_protocol_t *p,
                                         const uint8_t   *payload,
                                         size_t           len);

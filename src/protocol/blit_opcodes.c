@@ -30,11 +30,34 @@
 
 /* Forward declarations for opcode handlers */
 static int blit_op_fill_texture_with_color(lagfx_protocol_t *p,
-                                           const uint8_t    *payload,
-                                           size_t            len);
+                                            const uint8_t    *payload,
+                                            size_t            len);
 static int blit_op_copy_texture_to_texture(lagfx_protocol_t *p,
-                                           const uint8_t    *payload,
-                                           size_t            len);
+                                            const uint8_t    *payload,
+                                            size_t            len);
+
+/* Extended range stub handlers for low-range opcodes (0x001-0x07d) */
+static int blit_op_0x001_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len);
+static int blit_op_0x01a_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len);
+static int blit_op_0x06e_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len);
+static int blit_op_0x070_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len);
+static int blit_op_0x072_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len);
+static int blit_op_0x074_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len);
+static int blit_op_0x07d_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len);
 
 /* ================================================================
  * Little-endian helpers
@@ -54,8 +77,72 @@ static inline uint64_t blit_le64(const uint8_t *b) {
  * ================================================================ */
 
 static int blit_op_ack_stub(lagfx_protocol_t *p,
-                             const uint8_t    *payload,
-                             size_t            len) {
+                              const uint8_t    *payload,
+                              size_t            len) {
+    (void)p;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+
+/* Extended range stub handlers for low-range opcodes */
+static int blit_op_0x001_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
+    (void)p;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+
+static int blit_op_0x01a_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
+    (void)p;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+
+static int blit_op_0x06e_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
+    (void)p;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+
+static int blit_op_0x070_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
+    (void)p;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+
+static int blit_op_0x072_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
+    (void)p;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+
+static int blit_op_0x074_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
+    (void)p;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+
+static int blit_op_0x07d_ack_stub(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
     (void)p;
     (void)payload;
     (void)len;
@@ -258,6 +345,29 @@ _Static_assert(sizeof(g_blit_op_table) / sizeof(g_blit_op_table[0]) ==
 
 const lagfx_blit_op_descriptor_t *
 lagfx_blit_op_lookup(uint32_t opcode) {
+    /* Check extended range first (low-range opcodes in Blit streams) */
+    if (opcode >= LAGFX_BLIT_OPCODE_EXT_MIN && opcode <= LAGFX_BLIT_OPCODE_EXT_MAX) {
+        static const lagfx_blit_op_descriptor_t ext_table[] = {
+            { 0x001, "Ext_0x001",      0, 0, blit_op_0x001_ack_stub },
+            { 0x01a, "Ext_0x01a",      0, 0, blit_op_0x01a_ack_stub },
+            { 0x06e, "Ext_0x06e",      0, 0, blit_op_0x06e_ack_stub },
+            { 0x070, "Ext_0x070",      0, 0, blit_op_0x070_ack_stub },
+            { 0x072, "Ext_0x072",      0, 0, blit_op_0x072_ack_stub },
+            { 0x074, "Ext_0x074",      0, 0, blit_op_0x074_ack_stub },
+            { 0x07d, "Ext_0x07d",      0, 0, blit_op_0x07d_ack_stub },
+        };
+        
+        /* Linear search for extended range opcodes */
+        const size_t ext_count = sizeof(ext_table) / sizeof(ext_table[0]);
+        for (size_t i = 0; i < ext_count; ++i) {
+            if (ext_table[i].opcode == opcode) {
+                return &ext_table[i];
+            }
+        }
+        return NULL;
+    }
+    
+    /* Check main range */
     if (opcode < LAGFX_BLIT_OPCODE_MIN || opcode > LAGFX_BLIT_OPCODE_MAX) {
         return NULL;
     }
