@@ -536,9 +536,14 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
 
         size_t soff = 0;
         unsigned segment_idx = 0;
-        while (soff + 16u <= (size_t)length) {
+        /* Try skipping first 8 bytes - might be an undocumented wrapper header.
+         * If segment_size at byte 4 matches resource length, that's the real start. */
+        uint32_t probe_size_at_4 = lagfx_le32(cmdbuf + soff + 4);
+        size_t segment_start_offset = (probe_size_at_4 == length) ? 0u : 8u;
+
+        while (soff + segment_start_offset + 16u <= (size_t)length) {
             uint32_t segment_size =
-                lagfx_le32(cmdbuf + soff + 0);
+                lagfx_le32(cmdbuf + soff + segment_start_offset + 0);
             /* PGSerializerCommandSegmentHeader is 16 bytes:
              *   +0x00 segmentSize (u32)
              *   +0x04 protectionOptions (u32)
@@ -547,37 +552,45 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
              *   +0x0a reuseFlag (u8)
              *   +0x0b pad
              *   +0x0c reserved (u32) */
-            uint8_t  encoder_type = cmdbuf[soff + 8];
-            uint8_t  final_flag   = cmdbuf[soff + 9];
-            uint8_t  reuse_flag   = cmdbuf[soff + 10];
+            uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 8];
+            uint8_t  final_flag   = cmdbuf[soff + segment_start_offset + 9];
+            uint8_t  reuse_flag   = cmdbuf[soff + segment_start_offset + 10];
 
             if (segment_idx == 0u) {
                 LAGFX_LOG("    segment[%u]: size=%u "
                           "encType=%u final=%u reuse=%u "
+                          "probe_size_at_4=0x%x segment_start_off=%zu "
                           "hdr=%02x%02x%02x%02x %02x%02x%02x%02x "
                           "%02x%02x%02x%02x %02x%02x%02x%02x "
                           "off=%zu taskID=%u",
                           segment_idx, segment_size,
                           (unsigned)encoder_type, (unsigned)final_flag,
                           (unsigned)reuse_flag,
-                          cmdbuf[soff+0], cmdbuf[soff+1],
-                          cmdbuf[soff+2], cmdbuf[soff+3],
-                          cmdbuf[soff+4], cmdbuf[soff+5],
-                          cmdbuf[soff+6], cmdbuf[soff+7],
-                          cmdbuf[soff+8], cmdbuf[soff+9],
-                          cmdbuf[soff+10], cmdbuf[soff+11],
+                          probe_size_at_4, segment_start_offset,
+                          cmdbuf[soff+segment_start_offset+0],
+                          cmdbuf[soff+segment_start_offset+1],
+                          cmdbuf[soff+segment_start_offset+2],
+                          cmdbuf[soff+segment_start_offset+3],
+                          cmdbuf[soff+segment_start_offset+4],
+                          cmdbuf[soff+segment_start_offset+5],
+                          cmdbuf[soff+segment_start_offset+6],
+                          cmdbuf[soff+segment_start_offset+7],
+                          cmdbuf[soff+segment_start_offset+8],
+                          cmdbuf[soff+segment_start_offset+9],
+                          cmdbuf[soff+segment_start_offset+10],
+                          cmdbuf[soff+segment_start_offset+11],
                           soff, task_id);
             }
 
            if (segment_size == 0u
-                || segment_size > (uint32_t)((size_t)length - soff)) {
+                || segment_size > (uint32_t)((size_t)length - soff - segment_start_offset)) {
                 LAGFX_WARN("    segment[%u]: bad size — bailing out", segment_idx);
                 break;
             }
 
             /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
-              * then totalLength-8 bytes payload. Inner stream starts at offset 16
-              * after the 16-byte PGSerializerCommandSegmentHeader. */
+              * then totalLength-8 bytes payload. Inner stream starts after the
+              * 16-byte PGSerializerCommandSegmentHeader (plus any wrapper offset). */
             bool render_begin_pending =
                 ((encoder_type == 4u || encoder_type == 2u)
                  && !p->render_enc.in_pass);
