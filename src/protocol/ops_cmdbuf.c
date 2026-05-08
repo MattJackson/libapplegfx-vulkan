@@ -982,12 +982,16 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                                reply_size);
                                 }
                             }
-                        } else {
+                       } else {
                             LAGFX_WARN("        %s reply: buffer_id=%u >= "
                                        "resource_count=%u — out of range",
                                        opname, buffer_id, resource_count);
                         }
                     }
+
+                LAGFX_WARN("    segment[%u]: dispatching inner op=0x%04x encType=%u",
+                          segment_idx, inner_opcode, encoder_type);
+
                 } else if (encoder_type == 2u) {
                     /* Render encoder (encType=2): Metal drawing commands.
                      * PGDeserializerRenderDecoder handlers are ALL STUBS
