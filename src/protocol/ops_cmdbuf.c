@@ -588,6 +588,17 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             uint8_t  final_flag   = cmdbuf[soff + segment_start_offset + 9];
             uint8_t  reuse_flag   = cmdbuf[soff + segment_start_offset + 10];
 
+            LAGFX_WARN("    segment[%u]: seg_header[+8..+15]=%02x%02x%02x%02x %02x%02x%02x%02x encType=0x%02x",
+                      segment_idx, cmdbuf[soff + segment_start_offset + 8],
+                      cmdbuf[soff + segment_start_offset + 9],
+                      cmdbuf[soff + segment_start_offset + 10],
+                      cmdbuf[soff + segment_start_offset + 11],
+                      cmdbuf[soff + segment_start_offset + 12],
+                      cmdbuf[soff + segment_start_offset + 13],
+                      cmdbuf[soff + segment_start_offset + 14],
+                      cmdbuf[soff + segment_start_offset + 15],
+                      encoder_type);
+
             if (segment_idx == 0u) {
                 LAGFX_LOG("    segment[%u]: size=%u "
                           "encType=%u final=%u reuse=%u "
@@ -624,12 +635,11 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             }
 
             /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
-              * then totalLength-8 bytes payload. Inner stream starts after the
-              * 16-byte PGSerializerCommandSegmentHeader (plus any wrapper offset). */
+              * Inner stream starts at offset +16 from segment_start (after segment header). */
             bool render_begin_pending =
                 ((encoder_type == 4u || encoder_type == 2u)
                  && !p->render_enc.in_pass);
-            size_t ioff = soff + 16u;
+            size_t ioff = soff + segment_start_offset + 16u;
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
            while (ioff + 8u <= iend) {
