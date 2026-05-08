@@ -538,21 +538,36 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         unsigned segment_idx = 0;
         /* Probe for segment header start: try both offset 0 and 8.
          * At each candidate, check if bytes 0-3 form a valid segmentSize
-         * that fits within the buffer (size <= remaining space). */
+         * that fits within the buffer (size <= remaining space), AND
+         * verify encoderType at +8 is one of {0,1,2,4}. */
         uint32_t probe_size_at_0 = lagfx_le32(cmdbuf + soff + 0);
         size_t seg_off[2] = { 0u, 8u };
-        size_t best_off = 0;
+        size_t best_off = (size_t)-1; /* Invalid sentinel */
         for (int i = 0; i < 2; i++) {
             size_t off = seg_off[i];
             if (soff + off + 16u > (size_t)length) continue;
             uint32_t seg_size = lagfx_le32(cmdbuf + soff + off + 0);
-            /* Valid if: non-zero, and segment fits in remaining buffer */
-            if (seg_size != 0 && seg_size <= (uint32_t)((size_t)length - soff - off)) {
-                best_off = off;
-                break; /* Prefer offset 0 if valid */
+            /* Valid if: non-zero, fits in buffer, AND encoderType is valid. */
+            if (seg_size == 0 || seg_size > (uint32_t)((size_t)length - soff - off)) {
+                continue;
             }
+            uint8_t enc_type = cmdbuf[soff + off + 8];
+            /* encoderType must be one of: 0=compute, 1=compute-alt,
+             * 2=render, 4=blit. Anything else means this offset is wrong. */
+            if (enc_type != 0 && enc_type != 1 && enc_type != 2 && enc_type != 4) {
+                continue;
+            }
+            best_off = off;
+            break; /* Prefer offset 0 if valid */
         }
         size_t segment_start_offset = best_off;
+        
+        /* If no valid segment header found, skip this resource. */
+        if (segment_start_offset == (size_t)-1) {
+            LAGFX_WARN("    No valid segment header found — skipping resource");
+            free(cmdbuf);
+            continue;
+        }
 
         while (soff + segment_start_offset + 16u <= (size_t)length) {
             uint32_t segment_size =
