@@ -285,7 +285,7 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
  * Each resource_table entry's host_gpu_addr is a TASK-VIRTUAL address
  * (translated through the per-task PFN-array from CmdDefineHostTask 0x38).
  * It points at a per-resource cmdBuf containing:
- *   - PGSerializerCommandSegmentHeader (16 B): segmentSize(4), protectionOptions(4),
+   *   - Segment header: 42B metadata block, inner commands start at +42
  *     encoderType(1 @ +8: 0=compute, 1=compute-alt, 2=render, 4=blit),
  *     finalFlag(1), reuseFlag(1), pad(1), reserved(4)
  *   - Nested PGCmdHeader streams (8 B: opcode, totalLength)
@@ -576,14 +576,9 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
          while (soff + segment_start_offset + 16u <= (size_t)length) {
             uint32_t segment_size =
                 lagfx_le32(cmdbuf + soff + segment_start_offset + 0);
-            /* PGSerializerCommandSegmentHeader is 16 bytes:
-              *   +0x00 segmentSize (u32)
-              *   +0x04 protectionOptions (u32)
-              *   +0x08 encoderType (u8): 0=compute, 1=compute-alt, 2=render, 4=blit
-              *   +0x09 finalFlag (u8)
-              *   +0x0a reuseFlag (u8)
-              *   +0x0b pad
-              *   +0x0c reserved (u32) */
+            /* Segment header is 42 bytes (discovered via debug):
+              *   +0x00..+0x3b: segment metadata, descriptor data, or padding
+              *   +0x2a (+42): inner command stream starts here */
             uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 8];
             uint8_t  final_flag   = cmdbuf[soff + segment_start_offset + 9];
             uint8_t  reuse_flag   = cmdbuf[soff + segment_start_offset + 10];
@@ -635,13 +630,13 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             }
 
             /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
-              * Inner stream starts at offset +16 from segment_start (after segment header). */
+              * Inner stream starts at offset +42 from segment_start (after segment header). */
             bool render_begin_pending =
                 ((encoder_type == 4u || encoder_type == 2u)
                  && !p->render_enc.in_pass);
-            size_t ioff = soff + segment_start_offset + 16u;
+            size_t ioff = soff + segment_start_offset + 42u;
             
-            LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu (soff+hdr_off+16)",
+            LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu (soff+hdr_off+42)",
                       segment_idx, ioff);
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
