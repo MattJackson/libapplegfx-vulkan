@@ -614,7 +614,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
               * Inner stream starts at offset +8 from segment_start (after 8B segment header). */
             bool render_begin_pending =
-                ((encoder_type == 4u || encoder_type == 2u)
+                ((encoder_type == 4u || encoder_type == 2u || encoder_type == 0u)
                  && !p->render_enc.in_pass);
 
             /* Inner command stream starts at offset +8 from segment_start */
@@ -1024,11 +1024,11 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                   "op=0x%04x returned %d (continuing)",
                                   inner_idx, inner_opcode, rc);
                     }
-                } else if (encoder_type == 1u) {
-                    /* Compute encoder (encType=1): compute pipeline
-                     * dispatch. PGDeserializerComputeDecoder is
-                     * scaffolded — observation-only for now.
-                     */
+          } else if (encoder_type == 0u || encoder_type == 1u) {
+                /* Compute encoder (encType=0 or 1): compute pipeline
+                  * dispatch. PGDeserializerComputeDecoder is
+                  * scaffolded — observation-only for now.
+                  */
                     {
                         const uint8_t *cpl = cmdbuf + ioff + 8u;
                         int rc = lagfx_compute_decoder_dispatch(p, inner_opcode,
