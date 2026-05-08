@@ -543,8 +543,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         unsigned segment_idx = 0;
         /* Probe for segment header start: try both offset 0 and 8.
          * At each candidate, check if bytes 0-3 form a valid segmentSize
-         * that fits within the buffer (size <= remaining space), AND
-         * verify encoderType at +8 is one of {0,1,2,4}. */
+         * that fits within the buffer (size <= remaining space). */
         uint32_t probe_size_at_0 = lagfx_le32(cmdbuf + soff + 0);
         size_t seg_off[2] = { 0u, 8u };
         size_t best_off = (size_t)-1; /* Invalid sentinel */
@@ -574,11 +573,12 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         }
 
          while (soff + segment_start_offset + 16u <= (size_t)length) {
-            uint32_t segment_size =
-                lagfx_le32(cmdbuf + soff + segment_start_offset + 0);
-      /* Segment header is 8 bytes per RE notes: size(4), encType(1), flags(3)
-              * Inner PGCmdHeader stream starts at offset +8 */
-            uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 4];
+             uint32_t segment_size =
+                 lagfx_le32(cmdbuf + soff + segment_start_offset + 0);
+       /* Segment header is 16 bytes per RE docs (inner-opcode-format.md):
+          size(4), protectionOptions(4), encoderType(1) at +8, flags/pad(7).
+          Inner PGCmdHeader stream starts at offset +16. */
+             uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 8];
 
             LAGFX_WARN("    segment[%u]: seg_header_bytes_0to3=%02x%02x%02x%02x encType=0x%02x",
                       segment_idx, cmdbuf[soff + segment_start_offset],
@@ -611,9 +611,9 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                 break;
             }
 
-            /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
-              * Inner stream starts at offset +8 from segment_start (after 8B segment header). */
-            bool render_begin_pending =
+           /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
+               * Inner stream starts at offset +16 from segment_start (after 16B header). */
+             bool render_begin_pending =
                 ((encoder_type == 4u || encoder_type == 2u || encoder_type == 0u)
                  && !p->render_enc.in_pass);
 
