@@ -988,11 +988,13 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                        opname, buffer_id, resource_count);
                         }
                     }
+                } /* end if (have_triplet && reply_size > 0u) */
 
+                /* Debug: log which encoder path we're taking for ALL inner opcodes */
                 LAGFX_WARN("    segment[%u]: dispatching inner op=0x%04x encType=%u",
                           segment_idx, inner_opcode, encoder_type);
 
-                } else if (encoder_type == 2u) {
+                /* Dispatch based on encoder type: 2=render, 4=blit, 0/1=compute */
                     /* Render encoder (encType=2): Metal drawing commands.
                      * PGDeserializerRenderDecoder handlers are ALL STUBS
                      * (stage 30%+ gap). Without real implementations,
