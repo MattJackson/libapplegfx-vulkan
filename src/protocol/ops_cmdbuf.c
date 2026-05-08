@@ -640,9 +640,15 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                 ((encoder_type == 4u || encoder_type == 2u)
                  && !p->render_enc.in_pass);
             size_t ioff = soff + segment_start_offset + 16u;
+            
+            LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu (soff+hdr_off+16)",
+                      segment_idx, ioff);
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
            while (ioff + 8u <= iend) {
+                LAGFX_WARN("    segment[%u]: byte at ioff=%zu = %02x%02x%02x%02x",
+                          segment_idx, ioff, cmdbuf[ioff], cmdbuf[ioff+1],
+                          cmdbuf[ioff+2], cmdbuf[ioff+3]);
                 uint32_t inner_opcode = lagfx_le32(cmdbuf + ioff + 0);
                 uint32_t inner_total  = lagfx_le32(cmdbuf + ioff + 4);
                 LAGFX_WARN("      inner[%u]: raw[+0..+7]=%02x%02x%02x%02x %02x%02x%02x%02x op=0x%04x totalLen=%u",
