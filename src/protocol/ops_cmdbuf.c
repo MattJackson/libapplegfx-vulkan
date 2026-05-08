@@ -536,10 +536,23 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
 
         size_t soff = 0;
         unsigned segment_idx = 0;
-        /* Try skipping first 8 bytes - might be an undocumented wrapper header.
-         * If segment_size at byte 0 matches resource length, that's the real start. */
+        /* Probe for segment header start: try both offset 0 and 8.
+         * At each candidate, check if bytes 0-3 form a valid segmentSize
+         * that fits within the buffer (size <= remaining space). */
         uint32_t probe_size_at_0 = lagfx_le32(cmdbuf + soff + 0);
-        size_t segment_start_offset = (probe_size_at_0 == length) ? 0u : 8u;
+        size_t seg_off[2] = { 0u, 8u };
+        size_t best_off = 0;
+        for (int i = 0; i < 2; i++) {
+            size_t off = seg_off[i];
+            if (soff + off + 16u > (size_t)length) continue;
+            uint32_t seg_size = lagfx_le32(cmdbuf + soff + off + 0);
+            /* Valid if: non-zero, and segment fits in remaining buffer */
+            if (seg_size != 0 && seg_size <= (uint32_t)((size_t)length - soff - off)) {
+                best_off = off;
+                break; /* Prefer offset 0 if valid */
+            }
+        }
+        size_t segment_start_offset = best_off;
 
         while (soff + segment_start_offset + 16u <= (size_t)length) {
             uint32_t segment_size =
@@ -559,14 +572,14 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             if (segment_idx == 0u) {
                 LAGFX_LOG("    segment[%u]: size=%u "
                           "encType=%u final=%u reuse=%u "
-                          "probe_size_at_0=0x%x segment_start_off=%zu "
+                          "probe_size_at_0=0x%x resource_len=%u segment_start_off=%zu "
                           "hdr=%02x%02x%02x%02x %02x%02x%02x%02x "
                           "%02x%02x%02x%02x %02x%02x%02x%02x "
                           "off=%zu taskID=%u",
                           segment_idx, segment_size,
                           (unsigned)encoder_type, (unsigned)final_flag,
                           (unsigned)reuse_flag,
-                          probe_size_at_0, segment_start_offset,
+                          probe_size_at_0, (unsigned)length, segment_start_offset,
                           cmdbuf[soff+segment_start_offset+0],
                           cmdbuf[soff+segment_start_offset+1],
                           cmdbuf[soff+segment_start_offset+2],
