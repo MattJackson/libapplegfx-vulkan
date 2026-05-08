@@ -576,34 +576,24 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
          while (soff + segment_start_offset + 16u <= (size_t)length) {
             uint32_t segment_size =
                 lagfx_le32(cmdbuf + soff + segment_start_offset + 0);
-            /* Segment header is 42 bytes (discovered via debug):
-              *   +0x00..+0x3b: segment metadata, descriptor data, or padding
-              *   +0x2a (+42): inner command stream starts here */
+            /* Segment header is 8 bytes per RE notes: size(4), encType(1), flags(3)
+              * Inner PGCmdHeader stream starts at offset +8 */
             uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 8];
-            uint8_t  final_flag   = cmdbuf[soff + segment_start_offset + 9];
-            uint8_t  reuse_flag   = cmdbuf[soff + segment_start_offset + 10];
 
-            LAGFX_WARN("    segment[%u]: seg_header[+8..+15]=%02x%02x%02x%02x %02x%02x%02x%02x encType=0x%02x",
-                      segment_idx, cmdbuf[soff + segment_start_offset + 8],
-                      cmdbuf[soff + segment_start_offset + 9],
-                      cmdbuf[soff + segment_start_offset + 10],
-                      cmdbuf[soff + segment_start_offset + 11],
-                      cmdbuf[soff + segment_start_offset + 12],
-                      cmdbuf[soff + segment_start_offset + 13],
-                      cmdbuf[soff + segment_start_offset + 14],
-                      cmdbuf[soff + segment_start_offset + 15],
-                      encoder_type);
+            LAGFX_WARN("    segment[%u]: seg_header_bytes_8to15=encType=0x%02x",
+                      segment_idx, encoder_type);
+
+            if (segment_idx == 0u && ioff < length) {
+                LAGFX_WARN("    segment[%u]: inner_cmd_start_byte=0x%02x",
+                          segment_idx, cmdbuf[soff + segment_start_offset + 8]);
+            }
 
             if (segment_idx == 0u) {
                 LAGFX_LOG("    segment[%u]: size=%u "
-                          "encType=%u final=%u reuse=%u "
-                          "probe_size_at_0=0x%x resource_len=%u segment_start_off=%zu "
-                          "hdr=%02x%02x%02x%02x %02x%02x%02x%02x "
-                          "%02x%02x%02x%02x %02x%02x%02x%02x "
+                          "encType=%u probe_size_at_0=0x%x resource_len=%u segment_start_off=%zu "
+                          "hdr_bytes_0to7=%02x%02x%02x%02x %02x%02x%02x%02x "
                           "off=%zu taskID=%u",
-                          segment_idx, segment_size,
-                          (unsigned)encoder_type, (unsigned)final_flag,
-                          (unsigned)reuse_flag,
+                          segment_idx, segment_size, (unsigned)encoder_type,
                           probe_size_at_0, (unsigned)length, segment_start_offset,
                           cmdbuf[soff+segment_start_offset+0],
                           cmdbuf[soff+segment_start_offset+1],
@@ -613,30 +603,23 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                           cmdbuf[soff+segment_start_offset+5],
                           cmdbuf[soff+segment_start_offset+6],
                           cmdbuf[soff+segment_start_offset+7],
-                          cmdbuf[soff+segment_start_offset+8],
-                          cmdbuf[soff+segment_start_offset+9],
-                          cmdbuf[soff+segment_start_offset+10],
-                          cmdbuf[soff+segment_start_offset+11],
                           soff, task_id);
             }
 
             if (segment_size == 0u
                  || segment_size > (uint32_t)((size_t)length - soff - segment_start_offset)) {
-                LAGFX_WARN("    segment[%u]: seg_size=%u length=%zu soff=%zu max_allowed=%u FAIL",
-                          segment_idx, segment_size, (size_t)length, soff,
-                          (uint32_t)((size_t)length - soff - segment_start_offset));
                 LAGFX_WARN("    segment[%u]: bad size — bailing out", segment_idx);
                 break;
             }
 
             /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
-              * Inner stream starts at offset +42 from segment_start (after segment header). */
+              * Inner stream starts at offset +8 from segment_start (after 8B segment header). */
             bool render_begin_pending =
                 ((encoder_type == 4u || encoder_type == 2u)
                  && !p->render_enc.in_pass);
-            size_t ioff = soff + segment_start_offset + 42u;
+            size_t ioff = soff + segment_start_offset + 8u;
             
-            LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu (soff+hdr_off+42)",
+            LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu (soff+hdr_off+8)",
                       segment_idx, ioff);
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
