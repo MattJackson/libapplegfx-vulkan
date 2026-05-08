@@ -580,13 +580,12 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
               * Inner PGCmdHeader stream starts at offset +8 */
             uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 8];
 
-            LAGFX_WARN("    segment[%u]: seg_header_bytes_8to15=encType=0x%02x",
-                      segment_idx, encoder_type);
-
-            if (segment_idx == 0u && ioff < length) {
-                LAGFX_WARN("    segment[%u]: inner_cmd_start_byte=0x%02x",
-                          segment_idx, cmdbuf[soff + segment_start_offset + 8]);
-            }
+         LAGFX_WARN("    segment[%u]: seg_header_bytes_0to3=%02x%02x%02x%02x encType=0x%02x",
+                      segment_idx, cmdbuf[soff + segment_start_offset],
+                      cmdbuf[soff + segment_start_offset + 1],
+                      cmdbuf[soff + segment_start_offset + 2],
+                      cmdbuf[soff + segment_start_offset + 3],
+                      encoder_type);
 
             if (segment_idx == 0u) {
                 LAGFX_LOG("    segment[%u]: size=%u "
@@ -617,9 +616,11 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             bool render_begin_pending =
                 ((encoder_type == 4u || encoder_type == 2u)
                  && !p->render_enc.in_pass);
+
+            /* Inner command stream starts at offset +8 from segment_start */
             size_t ioff = soff + segment_start_offset + 8u;
-            
-            LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu (soff+hdr_off+8)",
+
+            LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu",
                       segment_idx, ioff);
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
