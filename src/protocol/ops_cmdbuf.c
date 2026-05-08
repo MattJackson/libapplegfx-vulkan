@@ -380,6 +380,9 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         return LAGFX_HANDLER_OK;
     }
 
+    LAGFX_WARN("CmdExecIndirect2: processing taskID=%u descriptor_count=%u resource_count=%u",
+              task_id, descriptor_count, resource_count);
+
     lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
     if (!task) {
         LAGFX_WARN("CmdExecIndirect2: taskID=%u not found "
@@ -530,11 +533,13 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                     if (w > 0) dpos += (size_t)w;
                 }
             }
-            LAGFX_WARN("  resource[%u] hexdump (first %zu/%u bytes):\n              %s",
-                       i, dump_n, length, dump_buf);
-        }
+        LAGFX_WARN("  resource[%u] first_8bytes: %02x%02x%02x%02x %02x%02x%02x%02x encType_at_8=0x%02x",
+                    i, cmdbuf[0], cmdbuf[1], cmdbuf[2], cmdbuf[3],
+                    cmdbuf[4], cmdbuf[5], cmdbuf[6], cmdbuf[7],
+                    cmdbuf[8]);
+    }
 
-        size_t soff = 0;
+    size_t soff = 0;
         unsigned segment_idx = 0;
         /* Probe for segment header start: try both offset 0 and 8.
          * At each candidate, check if bytes 0-3 form a valid segmentSize
@@ -573,17 +578,17 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             continue;
         }
 
-        while (soff + segment_start_offset + 16u <= (size_t)length) {
+         while (soff + segment_start_offset + 16u <= (size_t)length) {
             uint32_t segment_size =
                 lagfx_le32(cmdbuf + soff + segment_start_offset + 0);
             /* PGSerializerCommandSegmentHeader is 16 bytes:
-             *   +0x00 segmentSize (u32)
-             *   +0x04 protectionOptions (u32)
-             *   +0x08 encoderType (u8): 0=compute, 1=compute-alt, 2=render, 4=blit
-             *   +0x09 finalFlag (u8)
-             *   +0x0a reuseFlag (u8)
-             *   +0x0b pad
-             *   +0x0c reserved (u32) */
+              *   +0x00 segmentSize (u32)
+              *   +0x04 protectionOptions (u32)
+              *   +0x08 encoderType (u8): 0=compute, 1=compute-alt, 2=render, 4=blit
+              *   +0x09 finalFlag (u8)
+              *   +0x0a reuseFlag (u8)
+              *   +0x0b pad
+              *   +0x0c reserved (u32) */
             uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 8];
             uint8_t  final_flag   = cmdbuf[soff + segment_start_offset + 9];
             uint8_t  reuse_flag   = cmdbuf[soff + segment_start_offset + 10];
@@ -614,8 +619,12 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                           soff, task_id);
             }
 
-           if (segment_size == 0u
-                || segment_size > (uint32_t)((size_t)length - soff - segment_start_offset)) {
+            LAGFX_WARN("    segment[%u]: seg_size=%u length=%zu soff=%zu max_allowed=%u FAIL",
+                      segment_idx, segment_size, (size_t)length, soff,
+                      (uint32_t)((size_t)length - soff - segment_start_offset));
+
+            if (segment_size == 0u
+                 || segment_size > (uint32_t)((size_t)length - soff - segment_start_offset)) {
                 LAGFX_WARN("    segment[%u]: bad size — bailing out", segment_idx);
                 break;
             }
