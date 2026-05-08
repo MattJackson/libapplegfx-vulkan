@@ -632,12 +632,16 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             size_t ioff = soff + 16u;
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
-            while (ioff + 8u <= iend) {
+           while (ioff + 8u <= iend) {
                 uint32_t inner_opcode = lagfx_le32(cmdbuf + ioff + 0);
                 uint32_t inner_total  = lagfx_le32(cmdbuf + ioff + 4);
+                LAGFX_WARN("      inner[%u]: raw[+0..+7]=%02x%02x%02x%02x %02x%02x%02x%02x op=0x%04x totalLen=%u",
+                          inner_idx, cmdbuf[ioff], cmdbuf[ioff+1], cmdbuf[ioff+2], cmdbuf[ioff+3],
+                          cmdbuf[ioff+4], cmdbuf[ioff+5], cmdbuf[ioff+6], cmdbuf[ioff+7],
+                          inner_opcode, inner_total);
                 if (inner_total < 8u || ioff + inner_total > iend) {
                     LAGFX_WARN("      inner[%u]: bad totalLength=%u — bailing",
-                               inner_idx, inner_total);
+                                inner_idx, inner_total);
                     break;
                 }
                 size_t ipl_len = (size_t)inner_total - 8u;
