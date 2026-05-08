@@ -549,12 +549,16 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             uint32_t seg_size = lagfx_le32(cmdbuf + soff + off + 0);
             /* Valid if: non-zero, fits in buffer, AND encoderType is valid. */
             if (seg_size == 0 || seg_size > (uint32_t)((size_t)length - soff - off)) {
+                LAGFX_WARN("      probe off=%zu: seg_size=%u length=%zu soff=%zu FAIL",
+                          off, seg_size, (size_t)length, soff);
                 continue;
             }
             uint8_t enc_type = cmdbuf[soff + off + 8];
             /* encoderType must be one of: 0=compute, 1=compute-alt,
              * 2=render, 4=blit. Anything else means this offset is wrong. */
             if (enc_type != 0 && enc_type != 1 && enc_type != 2 && enc_type != 4) {
+                LAGFX_WARN("      probe off=%zu: seg_size=%u encType=0x%02x invalid",
+                          off, seg_size, enc_type);
                 continue;
             }
             best_off = off;
