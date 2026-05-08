@@ -989,10 +989,13 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                         }
                     }
 
-                LAGFX_WARN("    segment[%u]: dispatching inner op=0x%04x encType=%u",
-                          segment_idx, inner_opcode, encoder_type);
+                 LAGFX_WARN("    segment[%u]: dispatching inner op=0x%04x encType=%u",
+                           segment_idx, inner_opcode, encoder_type);
+                } /* end if (have_triplet && reply_size > 0u) */
 
-                } else if (encoder_type == 2u) {
+                /* Dispatch render/blit/compute opcodes for ALL segments.
+                 * This is separate from InfoDecoder reply handling above. */
+                if (encoder_type == 2u) {
                     /* Render encoder (encType=2): Metal drawing commands.
                      * PGDeserializerRenderDecoder handlers are ALL STUBS
                      * (stage 30%+ gap). Without real implementations,
@@ -1015,7 +1018,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                         render_begin_pending = false;
                         lagfx_render_encoder_try_begin(p);
                     }
-               } else if (encoder_type == 4u) {
+                } else if (encoder_type == 4u) {
                     /* Blit encoder (encType=4): buffer copies,
                       * texture blits. PGDeserializerBlitDecoder is
                       * scaffolded — observation-only for now.
@@ -1028,11 +1031,11 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                   "op=0x%04x returned %d (continuing)",
                                   inner_idx, inner_opcode, rc);
                     }
-          } else if (encoder_type == 0u || encoder_type == 1u) {
-                /* Compute encoder (encType=0 or 1): compute pipeline
-                  * dispatch. PGDeserializerComputeDecoder is
-                  * scaffolded — observation-only for now.
-                  */
+                } else if (encoder_type == 0u || encoder_type == 1u) {
+                    /* Compute encoder (encType=0 or 1): compute pipeline
+                      * dispatch. PGDeserializerComputeDecoder is
+                      * scaffolded — observation-only for now.
+                      */
                     {
                         const uint8_t *cpl = cmdbuf + ioff + 8u;
                         int rc = lagfx_compute_decoder_dispatch(p, inner_opcode,
