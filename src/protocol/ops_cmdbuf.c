@@ -576,11 +576,11 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
          while (soff + segment_start_offset + 16u <= (size_t)length) {
             uint32_t segment_size =
                 lagfx_le32(cmdbuf + soff + segment_start_offset + 0);
-            /* Segment header is 8 bytes per RE notes: size(4), encType(1), flags(3)
+      /* Segment header is 8 bytes per RE notes: size(4), encType(1), flags(3)
               * Inner PGCmdHeader stream starts at offset +8 */
-            uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 8];
+            uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 4];
 
-         LAGFX_WARN("    segment[%u]: seg_header_bytes_0to3=%02x%02x%02x%02x encType=0x%02x",
+            LAGFX_WARN("    segment[%u]: seg_header_bytes_0to3=%02x%02x%02x%02x encType=0x%02x",
                       segment_idx, cmdbuf[soff + segment_start_offset],
                       cmdbuf[soff + segment_start_offset + 1],
                       cmdbuf[soff + segment_start_offset + 2],
@@ -620,8 +620,8 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             /* Inner command stream starts at offset +8 from segment_start */
             size_t ioff = soff + segment_start_offset + 8u;
 
-            LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu",
-                      segment_idx, ioff);
+            LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu encType=%u",
+                      segment_idx, ioff, encoder_type);
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
            while (ioff + 8u <= iend) {
