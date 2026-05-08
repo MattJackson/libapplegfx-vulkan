@@ -614,12 +614,11 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                           soff, task_id);
             }
 
-            LAGFX_WARN("    segment[%u]: seg_size=%u length=%zu soff=%zu max_allowed=%u FAIL",
-                      segment_idx, segment_size, (size_t)length, soff,
-                      (uint32_t)((size_t)length - soff - segment_start_offset));
-
             if (segment_size == 0u
                  || segment_size > (uint32_t)((size_t)length - soff - segment_start_offset)) {
+                LAGFX_WARN("    segment[%u]: seg_size=%u length=%zu soff=%zu max_allowed=%u FAIL",
+                          segment_idx, segment_size, (size_t)length, soff,
+                          (uint32_t)((size_t)length - soff - segment_start_offset));
                 LAGFX_WARN("    segment[%u]: bad size — bailing out", segment_idx);
                 break;
             }
