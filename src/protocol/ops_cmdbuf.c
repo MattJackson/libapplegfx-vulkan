@@ -559,14 +559,14 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             if (segment_idx == 0u) {
                 LAGFX_LOG("    segment[%u]: size=%u "
                           "encType=%u final=%u reuse=%u "
-                          "probe_size_at_4=0x%x segment_start_off=%zu "
+                          "probe_size_at_0=0x%x segment_start_off=%zu "
                           "hdr=%02x%02x%02x%02x %02x%02x%02x%02x "
                           "%02x%02x%02x%02x %02x%02x%02x%02x "
                           "off=%zu taskID=%u",
                           segment_idx, segment_size,
                           (unsigned)encoder_type, (unsigned)final_flag,
                           (unsigned)reuse_flag,
-                          probe_size_at_4, segment_start_offset,
+                          probe_size_at_0, segment_start_offset,
                           cmdbuf[soff+segment_start_offset+0],
                           cmdbuf[soff+segment_start_offset+1],
                           cmdbuf[soff+segment_start_offset+2],
