@@ -17,8 +17,9 @@
  * the real length arrives via the wire-level totalLengthBytes field.
  *
  * Opcodes 0x86 (UseHeaps) and 0x87 (UseResources) are shared with the
- * Render decoder. When encoderType==1 they dispatch through this table;
- * when encoderType==2 they dispatch through the render opcode table.
+ * Render decoder. When encoderType==0/1 (compute) they dispatch through
+ * this table; when encoderType==2 (render) they dispatch through the render
+ * opcode table.
  * Opcode 0xdb (SetComputePassDispatchType) is descriptor-only — it is
  * only valid inside decodeComputePassDescriptor: and never reaches the
  * main dispatch loop, so it is excluded from this table.
@@ -47,7 +48,7 @@ bool lagfx_compute_op_is_stub(uint32_t opcode) {
 }
 
 static const lagfx_compute_op_descriptor_t g_compute_op_table[] = {
-    /* Shared with Render decoder (valid when encoderType==1). */
+    /* Shared with Render decoder (valid when encoderType==0, compute path). */
     { 0x86, "UseHeaps",                                   0, 0, compute_op_ack_stub },
     { 0x87, "UseResources",                               0, 0, compute_op_ack_stub },
 

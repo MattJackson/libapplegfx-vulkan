@@ -50,11 +50,11 @@
  *   - Guest may detect "GPU hang" if work doesn't visibly progress.
  *
  * Priority for stage 30%+:
- *   1. Render opcodes (0x20 inner, encoder_type=2):
+ *   1. Render opcodes (inner 0x20, encoder_type=2):
  *      PGDeserializerRenderDecoder handlers — needed for actual drawing.
  *      See render_opcodes.c for stub vs real status per opcode.
- *   2. Blit opcodes (encoder_type=0): buffer copies, texture blits.
- *   3. Compute opcodes (encoder_type=1): compute pipeline dispatch.
+ *   2. Blit opcodes (encoder_type=4): buffer copies, texture blits.
+ *   3. Compute opcodes (encoder_type=0/1): compute pipeline dispatch.
  *   4. InfoDecoder replies: mostly done (stubs return defaults).
  *
  * RE references:
@@ -285,30 +285,32 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
  * Each resource_table entry's host_gpu_addr is a TASK-VIRTUAL address
  * (translated through the per-task PFN-array from CmdDefineHostTask 0x38).
  * It points at a per-resource cmdBuf containing:
- *   - PGSerializerCommandSegmentHeader (8 B: size, encType, flags)
- *     encType: 0=blit, 1=compute, 2=render, 4=info
+ *   - PGSerializerCommandSegmentHeader (16 B): segmentSize(4), protectionOptions(4),
+ *     encoderType(1 @ +8: 0=compute, 1=compute-alt, 2=render, 4=blit),
+ *     finalFlag(1), reuseFlag(1), pad(1), reserved(4)
  *   - Nested PGCmdHeader streams (8 B: opcode, totalLength)
  *   See paravirt-re/classes/ for segment header format.
  *
- * Inner opcode families by encoder_type:
- *   - encType=0 (blit):  lagfx_blit_decoder_dispatch()
- *     Scaffolded in blit_decoder.c — observation-only for now.
- *     See paravirt-re/M5-air-translation-status.md.
- *   - encType=1 (compute): lagfx_compute_decoder_dispatch()
+* Inner opcode families by encoder_type:
+ *   - encType=0 (compute): lagfx_compute_decoder_dispatch()
+ *     PGDeserializerComputeDecoder — compute pipeline dispatch.
  *     Scaffolded in compute_decoder.c — observation-only for now.
+ *   - encType=1 (compute-alt): same as encType=0, alternate init path
  *   - encType=2 (render):  lagfx_render_decoder_dispatch()
  *     PGDeserializerRenderDecoder in render_opcodes.c.
  *     Most handlers are STUBS (return 0) — stage 30%+ gap.
  *     See render_opcodes.c header comment for stub vs real status.
- *   - encType=4 (info):   InfoDecoder stubs (0x1c2..0x1d0)
+ *   - encType=4 (blit):    lagfx_blit_decoder_dispatch()
+ *     PGDeserializerBlitDecoder — buffer copies, texture blits.
+ *     Scaffolded in blit_decoder.c — observation-only for now.
  *     Reply with sane defaults so SkyLight doesn't abort.
  *     See paravirt-re/library/state-machines/info-decoder-replies.tsv
  *
  * Stage 30%+ work (see CLAUDE.md):
  *   - Render opcodes (encType=2): Need real implementations
  *     for actual Metal drawing to appear.
- *   - Blit opcodes (encType=0): buffer copies, texture blits.
- *   - Compute opcodes (encType=1): compute pipeline dispatch.
+ *   - Blit opcodes (encType=4): buffer copies, texture blits.
+ *   - Compute opcodes (encType=0/1): compute pipeline dispatch.
  *
  * Empty-list case falls through to metal-no-op completion path.
  * The outer stamp is signalled by the dispatcher.
@@ -534,17 +536,26 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
 
         size_t soff = 0;
         unsigned segment_idx = 0;
-        while (soff + 8u <= (size_t)length) {
+        while (soff + 16u <= (size_t)length) {
             uint32_t segment_size =
                 lagfx_le32(cmdbuf + soff + 0);
-            uint8_t  encoder_type = cmdbuf[soff + 4];
-            uint8_t  final_flag   = cmdbuf[soff + 5];
-            uint8_t  reuse_flag   = cmdbuf[soff + 6];
+            /* PGSerializerCommandSegmentHeader is 16 bytes:
+             *   +0x00 segmentSize (u32)
+             *   +0x04 protectionOptions (u32)
+             *   +0x08 encoderType (u8): 0=compute, 1=compute-alt, 2=render, 4=blit
+             *   +0x09 finalFlag (u8)
+             *   +0x0a reuseFlag (u8)
+             *   +0x0b pad
+             *   +0x0c reserved (u32) */
+            uint8_t  encoder_type = cmdbuf[soff + 8];
+            uint8_t  final_flag   = cmdbuf[soff + 9];
+            uint8_t  reuse_flag   = cmdbuf[soff + 10];
 
             if (segment_idx == 0u) {
                 LAGFX_LOG("    segment[%u]: size=%u "
                           "encType=%u final=%u reuse=%u "
                           "hdr=%02x%02x%02x%02x %02x%02x%02x%02x "
+                          "%02x%02x%02x%02x %02x%02x%02x%02x "
                           "off=%zu taskID=%u",
                           segment_idx, segment_size,
                           (unsigned)encoder_type, (unsigned)final_flag,
@@ -553,21 +564,24 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                           cmdbuf[soff+2], cmdbuf[soff+3],
                           cmdbuf[soff+4], cmdbuf[soff+5],
                           cmdbuf[soff+6], cmdbuf[soff+7],
+                          cmdbuf[soff+8], cmdbuf[soff+9],
+                          cmdbuf[soff+10], cmdbuf[soff+11],
                           soff, task_id);
             }
 
-            if (segment_size == 0u
+           if (segment_size == 0u
                 || segment_size > (uint32_t)((size_t)length - soff)) {
                 LAGFX_WARN("    segment[%u]: bad size — bailing out", segment_idx);
                 break;
             }
 
             /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
-             * then totalLength-8 bytes payload. */
+              * then totalLength-8 bytes payload. Inner stream starts at offset 16
+              * after the 16-byte PGSerializerCommandSegmentHeader. */
             bool render_begin_pending =
-                ((encoder_type == 0u || encoder_type == 2u)
+                ((encoder_type == 4u || encoder_type == 2u)
                  && !p->render_enc.in_pass);
-            size_t ioff = soff + 8u;
+            size_t ioff = soff + 16u;
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
             while (ioff + 8u <= iend) {
@@ -950,11 +964,11 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                         render_begin_pending = false;
                         lagfx_render_encoder_try_begin(p);
                     }
-                } else if (encoder_type == 0u) {
-                    /* Blit encoder (encType=0): buffer copies,
-                     * texture blits. PGDeserializerBlitDecoder is
-                     * scaffolded — observation-only for now.
-                     */
+               } else if (encoder_type == 4u) {
+                    /* Blit encoder (encType=4): buffer copies,
+                      * texture blits. PGDeserializerBlitDecoder is
+                      * scaffolded — observation-only for now.
+                      */
                     const uint8_t *bpl = cmdbuf + ioff + 8u;
                     int rc = lagfx_blit_decoder_dispatch(p, inner_opcode,
                                                          bpl, ipl_len);
