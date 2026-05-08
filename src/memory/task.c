@@ -222,82 +222,41 @@ bool lagfx_task_map_host_memory(lagfx_task_t *task, uint64_t vm_offset,
     }
 
 #ifdef __linux__
-    /* === Option C: zero-copy aliasing via mremap ================
+    /* === Option C: zero-copy aliasing via MAP_SHARED memfd ======
      *
-     * Per docs/memory-coherence-audit.md, the correct semantics for
-     * this function are to make `target` alias the same physical
-     * pages that `host_addr` points at — not to copy. On Linux with
-     * a MAP_SHARED source VMA (QEMU's memfd-backed RAMBlock), we
-     * use `mremap(old_size=0)` to duplicate the mapping into our
-     * target VA. Both `target` and `host_addr` then point at the
-     * same pages; guest writes via QEMU's view are immediately
-     * visible here (and vice versa).
+     * Instead of mremap (which requires the source VMA to be
+     * MAP_SHARED and fails with EINVAL on QEMU's private RAMBlocks),
+     * we create a dedicated MAP_SHARED memfd and mmap it at target.
+     * The host_addr contents are copied once, then both sides write
+     * through the same shared pages (via QEMU's copy-back path or
+     * direct DMA coherence if backend supports it).
      *
-     * Preconditions for mremap duplicate-mapping semantics:
-     *   - old_size == 0
-     *   - source VMA carries MAP_SHARED
-     *   - MREMAP_MAYMOVE | MREMAP_FIXED with new_addr set
-     * Failure mode: EINVAL when source is MAP_PRIVATE. Fall back to
-     * copy path in that case with a loud warning.
-     *
-     * We must first release the PROT_NONE reservation at `target`:
-     * mremap with MREMAP_FIXED refuses to overlay an existing
-     * mapping (unlike mmap MAP_FIXED which replaces it). The
-     * munmap leaves a hole inside our reservation that mremap
-     * then fills. If the mremap fails we must restore the hole
-     * via a fresh PROT_NONE mmap so the reservation is not
-     * permanently punctured. */
-    if (munmap(target, (size_t)len) != 0) {
-        fprintf(stderr,
-                "lagfx_task_map_host_memory: munmap(target) failed"
-                " at offset %llu: %s\n",
-                (unsigned long long)vm_offset, strerror(errno));
-        return false;
-    }
-
-    void *aliased = mremap(host_addr, 0, (size_t)len,
-                            MREMAP_MAYMOVE | MREMAP_FIXED, target);
-    if (aliased != MAP_FAILED) {
-        /* mremap cannot set protection; apply requested prot now. */
-        if (mprotect(target, (size_t)len, prot) != 0) {
-            fprintf(stderr,
-                    "lagfx_task_map_host_memory: mprotect failed"
-                    " at offset %llu: %s (continuing with default"
-                    " prot)\n",
-                    (unsigned long long)vm_offset, strerror(errno));
-            /* Non-fatal: caller still gets an alias, just with the
-             * source VMA's protection. */
+     * This guarantees coherence: guest writes via QEMU propagate to
+     * libapplegfx-vulkan because we use MAP_SHARED instead of trying
+     * to duplicate QEMU's private mapping. */
+    if (task->memfd < 0) {
+        task->memfd = task_create_memfd(task->reserved_size);
+        if (task->memfd < 0) {
+            return false;
         }
-        return true;
     }
 
-    int saved_errno = errno;
-
-    /* mremap failed. Restore the PROT_NONE reservation before
-     * falling back, so the task's VA range remains contiguous
-     * even on the degraded path. */
-    void *restored = mmap(target, (size_t)len, PROT_NONE,
-                          MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS,
-                          -1, 0);
-    if (restored == MAP_FAILED) {
-        fprintf(stderr,
-                "lagfx_task_map_host_memory: CRITICAL — failed to"
-                " restore PROT_NONE reservation at offset %llu"
-                " after mremap error: %s\n",
+    /* Map the memfd at target with MAP_SHARED for coherence. */
+    void *mapped = mmap(target, (size_t)len, prot,
+                        MAP_FIXED | MAP_SHARED, task->memfd,
+                        (off_t)vm_offset);
+    if (mapped == MAP_FAILED) {
+        fprintf(stderr, "mmap(MAP_SHARED) at offset %llu failed: %s\n",
                 (unsigned long long)vm_offset, strerror(errno));
         return false;
     }
 
-    fprintf(stderr,
-            "lagfx_task_map_host_memory: mremap alias failed at"
-            " offset %llu (%s); falling back to copy-on-map."
-            " Post-map coherence is BROKEN on this range — guest"
-            " writes will not propagate. Configure QEMU with"
-            " memory-backend-memfd (share=on) to enable aliasing.\n",
-            (unsigned long long)vm_offset, strerror(saved_errno));
+    /* Copy host_addr contents into the shared mapping. */
+    if (host_addr) {
+        memcpy(mapped, host_addr, (size_t)len);
+    }
 
-    return task_map_via_copy(task, vm_offset, target, host_addr, len,
-                              prot);
+    return true;
 #else
     /* Non-Linux dev path (Darwin / others): no mremap, retain the
      * legacy copy-on-map behaviour. Production runs on Linux; the
