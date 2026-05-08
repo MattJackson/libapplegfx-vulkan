@@ -537,9 +537,9 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         size_t soff = 0;
         unsigned segment_idx = 0;
         /* Try skipping first 8 bytes - might be an undocumented wrapper header.
-         * If segment_size at byte 4 matches resource length, that's the real start. */
-        uint32_t probe_size_at_4 = lagfx_le32(cmdbuf + soff + 4);
-        size_t segment_start_offset = (probe_size_at_4 == length) ? 0u : 8u;
+         * If segment_size at byte 0 matches resource length, that's the real start. */
+        uint32_t probe_size_at_0 = lagfx_le32(cmdbuf + soff + 0);
+        size_t segment_start_offset = (probe_size_at_0 == length) ? 0u : 8u;
 
         while (soff + segment_start_offset + 16u <= (size_t)length) {
             uint32_t segment_size =
