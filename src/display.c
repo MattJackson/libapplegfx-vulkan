@@ -82,7 +82,7 @@ static void display_rt_create(lagfx_display_t *disp) {
         w = disp->desc.modes[0].width_px;
         h = disp->desc.modes[0].height_px;
     }
-    if (w == 0u || h == 0u) {
+   if (w == 0u || h == 0u) {
         w = LAGFX_DISPLAY_DEFAULT_W;
         h = LAGFX_DISPLAY_DEFAULT_H;
     }
@@ -97,8 +97,7 @@ static void display_rt_create(lagfx_display_t *disp) {
             LAGFX_LOG("display_rt_create: wrapped pipeline frame image "
                       "(%ux%u, no extra allocation)", w, h);
             disp->rt_ready = true;
-            disp->rt_width = w;
-            disp->rt_height = h;
+            notify_mode_changed(disp);
             return;
         }
     }
@@ -109,11 +108,11 @@ static void display_rt_create(lagfx_display_t *disp) {
         LAGFX_ERR("display_new: render_target_create failed (%d) — "
                   "read_frame will return NO_FRAME", (int)st);
         disp->rt_ready = false;
+        notify_mode_changed(disp);
         return;
     }
     disp->rt_ready = true;
-    disp->rt_width = w;
-    disp->rt_height = h;
+    notify_mode_changed(disp);
 }
 
 static void display_rt_destroy(lagfx_display_t *disp) {
