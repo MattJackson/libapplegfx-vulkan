@@ -127,13 +127,14 @@ void lagfx_ops_display_reset(void);
  * at 60 Hz once the shell integration lands; tests can invoke it
  * directly to assert mailbox behaviour.
  *
- * `shell_opaque` + `write_memory` mirror the shell-callback surface
- * so the implementation stays self-contained and doesn't reach into
- * lagfx_device_t internals. Returns true if the DMA write was
- * attempted (page was installed and write_memory is non-NULL). */
-bool lagfx_ops_display_tick_vblank(
-    void *shell_opaque,
-    bool (*write_memory)(void *, uint64_t, uint64_t, const void *));
+* `shell_opaque` + `write_memory` mirror the shell-callback surface
+     * so the implementation stays self-contained and doesn't reach into
+     * lagfx_device_t internals. Returns true if the DMA write was
+     * attempted (page was installed and write_memory is non-NULL). */
+ bool lagfx_ops_display_tick_vblank(
+     void *shell_opaque,
+     bool (*write_memory)(void *, uint64_t, uint64_t, const void *),
+     bool (*read_memory)(void *, uint64_t, uint64_t, void *));
 
 /* Handler forward declarations — registered in the opcode table. */
 lagfx_handler_status_t lagfx_op_display_cursor_show(

@@ -303,12 +303,9 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
     }
 
     /* rt_* fields accessed under lock for thread safety. */
-    uint32_t w, h;
     bool ready;
     LAGFX_DISPLAY_RT_LOCK(display);
-    w = display->rt_width;
-    h = display->rt_height;
-    ready = display->rt_ready;
+    ready = display->rt_ready;  /* Only need this for the check */
     LAGFX_DISPLAY_RT_UNLOCK(display);
 
     if (!ready || !display->device

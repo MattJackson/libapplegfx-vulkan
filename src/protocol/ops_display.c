@@ -579,9 +579,10 @@ bool lagfx_ops_display_tick_vblank(
 bool lagfx_display_tick_vblank(
     lagfx_device_t *dev,
     void *shell_opaque,
-    bool (*write_memory)(void *, uint64_t, uint64_t, const void *)) {
+    bool (*write_memory)(void *, uint64_t, uint64_t, const void *),
+    bool (*read_memory)(void *, uint64_t, uint64_t, void *)) {
     
-    if (!dev || !write_memory) {
+    if (!dev || !write_memory || !read_memory) {
         return false;
     }
 
@@ -852,12 +853,14 @@ lagfx_handler_status_t lagfx_op_display_set_shared_page(
     g_shared_state.page_va        = page_va;
     g_shared_state.vblank_counter = 0u;
 
-    if (p->dev != NULL && p->dev->desc.shell.write_memory != NULL) {
+    if (p->dev != NULL && p->dev->desc.shell.write_memory != NULL
+         && p->dev->desc.shell.read_memory != NULL) {
         static const uint8_t zeros[64] = {0};
         (void)p->dev->desc.shell.write_memory(
             p->dev->desc.shell.opaque, page_va, sizeof(zeros), zeros);
         (void)lagfx_ops_display_tick_vblank(
-            p->dev->desc.shell.opaque, p->dev->desc.shell.write_memory);
+            p->dev->desc.shell.opaque, p->dev->desc.shell.write_memory,
+            p->dev->desc.shell.read_memory);
     } else {
         /* Shadow-only kick so "counter > 0" checks succeed before
          * any DMA path lands. */
