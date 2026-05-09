@@ -82,10 +82,18 @@ static void display_rt_create(lagfx_display_t *disp) {
         w = disp->desc.modes[0].width_px;
         h = disp->desc.modes[0].height_px;
     }
-   if (w == 0u || h == 0u) {
+    if (w == 0u || h == 0u) {
         w = LAGFX_DISPLAY_DEFAULT_W;
         h = LAGFX_DISPLAY_DEFAULT_H;
     }
+
+    /* Publish dimensions before any notify_mode_changed call below.
+     * The callback reads disp->rt_width/rt_height; leaving them at the
+     * post-calloc zero values causes the QEMU-side mode_changed
+     * callback to create a 0x0 DisplaySurface, which aborts in
+     * qemu_memfd_alloc (mmap length=0 → EINVAL). */
+    disp->rt_width = w;
+    disp->rt_height = h;
 
     if (vk->frame_image != VK_NULL_HANDLE
         && vk->frame_image_w == w && vk->frame_image_h == h) {
