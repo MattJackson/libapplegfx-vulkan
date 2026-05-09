@@ -2013,9 +2013,6 @@ static void test_display_set_icc_profile_handler(void) {
     lagfx_device_free(dev);
 }
 
-/* CmdDeleteIOSurfaceBacking2 (opcode 0x26) tested via separate mechanism. */
-static void test_iosurface_delete_handler(void) {}
-
 static void test_iosurface_create_handler(void) {
     fprintf(stdout, "\n--- test: iosurface_create_handler ---\n");
 
@@ -2528,9 +2525,9 @@ static void test_display_set_shared_state_page_handler(void) {
     CHECK(page[64] == 0xaau,
           "mailbox: bytes past first 64 left untouched");
 
-    CHECK(lagfx_ops_display_tick_vblank(&shell, mock_write, NULL),
+    CHECK(lagfx_ops_display_tick_vblank(&shell, mock_write),
           "tick_vblank returns true (installed + write_memory)");
-    CHECK(lagfx_ops_display_tick_vblank(&shell, mock_write, NULL),
+    CHECK(lagfx_ops_display_tick_vblank(&shell, mock_write),
           "tick_vblank second call returns true");
     ss = lagfx_ops_display_shared_state();
     CHECK(ss->vblank_counter == 3u,
@@ -2542,7 +2539,7 @@ static void test_display_set_shared_state_page_handler(void) {
     CHECK(first_u32 == 3u,
           "mailbox: DMA-written counter matches shadow (3)");
 
-    CHECK(!lagfx_ops_display_tick_vblank(&shell, NULL, NULL),
+    CHECK(!lagfx_ops_display_tick_vblank(&shell, NULL),
           "tick_vblank returns false when no write_memory provided");
     ss = lagfx_ops_display_shared_state();
     CHECK(ss->vblank_counter == 4u,

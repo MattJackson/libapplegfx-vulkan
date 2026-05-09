@@ -484,6 +484,228 @@ static void test_doorbell_ch6_keeps_ss_path(void) {
     db_shell_free(&shell);
 }
 
+/* === Edge-case coverage (item 9 — guest-controlled drain inputs) ==== */
+
+/* PFN-walk that crosses a page boundary: place a 12B header at offset
+ * 0xff8 so 8 bytes live in PFN-array entry 0 and the remaining 4 bytes
+ * live in entry 1. Walker must stitch the read across two PFN lookups
+ * and dispatch a single NOP. */
+static void test_doorbell_ch1_pfn_walk_crosses_page_boundary(void) {
+    fprintf(stdout, "\n--- test: doorbell_ch1_pfn_walk_crosses_page_boundary ---\n");
+    db_shell_t shell;
+    db_shell_init(&shell, 0x40000000ull);
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    uint32_t shared_pfn    = 0x40001u;
+    uint32_t ring_pfn      = 0x40090u;
+    uint32_t data_pfn_a    = 0x40091u;
+    uint32_t data_pfn_b    = 0x40092u;
+    uint32_t ring_base_pfn = 0x40093u;
+    arm_doorbell_state(dev, shared_pfn, ring_base_pfn);
+
+    /* PFN-array: page0[0] = data_pfn_a, page0[1] = data_pfn_b. */
+    uint64_t ring_page_gpa = (uint64_t)ring_pfn * 0x1000ull;
+    uint8_t *ring_page = shell.heap + (ring_page_gpa - shell.heap_gpa);
+    put_le32(ring_page + 0, data_pfn_a);
+    put_le32(ring_page + 4, data_pfn_b);
+
+    /* Build a 12B NOP header in scratch then write the first 8 bytes to
+     * data_pfn_a + 0xff8 and the remaining 4 bytes to data_pfn_b + 0. */
+    uint8_t hdr[12];
+    put_cmd_header(hdr, /*opcode=*/LAGFX_OP_NOP, /*arg_count_8b=*/0,
+                   /*total_length=*/12u, /*stamp=*/0xc0c00001u);
+    uint8_t *page_a = shell.heap
+        + ((uint64_t)data_pfn_a * 0x1000ull - shell.heap_gpa);
+    uint8_t *page_b = shell.heap
+        + ((uint64_t)data_pfn_b * 0x1000ull - shell.heap_gpa);
+    memcpy(page_a + 0xff8u, hdr + 0, 8u);
+    memcpy(page_b + 0u,     hdr + 8, 4u);
+
+    /* read_ptr=0xff8, write_ptr=0x1004 (one 12B cmd straddling the
+     * page boundary at 0x1000). chan_id=ch=1. */
+    place_descr(&shell, shared_pfn, /*ch=*/1u,
+                /*write_ptr=*/0x1004u, /*read_ptr=*/0xff8u,
+                /*mid=*/0u, /*chan_id=*/1u, ring_pfn);
+
+    uint64_t seen_before = 0;
+    lagfx_protocol_stats(p, &seen_before, NULL, NULL);
+    lagfx_mmio_write(dev, 0x1020u, 1u);
+    uint64_t seen_after = 0;
+    lagfx_protocol_stats(p, &seen_after, NULL, NULL);
+
+    CHECK(seen_after - seen_before == 1u,
+          "ch=1 doorbell with cmd straddling PFN boundary: 1 cmd dispatched");
+
+    /* descr.read_ptr -> write_ptr=0x1004. */
+    uint64_t descr_gpa = (uint64_t)shared_pfn * 0x1000ull + 0x400u;
+    uint32_t new_rp = get_le32(shell.heap + (descr_gpa - shell.heap_gpa) + 4u);
+    CHECK(new_rp == 0x1004u,
+          "ch=1 doorbell straddle: descr.read_ptr advanced 0xff8->0x1004");
+
+    /* Stamp cell carries the cmd's stamp. */
+    uint64_t cell_gpa = (uint64_t)ring_base_pfn * 0x1000ull + 1u * 4u;
+    uint32_t cell = get_le32(shell.heap + (cell_gpa - shell.heap_gpa));
+    CHECK(cell == 0xc0c00001u,
+          "ch=1 doorbell straddle: stamp_cell[1] := stitched cmd's stamp");
+
+    lagfx_device_free(dev);
+    db_shell_free(&shell);
+}
+
+/* page0[0]=valid_pfn but page0[1]=0: header read straddling the page
+ * boundary hits the pte_pfn==0 sentinel during the SECOND PFN lookup
+ * (mid-walk, not at the entry point). Walker must bail without
+ * dispatching, and read_ptr stays at the unprocessed offset. */
+static void test_doorbell_ch1_pte_pfn_zero_mid_walk(void) {
+    fprintf(stdout, "\n--- test: doorbell_ch1_pte_pfn_zero_mid_walk ---\n");
+    db_shell_t shell;
+    db_shell_init(&shell, 0x40000000ull);
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    uint32_t shared_pfn    = 0x40001u;
+    uint32_t ring_pfn      = 0x400a0u;
+    uint32_t data_pfn_a    = 0x400a1u;
+    uint32_t ring_base_pfn = 0x400a3u;
+    arm_doorbell_state(dev, shared_pfn, ring_base_pfn);
+
+    /* PFN-array: page0[0]=data_pfn_a (valid), page0[1]=0 (sentinel). */
+    uint64_t ring_page_gpa = (uint64_t)ring_pfn * 0x1000ull;
+    uint8_t *ring_page = shell.heap + (ring_page_gpa - shell.heap_gpa);
+    put_le32(ring_page + 0, data_pfn_a);
+    put_le32(ring_page + 4, 0u);
+
+    /* Pre-populate the first 8 bytes of the header at data_pfn_a+0xff8.
+     * The walker will read those 8 bytes, then look up page0[1] for the
+     * remaining 4 bytes — and find pte_pfn=0, so it bails. */
+    uint8_t hdr[12];
+    put_cmd_header(hdr, LAGFX_OP_NOP, 0, 12u, 0xbadbad01u);
+    uint8_t *page_a = shell.heap
+        + ((uint64_t)data_pfn_a * 0x1000ull - shell.heap_gpa);
+    memcpy(page_a + 0xff8u, hdr + 0, 8u);
+
+    place_descr(&shell, shared_pfn, /*ch=*/1u,
+                /*write_ptr=*/0x1004u, /*read_ptr=*/0xff8u,
+                /*mid=*/0u, /*chan_id=*/1u, ring_pfn);
+
+    uint64_t seen_before = 0;
+    lagfx_protocol_stats(p, &seen_before, NULL, NULL);
+    lagfx_mmio_write(dev, 0x1020u, 1u);
+    uint64_t seen_after = 0;
+    lagfx_protocol_stats(p, &seen_after, NULL, NULL);
+
+    CHECK(seen_after - seen_before == 0u,
+          "ch=1 doorbell with pte_pfn=0 mid-walk: walker bails, NO cmd dispatched");
+
+    lagfx_device_free(dev);
+    db_shell_free(&shell);
+}
+
+/* Oversized cmd_len in the on-wire header triggers the `cmd_len >
+ * (write_ptr - cur_rp)` rejection in protocol.c (line ~978). Header
+ * claims 0x10000 but only 12 bytes are advertised by write_ptr.
+ * Walker must reject WITHOUT dispatching. */
+static void test_doorbell_ch1_oversized_cmd_len_rejected(void) {
+    fprintf(stdout, "\n--- test: doorbell_ch1_oversized_cmd_len_rejected ---\n");
+    db_shell_t shell;
+    db_shell_init(&shell, 0x40000000ull);
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    uint32_t shared_pfn    = 0x40001u;
+    uint32_t ring_pfn      = 0x400b0u;
+    uint32_t data_pfn      = 0x400b1u;
+    uint32_t ring_base_pfn = 0x400b2u;
+    arm_doorbell_state(dev, shared_pfn, ring_base_pfn);
+
+    uint64_t ring_page_gpa = (uint64_t)ring_pfn * 0x1000ull;
+    put_le32(shell.heap + (ring_page_gpa - shell.heap_gpa), data_pfn);
+
+    /* Header advertises total_length=0x10000 (64 KiB) but write_ptr is
+     * only 12 — only the header is actually published. Walker must
+     * reject the bogus length and not dispatch. */
+    uint8_t *data_page = shell.heap
+        + ((uint64_t)data_pfn * 0x1000ull - shell.heap_gpa);
+    put_cmd_header(data_page, /*opcode=*/LAGFX_OP_NOP, 0,
+                   /*total_length=*/0x10000u, /*stamp=*/0xdeadbe01u);
+
+    place_descr(&shell, shared_pfn, /*ch=*/1u,
+                /*write_ptr=*/12u, /*read_ptr=*/0u,
+                /*mid=*/0u, /*chan_id=*/1u, ring_pfn);
+
+    uint64_t seen_before = 0;
+    lagfx_protocol_stats(p, &seen_before, NULL, NULL);
+    lagfx_mmio_write(dev, 0x1020u, 1u);
+    uint64_t seen_after = 0;
+    lagfx_protocol_stats(p, &seen_after, NULL, NULL);
+
+    CHECK(seen_after == seen_before,
+          "ch=1 doorbell with cmd_len > (write_ptr-cur_rp): rejected, NO dispatch");
+
+    /* Stamp cell should NOT have been written (no successful dispatch). */
+    uint64_t cell_gpa = (uint64_t)ring_base_pfn * 0x1000ull + 1u * 4u;
+    uint32_t cell = get_le32(shell.heap + (cell_gpa - shell.heap_gpa));
+    CHECK(cell == 0u,
+          "ch=1 doorbell oversized cmd_len: stamp_cell[1] not advanced");
+
+    lagfx_device_free(dev);
+    db_shell_free(&shell);
+}
+
+/* cmd_len that fits within write_ptr but exceeds the 64 KiB bounce
+ * buffer (line ~995 in protocol.c). Header advertises cmd_len=65540
+ * with write_ptr=65540 — passes the (write_ptr - cur_rp) guard but
+ * trips the bounce-buffer overflow rejection. Walker must bail. */
+static void test_doorbell_ch1_cmd_len_exceeds_bounce_buffer(void) {
+    fprintf(stdout, "\n--- test: doorbell_ch1_cmd_len_exceeds_bounce_buffer ---\n");
+    db_shell_t shell;
+    db_shell_init(&shell, 0x40000000ull);
+    lagfx_device_t *dev = make_dev(&shell);
+    lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+
+    uint32_t shared_pfn    = 0x40001u;
+    uint32_t ring_pfn      = 0x400c0u;
+    uint32_t data_pfn      = 0x400c1u;
+    uint32_t ring_base_pfn = 0x400c2u;
+    arm_doorbell_state(dev, shared_pfn, ring_base_pfn);
+
+    /* page0[0] = data_pfn (only the header lookup needs to succeed —
+     * the body read is rejected before it runs). */
+    uint64_t ring_page_gpa = (uint64_t)ring_pfn * 0x1000ull;
+    put_le32(shell.heap + (ring_page_gpa - shell.heap_gpa), data_pfn);
+
+    /* Header advertises cmd_len=65540 (0x10004) — 4 bytes past the
+     * 65536-byte bounce buffer. write_ptr=65540 so the
+     * (write_ptr-cur_rp) guard at line ~978 passes. */
+    uint8_t *data_page = shell.heap
+        + ((uint64_t)data_pfn * 0x1000ull - shell.heap_gpa);
+    put_cmd_header(data_page, /*opcode=*/LAGFX_OP_NOP, 0,
+                   /*total_length=*/0x10004u, /*stamp=*/0xdeadbe02u);
+
+    place_descr(&shell, shared_pfn, /*ch=*/1u,
+                /*write_ptr=*/0x10004u, /*read_ptr=*/0u,
+                /*mid=*/0u, /*chan_id=*/1u, ring_pfn);
+
+    uint64_t seen_before = 0;
+    lagfx_protocol_stats(p, &seen_before, NULL, NULL);
+    lagfx_mmio_write(dev, 0x1020u, 1u);
+    uint64_t seen_after = 0;
+    lagfx_protocol_stats(p, &seen_after, NULL, NULL);
+
+    CHECK(seen_after == seen_before,
+          "ch=1 doorbell with cmd_len > bounce buffer: rejected, NO dispatch");
+
+    /* Stamp cell should NOT have been written. */
+    uint64_t cell_gpa = (uint64_t)ring_base_pfn * 0x1000ull + 1u * 4u;
+    uint32_t cell = get_le32(shell.heap + (cell_gpa - shell.heap_gpa));
+    CHECK(cell == 0u,
+          "ch=1 doorbell bounce-overflow: stamp_cell[1] not advanced");
+
+    lagfx_device_free(dev);
+    db_shell_free(&shell);
+}
+
 /* === main ============================================================ */
 
 int main(void) {
@@ -494,6 +716,12 @@ int main(void) {
     test_doorbell_ch3_bails_when_page0_zero();
     test_doorbell_ch5_keeps_setupSharedState_path();
     test_doorbell_ch6_keeps_ss_path();
+
+    /* Edge-case coverage for guest-controlled drain inputs. */
+    test_doorbell_ch1_pfn_walk_crosses_page_boundary();
+    test_doorbell_ch1_pte_pfn_zero_mid_walk();
+    test_doorbell_ch1_oversized_cmd_len_rejected();
+    test_doorbell_ch1_cmd_len_exceeds_bounce_buffer();
 
     fprintf(stdout, "\n=== m4-doorbell-drain: %d pass, %d fail ===\n",
             g_pass, g_fail);

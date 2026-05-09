@@ -519,7 +519,7 @@ endif
 if fs.is_file(meson.current_source_dir() / 'trace-replay.c') \
    and fs.is_file(meson.current_source_dir() / 'traces' / 'm2-m3-init-2026-04-21.trace')
   trace_replay_default = meson.current_source_dir() / 'traces' / 'm2-m3-init-2026-04-21.trace'
-  /* trace-replay includes state.h which transitively pulls vulkan headers. */
+  # trace-replay includes state.h which transitively pulls vulkan headers.
   trace_replay_test = executable('trace-replay',
     'trace-replay.c',
     include_directories : [include_dir, internal_include_dir],
