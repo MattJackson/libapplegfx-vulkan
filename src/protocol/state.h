@@ -406,9 +406,13 @@ lagfx_protocol_alloc_task_slot(lagfx_protocol_t *p) {
     }
     for (unsigned i = 0; i < LAGFX_MAX_TASKS; ++i) {
         if (!p->tasks[i].live) {
-            /* Initialize with identity mapping as fallback when kext doesn't
-             * send CmdDefineHostTask. root_page_pfn=1 means PFN 1 (the first
-             * data page), which maps VA==GPA for the initial boot period. */
+            /* Initialize with identity mapping as fallback: the kext does NOT
+             * send CmdDefineHostTask (opcode 0x38) to define task radix trees.
+             * Instead, it relies on VA interval fallback in lagfx_task_translate
+             * which uses gpa_base=va_base (identity mapping). root_page_pfn=1
+             * here is a placeholder that will fail radix translation but the
+             * VA interval path will succeed. Verified: CmdDefineHostTask never
+             * appears in production logs, tasks 0/1/2 work via identity GPA. */
             p->tasks[i].root_page_pfn = 1u;
             return &p->tasks[i];
         }
