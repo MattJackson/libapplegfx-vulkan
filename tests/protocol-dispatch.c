@@ -2528,9 +2528,9 @@ static void test_display_set_shared_state_page_handler(void) {
     CHECK(page[64] == 0xaau,
           "mailbox: bytes past first 64 left untouched");
 
-    CHECK(lagfx_ops_display_tick_vblank(&shell, mock_write),
+    CHECK(lagfx_ops_display_tick_vblank(&shell, mock_write, NULL),
           "tick_vblank returns true (installed + write_memory)");
-    CHECK(lagfx_ops_display_tick_vblank(&shell, mock_write),
+    CHECK(lagfx_ops_display_tick_vblank(&shell, mock_write, NULL),
           "tick_vblank second call returns true");
     ss = lagfx_ops_display_shared_state();
     CHECK(ss->vblank_counter == 3u,
@@ -2542,7 +2542,7 @@ static void test_display_set_shared_state_page_handler(void) {
     CHECK(first_u32 == 3u,
           "mailbox: DMA-written counter matches shadow (3)");
 
-    CHECK(!lagfx_ops_display_tick_vblank(&shell, NULL),
+    CHECK(!lagfx_ops_display_tick_vblank(&shell, NULL, NULL),
           "tick_vblank returns false when no write_memory provided");
     ss = lagfx_ops_display_shared_state();
     CHECK(ss->vblank_counter == 4u,

@@ -543,7 +543,7 @@ void lagfx_ops_display_reset(void) {
     memset(&g_icc_profile,       0, sizeof(g_icc_profile));
 }
 
-static bool tick_vblank_counter_only(
+bool lagfx_ops_display_tick_vblank(
     void *shell_opaque,
     bool (*write_memory)(void *, uint64_t, uint64_t, const void *)) {
     if (!g_shared_state.installed) {
@@ -846,7 +846,7 @@ lagfx_handler_status_t lagfx_op_display_set_shared_page(
         static const uint8_t zeros[64] = {0};
         (void)p->dev->desc.shell.write_memory(
             p->dev->desc.shell.opaque, page_va, sizeof(zeros), zeros);
-        tick_vblank_counter_only(p->dev->desc.shell.opaque, p->dev->desc.shell.write_memory);
+        lagfx_ops_display_tick_vblank(p->dev->desc.shell.opaque, p->dev->desc.shell.write_memory, NULL);
     } else {
         /* Shadow-only kick so "counter > 0" checks succeed before
          * any DMA path lands. */
