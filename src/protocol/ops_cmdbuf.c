@@ -1079,7 +1079,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                   "op=0x%04x returned %d (continuing)",
                                   inner_idx, inner_opcode, rc);
                     }
-               } else if (encoder_type == 0u || encoder_type == 1u) {
+             } else if (encoder_type == 0u || encoder_type == 1u) {
                     /* Compute or compute-like segment: try compute decoder first, fall back to render. */
                     int rc = lagfx_compute_decoder_dispatch(p, inner_opcode, cmdbuf + ioff + 8u, ipl_len);
 
@@ -1100,6 +1100,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                             || inner_opcode == 0x74u || inner_opcode == 0x75u
                             || inner_opcode == 0x65u || inner_opcode == 0x66u) {
                             force_try_render = 1;
+                            LAGFX_TRACE("        [DEBUG] opcode=0x%04x matches render range, forcing render fallback", inner_opcode);
                         }
                     }
 
