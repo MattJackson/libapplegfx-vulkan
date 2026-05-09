@@ -20,14 +20,19 @@
 #include <stdio.h>
 
 int lagfx_render_decoder_dispatch(lagfx_protocol_t *p,
-                                  uint32_t          opcode,
-                                  const uint8_t    *payload,
-                                  size_t            len) {
+                                   uint32_t          opcode,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
     /* `payload == NULL` is only valid when `len == 0`. We don't bail
      * — even a malformed (NULL, len>0) call lands in the ack-only
      * stub which ignores its inputs anyway, so during M5 bring-up we
      * keep the dispatcher fail-open and rely on the trace to surface
      * the issue. */
+    
+    /* Debug: log all render decoder calls for Stage 20 verification */
+    fprintf(stderr, "[lagfx render] dispatch called: opcode=0x%02x len=%zu\n",
+            (unsigned)(opcode & 0xffu), len);
+    
     const lagfx_render_op_descriptor_t *d = lagfx_render_op_lookup(opcode);
     if (!d) {
         /* Unknown / out-of-range opcode. Log unconditionally (this is
@@ -44,6 +49,10 @@ int lagfx_render_decoder_dispatch(lagfx_protocol_t *p,
         fprintf(stderr,
                 "[lagfx render] op=0x%02x (%s) — ack-only stub\n",
                 (unsigned)(d->opcode & 0xffu), d->name);
+    } else {
+        fprintf(stderr,
+                "[lagfx render] op=0x%02x (%s) — real handler\n",
+                (unsigned)(d->opcode & 0xffu), d->name);
     }
 
     if (d->default_handler == NULL) {
@@ -52,5 +61,8 @@ int lagfx_render_decoder_dispatch(lagfx_protocol_t *p,
          * during a real-handler transition. */
         return 0;
     }
-    return d->default_handler(p, payload, len);
+    int rc = d->default_handler(p, payload, len);
+    fprintf(stderr, "[lagfx render] opcode=0x%02x handler returned: %d\n",
+            (unsigned)(opcode & 0xffu), rc);
+    return rc;
 }
