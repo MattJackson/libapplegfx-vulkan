@@ -527,6 +527,36 @@ lagfx_handler_status_t lagfx_op_vchan_present(
 
 #define LAGFX_VCHAN_PRESENT_GAMMA_PAYLOAD 36u
 
+/* ================================================================
+ * 0x35/0x36 unknown display vchan opcodes
+ *
+ * Guest emits these on channels 4+ during early boot. Semantics
+ * unclear from kext disasm — log once per protocol instance and
+ * ACK silently to avoid blocking the dispatch loop.
+ * ================================================================ */
+
+lagfx_handler_status_t lagfx_op_vchan_unknown_extended(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr, uint8_t opcode) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    
+    static bool logged_35 = false;
+    static bool logged_36 = false;
+    
+    if (opcode == 0x35u && !logged_35) {
+        LAGFX_WARN("vchan unknown extended opcode 0x35: stamp=0x%08x "
+                   "payload_size=%u", hdr->stamp, (unsigned)hdr->payload_size);
+        logged_35 = true;
+    } else if (opcode == 0x36u && !logged_36) {
+        LAGFX_WARN("vchan unknown extended opcode 0x36: stamp=0x%08x "
+                   "payload_size=%u", hdr->stamp, (unsigned)hdr->payload_size);
+        logged_36 = true;
+    }
+    
+    return LAGFX_HANDLER_OK;
+}
+
 lagfx_handler_status_t lagfx_op_vchan_present_gamma(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) {

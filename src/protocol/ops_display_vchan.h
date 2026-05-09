@@ -37,4 +37,7 @@ lagfx_handler_status_t lagfx_op_vchan_present_gamma(
 lagfx_handler_status_t lagfx_op_display_define_child_fifo(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
+lagfx_handler_status_t lagfx_op_vchan_unknown_extended(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr, uint8_t opcode);
+
 #endif

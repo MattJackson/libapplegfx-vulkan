@@ -1302,22 +1302,28 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                              lagfx_op_display_cursor_glyph(p, &parsed);
                              break;
                          case 0x1eu:
-                             /* Display vchan extended opcode (unknown semantics).
-                              * Log once per ring to avoid spam while guest initializes.
-                              * May be present/swap-related based on kext disasm. */
-                             if (!p->display_1e_logged) {
-                                 LAGFX_WARN("doorbell ch=%u: display vchan opcode 0x1e "
-                                            "(extended, unimplemented) at rp=%u len=%u",
-                                            ch, cur_rp, cmd_len);
-                                 p->display_1e_logged = true;
-                             }
+                              /* Display vchan extended opcode (unknown semantics).
+                               * Log once per ring to avoid spam while guest initializes.
+                               * May be present/swap-related based on kext disasm. */
+                              if (!p->display_1e_logged) {
+                                  LAGFX_WARN("doorbell ch=%u: display vchan opcode 0x1e "
+                                             "(extended, unimplemented) at rp=%u len=%u",
+                                             ch, cur_rp, cmd_len);
+                                  p->display_1e_logged = true;
+                              }
+                              break;
+                          case 0x35u:
+                          case 0x36u:
+                              /* Unknown extended opcodes from macOS boot.
+                               * Log once and ACK to avoid blocking dispatch. */
+                              lagfx_op_vchan_unknown_extended(p, &parsed, opcode);
+                              break;
+                          default:
+                             LAGFX_WARN("doorbell ch=%u: unknown "
+                                        "display vchan opcode 0x%02x "
+                                        "at rp=%u len=%u",
+                                        ch, opcode, cur_rp, cmd_len);
                              break;
-                         default:
-                            LAGFX_WARN("doorbell ch=%u: unknown "
-                                       "display vchan opcode 0x%02x "
-                                       "at rp=%u len=%u",
-                                       ch, opcode, cur_rp, cmd_len);
-                            break;
                     }
 
                     if (stamp > last_stamp) {
