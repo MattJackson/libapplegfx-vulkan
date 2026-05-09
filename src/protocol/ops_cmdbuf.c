@@ -282,14 +282,20 @@ lagfx_handler_status_t lagfx_op_synchronize_resources(
  *     ...             resource_table[]  (16 B each:
  *                      {u64 host_gpu_addr, u32 length, u32 _pad})
  *
- * Each resource_table entry's host_gpu_addr is a TASK-VIRTUAL address
+* Each resource_table entry's host_gpu_addr is a TASK-VIRTUAL address
  * (translated through the per-task PFN-array from CmdDefineHostTask 0x38).
  * It points at a per-resource cmdBuf containing:
-   *   - Segment header: 42B metadata block, inner commands start at +42
- *     encoderType(1 @ +8: 0=compute, 1=compute-alt, 2=render, 4=blit),
- *     finalFlag(1), reuseFlag(1), pad(1), reserved(4)
+    *   - Segment header: 16B metadata block, inner commands start at +16
+ *     encoderType(1 @ +4: 0=compute, 1=compute-alt, 2=render, 4=blit),
+ *     finalFlag(1 @ +5), reuseFlag(1 @ +6), pad(1 @ +7)
  *   - Nested PGCmdHeader streams (8 B: opcode, totalLength)
- *   See paravirt-re/classes/ for segment header format.
+ * See paravirt-re/library/state-machines/segment-header-wire-format.md for 
+ * segment header format analysis.
+
+**CRITICAL:** Live guest traffic from macOS 15.7.5 shows encoderType at +0x04, NOT
++0x08 as originally claimed by framework binary RE. Invalid values (0x1a, 0x2c) appear
+at +0x08 while valid encoder types (0=compute, 2=render) are found at +0x04. This 
+document has been updated to reflect the actual wire format observed in live traffic.
  *
 * Inner opcode families by encoder_type:
  *   - encType=0 (compute): lagfx_compute_decoder_dispatch()
@@ -571,11 +577,12 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         }
 
          while (soff + segment_start_offset + 16u <= (size_t)length) {
-             uint32_t segment_size =
-                 lagfx_le32(cmdbuf + soff + segment_start_offset + 0);
-          /* Segment header format: size(4), then possibly encoder type at different offsets.
-          Try byte +4 first (some segments show encType in bytes 4-7). */
-             uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 4];
+              uint32_t segment_size =
+                  lagfx_le32(cmdbuf + soff + segment_start_offset + 0);
+           /* Segment header format: size(4) at +0, encoderType(1) at +4.
+            * CONFIRMED from live macOS 15.7.5 traffic: encoderType is at byte +4, NOT +8.
+            * Framework binary RE incorrectly claimed +0x08; live traffic shows invalid values (0x1a, 0x2c) there. */
+              uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 4];
 
             LAGFX_WARN("    segment[%u]: seg_header_bytes_0to7=%02x%02x%02x%02x %02x%02x%02x%02x encType=0x%02x",
                       segment_idx, cmdbuf[soff + segment_start_offset],
@@ -606,20 +613,21 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                           soff, task_id);
             }
 
-            if (segment_size == 0u
-                 || segment_size > (uint32_t)((size_t)length - soff - segment_start_offset)) {
+           if (segment_size == 0u
+                  || segment_size > (uint32_t)((size_t)length - soff - segment_start_offset)) {
                 LAGFX_WARN("    segment[%u]: bad size — bailing out", segment_idx);
                 break;
             }
 
            /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
-               * Inner stream starts at offset +16 from segment_start (after 16B header). */
-             bool render_begin_pending =
-                ((encoder_type == 4u || encoder_type == 2u || encoder_type == 0u)
-                 && !p->render_enc.in_pass);
+                * Inner stream starts at offset +16 from segment_start (after 16B header). */
+              bool render_begin_pending =
+                 ((encoder_type == 4u || encoder_type == 2u || encoder_type == 0u)
+                  && !p->render_enc.in_pass);
 
-            /* Inner command stream starts at offset +8 from segment_start */
-            size_t ioff = soff + segment_start_offset + 8u;
+             /* Inner command stream starts at offset +16 from segment_start (after full 16B header).
+            * Header layout: size(4 @ +0), encType(1 @ +4), finalFlag(1 @ +5), reuseFlag(1 @ +6), pad(1 @ +7), reserved(4 @ +8..+11). */
+             size_t ioff = soff + segment_start_offset + 16u;
 
             LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu encType=%u",
                       segment_idx, ioff, encoder_type);
@@ -1036,12 +1044,29 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                     /* Compute encoder (encType=0 or 1): compute pipeline
                       * dispatch. PGDeserializerComputeDecoder is
                       * scaffolded — observation-only for now.
+                      * 
+                      * Fallback: some guests send render opcodes with encType=0,
+                      * so try render decoder if compute says unknown.
                       */
                     {
                         const uint8_t *cpl = cmdbuf + ioff + 8u;
                         int rc = lagfx_compute_decoder_dispatch(p, inner_opcode,
                                                                  cpl, ipl_len);
+                        /* If compute says unknown (rc != 0), try render decoder as fallback */
                         if (rc != 0) {
+                            const uint8_t *ipl = cmdbuf + ioff + 8u;
+                            int rc2 = lagfx_render_decoder_dispatch(p, inner_opcode,
+                                                                    ipl, ipl_len);
+                            if (rc2 == 0) {
+                                LAGFX_TRACE("      inner[%u]: tried render fallback "
+                                          "for op=0x%04x (compute failed)",
+                                          inner_idx, inner_opcode);
+                            } else {
+                                LAGFX_TRACE("      inner[%u]: compute+render dispatch "
+                                          "both failed for op=0x%04x",
+                                          inner_idx, inner_opcode);
+                            }
+                        } else {
                             LAGFX_TRACE("      inner[%u]: compute dispatch "
                                       "op=0x%04x returned %d (continuing)",
                                       inner_idx, inner_opcode, rc);
