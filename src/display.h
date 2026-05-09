@@ -43,6 +43,13 @@ struct lagfx_display {
     /* Phase 1.A.1 legacy: true once a frame has rendered (retained for
      * observability; superseded by new_frame_ready semantically). */
     int has_frame;
+
+    /* Fallback path for when CmdDisplaySwapMapping never fires:
+     * store rendered pixels here until shell.read_memory pulls them.
+     * This enables noVNC display even without scanout buffer registration. */
+    uint8_t *fallback_pixels;
+    size_t fallback_stride;
+    size_t fallback_bytes;
 };
 
 /* Internal accessor: called by ops_display.c when a clear-colour

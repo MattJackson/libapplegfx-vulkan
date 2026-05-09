@@ -204,6 +204,14 @@ void lagfx_display_free(lagfx_display_t *display) {
 
     display_rt_destroy(display);
 
+    /* Clean up fallback pixels buffer. */
+    if (display->fallback_pixels) {
+        free(display->fallback_pixels);
+        display->fallback_pixels = NULL;
+        display->fallback_stride = 0;
+        display->fallback_bytes = 0;
+    }
+
     if (display->device) {
         lagfx_device_detach_display(display->device, display);
     }
@@ -247,6 +255,31 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
     }
 
 #ifdef LAGFX_HAVE_VULKAN
+    /* Fallback path: use pre-stored pixels from CmdDisplaySwapMapping
+     * miss (no scanout buffer registered). This enables display output
+     * even when macOS hasn't called IOFBSetDisplayModeAndDepth. */
+    if (display->fallback_pixels && dst) {
+        size_t copy_len = display->fallback_bytes;
+        if (dst_size_bytes < copy_len) {
+            copy_len = dst_size_bytes;
+        }
+        memcpy(dst, display->fallback_pixels, copy_len);
+        if (stride_out) {
+            *stride_out = display->fallback_stride;
+        }
+        if (new_frame_out) {
+            *new_frame_out = true;
+        }
+        /* Consume fallback pixels — they've been delivered. */
+        free(display->fallback_pixels);
+        display->fallback_pixels = NULL;
+        display->fallback_stride = 0;
+        display->fallback_bytes = 0;
+        display->new_frame_ready = false;
+        display->has_frame = 1;
+        return LAGFX_OK;
+    }
+
     if (!display->rt_ready || !display->device
         || !display->device->vk || !display->device->vk->initialized) {
         /* Flag says "frame ready" but no backend — unusual; clear
@@ -280,8 +313,6 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
     display->has_frame = 1;
     return LAGFX_OK;
 #else
-    (void)dst;
-    (void)dst_size_bytes;
     /* No backend built — clear the flag, keep reporting NO_FRAME. */
     display->new_frame_ready = false;
     return LAGFX_ERR_NO_FRAME;
@@ -561,11 +592,70 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
     if (!display || display->magic != LAGFX_DISPLAY_MAGIC) {
         return LAGFX_ERR_INVALID_ARG;
     }
+
+#ifdef LAGFX_HAVE_VULKAN
+    /* Fallback path when macOS hasn't registered a scanout buffer:
+     * CmdDisplaySwapMapping (opcode 0x12) not received yet. Read back
+     * the render target directly and let QEMU's frame_ready callback
+     * expose it via noVNC. */
     if (scanout_gpa == 0 || scanout_length == 0) {
+        if (!display->device || !display->device->vk
+            || !display->device->vk->initialized) {
+            return LAGFX_OK;
+        }
+        struct lagfx_vk_state *vk = display->device->vk;
+        if (vk->frame_image == VK_NULL_HANDLE) {
+            return LAGFX_OK;
+        }
+
+        const uint32_t stride_expected = vk->frame_image_w * 4u;
+        const size_t frame_bytes = (size_t)vk->frame_image_h
+                                 * (size_t)stride_expected;
+        if (frame_bytes == 0) {
+            return LAGFX_OK;
+        }
+
+        uint8_t *pixels = malloc(frame_bytes);
+        if (!pixels) {
+            LAGFX_ERR("display_submit_rendered_frame: OOM allocating %zu-byte "
+                      "readback buffer (fallback path)", frame_bytes);
+            return LAGFX_ERR_BACKEND;
+        }
+
+        size_t stride_actual = 0;
+        lagfx_status_t rb_st = lagfx_vk_render_target_readback(
+            vk, &display->rt, pixels, frame_bytes, &stride_actual);
+        if (rb_st != LAGFX_OK) {
+            LAGFX_ERR("display_submit_rendered_frame: readback failed (%d)",
+                      (int)rb_st);
+            free(pixels);
+            return rb_st;
+        }
+
+        /* Expose pixels via shell.read_memory callback so QEMU can
+         * copy them to the DisplaySurface. We use the display's rt_width/rt_height
+         * as the destination dimensions. */
+        if (display->device->desc.shell.read_memory != NULL) {
+            /* For now: store pixels in a static buffer and signal frame_ready.
+             * The shell's read_frame path will pull them on next poll. */
+            if (display->fallback_pixels) {
+                free(display->fallback_pixels);
+            }
+            display->fallback_pixels = pixels;
+            display->fallback_stride = stride_actual;
+            display->fallback_bytes = frame_bytes;
+        } else {
+            /* No read_memory callback — just keep pixels for now.
+             * Future: store in ring buffer. */
+            LAGFX_WARN("display_submit_rendered_frame: no shell.read_memory "
+                       "callback available for fallback path");
+            free(pixels);
+        }
+
+        set_frame_ready(display);
         return LAGFX_OK;
     }
 
-#ifdef LAGFX_HAVE_VULKAN
     if (!display->device || !display->device->vk
         || !display->device->vk->initialized) {
         return LAGFX_OK;
