@@ -854,12 +854,12 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
         return rc;
     }
     g_last_render_pass_desc = desc;
-    LAGFX_LOG("render_op_describe_render_pass: depth=%u stencil=%u "
-              "colors=%u rt=%llux%llu",
-              desc.has_depth, desc.has_stencil,
-              desc.color_attachment_count,
-              (unsigned long long)desc.render_target_width,
-              (unsigned long long)desc.render_target_height);
+    LAGFX_WARN("render_op_describe_render_pass: depth=%u stencil=%u "
+               "colors=%u rt=%llux%llu",
+               desc.has_depth, desc.has_stencil,
+               desc.color_attachment_count,
+               (unsigned long long)desc.render_target_width,
+               (unsigned long long)desc.render_target_height);
     return 0;
 }
 
