@@ -1081,6 +1081,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                     }
              } else if (encoder_type == 0u || encoder_type == 1u) {
                     /* Compute or compute-like segment: try compute decoder first, fall back to render. */
+                    LAGFX_TRACE("        [DEBUG] ENTER encType=0/1 handler opcode=0x%04x", inner_opcode);
                     int rc = lagfx_compute_decoder_dispatch(p, inner_opcode, cmdbuf + ioff + 8u, ipl_len);
 
                     /* macOS sometimes sends render opcodes in encType=0 segments (e.g., 0x1a RENDER_DESCRIBE_RENDER_PASS).
