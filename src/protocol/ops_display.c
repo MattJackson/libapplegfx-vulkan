@@ -827,8 +827,43 @@ lagfx_handler_status_t lagfx_op_display_cursor_glyph(
  *      counter after attach — prevents the spin-or-degrade failure
  *      mode called out in §14.6.
  *
-* Subsequent ticks are driven by tick_vblank_counter_only — the counter bump only. */
+ * Subsequent ticks are driven by tick_vblank_counter_only — the counter bump only. */
 
+lagfx_handler_status_t lagfx_op_display_set_shared_page(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    if (!hdr || !hdr->payload || hdr->payload_size < 8u) {
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint64_t page_va = read_le64(hdr->payload);
+
+    g_shared_state.installed   = true;
+    g_shared_state.page_va     = page_va;
+    g_shared_state.vblank_counter = 0u;
+
+    /* Invoke QEMU cursor_glyph callback so the cursor image updates. */
+    if (g_cursor_glyph.captured_len > 0 && p->dev) {
+        for (int i = 0; i < LAGFX_MAX_DISPLAYS; i++) {
+            if (p->dev->displays[i]) {
+                lagfx_display_t *disp = p->dev->displays[i];
+                if (disp->desc.callbacks.cursor_glyph) {
+                    lagfx_coord_t hotspot = {
+                        .x = (uint16_t)g_cursor_glyph.hot_x,
+                        .y = (uint16_t)g_cursor_glyph.hot_y
+                    };
+                    disp->desc.callbacks.cursor_glyph(
+                        disp->desc.callbacks.opaque,
+                        g_cursor_glyph.bytes,
+                        g_cursor_glyph.width,
+                        g_cursor_glyph.height,
+                        hotspot);
+                }
+                break;
+            }
+        }
+    }
+
+    /* Best-effort zero the first 64 bytes of the mailbox page. */
     if (p->dev != NULL && p->dev->desc.shell.write_memory != NULL) {
         static const uint8_t zeros[64] = {0};
         (void)p->dev->desc.shell.write_memory(
