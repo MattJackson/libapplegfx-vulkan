@@ -1083,23 +1083,38 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                     /* Compute or compute-like segment: try compute decoder first, fall back to render. */
                     int rc = lagfx_compute_decoder_dispatch(p, inner_opcode, cmdbuf + ioff + 8u, ipl_len);
 
-                    if (rc != LAGFX_HANDLER_OK && (encoder_type == 0u || encoder_type == 1u)) {
+                    /* macOS sometimes sends render opcodes in encType=0 segments (e.g., 0x1a RENDER_DESCRIBE_RENDER_PASS).
+                     * Force try render decoder if opcode looks like a known render op. */
+                    int force_try_render = 0;
+                    static const char *opnames[] = {
+                        "0x00", "0x01", "0x02", "0x03", "0x04", "0x05", "0x06", "0x07",
+                        "0x08", "0x09", "0x0a", "0x0b", "0x0c", "0x0d", "0x0e", "0x0f",
+                        "0x10", "0x11", "0x12", "0x13", "0x14", "0x15", "0x16", "0x17",
+                        "0x18", "0x19", "0x1a", "0x1b", "0x1c", "0x1d", "0x1e", "0x1f"
+                    };
+                    const char *opname = (inner_opcode < 32u) ? opnames[inner_opcode] : "???";
+
+                    if (encoder_type == 0u || encoder_type == 1u) {
+                        /* Render pass descriptor ops (0x1a-0x24), SET_RENDER_PIPELINE_STATE (0x74), etc. */
+                        if ((inner_opcode >= 0x1au && inner_opcode <= 0x24u)
+                            || inner_opcode == 0x74u || inner_opcode == 0x75u
+                            || inner_opcode == 0x65u || inner_opcode == 0x66u) {
+                            force_try_render = 1;
+                        }
+                    }
+
+                    if (rc != LAGFX_HANDLER_OK || force_try_render) {
                         /* Fallback: treat as render for encType=0/1 (some macOS paths use compute path for render ops). */
                         int rc2 = lagfx_render_decoder_dispatch(p, inner_opcode, cmdbuf + ioff + 8u, ipl_len);
 
                         if (rc2 != LAGFX_HANDLER_OK) {
-                            static const char *opnames[] = {
-                                "0x00", "0x01", "0x02", "0x03", "0x04", "0x05", "0x06", "0x07",
-                                "0x08", "0x09", "0x0a", "0x0b", "0x0c", "0x0d", "0x0e", "0x0f",
-                                "0x10", "0x11", "0x12", "0x13", "0x14", "0x15", "0x16", "0x17",
-                                "0x18", "0x19", "0x1a", "0x1b", "0x1c", "0x1d", "0x1e", "0x1f"
-                            };
-                            const char *opname = (inner_opcode < 32u) ? opnames[inner_opcode] : "???";
-
-                            LAGFX_WARN("        %s: encoder_type=%u compute rc=%d fallback rc=%d — skipping",
-                                       opname, encoder_type, rc, rc2);
+                            LAGFX_WARN("        %s: encoder_type=%u compute rc=%d fallback rc=%d%s — skipping",
+                                       opname, encoder_type, rc, rc2, force_try_render ? " (forced)" : "");
                             LAGFX_TRACE("      inner[%u]: compute+render dispatch both failed",
                                         inner_idx);
+                        } else if (force_try_render) {
+                            LAGFX_LOG("        %s: encoder_type=%u compute=success render=success — render handled",
+                                      opname, encoder_type);
                         }
                     }
                 } else if (encoder_type == 2u) {
