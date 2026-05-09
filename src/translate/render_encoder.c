@@ -341,6 +341,8 @@ lagfx_status_t lagfx_translate_render_draw(
             VkDeviceSize offset = 0;
             vkCmdBindVertexBuffers(state->cmdbuf, 0, 1,
                                    &state->vk->dummy_vb, &offset);
+            LAGFX_ERR("translate_render_draw: using dummy_vb placeholder "
+                      "(Stage 20% vertex buffers not wired)");
         }
         vkCmdDraw(state->cmdbuf, vertex_count, instance_count,
                   first_vertex, first_instance);
@@ -378,6 +380,8 @@ lagfx_status_t lagfx_translate_render_draw_indexed(
             VkDeviceSize offset = 0;
             vkCmdBindVertexBuffers(state->cmdbuf, 0, 1,
                                    &state->vk->dummy_vb, &offset);
+            LAGFX_ERR("translate_render_draw_indexed: using dummy_vb placeholder "
+                      "(Stage 20% vertex buffers not wired)");
         }
         vkCmdDrawIndexed(state->cmdbuf, index_count, instance_count,
                          first_index, vertex_offset, first_instance);
