@@ -386,8 +386,8 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
         return LAGFX_HANDLER_OK;
     }
 
-    LAGFX_WARN("CmdExecIndirect2: processing taskID=%u descriptor_count=%u resource_count=%u",
-              task_id, descriptor_count, resource_count);
+  LAGFX_LOG("CmdExecIndirect2: processing taskID=%u descriptor_count=%u resource_count=%u",
+               task_id, descriptor_count, resource_count);
 
     lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
     if (!task) {
@@ -435,8 +435,8 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             ((uint64_t)lagfx_le32(rec + 4) << 32);
         uint32_t length = lagfx_le32(rec + 8);
         uint32_t pad    = lagfx_le32(rec + 12);
-        LAGFX_WARN("  resource[%u]: host_gpu_addr=0x%llx length=%u pad=0x%08x",
-                  i, (unsigned long long)host_gpu_addr, length, pad);
+   LAGFX_LOG("  resource[%u]: host_gpu_addr=0x%llx length=%u pad=0x%08x",
+                   i, (unsigned long long)host_gpu_addr, length, pad);
 
         if (length == 0u || length > (1u << 22) /* 4 MiB cap */
             || p->dev == NULL || p->dev->desc.shell.read_memory == NULL) {
@@ -539,7 +539,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                     if (w > 0) dpos += (size_t)w;
                 }
             }
-        LAGFX_WARN("  resource[%u] first_8bytes: %02x%02x%02x%02x %02x%02x%02x%02x encType_at_8=0x%02x",
+        LAGFX_TRACE("  resource[%u] first_8bytes: %02x%02x%02x%02x %02x%02x%02x%02x encType_at_8=0x%02x",
                     i, cmdbuf[0], cmdbuf[1], cmdbuf[2], cmdbuf[3],
                     cmdbuf[4], cmdbuf[5], cmdbuf[6], cmdbuf[7],
                     cmdbuf[8]);
@@ -584,7 +584,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
             * Framework binary RE incorrectly claimed +0x08; live traffic shows invalid values (0x1a, 0x2c) there. */
               uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 4];
 
-            LAGFX_WARN("    segment[%u]: seg_header_bytes_0to7=%02x%02x%02x%02x %02x%02x%02x%02x encType=0x%02x",
+            LAGFX_TRACE("    segment[%u]: seg_header_bytes_0to7=%02x%02x%02x%02x %02x%02x%02x%02x encType=0x%02x",
                       segment_idx, cmdbuf[soff + segment_start_offset],
                       cmdbuf[soff + segment_start_offset + 1],
                       cmdbuf[soff + segment_start_offset + 2],
@@ -654,8 +654,8 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                 /* Inner command stream starts at offset +16 from segment_start (after 8B preamble + 8B new header). */
                    ioff = soff + segment_start_offset + 16u;
 
-                 LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu encType=%u (post-preamble)",
-                           segment_idx, ioff, encoder_type);
+LAGFX_TRACE("    segment[%u]: inner_stream_start=ioff=%zu encType=%u (post-preamble)",
+                          segment_idx, ioff, encoder_type);
              } else {
                 /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
                   * Inner stream starts at offset +8 from segment_start (after 8B header). */
@@ -667,18 +667,18 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
               * Header layout: size(4 @ +0), encType(1 @ +4), reuseFlag(1 @ +5), keepFlag(1 @ +6), pad(1 @ +7). */
                ioff = soff + segment_start_offset + 8u;
 
-             LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu encType=%u",
-                       segment_idx, ioff, encoder_type);
+LAGFX_TRACE("    segment[%u]: inner_stream_start=ioff=%zu encType=%u",
+                        segment_idx, ioff, encoder_type);
             }
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
            while (ioff + 8u <= iend) {
-                LAGFX_WARN("    segment[%u]: byte at ioff=%zu = %02x%02x%02x%02x",
+                LAGFX_TRACE("    segment[%u]: byte at ioff=%zu = %02x%02x%02x%02x",
                           segment_idx, ioff, cmdbuf[ioff], cmdbuf[ioff+1],
                           cmdbuf[ioff+2], cmdbuf[ioff+3]);
                 uint32_t inner_opcode = lagfx_le32(cmdbuf + ioff + 0);
                 uint32_t inner_total  = lagfx_le32(cmdbuf + ioff + 4);
-                LAGFX_WARN("      inner[%u]: raw[+0..+7]=%02x%02x%02x%02x %02x%02x%02x%02x op=0x%04x totalLen=%u",
+                LAGFX_TRACE("      inner[%u]: raw[+0..+7]=%02x%02x%02x%02x %02x%02x%02x%02x op=0x%04x totalLen=%u",
                           inner_idx, cmdbuf[ioff], cmdbuf[ioff+1], cmdbuf[ioff+2], cmdbuf[ioff+3],
                           cmdbuf[ioff+4], cmdbuf[ioff+5], cmdbuf[ioff+6], cmdbuf[ioff+7],
                           inner_opcode, inner_total);
@@ -688,7 +688,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                     break;
                 }
                 size_t ipl_len = (size_t)inner_total - 8u;
-                LAGFX_WARN("      inner[%u]: op=0x%04x totalLen=%u (encType=%u)",
+                LAGFX_TRACE("      inner[%u]: op=0x%04x totalLen=%u (encType=%u)",
                           inner_idx, inner_opcode, inner_total,
                           (unsigned)encoder_type);
 
@@ -1037,8 +1037,8 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                         }
                     }
 
-                 LAGFX_WARN("    segment[%u]: dispatching inner op=0x%04x encType=%u",
-                           segment_idx, inner_opcode, encoder_type);
+LAGFX_TRACE("    segment[%u]: dispatching inner op=0x%04x encType=%u",
+                            segment_idx, inner_opcode, encoder_type);
                 } /* end if (have_triplet && reply_size > 0u) */
 
                 /* Dispatch render/blit/compute opcodes for ALL segments.

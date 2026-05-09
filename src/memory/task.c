@@ -21,6 +21,8 @@
 
 #include "task.h"
 
+#include "../common/log.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -91,13 +93,13 @@ static int memfd_create_fallback(const char *name, unsigned int flags) {
 static int task_create_memfd(size_t size) {
     int fd = memfd_create_fallback("lagfx-guest-dma", MFD_CLOEXEC);
     if (fd < 0) {
-        fprintf(stderr, "memfd_create failed: %s\n", strerror(errno));
+        LAGFX_ERR("memfd_create failed: %s", strerror(errno));
         return -1;
     }
 
     /* Pre-allocate the memfd to avoid SIGBUS on first access. */
     if (ftruncate(fd, (off_t)size) < 0) {
-        fprintf(stderr, "ftruncate failed: %s\n", strerror(errno));
+        LAGFX_ERR("ftruncate failed: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -118,7 +120,7 @@ lagfx_task_t *lagfx_task_create(size_t vm_size, void **base_out) {
     void *base = mmap(NULL, vm_size, PROT_NONE,
                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base == MAP_FAILED) {
-        fprintf(stderr, "Failed to reserve %zu byte VA range: %s\n",
+        LAGFX_ERR("Failed to reserve %zu byte VA range: %s",
                 vm_size, strerror(errno));
         return NULL;
     }
@@ -177,7 +179,7 @@ static bool task_map_via_copy(lagfx_task_t *task, uint64_t vm_offset,
                          MAP_FIXED | MAP_SHARED, task->memfd,
                          (off_t)vm_offset);
     if (mapped == MAP_FAILED) {
-        fprintf(stderr, "mmap(MAP_FIXED) at offset %llu failed: %s\n",
+        LAGFX_ERR("mmap(MAP_FIXED) at offset %llu failed: %s",
                 (unsigned long long)vm_offset, strerror(errno));
         return false;
     }
@@ -188,7 +190,7 @@ static bool task_map_via_copy(lagfx_task_t *task, uint64_t vm_offset,
 
     if (prot != (PROT_READ | PROT_WRITE)) {
         if (mprotect(target, (size_t)len, prot) != 0) {
-            fprintf(stderr, "mprotect to caller prot=0x%x failed: %s\n",
+            LAGFX_ERR("mprotect to caller prot=0x%x failed: %s",
                     prot, strerror(errno));
             return false;
         }
@@ -246,7 +248,7 @@ bool lagfx_task_map_host_memory(lagfx_task_t *task, uint64_t vm_offset,
                         MAP_FIXED | MAP_SHARED, task->memfd,
                         (off_t)vm_offset);
     if (mapped == MAP_FAILED) {
-        fprintf(stderr, "mmap(MAP_SHARED) at offset %llu failed: %s\n",
+        LAGFX_ERR("mmap(MAP_SHARED) at offset %llu failed: %s",
                 (unsigned long long)vm_offset, strerror(errno));
         return false;
     }
@@ -261,11 +263,11 @@ bool lagfx_task_map_host_memory(lagfx_task_t *task, uint64_t vm_offset,
     /* Non-Linux dev path (Darwin / others): no mremap, retain the
      * legacy copy-on-map behaviour. Production runs on Linux; the
      * audit doc covers why this is acceptable for dev builds only. */
-    fprintf(stderr,
-            "lagfx_task_map_host_memory: non-Linux host — using"
-            " copy-on-map fallback at offset %llu (coherence will"
-            " fail post-map; Linux is the production target).\n",
-            (unsigned long long)vm_offset);
+    LAGFX_WARN(
+        "lagfx_task_map_host_memory: non-Linux host — using"
+        " copy-on-map fallback at offset %llu (coherence will"
+        " fail post-map; Linux is the production target)",
+        (unsigned long long)vm_offset);
     return task_map_via_copy(task, vm_offset, target, host_addr, len,
                               prot);
 #endif
@@ -284,7 +286,7 @@ bool lagfx_task_unmap(lagfx_task_t *task, uint64_t vm_offset,
     void *result = mmap(target, (size_t)len, PROT_NONE,
                          MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (result == MAP_FAILED) {
-        fprintf(stderr, "mmap(PROT_NONE) unmap at offset %llu failed: %s\n",
+        LAGFX_ERR("mmap(PROT_NONE) unmap at offset %llu failed: %s",
                 (unsigned long long)vm_offset, strerror(errno));
         return false;
     }

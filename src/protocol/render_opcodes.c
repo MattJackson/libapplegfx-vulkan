@@ -493,8 +493,8 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
                             first + i, ref);
             }
             if (store_count > 0) {
-                LAGFX_ERR("SetFragmentTextures: SKIPPED all %u fragment textures "
-                          "— VK_NULL_HANDLE placeholders not wired for Stage 20%");
+                LAGFX_ERR("SetFragmentTextures: SKIPPED all %%u fragment textures "
+                          "-- VK_NULL_HANDLE placeholders not wired for Stage 20%%");
             }
 #else
             LAGFX_LOG("SetFragmentTextures: would bind %u textures "
@@ -598,7 +598,7 @@ static int render_op_draw_primitives_16(lagfx_protocol_t *p,
     if (p && p->render_enc.in_pass && vertex_count > 0) {
 #ifdef LAGFX_HAVE_VULKAN
         LAGFX_ERR("DrawPrimitives16: DRAW with VK_NULL_HANDLE placeholders "
-                  "(pipeline=COLOR_FILL stub, vb=dummy_vb — Stage 20% not wired)");
+                  "(pipeline=COLOR_FILL stub, vb=dummy_vb -- Stage 20%% not wired)");
         lagfx_translate_render_draw(&p->render_enc,
                                     vertex_count, 1,
                                     vertex_start, 0);
@@ -630,7 +630,7 @@ static int render_op_draw_indexed_primitives_64(lagfx_protocol_t *p,
     if (p && p->render_enc.in_pass && index_count > 0) {
 #ifdef LAGFX_HAVE_VULKAN
         LAGFX_ERR("DrawIndexedPrimitives64: DRAW with VK_NULL_HANDLE placeholders "
-                  "(pipeline=COLOR_FILL stub, vb=dummy_vb — Stage 20% not wired)");
+                  "(pipeline=COLOR_FILL stub, vb=dummy_vb -- Stage 20%% not wired)");
         uint32_t elem_size = (index_type == 0) ? 2u : 4u;
         uint32_t first_index = (uint32_t)(index_buf_offset / elem_size);
         lagfx_translate_render_draw_indexed(&p->render_enc,

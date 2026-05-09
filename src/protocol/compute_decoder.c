@@ -37,16 +37,14 @@ int lagfx_compute_decoder_dispatch(lagfx_protocol_t *p,
                                    size_t            len) {
     const lagfx_compute_op_descriptor_t *d = lagfx_compute_op_lookup(opcode);
     if (!d) {
-        fprintf(stderr,
-                "[lagfx compute] op=0x%03x (Unknown) "
-                "— absorbed (no descriptor; len=%zu)\n",
+        LAGFX_TRACE("[lagfx compute] op=0x%03x (Unknown) "
+                "— absorbed (no descriptor; len=%zu)",
                 (unsigned)(opcode & 0xffffu), len);
         return 0;
     }
 
     if (lagfx_compute_op_is_stub(opcode)) {
-        fprintf(stderr,
-                "[lagfx compute] op=0x%03x (%s) — ack-only stub\n",
+        LAGFX_TRACE("[lagfx compute] op=0x%03x (%s) — ack-only stub",
                 (unsigned)(d->opcode & 0xffffu), d->name);
     }
 

@@ -30,7 +30,7 @@ int lagfx_render_decoder_dispatch(lagfx_protocol_t *p,
      * the issue. */
     
     /* Debug: log all render decoder calls for Stage 20 verification */
-    fprintf(stderr, "[lagfx render] dispatch called: opcode=0x%02x len=%zu\n",
+    LAGFX_TRACE("[lagfx render] dispatch called: opcode=0x%02x len=%zu",
             (unsigned)(opcode & 0xffu), len);
     
     const lagfx_render_op_descriptor_t *d = lagfx_render_op_lookup(opcode);
@@ -38,20 +38,17 @@ int lagfx_render_decoder_dispatch(lagfx_protocol_t *p,
         /* Unknown / out-of-range opcode. Log unconditionally (this is
          * exactly the kind of event that should never go silent during
          * bring-up) and absorb. */
-        fprintf(stderr,
-                "[lagfx render] op=0x%02x (Unknown) "
-                "— absorbed (no descriptor; len=%zu)\n",
+        LAGFX_WARN("[lagfx render] op=0x%02x (Unknown) "
+                "— absorbed (no descriptor; len=%zu)",
                 (unsigned)(opcode & 0xffu), len);
         return 0;
     }
 
     if (lagfx_render_op_is_stub(opcode)) {
-        fprintf(stderr,
-                "[lagfx render] op=0x%02x (%s) — ack-only stub\n",
+        LAGFX_TRACE("[lagfx render] op=0x%02x (%s) — ack-only stub",
                 (unsigned)(d->opcode & 0xffu), d->name);
     } else {
-        fprintf(stderr,
-                "[lagfx render] op=0x%02x (%s) — real handler\n",
+        LAGFX_TRACE("[lagfx render] op=0x%02x (%s) — real handler",
                 (unsigned)(d->opcode & 0xffu), d->name);
     }
 
@@ -62,7 +59,7 @@ int lagfx_render_decoder_dispatch(lagfx_protocol_t *p,
         return 0;
     }
     int rc = d->default_handler(p, payload, len);
-    fprintf(stderr, "[lagfx render] opcode=0x%02x handler returned: %d\n",
+    LAGFX_TRACE("[lagfx render] opcode=0x%02x handler returned: %d",
             (unsigned)(opcode & 0xffu), rc);
     return rc;
 }
