@@ -89,6 +89,11 @@ typedef struct {
     bool     completed;
 } lagfx_inflight_entry_t;
 
+/* Per-instance diagnostic state — replaces file-scope static singletons.
+ * Each protocol instance tracks its own channel-drain history to avoid
+ * cross-device aliasing (concern #7). */
+#define LAGFX_MAX_CHANNELS 32u
+
 /* Display-pipe tracking (Phase 2.A). Populated by CmdDisplaySwapMapping
  * (0x12) and updated by CmdDisplayTransaction3 (0x16); cleared when the
  * guest issues the matching CmdDisplayAck (0x10).
