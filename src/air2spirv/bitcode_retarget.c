@@ -159,7 +159,7 @@ lagfx_status_t lagfx_bitcode_retarget_to_spirv(
     if (!lagfx_bitcode_has_magic(in_buf, in_len)) {
         LAGFX_ERR("bitcode_retarget: no LLVM Bitcode wrapper magic "
                   "(got %02x %02x %02x %02x) "
-                  "[FIXME(phase-3c2-bitcode-reader)]",
+                  "unknown opcode",
                   in_len >= 4u ? in_buf[0] : 0,
                   in_len >= 4u ? in_buf[1] : 0,
                   in_len >= 4u ? in_buf[2] : 0,
@@ -188,7 +188,7 @@ lagfx_status_t lagfx_bitcode_retarget_to_spirv(
 
     if (!found_any) {
         LAGFX_ERR("bitcode_retarget: no AIR target-triple pattern "
-                  "found [FIXME(phase-3c2-unknown-triple-format)]");
+                  "found unknown triple format");
         return LAGFX_ERR_PROTOCOL;
     }
 

@@ -283,7 +283,7 @@ lagfx_status_t lagfx_metallib_extract_functions(
                 default:
                     rec.stage = LAGFX_METALLIB_STAGE_UNKNOWN;
                     LAGFX_WARN("metallib_extract: entry %u stage_raw=%u "
-                               "unknown [FIXME(phase-3c2-metallib-stages)]",
+                               "unknown",
                                e, (unsigned)fdata[0]);
                 }
             } else if (tag_eq(tagp, "OFFT")) {
@@ -315,7 +315,7 @@ lagfx_status_t lagfx_metallib_extract_functions(
                  * against unknown tags" policy. */
                 LAGFX_WARN("metallib_extract: entry %u unknown tag "
                            "%02x%02x%02x%02x len=%u (skipping) "
-                           "[FIXME(phase-3c2-unknown-tag)]",
+                           "unknown tag",
                            e, tagp[0], tagp[1], tagp[2], tagp[3],
                            (unsigned)flen);
             }

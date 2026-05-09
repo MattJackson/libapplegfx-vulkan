@@ -277,7 +277,7 @@ lagfx_status_t lagfx_translate_render_bind_texture(
          * take the full path. */
         LAGFX_WARN("translate_render_bind_texture: layout=NULL "
                    "(Phase 3.A scaffold — push skipped) "
-                   "[FIXME(phase-3e-pipeline)]");
+                   "pipeline not yet bound");
         return LAGFX_OK;
     }
 
