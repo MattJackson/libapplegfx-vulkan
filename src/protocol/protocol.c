@@ -130,6 +130,8 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->display_swaps_applied          = 0;
     p->display_transactions_submitted = 0;
     p->display_acks_received          = 0;
+    p->display_submit_count           = 0;
+    p->display_1e_logged              = false;
 }
 
 /* === Completion path ========================================
@@ -1298,6 +1300,17 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                               * Invokes QEMU dpy_cursor_define callback
                               * for noVNC cursor rendering. */
                              lagfx_op_display_cursor_glyph(p, &parsed);
+                             break;
+                         case 0x1eu:
+                             /* Display vchan extended opcode (unknown semantics).
+                              * Log once per ring to avoid spam while guest initializes.
+                              * May be present/swap-related based on kext disasm. */
+                             if (!p->display_1e_logged) {
+                                 LAGFX_WARN("doorbell ch=%u: display vchan opcode 0x1e "
+                                            "(extended, unimplemented) at rp=%u len=%u",
+                                            ch, cur_rp, cmd_len);
+                                 p->display_1e_logged = true;
+                             }
                              break;
                          default:
                             LAGFX_WARN("doorbell ch=%u: unknown "

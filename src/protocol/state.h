@@ -292,6 +292,11 @@ struct lagfx_protocol {
      * online event now fires immediately when ss[0x104]==0xC. */
     uint32_t display_submit_count;
 
+    /* Display vchan opcode 0x1e spam suppression flag — prevents repeated
+     * warnings for unknown extended opcodes while guest initializes.
+     * Set once per boot cycle and reset in protocol_reset(). */
+    bool display_1e_logged;
+
     /* Per-channel highest stamp seen — used by the display tick handler
      * to detect when a compute channel (ch=1) stamp cell has fallen
      * behind and needs proactive advancement. Breaks the waitForStamp
