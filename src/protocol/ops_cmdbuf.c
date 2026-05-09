@@ -573,10 +573,9 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
          while (soff + segment_start_offset + 16u <= (size_t)length) {
              uint32_t segment_size =
                  lagfx_le32(cmdbuf + soff + segment_start_offset + 0);
-       /* Segment header is 16 bytes per RE docs (inner-opcode-format.md):
-          size(4), protectionOptions(4), encoderType(1) at +8, flags/pad(7).
-          Inner PGCmdHeader stream starts at offset +16. */
-             uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 8];
+          /* Segment header format: size(4), then possibly encoder type at different offsets.
+          Try byte +4 first (some segments show encType in bytes 4-7). */
+             uint8_t  encoder_type = cmdbuf[soff + segment_start_offset + 4];
 
             LAGFX_WARN("    segment[%u]: seg_header_bytes_0to7=%02x%02x%02x%02x %02x%02x%02x%02x encType=0x%02x",
                       segment_idx, cmdbuf[soff + segment_start_offset],
