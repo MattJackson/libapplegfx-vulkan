@@ -200,15 +200,6 @@ lagfx_display_t *lagfx_display_new(lagfx_device_t *device,
               desc->name ? desc->name : "(null)",
               (int)disp->rt_ready, disp->rt_width, disp->rt_height);
 
-    /* rt_* fields accessed under lock for thread safety. */
-    uint32_t w, h;
-    bool ready;
-    LAGFX_DISPLAY_RT_LOCK(disp);
-    w = disp->rt_width;
-    h = disp->rt_height;
-    ready = disp->rt_ready;
-    LAGFX_DISPLAY_RT_UNLOCK(disp);
-
     return disp;
 }
 
@@ -384,6 +375,16 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
 
     struct lagfx_vk_state *vk = display->device->vk;
 
+    /* Snapshot rt size once under the lock — reused for cursor draw,
+     * post-submit log, and DMA writeback below. Avoids racing with a
+     * concurrent display_rt_create that could otherwise let the cmdbuf
+     * encode one size and the writeback use another. */
+    uint32_t rt_w, rt_h;
+    LAGFX_DISPLAY_RT_LOCK(display);
+    rt_w = display->rt_width;
+    rt_h = display->rt_height;
+    LAGFX_DISPLAY_RT_UNLOCK(display);
+
     float rgba_local[4];
     if (rgba) {
         rgba_local[0] = rgba[0];
@@ -477,12 +478,8 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
     vkCmdBeginRendering(cb, &ri);
 
     if (want_cursor) {
-        uint32_t w, h;
-        LAGFX_DISPLAY_RT_LOCK(display);
-        w = display->rt_width;
-        h = display->rt_height;
-        LAGFX_DISPLAY_RT_UNLOCK(display);
-        lagfx_vk_cursor_draw(vk, cb, w, h, cs->x, cs->y, cs->hot_x, cs->hot_y);
+        lagfx_vk_cursor_draw(vk, cb, rt_w, rt_h,
+                             cs->x, cs->y, cs->hot_x, cs->hot_y);
     }
 
     vkCmdEndRendering(cb);
@@ -529,13 +526,9 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
     }
 
     set_frame_ready(display);
-    uint32_t w, h;
-    LAGFX_DISPLAY_RT_LOCK(display);
-    w = display->rt_width;
-    h = display->rt_height;
-    LAGFX_DISPLAY_RT_UNLOCK(display);
     LAGFX_LOG("display_submit_clear: %ux%u clear=(%.3f,%.3f,%.3f,%.3f) OK",
-              w, h, (double)rgba_local[0], (double)rgba_local[1],
+              rt_w, rt_h,
+              (double)rgba_local[0], (double)rgba_local[1],
               (double)rgba_local[2], (double)rgba_local[3]);
 
     /* M4 GAP #1: DMA the rendered pixels into the guest's scanout
@@ -556,13 +549,8 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
      * shell's read_frame path still works for local noVNC. */
     if (scanout_gpa != 0ull && scanout_length > 0ull
         && display->device->desc.shell.write_memory != NULL) {
-        uint32_t w, h;
-        LAGFX_DISPLAY_RT_LOCK(display);
-        w = display->rt_width;
-        h = display->rt_height;
-        LAGFX_DISPLAY_RT_UNLOCK(display);
-        const uint32_t stride_expected = w * 4u;
-        const size_t rt_bytes = (size_t)h * (size_t)stride_expected;
+        const uint32_t stride_expected = rt_w * 4u;
+        const size_t rt_bytes = (size_t)rt_h * (size_t)stride_expected;
         if (scanout_length < rt_bytes) {
             LAGFX_WARN("display_submit_clear: scanout length %llu < "
                        "render target bytes %zu — skipping DMA writeback "
