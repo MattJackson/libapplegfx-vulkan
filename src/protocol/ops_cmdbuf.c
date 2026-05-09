@@ -1114,7 +1114,7 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                         inner_idx);
                         } else if (force_try_render) {
                             /* Render opcode handled by render decoder even though it arrived in encType=0 segment. */
-                            LAGFX_LOG("        %s: encoder_type=%u render fallback succeeded", opname, encoder_type);
+                            LAGFX_WARN("        %s: encoder_type=%u render fallback succeeded", opname, encoder_type);
                         }
                     }
                 } else if (encoder_type == 2u) {
