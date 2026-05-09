@@ -71,6 +71,17 @@ static inline uint64_t lagfx_le64(const uint8_t *b) {
          | ((uint64_t)b[7] << 56);
 }
 
+static inline uint16_t lagfx_le16(const uint8_t *b) {
+    return (uint16_t)b[0] | ((uint16_t)b[1] << 8);
+}
+
+/* Helper to read float from little-endian u32. */
+static inline float lagfx_lef32(const uint8_t *b) {
+    union { uint32_t u; float f; } conv;
+    conv.u = lagfx_le32(b);
+    return conv.f;
+}
+
 static inline void lagfx_put_le32(uint8_t *b, uint32_t v) {
     b[0] = (uint8_t)(v & 0xffu);
     b[1] = (uint8_t)((v >> 8) & 0xffu);
