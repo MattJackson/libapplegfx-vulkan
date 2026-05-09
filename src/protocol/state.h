@@ -406,6 +406,10 @@ lagfx_protocol_alloc_task_slot(lagfx_protocol_t *p) {
     }
     for (unsigned i = 0; i < LAGFX_MAX_TASKS; ++i) {
         if (!p->tasks[i].live) {
+            /* Initialize with identity mapping as fallback when kext doesn't
+             * send CmdDefineHostTask. root_page_pfn=1 means PFN 1 (the first
+             * data page), which maps VA==GPA for the initial boot period. */
+            p->tasks[i].root_page_pfn = 1u;
             return &p->tasks[i];
         }
     }
