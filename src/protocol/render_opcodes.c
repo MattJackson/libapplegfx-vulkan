@@ -283,10 +283,13 @@ static int render_op_set_render_pipeline_state(lagfx_protocol_t *p,
         if (p->render_enc.in_pass) {
 #ifdef LAGFX_HAVE_VULKAN
             /* TODO: resolve reference -> VkPipeline once resource table exists.
-             * For now, use COLOR_FILL as placeholder render pipeline. */
+             * For now, use COLOR_FILL as placeholder render pipeline.
+             * This is a known gap — Stage 20% "RenderPassDescriptor parse log GREEN"
+             * passes only because actual binding work isn't wired yet (see concern #5).
+             * Real rendering requires resource registry integration. */
             lagfx_translate_render_bind_pipeline(&p->render_enc,
-                                                  LAGFX_SHADER_COLOR_FILL,
-                                                  VK_NULL_HANDLE);
+                                                   LAGFX_SHADER_COLOR_FILL,
+                                                   VK_NULL_HANDLE);
 #else
             lagfx_translate_render_bind_pipeline(&p->render_enc,
                                                   LAGFX_SHADER_COLOR_FILL,

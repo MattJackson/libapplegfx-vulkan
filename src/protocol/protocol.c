@@ -59,6 +59,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Bounce buffer for doorbell payload reads — prevents malloc in hot path.
+ * Max command size from guest is bounded by ring_size (64 KiB). Use 32 KiB
+ * as a practical cap that covers all legitimate macOS commands while
+ * preventing DoS via repeated large allocations. */
+#define LAGFX_DOORBELL_BOUNCE_BUFFER_SIZE 32768u
+static uint8_t doorbell_bounce_buffer[LAGFX_DOORBELL_BOUNCE_BUFFER_SIZE];
+
 /* === Lifecycle ============================================== */
 
 lagfx_protocol_t *lagfx_protocol_new(struct lagfx_device *dev) {
@@ -960,10 +967,10 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             break;
                         }
                     }
-                    uint32_t cmd_len = (uint32_t)(hdr_bytes[4]
-                                                  | (hdr_bytes[5] << 8)
-                                                  | (hdr_bytes[6] << 16)
-                                                  | (hdr_bytes[7] << 24));
+                   uint32_t cmd_len = (uint32_t)(hdr_bytes[4]
+                                                   | (hdr_bytes[5] << 8)
+                                                   | (hdr_bytes[6] << 16)
+                                                   | (hdr_bytes[7] << 24));
                     /* Reject patently absurd cmd_len values BEFORE arithmetic
                      * to avoid uint32 overflow in `cur_rp + cmd_len > wp`. */
                     if (cmd_len < 12u || cmd_len > (write_ptr - cur_rp)) {
@@ -974,10 +981,21 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         break;
                     }
 
-                    /* Read the full cmd into a temporary buffer + dispatch.
-                     * Same per-page walk as the header read above so cmds
-                     * crossing page boundaries assemble correctly. */
-                    uint8_t *cmd = malloc(cmd_len);
+                    /* Overflow check: ensure cur_rp + cmd_len doesn't wrap. */
+                    if (UINT32_MAX - cur_rp < cmd_len) {
+                        LAGFX_ERR("doorbell ch=%u: ring pointer overflow "
+                                  "at rp=%u + cmd_len=%u", ch, cur_rp, cmd_len);
+                        break;
+                    }
+
+                    /* Read the full cmd into a bounce buffer instead of malloc.
+                     * Guest-controlled cmd_len is capped at 32 KiB to prevent DoS. */
+                    if (cmd_len > sizeof(doorbell_bounce_buffer)) {
+                        LAGFX_ERR("doorbell ch=%u: cmd_len %u exceeds bounce buffer",
+                                  ch, cmd_len);
+                        break;
+                    }
+                    uint8_t *cmd = doorbell_bounce_buffer;
                     if (!cmd) {
                         LAGFX_WARN("doorbell ch=%u: malloc(%u) failed",
                                    ch, cmd_len);
@@ -1014,7 +1032,6 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                             LAGFX_WARN("doorbell ch=%u: read_memory(cmd, %u) "
                                        "failed at rp=%u (paginated walk)",
                                        ch, cmd_len, cur_rp);
-                            free(cmd);
                             break;
                         }
                     }
@@ -1064,11 +1081,10 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                   uint32_t effective = parsed.stamp
                                           + p->extra_stamp_advance;
                     LAGFX_WARN("doorbell ch=%u cmd[%u]: effective=0x%08x last_stamp=0x%08x",
-                              ch, cmd_idx, effective, last_stamp);
+                               ch, cmd_idx, effective, last_stamp);
                     if (effective > last_stamp) {
                         last_stamp = effective;
                     }
-                    free(cmd);
 
                     cur_rp += cmd_len;
                     cmd_idx += 1;
@@ -1167,15 +1183,22 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         break;
                     }
 
+                    /* Overflow check for payload read. */
+                    if (UINT32_MAX - cur_rp < cmd_len) {
+                        LAGFX_ERR("doorbell ch=%u: ring pointer overflow "
+                                  "at rp=%u + cmd_len=%u", ch, cur_rp, cmd_len);
+                        break;
+                    }
+
                     uint32_t payload_len = cmd_len - 12u;
                     uint8_t *payload_buf = NULL;
                     if (payload_len > 0u) {
-                        payload_buf = (uint8_t *)malloc(payload_len);
-                        if (!payload_buf) {
-                            LAGFX_WARN("doorbell ch=%u: malloc(%u) "
-                                       "failed", ch, payload_len);
+                        if (cmd_len > sizeof(doorbell_bounce_buffer)) {
+                            LAGFX_ERR("doorbell ch=%u: cmd_len %u exceeds bounce buffer",
+                                      ch, cmd_len);
                             break;
                         }
+                        payload_buf = doorbell_bounce_buffer;
                         bool ok = true;
                         uint32_t off = cur_rp + 12u;
                         size_t got = 0;
@@ -1206,7 +1229,6 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         if (!ok) {
                             LAGFX_WARN("doorbell ch=%u: payload read "
                                        "failed at rp=%u", ch, cur_rp);
-                            free(payload_buf);
                             break;
                         }
                     }

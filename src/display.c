@@ -58,11 +58,11 @@ static void set_err(char **errp_out, const char *msg) {
  * build can stub them cleanly. */
 #ifdef LAGFX_HAVE_VULKAN
 
-static void notify_mode_changed(lagfx_display_t *display) {
+static void notify_mode_changed(lagfx_display_t *display, uint32_t width, uint32_t height) {
     if (display->desc.callbacks.mode_changed) {
         display->desc.callbacks.mode_changed(
             display->desc.callbacks.opaque,
-            display->rt_width, display->rt_height);
+            width, height);
     }
 }
 
@@ -88,12 +88,13 @@ static void display_rt_create(lagfx_display_t *disp) {
     }
 
     /* Publish dimensions before any notify_mode_changed call below.
-     * The callback reads disp->rt_width/rt_height; leaving them at the
-     * post-calloc zero values causes the QEMU-side mode_changed
-     * callback to create a 0x0 DisplaySurface, which aborts in
-     * qemu_memfd_alloc (mmap length=0 → EINVAL). */
+     * Pass explicit (w, h) to the callback instead of reading from
+     * internal state — this avoids the tight coupling that caused
+     * regression e0ba3a5 → 20fe6c9 in libapplegfx-vulkan. */
+    LAGFX_DISPLAY_RT_LOCK(disp);
     disp->rt_width = w;
     disp->rt_height = h;
+    LAGFX_DISPLAY_RT_UNLOCK(disp);
 
     if (vk->frame_image != VK_NULL_HANDLE
         && vk->frame_image_w == w && vk->frame_image_h == h) {
@@ -105,7 +106,7 @@ static void display_rt_create(lagfx_display_t *disp) {
             LAGFX_LOG("display_rt_create: wrapped pipeline frame image "
                       "(%ux%u, no extra allocation)", w, h);
             disp->rt_ready = true;
-            notify_mode_changed(disp);
+            notify_mode_changed(disp, w, h);
             return;
         }
     }
@@ -116,11 +117,11 @@ static void display_rt_create(lagfx_display_t *disp) {
         LAGFX_ERR("display_new: render_target_create failed (%d) — "
                   "read_frame will return NO_FRAME", (int)st);
         disp->rt_ready = false;
-        notify_mode_changed(disp);
+        notify_mode_changed(disp, w, h);
         return;
     }
     disp->rt_ready = true;
-    notify_mode_changed(disp);
+    notify_mode_changed(disp, w, h);
 }
 
 static void display_rt_destroy(lagfx_display_t *disp) {
@@ -178,6 +179,9 @@ lagfx_display_t *lagfx_display_new(lagfx_device_t *device,
     disp->has_frame  = 0;
     disp->new_frame_ready = false;
 
+    /* Initialize thread-safety mutex for rt_* fields. */
+    pthread_mutex_init(&disp->rt_lock, NULL);
+
     int rc = lagfx_device_attach_display(device, disp);
     if (rc != LAGFX_OK) {
         set_err(errp_out,
@@ -196,7 +200,15 @@ lagfx_display_t *lagfx_display_new(lagfx_device_t *device,
               desc->name ? desc->name : "(null)",
               (int)disp->rt_ready, disp->rt_width, disp->rt_height);
 
+    /* rt_* fields are accessed in logs; ensure mutex is held. */
+    LAGFX_DISPLAY_RT_LOCK(disp);
+    uint32_t w = disp->rt_width;
+    uint32_t h = disp->rt_height;
+    bool ready = disp->rt_ready;
+    LAGFX_DISPLAY_RT_UNLOCK(disp);
+
     return disp;
+}
 }
 
 void lagfx_display_free(lagfx_display_t *display) {
@@ -210,6 +222,9 @@ void lagfx_display_free(lagfx_display_t *display) {
     }
 
     display_rt_destroy(display);
+
+    /* Destroy thread-safety mutex. */
+    pthread_mutex_destroy(&display->rt_lock);
 
     /* Clean up fallback pixels buffer. */
     if (display->fallback_pixels) {
@@ -287,7 +302,16 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
         return LAGFX_OK;
     }
 
-    if (!display->rt_ready || !display->device
+    /* rt_* fields accessed under lock for thread safety. */
+    uint32_t w, h;
+    bool ready;
+    LAGFX_DISPLAY_RT_LOCK(display);
+    w = display->rt_width;
+    h = display->rt_height;
+    ready = display->rt_ready;
+    LAGFX_DISPLAY_RT_UNLOCK(display);
+
+    if (!ready || !display->device
         || !display->device->vk || !display->device->vk->initialized) {
         /* Flag says "frame ready" but no backend — unusual; clear
          * the flag so we don't loop. */
@@ -299,6 +323,8 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
     }
 
     size_t stride = 0;
+    /* Use local copy of rt for readback — the render target itself is not
+     * mutated, but we need to ensure we're reading consistent dimensions. */
     lagfx_status_t st = lagfx_vk_render_target_readback(
         display->device->vk, &display->rt, dst, dst_size_bytes, &stride);
     if (st != LAGFX_OK) {
@@ -453,9 +479,12 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
     vkCmdBeginRendering(cb, &ri);
 
     if (want_cursor) {
-        lagfx_vk_cursor_draw(vk, cb,
-                             display->rt_width, display->rt_height,
-                             cs->x, cs->y, cs->hot_x, cs->hot_y);
+        uint32_t w, h;
+        LAGFX_DISPLAY_RT_LOCK(display);
+        w = display->rt_width;
+        h = display->rt_height;
+        LAGFX_DISPLAY_RT_UNLOCK(display);
+        lagfx_vk_cursor_draw(vk, cb, w, h, cs->x, cs->y, cs->hot_x, cs->hot_y);
     }
 
     vkCmdEndRendering(cb);
@@ -502,9 +531,13 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
     }
 
     set_frame_ready(display);
+    uint32_t w, h;
+    LAGFX_DISPLAY_RT_LOCK(display);
+    w = display->rt_width;
+    h = display->rt_height;
+    LAGFX_DISPLAY_RT_UNLOCK(display);
     LAGFX_LOG("display_submit_clear: %ux%u clear=(%.3f,%.3f,%.3f,%.3f) OK",
-              display->rt_width, display->rt_height,
-              (double)rgba_local[0], (double)rgba_local[1],
+              w, h, (double)rgba_local[0], (double)rgba_local[1],
               (double)rgba_local[2], (double)rgba_local[3]);
 
     /* M4 GAP #1: DMA the rendered pixels into the guest's scanout
@@ -525,9 +558,13 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
      * shell's read_frame path still works for local noVNC. */
     if (scanout_gpa != 0ull && scanout_length > 0ull
         && display->device->desc.shell.write_memory != NULL) {
-        const uint32_t stride_expected = display->rt_width * 4u;
-        const size_t rt_bytes = (size_t)display->rt_height
-                              * (size_t)stride_expected;
+        uint32_t w, h;
+        LAGFX_DISPLAY_RT_LOCK(display);
+        w = display->rt_width;
+        h = display->rt_height;
+        LAGFX_DISPLAY_RT_UNLOCK(display);
+        const uint32_t stride_expected = w * 4u;
+        const size_t rt_bytes = (size_t)h * (size_t)stride_expected;
         if (scanout_length < rt_bytes) {
             LAGFX_WARN("display_submit_clear: scanout length %llu < "
                        "render target bytes %zu — skipping DMA writeback "

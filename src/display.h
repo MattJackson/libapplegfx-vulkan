@@ -13,6 +13,19 @@
 #include "device.h"
 #include "vulkan/render_target.h"
 
+#include <pthread.h>
+
+/* Thread safety: rt_* fields are accessed from multiple threads.
+ * - VBlank tick runs on QEMU_CLOCK_VIRTUAL thread (QEMU side)
+ * - Doorbell drain may run in MMIO context (different thread)
+ * - display_rt_create/destroy called during realize (initialization thread)
+ *
+ * All accesses to rt, rt_ready, rt_width, rt_height must be guarded by
+ * this mutex. No-vulkan builds don't use Vulkan resources but still need
+ * the mutex for rt_ready and dimension fields. */
+#define LAGFX_DISPLAY_RT_LOCK(disp) pthread_mutex_lock(&(disp)->rt_lock)
+#define LAGFX_DISPLAY_RT_UNLOCK(disp) pthread_mutex_unlock(&(disp)->rt_lock)
+
 struct lagfx_display {
     uint32_t magic;                     /* LAGFX_DISPLAY_MAGIC */
     lagfx_device_t *device;             /* owning device (not owned) */
@@ -32,6 +45,10 @@ struct lagfx_display {
     bool rt_ready;
     uint32_t rt_width;
     uint32_t rt_height;
+
+    /* Thread safety: protects rt, rt_ready, rt_width, rt_height from
+     * concurrent access (VBlank tick + doorbell drain). */
+    pthread_mutex_t rt_lock;
 
     /* Latched "a new frame has rendered" flag. Set by the protocol
      * decoder (ops_display.c) when a clear-colour transaction has been
