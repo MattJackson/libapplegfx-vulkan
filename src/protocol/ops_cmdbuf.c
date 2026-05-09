@@ -619,15 +619,15 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                 break;
             }
 
-           /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
-                * Inner stream starts at offset +16 from segment_start (after 16B header). */
-              bool render_begin_pending =
-                 ((encoder_type == 4u || encoder_type == 2u || encoder_type == 0u)
-                  && !p->render_enc.in_pass);
+          /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
+                 * Inner stream starts at offset +8 from segment_start (after 8B header). */
+               bool render_begin_pending =
+                  ((encoder_type == 4u || encoder_type == 2u || encoder_type == 0u)
+                   && !p->render_enc.in_pass);
 
-             /* Inner command stream starts at offset +16 from segment_start (after full 16B header).
-            * Header layout: size(4 @ +0), encType(1 @ +4), finalFlag(1 @ +5), reuseFlag(1 @ +6), pad(1 @ +7), reserved(4 @ +8..+11). */
-             size_t ioff = soff + segment_start_offset + 16u;
+              /* Inner command stream starts at offset +8 from segment_start (after full 8B header).
+             * Header layout: size(4 @ +0), encType(1 @ +4), finalFlag(1 @ +5), reuseFlag(1 @ +6), pad(1 @ +7). */
+              size_t ioff = soff + segment_start_offset + 8u;
 
             LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu encType=%u",
                       segment_idx, ioff, encoder_type);
@@ -1040,33 +1040,53 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                                   "op=0x%04x returned %d (continuing)",
                                   inner_idx, inner_opcode, rc);
                     }
-                } else if (encoder_type == 0u || encoder_type == 1u) {
-                    /* Compute encoder (encType=0 or 1): compute pipeline
-                      * dispatch. PGDeserializerComputeDecoder is
-                      * scaffolded — observation-only for now.
-                      * 
-                      * Fallback: some guests send render opcodes with encType=0,
-                      * so try render decoder after compute to catch misclassified ops.
-                      */
-                    {
-                        const uint8_t *cpl = cmdbuf + ioff + 8u;
-                        int rc = lagfx_compute_decoder_dispatch(p, inner_opcode,
-                                                                 cpl, ipl_len);
-                        /* Always try render decoder as fallback since compute always returns 0.
-                         * This catches cases where guests send render opcodes with encType=0 */
-                        const uint8_t *ipl = cmdbuf + ioff + 8u;
-                        int rc2 = lagfx_render_decoder_dispatch(p, inner_opcode,
-                                                                ipl, ipl_len);
-                        if (rc2 == 0) {
-                            LAGFX_TRACE("      inner[%u]: tried render fallback "
-                                      "(compute returned %d)",
-                                      inner_idx, rc);
-                        } else {
+               } else if (encoder_type == 0u || encoder_type == 1u) {
+                    /* Compute or compute-like segment: try compute decoder first, fall back to render. */
+                    int rc = lagfx_compute_decoder_dispatch(p, inner_opcode, cmdbuf + ioff + 8u, ipl_len);
+
+                    if (rc != LAGFX_HANDLER_OK && (encoder_type == 0u || encoder_type == 1u)) {
+                        /* Fallback: treat as render for encType=0/1 (some macOS paths use compute path for render ops). */
+                        int rc2 = lagfx_render_decoder_dispatch(p, inner_opcode, cmdbuf + ioff + 8u, ipl_len);
+
+                        if (rc2 != LAGFX_HANDLER_OK) {
+                            static const char *opnames[] = {
+                                "0x00", "0x01", "0x02", "0x03", "0x04", "0x05", "0x06", "0x07",
+                                "0x08", "0x09", "0x0a", "0x0b", "0x0c", "0x0d", "0x0e", "0x0f",
+                                "0x10", "0x11", "0x12", "0x13", "0x14", "0x15", "0x16", "0x17",
+                                "0x18", "0x19", "0x1a", "0x1b", "0x1c", "0x1d", "0x1e", "0x1f"
+                            };
+                            const char *opname = (inner_opcode < 32u) ? opnames[inner_opcode] : "???";
+
+                            LAGFX_WARN("        %s: encoder_type=%u compute rc=%d fallback rc=%d — skipping",
+                                       opname, encoder_type, rc, rc2);
                             LAGFX_TRACE("      inner[%u]: compute+render dispatch both failed",
-                                      inner_idx);
+                                        inner_idx);
                         }
                     }
-                }
+                } else if (encoder_type == 2u) {
+                    /* Render segment: always try render decoder first. */
+                    int rc = lagfx_render_decoder_dispatch(p, inner_opcode, cmdbuf + ioff + 8u, ipl_len);
+
+                    if (rc != LAGFX_HANDLER_OK) {
+                        /* Fallback: treat as compute for encType=2 (rare macOS paths). */
+                        int rc2 = lagfx_compute_decoder_dispatch(p, inner_opcode, cmdbuf + ioff + 8u, ipl_len);
+
+                        if (rc2 != LAGFX_HANDLER_OK) {
+                            static const char *opnames[] = {
+                                "0x00", "0x01", "0x02", "0x03", "0x04", "0x05", "0x06", "0x07",
+                                "0x08", "0x09", "0x0a", "0x0b", "0x0c", "0x0d", "0x0e", "0x0f",
+                                "0x10", "0x11", "0x12", "0x13", "0x14", "0x15", "0x16", "0x17",
+                                "0x18", "0x19", "0x1a", "0x1b", "0x1c", "0x1d", "0x1e", "0x1f"
+                            };
+                            const char *opname = (inner_opcode < 32u) ? opnames[inner_opcode] : "???";
+
+                            LAGFX_WARN("        %s: encoder_type=%u render rc=%d fallback rc=%d — skipping",
+                                       opname, encoder_type, rc, rc2);
+                            LAGFX_TRACE("      inner[%u]: render+compute dispatch both failed",
+                                        inner_idx);
+                        }
+                    }
+                } /* end if/else dispatch based on encoder_type */
 
                 ioff += inner_total;
                 inner_idx += 1;
