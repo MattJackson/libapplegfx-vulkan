@@ -665,13 +665,15 @@ lagfx_handler_status_t lagfx_op_display_cursor_show(
     uint16_t hot_x      = (uint16_t)((hotpack >> 16) & 0xffffu);
     uint16_t hot_y      = (uint16_t)(hotpack & 0xffffu);
 
-    g_cursor_show.valid      = true;
-    g_cursor_show.display_id = display_id;
-    g_cursor_show.x          = x;
-    g_cursor_show.y          = y;
-    g_cursor_show.visible    = visible;
-    g_cursor_show.hot_x      = hot_x;
-    g_cursor_show.hot_y      = hot_y;
+    p->cursor_show.valid      = true;
+    p->cursor_show.display_id = display_id;
+    p->cursor_show.x          = x;
+    p->cursor_show.y          = y;
+    p->cursor_show.visible    = visible;
+    p->cursor_show.hot_x      = hot_x;
+    p->cursor_show.hot_y      = hot_y;
+    /* Mirror to file-scope static for the legacy zero-arg accessor. */
+    g_cursor_show = p->cursor_show;
 
     /* Invoke QEMU cursor callbacks so the cursor becomes visible via noVNC.
      * The callbacks were registered in apple_gfx_common_realize()
@@ -749,15 +751,15 @@ lagfx_handler_status_t lagfx_op_display_cursor_glyph(
     uint32_t hot_x         = lagfx_le32(hdr->payload + 24);
     uint32_t hot_y         = lagfx_le32(hdr->payload + 28);
 
-    g_cursor_glyph.valid         = true;
-    g_cursor_glyph.display_id    = display_id;
-    g_cursor_glyph.glyph_va      = glyph_va;
-    g_cursor_glyph.width         = width;
-    g_cursor_glyph.height        = height;
-    g_cursor_glyph.bytes_per_row = bytes_per_row;
-    g_cursor_glyph.hot_x         = hot_x;
-    g_cursor_glyph.hot_y         = hot_y;
-    g_cursor_glyph.captured_len  = 0;
+    p->cursor_glyph.valid         = true;
+    p->cursor_glyph.display_id    = display_id;
+    p->cursor_glyph.glyph_va      = glyph_va;
+    p->cursor_glyph.width         = width;
+    p->cursor_glyph.height        = height;
+    p->cursor_glyph.bytes_per_row = bytes_per_row;
+    p->cursor_glyph.hot_x         = hot_x;
+    p->cursor_glyph.hot_y         = hot_y;
+    p->cursor_glyph.captured_len  = 0;
 
     uint64_t total_bytes = (uint64_t)bytes_per_row * (uint64_t)height;
     if (total_bytes == 0 || total_bytes > LAGFX_CURSOR_GLYPH_MAX_BYTES) {
@@ -769,8 +771,8 @@ lagfx_handler_status_t lagfx_op_display_cursor_glyph(
         if (p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
                                            glyph_va,
                                            total_bytes,
-                                           g_cursor_glyph.bytes)) {
-            g_cursor_glyph.captured_len = (size_t)total_bytes;
+                                           p->cursor_glyph.bytes)) {
+            p->cursor_glyph.captured_len = (size_t)total_bytes;
         } else {
             LAGFX_WARN("CmdDisplayCursorGlyph: read_memory failed at "
                        "glyphVA=0x%llx len=%llu — pixels unavailable",
@@ -786,7 +788,7 @@ lagfx_handler_status_t lagfx_op_display_cursor_glyph(
      * which converts BGRA→RGBA and calls dpy_cursor_define().
      *
      * Find the first live display on the device and call its callback. */
-    if (g_cursor_glyph.captured_len > 0 && p->dev) {
+    if (p->cursor_glyph.captured_len > 0 && p->dev) {
         for (int i = 0; i < LAGFX_MAX_DISPLAYS; i++) {
             if (p->dev->displays[i]) {
                 lagfx_display_t *disp = p->dev->displays[i];
@@ -797,7 +799,7 @@ lagfx_handler_status_t lagfx_op_display_cursor_glyph(
                     };
                     disp->desc.callbacks.cursor_glyph(
                         disp->desc.callbacks.opaque,
-                        g_cursor_glyph.bytes,
+                        p->cursor_glyph.bytes,
                         width, height, hotspot);
                 }
                 break;
@@ -805,12 +807,15 @@ lagfx_handler_status_t lagfx_op_display_cursor_glyph(
         }
     }
 
+    /* Mirror to file-scope static for the legacy zero-arg accessor. */
+    g_cursor_glyph = p->cursor_glyph;
+
     LAGFX_LOG("CmdDisplayCursorGlyph: displayID=%u glyphVA=0x%llx %ux%u "
                "bpr=%u hot=(%u,%u) captured=%zu bytes stamp=0x%08x",
                display_id,
                (unsigned long long)glyph_va,
                width, height, bytes_per_row, hot_x, hot_y,
-               g_cursor_glyph.captured_len, hdr->stamp);
+               p->cursor_glyph.captured_len, hdr->stamp);
     return LAGFX_HANDLER_OK;
 }
 
@@ -837,9 +842,12 @@ lagfx_handler_status_t lagfx_op_display_set_shared_page(
 
     uint64_t page_va = lagfx_le64(hdr->payload);
 
-    g_shared_state.installed   = true;
-    g_shared_state.page_va     = page_va;
-    g_shared_state.vblank_counter = 0u;
+    p->shared_state.installed      = true;
+    p->shared_state.page_va        = page_va;
+    p->shared_state.vblank_counter = 0u;
+    /* Mirror to file-scope static so the legacy tick_vblank()/accessor
+     * see the same install state. */
+    g_shared_state = p->shared_state;
 
     /* Best-effort zero the first 64 bytes of the mailbox page. */
     if (p->dev != NULL && p->dev->desc.shell.write_memory != NULL) {
@@ -847,16 +855,20 @@ lagfx_handler_status_t lagfx_op_display_set_shared_page(
         (void)p->dev->desc.shell.write_memory(
             p->dev->desc.shell.opaque, page_va, sizeof(zeros), zeros);
         lagfx_ops_display_tick_vblank(p->dev->desc.shell.opaque, p->dev->desc.shell.write_memory);
+        /* tick_vblank operates on the legacy static; pull the bumped
+         * counter back onto the per-protocol copy. */
+        p->shared_state.vblank_counter = g_shared_state.vblank_counter;
     } else {
         /* Shadow-only kick so "counter > 0" checks succeed before
          * any DMA path lands. */
-        g_shared_state.vblank_counter = 1u;
+        p->shared_state.vblank_counter = 1u;
+        g_shared_state.vblank_counter  = 1u;
     }
 
     LAGFX_LOG("CmdDisplaySetSharedStatePage: pageVA=0x%llx installed; "
               "vblank_counter=%u stamp=0x%08x",
               (unsigned long long)page_va,
-              g_shared_state.vblank_counter,
+              p->shared_state.vblank_counter,
               hdr->stamp);
     return LAGFX_HANDLER_OK;
 }
@@ -878,32 +890,34 @@ lagfx_handler_status_t lagfx_op_display_set_shared_page(
 
 lagfx_handler_status_t lagfx_op_display_compositor_params(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    (void)p;
-    if (!hdr) {
+    if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
 
-    g_compositor_params.valid          = true;
-    g_compositor_params.dispatch_count += 1;
-    g_compositor_params.last_stamp     = hdr->stamp;
-    g_compositor_params.display_id     = 0;
-    g_compositor_params.payload_size   = hdr->payload_size;
+    p->compositor_params.valid          = true;
+    p->compositor_params.dispatch_count += 1;
+    p->compositor_params.last_stamp     = hdr->stamp;
+    p->compositor_params.display_id     = 0;
+    p->compositor_params.payload_size   = hdr->payload_size;
 
     uint32_t to_copy = hdr->payload_size;
     if (to_copy > LAGFX_COMPOSITOR_PARAMS_CAPTURE_MAX) {
         to_copy = LAGFX_COMPOSITOR_PARAMS_CAPTURE_MAX;
     }
-    g_compositor_params.captured_len = to_copy;
+    p->compositor_params.captured_len = to_copy;
     if (to_copy > 0 && hdr->payload != NULL) {
-        memcpy(g_compositor_params.bytes, hdr->payload, to_copy);
+        memcpy(p->compositor_params.bytes, hdr->payload, to_copy);
     }
     if (hdr->payload && hdr->payload_size >= 4) {
-        g_compositor_params.display_id = lagfx_le32(hdr->payload + 0);
+        p->compositor_params.display_id = lagfx_le32(hdr->payload + 0);
     }
+
+    /* Mirror to file-scope static for the legacy zero-arg accessor. */
+    g_compositor_params = p->compositor_params;
 
     LAGFX_LOG("CmdDisplayCompositorParameters: displayID=%u payload_size=%u "
               "stamp=0x%08x (M6 log-only; §14.10 cosmetic)",
-              g_compositor_params.display_id,
+              p->compositor_params.display_id,
               (unsigned)hdr->payload_size,
               hdr->stamp);
     return LAGFX_HANDLER_OK;
@@ -925,43 +939,45 @@ lagfx_handler_status_t lagfx_op_display_compositor_params(
 
 lagfx_handler_status_t lagfx_op_display_set_icc_profile(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    (void)p;
-    if (!hdr) {
+    if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
 
-    g_icc_profile.valid          = true;
-    g_icc_profile.dispatch_count += 1;
-    g_icc_profile.last_stamp     = hdr->stamp;
-    g_icc_profile.display_id     = 0;
-    g_icc_profile.profile_va     = 0;
-    g_icc_profile.profile_size   = 0;
-    g_icc_profile.payload_size   = hdr->payload_size;
+    p->icc_profile.valid          = true;
+    p->icc_profile.dispatch_count += 1;
+    p->icc_profile.last_stamp     = hdr->stamp;
+    p->icc_profile.display_id     = 0;
+    p->icc_profile.profile_va     = 0;
+    p->icc_profile.profile_size   = 0;
+    p->icc_profile.payload_size   = hdr->payload_size;
 
     uint32_t to_copy = hdr->payload_size;
     if (to_copy > LAGFX_ICC_PROFILE_CAPTURE_MAX) {
         to_copy = LAGFX_ICC_PROFILE_CAPTURE_MAX;
     }
-    g_icc_profile.captured_len = to_copy;
+    p->icc_profile.captured_len = to_copy;
     if (to_copy > 0 && hdr->payload != NULL) {
-        memcpy(g_icc_profile.bytes, hdr->payload, to_copy);
+        memcpy(p->icc_profile.bytes, hdr->payload, to_copy);
     }
     if (hdr->payload && hdr->payload_size >= 4) {
-        g_icc_profile.display_id = lagfx_le32(hdr->payload + 0);
+        p->icc_profile.display_id = lagfx_le32(hdr->payload + 0);
     }
     if (hdr->payload && hdr->payload_size >= 8) {
-        g_icc_profile.profile_size = lagfx_le32(hdr->payload + 4);
+        p->icc_profile.profile_size = lagfx_le32(hdr->payload + 4);
     }
     if (hdr->payload && hdr->payload_size >= 16) {
-        g_icc_profile.profile_va = lagfx_le64(hdr->payload + 8);
+        p->icc_profile.profile_va = lagfx_le64(hdr->payload + 8);
     }
+
+    /* Mirror to file-scope static for the legacy zero-arg accessor. */
+    g_icc_profile = p->icc_profile;
 
     LAGFX_LOG("CmdDisplaySetGuestICCProfile: displayID=%u profile_size=%u "
               "profile_va=0x%llx payload_size=%u stamp=0x%08x "
               "(M6 log-only; §14.10 cosmetic)",
-              g_icc_profile.display_id,
-              g_icc_profile.profile_size,
-              (unsigned long long)g_icc_profile.profile_va,
+              p->icc_profile.display_id,
+              p->icc_profile.profile_size,
+              (unsigned long long)p->icc_profile.profile_va,
               (unsigned)hdr->payload_size,
               hdr->stamp);
     return LAGFX_HANDLER_OK;

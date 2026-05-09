@@ -852,12 +852,9 @@ static int render_op_set_vertex_buffers_with_stride(lagfx_protocol_t *p,
     return 0;
 }
 
-static lagfx_render_pass_desc_t g_last_render_pass_desc;
-
 static int render_op_describe_render_pass(lagfx_protocol_t *p,
                                           const uint8_t    *payload,
                                           size_t            len) {
-    (void)p;
     lagfx_render_pass_desc_t desc;
     memset(&desc, 0, sizeof(desc));
     int rc = lagfx_parse_render_pass_descriptor(payload, len, &desc);
@@ -866,7 +863,9 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                   rc, len);
         return rc;
     }
-    g_last_render_pass_desc = desc;
+    if (p) {
+        p->last_render_pass_desc = desc;
+    }
     LAGFX_WARN("render_op_describe_render_pass: depth=%u stencil=%u "
                "colors=%u rt=%llux%llu",
                desc.has_depth, desc.has_stencil,
@@ -877,8 +876,8 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
 }
 
 const lagfx_render_pass_desc_t *
-lagfx_render_pass_desc_get(void) {
-    return &g_last_render_pass_desc;
+lagfx_render_pass_desc_get(const lagfx_protocol_t *p) {
+    return p ? &p->last_render_pass_desc : NULL;
 }
 
 /* --- Draw instanced/base/patch/indirect variants --------------- */

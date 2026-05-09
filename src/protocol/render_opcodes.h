@@ -209,8 +209,12 @@ const char *lagfx_render_op_name(uint32_t opcode);
 bool lagfx_render_op_is_stub(uint32_t opcode);
 
 /* Return a pointer to the most recently parsed RenderDescribeRenderPass
- * (opcode 0x1a) descriptor. Valid until the next 0x1a is dispatched.
- * Single-threaded (BQL-gated) — the pointer is to a static buffer. */
-const lagfx_render_pass_desc_t *lagfx_render_pass_desc_get(void);
+ * (opcode 0x1a) descriptor for the given protocol instance. Valid
+ * until the next 0x1a is dispatched on this protocol. Returns NULL on
+ * a NULL protocol pointer. Per-protocol storage so concurrent
+ * multi-device renderers don't alias each other's pass state. */
+struct lagfx_protocol;
+const lagfx_render_pass_desc_t *lagfx_render_pass_desc_get(
+    const struct lagfx_protocol *p);
 
 #endif /* LIBAPPLEGFX_PROTOCOL_RENDER_OPCODES_H */

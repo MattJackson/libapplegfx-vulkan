@@ -128,6 +128,27 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->display_acks_received          = 0;
     p->display_submit_count           = 0;
     p->display_1e_logged              = false;
+
+    /* Per-protocol diagnostic counters previously held in function-local
+     * statics — now reset properly across reconnects. */
+    memset(p->log_suppress, 0, sizeof(p->log_suppress));
+    memset(p->ch_drained,   0, sizeof(p->ch_drained));
+
+    /* Display-handler captures (canonical per-protocol copies). The
+     * legacy file-scope static mirror in ops_display.c is cleared via
+     * lagfx_ops_display_reset() when tests need a fresh slate. */
+    memset(&p->cursor_show,       0, sizeof(p->cursor_show));
+    memset(&p->cursor_glyph,      0, sizeof(p->cursor_glyph));
+    memset(&p->shared_state,      0, sizeof(p->shared_state));
+    memset(&p->compositor_params, 0, sizeof(p->compositor_params));
+    memset(&p->icc_profile,       0, sizeof(p->icc_profile));
+
+    /* IOSurface capture counters. */
+    memset(&p->cap_counters, 0, sizeof(p->cap_counters));
+
+    /* Queue / render-pass scratch state. */
+    p->cmd_define_fifo_called = false;
+    memset(&p->last_render_pass_desc, 0, sizeof(p->last_render_pass_desc));
 }
 
 /* === Completion path ========================================
@@ -295,11 +316,10 @@ static void lagfx_drain_display_child_rings(lagfx_protocol_t *p,
         }
 
         {
-            static unsigned log_suppress[LAGFX_MAX_DISPLAY_CHILD_RINGS];
             if (ri < LAGFX_MAX_DISPLAY_CHILD_RINGS) {
-                log_suppress[ri]++;
+                p->log_suppress[ri]++;
             }
-if (log_suppress[ri] <= 4) {
+            if (p->log_suppress[ri] <= 4) {
                 LAGFX_TRACE("child_ring[%u]: FIRST SEEN produced=%u "
                             "consumed=%u fault=%u pending=%u "
                             "ring_base=0x%llx ring_size=0x%llx "
@@ -865,9 +885,8 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                  * the first 16 u32 entries of page0 to understand the
                  * PFN-array layout when it fails. */
                 {
-                    static uint32_t ch_drained[32] = {0};
-                    if (ch < 32u && ch_drained[ch] == 0u) {
-                        ch_drained[ch] = 1u;
+                    if (ch < LAGFX_MAX_CHANNELS && p->ch_drained[ch] == 0u) {
+                        p->ch_drained[ch] = 1u;
                         uint32_t pfn_dump[16] = {0};
                         p->dev->desc.shell.read_memory(
                             p->dev->desc.shell.opaque,

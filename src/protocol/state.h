@@ -17,6 +17,9 @@
 
 #include "protocol.h"
 #include "opcodes.h"
+#include "ops_display.h"
+#include "ops_iosurface.h"
+#include "render_pass.h"
 #include "resource_registry.h"
 #include "../translate/render_encoder.h"
 
@@ -278,8 +281,8 @@ struct lagfx_protocol {
     uint32_t compute_sampler_first;
 
     /* Doorbell MMIO bounce buffer — per-protocol to avoid concurrent
- * MMIO corruption across devices. Size = 65 KiB (ring is 64 KiB). */
-uint8_t doorbell_bounce_buffer[65536u];
+     * MMIO corruption across devices. Size = 65 KiB (ring is 64 KiB). */
+    uint8_t doorbell_bounce_buffer[65536u];
 
     /* Stats / observability. */
     uint64_t total_cmds_seen;
@@ -315,6 +318,48 @@ uint8_t doorbell_bounce_buffer[65536u];
      * Index is channel (1..4 for compute vchans). Updated in the
      * per-channel doorbell handler in protocol.c. */
     uint32_t per_channel_highest_stamp[32];
+
+    /* Per-protocol diagnostic state — replaces function-local statics
+     * in protocol.c so lagfx_protocol_reset actually clears them and
+     * concurrent protocols don't alias log/diagnostic counters. */
+    unsigned log_suppress[LAGFX_MAX_DISPLAY_CHILD_RINGS]; /* child-ring trace gate */
+    uint32_t ch_drained[LAGFX_MAX_CHANNELS];              /* per-channel first-drain marker */
+
+    /* Display-handler captures (Phase 2.A/2.C). Canonical per-protocol
+     * storage — handlers in ops_display.c write here. The legacy
+     * file-scope static accessors in ops_display.c keep a parallel
+     * "last-touched" mirror for the existing zero-arg public accessors
+     * declared in ops_display.h until those are migrated to take a
+     * protocol pointer. lagfx_protocol_reset zeroes the per-protocol
+     * copies; lagfx_ops_display_reset zeroes the static mirror. */
+    lagfx_cursor_show_state_t       cursor_show;
+    lagfx_cursor_glyph_state_t      cursor_glyph;
+    lagfx_shared_state_t            shared_state;
+    lagfx_compositor_params_state_t compositor_params;
+    lagfx_icc_profile_state_t       icc_profile;
+
+    /* IOSurface opcode capture counters — see ops_iosurface.c. Same
+     * dual-store pattern as the display captures above. */
+    struct {
+        lagfx_iosurface_capture_t cap_delete;
+        lagfx_iosurface_capture_t cap_create;
+        lagfx_iosurface_capture_t cap_lookup;
+        lagfx_iosurface_capture_t cap_import;
+        lagfx_iosurface_capture_t cap_unmap;
+    } cap_counters;
+
+    /* Set by CmdDefineChildFIFO (and the display-vchan equivalent) to
+     * signal that WindowServer has begun display init. Read by
+     * ops_display.c / ops_display_vchan.c gating logic. The static
+     * file-scope `g_cmd_define_fifo_called` in ops_queue.c remains as a
+     * legacy mirror because ops_display_vchan.c calls
+     * lagfx_ops_queue_set_cmddefine_called() without a protocol arg. */
+    bool cmd_define_fifo_called;
+
+    /* Last parsed render-pass descriptor (CmdDescribeRenderPass). Read
+     * by ops_cmdbuf.c via lagfx_render_pass_desc_get(p). Per-protocol
+     * so multi-device renderers don't alias each other's pass state. */
+    lagfx_render_pass_desc_t last_render_pass_desc;
 
     /* Delayed ACK fields no longer used (simplified 2026-05-01).
      * Kept for ABI compatibility; will remove after verifying stability. */

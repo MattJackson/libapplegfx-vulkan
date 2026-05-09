@@ -102,6 +102,13 @@ struct lagfx_vk_state {
     bool             cursor_glyph_valid;
     uint32_t         cursor_glyph_w;
     uint32_t         cursor_glyph_h;
+
+    /* Per-device push-descriptor dispatch cache —
+     * vkCmdPushDescriptorSetKHR resolved via vkGetDeviceProcAddr.
+     * Lives on the vk state (not in a file-scope static) so multiple
+     * VkDevices can each carry their own pfn. Populated lazily by
+     * resolve_push_desc() in src/translate/render_encoder.c. */
+    PFN_vkCmdPushDescriptorSetKHR push_desc_pfn;
 #else
     /* Pad so sizeof(struct) > 0 on no-vulkan builds. */
     int _placeholder;

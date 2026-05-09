@@ -138,7 +138,7 @@ static void lagfx_render_encoder_try_begin(lagfx_protocol_t *p) {
                    (int)st);
         return;
     }
-    const lagfx_render_pass_desc_t *desc = lagfx_render_pass_desc_get();
+    const lagfx_render_pass_desc_t *desc = lagfx_render_pass_desc_get(p);
     if (!desc) {
         LAGFX_WARN("render_encoder_try_begin: no render pass descriptor");
         return;

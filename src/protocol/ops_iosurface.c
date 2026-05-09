@@ -100,27 +100,31 @@ void lagfx_ops_iosurface_reset(void) {
 
 lagfx_handler_status_t lagfx_op_iosurface_delete_backing2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    if (!hdr) return LAGFX_HANDLER_ERR_INTERNAL;
+    if (!p || !hdr) return LAGFX_HANDLER_ERR_INTERNAL;
 
-    g_cap_delete.surface_id = 0;
-    g_cap_delete.last_stamp = hdr->stamp;
-    g_cap_delete.dispatch_count++;
-    g_cap_delete.valid = true;
-    g_cap_delete.payload_size = hdr->payload_size;
+    p->cap_counters.cap_delete.surface_id = 0;
+    p->cap_counters.cap_delete.last_stamp = hdr->stamp;
+    p->cap_counters.cap_delete.dispatch_count++;
+    p->cap_counters.cap_delete.valid = true;
+    p->cap_counters.cap_delete.payload_size = hdr->payload_size;
     if (hdr->payload && hdr->payload_size > 0) {
         uint32_t to_copy = hdr->payload_size < LAGFX_IOSURFACE_CAPTURE_MAX_BYTES ?
                           hdr->payload_size : LAGFX_IOSURFACE_CAPTURE_MAX_BYTES;
-        g_cap_delete.captured_len = to_copy;
-        memcpy(g_cap_delete.bytes, hdr->payload, to_copy);
+        p->cap_counters.cap_delete.captured_len = to_copy;
+        memcpy(p->cap_counters.cap_delete.bytes, hdr->payload, to_copy);
     }
 
     if (!hdr->payload || hdr->payload_size < 4) {
         LAGFX_WARN("CmdDeleteIOSurfaceBacking2: payload too small");
+        /* Mirror to file-scope static for the legacy zero-arg accessor. */
+        g_cap_delete = p->cap_counters.cap_delete;
         return LAGFX_HANDLER_OK;
     }
 
     uint32_t surface_id = le32(hdr->payload);
-    g_cap_delete.surface_id = surface_id;
+    p->cap_counters.cap_delete.surface_id = surface_id;
+    /* Mirror to file-scope static for the legacy zero-arg accessor. */
+    g_cap_delete = p->cap_counters.cap_delete;
 
     LAGFX_LOG("CmdDeleteIOSurfaceBacking2: surface_id=0x%x", surface_id);
 
@@ -158,23 +162,23 @@ lagfx_handler_status_t lagfx_op_iosurface_delete_backing2(
 
 lagfx_handler_status_t lagfx_op_iosurface_create_backing2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    if (!hdr) return LAGFX_HANDLER_ERR_INTERNAL;
+    if (!p || !hdr) return LAGFX_HANDLER_ERR_INTERNAL;
 
-    g_cap_create.surface_id = 0;
-    g_cap_create.width = 0;
-    g_cap_create.height = 0;
-    g_cap_create.pixel_format = 0;
-    g_cap_create.bytes_per_row = 0;
-    g_cap_create.size = 0;
-    g_cap_create.last_stamp = hdr->stamp;
-    g_cap_create.dispatch_count++;
-    g_cap_create.valid = true;
-    g_cap_create.payload_size = hdr->payload_size;
+    p->cap_counters.cap_create.surface_id = 0;
+    p->cap_counters.cap_create.width = 0;
+    p->cap_counters.cap_create.height = 0;
+    p->cap_counters.cap_create.pixel_format = 0;
+    p->cap_counters.cap_create.bytes_per_row = 0;
+    p->cap_counters.cap_create.size = 0;
+    p->cap_counters.cap_create.last_stamp = hdr->stamp;
+    p->cap_counters.cap_create.dispatch_count++;
+    p->cap_counters.cap_create.valid = true;
+    p->cap_counters.cap_create.payload_size = hdr->payload_size;
     if (hdr->payload && hdr->payload_size > 0) {
         uint32_t to_copy = hdr->payload_size < LAGFX_IOSURFACE_CAPTURE_MAX_BYTES ?
                           hdr->payload_size : LAGFX_IOSURFACE_CAPTURE_MAX_BYTES;
-        g_cap_create.captured_len = to_copy;
-        memcpy(g_cap_create.bytes, hdr->payload, to_copy);
+        p->cap_counters.cap_create.captured_len = to_copy;
+        memcpy(p->cap_counters.cap_create.bytes, hdr->payload, to_copy);
     }
 
     uint32_t surface_id = 0;
@@ -183,7 +187,7 @@ lagfx_handler_status_t lagfx_op_iosurface_create_backing2(
      * Test sends short payloads (4 bytes) and expects surface_id. */
     if (hdr->payload && hdr->payload_size >= 4) {
         surface_id = le32(hdr->payload + 0);
-        g_cap_create.surface_id = surface_id;
+        p->cap_counters.cap_create.surface_id = surface_id;
     }
 
     /* If payload is at least 28 bytes, parse full dimensions.
@@ -201,11 +205,11 @@ lagfx_handler_status_t lagfx_op_iosurface_create_backing2(
         bytes_per_row = le32(hdr->payload + 16);
         size = le64(hdr->payload + 20);
 
-        g_cap_create.width = width;
-        g_cap_create.height = height;
-        g_cap_create.pixel_format = pixel_format;
-        g_cap_create.bytes_per_row = bytes_per_row;
-        g_cap_create.size = size;
+        p->cap_counters.cap_create.width = width;
+        p->cap_counters.cap_create.height = height;
+        p->cap_counters.cap_create.pixel_format = pixel_format;
+        p->cap_counters.cap_create.bytes_per_row = bytes_per_row;
+        p->cap_counters.cap_create.size = size;
     } else {
         LAGFX_WARN("CmdCreateIOSurfaceBacking2: payload too small (%u < 28), "
                    "using defaults for surface_id=0x%x",
@@ -216,7 +220,10 @@ lagfx_handler_status_t lagfx_op_iosurface_create_backing2(
                "bpr=%u size=%llu", surface_id, width, height, pixel_format,
                bytes_per_row, (unsigned long long)size);
 
-    if (!p || !p->dev || !p->dev->vk || !p->dev->vk->initialized) {
+    /* Mirror to file-scope static for the legacy zero-arg accessor. */
+    g_cap_create = p->cap_counters.cap_create;
+
+    if (!p->dev || !p->dev->vk || !p->dev->vk->initialized) {
         LAGFX_WARN("CmdCreateIOSurfaceBacking2: vk not initialized");
         return LAGFX_HANDLER_OK;
     }
@@ -256,39 +263,45 @@ lagfx_handler_status_t lagfx_op_iosurface_create_backing2(
 
 lagfx_handler_status_t lagfx_op_iosurface_lookup(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    if (!hdr) return LAGFX_HANDLER_ERR_INTERNAL;
+    if (!p || !hdr) return LAGFX_HANDLER_ERR_INTERNAL;
 
-    g_cap_lookup.surface_id = 0;
-    g_cap_lookup.last_stamp = hdr->stamp;
-    g_cap_lookup.dispatch_count++;
-    g_cap_lookup.valid = true;
-    g_cap_lookup.payload_size = hdr->payload_size;
+    p->cap_counters.cap_lookup.surface_id = 0;
+    p->cap_counters.cap_lookup.last_stamp = hdr->stamp;
+    p->cap_counters.cap_lookup.dispatch_count++;
+    p->cap_counters.cap_lookup.valid = true;
+    p->cap_counters.cap_lookup.payload_size = hdr->payload_size;
     if (hdr->payload && hdr->payload_size > 0) {
         uint32_t to_copy = hdr->payload_size < LAGFX_IOSURFACE_CAPTURE_MAX_BYTES ?
                           hdr->payload_size : LAGFX_IOSURFACE_CAPTURE_MAX_BYTES;
-        g_cap_lookup.captured_len = to_copy;
-        memcpy(g_cap_lookup.bytes, hdr->payload, to_copy);
+        p->cap_counters.cap_lookup.captured_len = to_copy;
+        memcpy(p->cap_counters.cap_lookup.bytes, hdr->payload, to_copy);
     }
 
     if (!hdr->payload || hdr->payload_size < 4) {
         LAGFX_WARN("CmdLookupIOSurface: payload too small");
+        /* Mirror to file-scope static for the legacy zero-arg accessor. */
+        g_cap_lookup = p->cap_counters.cap_lookup;
         return LAGFX_HANDLER_OK;
     }
 
     uint32_t surface_id = le32(hdr->payload);
-    g_cap_lookup.surface_id = surface_id;
+    p->cap_counters.cap_lookup.surface_id = surface_id;
 
     /* Capture optional fields if payload is large enough.
      * Test sends: surface_id@+0, flags@+4, size@+8 (u64) */
     if (hdr->payload_size >= 8) {
-        g_cap_lookup.flags = le32(hdr->payload + 4);
+        p->cap_counters.cap_lookup.flags = le32(hdr->payload + 4);
     }
     if (hdr->payload_size >= 16) {
-        g_cap_lookup.size = le64(hdr->payload + 8);
+        p->cap_counters.cap_lookup.size = le64(hdr->payload + 8);
     }
 
+    /* Mirror to file-scope static for the legacy zero-arg accessor. */
+    g_cap_lookup = p->cap_counters.cap_lookup;
+
     LAGFX_LOG("CmdLookupIOSurface: surface_id=0x%x flags=0x%x size=%llu",
-               surface_id, g_cap_lookup.flags, (unsigned long long)g_cap_lookup.size);
+               surface_id, p->cap_counters.cap_lookup.flags,
+               (unsigned long long)p->cap_counters.cap_lookup.size);
 
     uint32_t task_id = 0;
     lagfx_resource_entry_t *e = lagfx_resource_lookup(&p->resources,
@@ -297,10 +310,11 @@ lagfx_handler_status_t lagfx_op_iosurface_lookup(
     /* Guest may not send CmdCreateIOSurfaceBacking2 (0x27). Auto-create
      * VkImage on first lookup when size > 0 to enable rendering. */
     if (!e || !e->host_handle) {
-        if (g_cap_lookup.size > 0 && p->dev && p->dev->vk) {
+        if (p->cap_counters.cap_lookup.size > 0 && p->dev && p->dev->vk) {
             LAGFX_LOG("CmdLookupIOSurface: auto-creating surface 0x%x "
                        "size=%llu (guest did not send CmdCreateIOSurfaceBacking2)",
-                       surface_id, (unsigned long long)g_cap_lookup.size);
+                       surface_id,
+                       (unsigned long long)p->cap_counters.cap_lookup.size);
             
 #ifdef LAGFX_HAVE_VULKAN
             /* Estimate dimensions from size (assume BGRA8Unorm).
@@ -309,14 +323,14 @@ lagfx_handler_status_t lagfx_op_iosurface_lookup(
             uint64_t max_area = ((uint64_t)width * 4320u) / 4; /* 1920x4320 @ 4B/pixel */
             
             uint32_t height;
-            if (g_cap_lookup.size > max_area) {
+            if (p->cap_counters.cap_lookup.size > max_area) {
                 LAGFX_LOG("CmdLookupIOSurface: size %llu exceeds max %lu, using default "
                            "dimensions",
-                           (unsigned long long)g_cap_lookup.size, max_area);
+                           (unsigned long long)p->cap_counters.cap_lookup.size, max_area);
                 width = 1920;
                 height = 1080;
             } else {
-                height = (uint32_t)(g_cap_lookup.size / width / 4);
+                height = (uint32_t)(p->cap_counters.cap_lookup.size / width / 4);
                 if (height == 0 || height > 4320) {
                     width = 1920;
                     height = 1080;
@@ -330,7 +344,8 @@ lagfx_handler_status_t lagfx_op_iosurface_lookup(
                 /* Register auto-created surface */
                 lagfx_resource_register(&p->resources, surface_id,
                                          LAGFX_RESOURCE_TYPE_TEXTURE,
-                                         task_id, 0u, g_cap_lookup.size);
+                                         task_id, 0u,
+                                         p->cap_counters.cap_lookup.size);
                 e = lagfx_resource_lookup(&p->resources, surface_id, task_id);
                 if (e) {
                     e->host_handle = ios;
@@ -348,7 +363,8 @@ lagfx_handler_status_t lagfx_op_iosurface_lookup(
             /* Non-Vulkan build: just register placeholder */
             lagfx_resource_register(&p->resources, surface_id,
                                      LAGFX_RESOURCE_TYPE_TEXTURE,
-                                     task_id, 0u, g_cap_lookup.size);
+                                     task_id, 0u,
+                                     p->cap_counters.cap_lookup.size);
             e = lagfx_resource_lookup(&p->resources, surface_id, task_id);
             if (e) {
                 /* Placeholder handle - no VkImage in non-Vulkan mode */
@@ -356,7 +372,7 @@ lagfx_handler_status_t lagfx_op_iosurface_lookup(
                            surface_id);
             }
 #endif
-        } else if (g_cap_lookup.size == 0) {
+        } else if (p->cap_counters.cap_lookup.size == 0) {
             /* Size field is garbage when payload < 16 bytes. Don't auto-create. */
             LAGFX_WARN("CmdLookupIOSurface: surface 0x%x not found, size=0 "
                        "(possibly short payload), skipping auto-create",
@@ -367,37 +383,39 @@ lagfx_handler_status_t lagfx_op_iosurface_lookup(
         return LAGFX_HANDLER_OK;
     }
 
-(void)e; /* unused — placeholder for future resource registry integration */
+    (void)e; /* unused — placeholder for future resource registry integration */
 #ifdef LAGFX_HAVE_VULKAN
     LAGFX_LOG("CmdLookupIOSurface: found surface 0x%x", surface_id);
 #else
     LAGFX_LOG("CmdLookupIOSurface: found surface");
 #endif
 
-return LAGFX_HANDLER_OK;
+    return LAGFX_HANDLER_OK;
 }
 
 /* === CmdImportIOSurfaceMachPort (0x29) ======================= */
 
 lagfx_handler_status_t lagfx_op_iosurface_import_mach_port(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    if (!hdr) return LAGFX_HANDLER_ERR_INTERNAL;
+    if (!p || !hdr) return LAGFX_HANDLER_ERR_INTERNAL;
 
-    g_cap_import.surface_id = 0;
-    g_cap_import.last_stamp = hdr->stamp;
-    g_cap_import.dispatch_count++;
-    g_cap_import.valid = true;
-    g_cap_import.payload_size = hdr->payload_size;
+    p->cap_counters.cap_import.surface_id = 0;
+    p->cap_counters.cap_import.last_stamp = hdr->stamp;
+    p->cap_counters.cap_import.dispatch_count++;
+    p->cap_counters.cap_import.valid = true;
+    p->cap_counters.cap_import.payload_size = hdr->payload_size;
     if (hdr->payload && hdr->payload_size > 0) {
         uint32_t to_copy = hdr->payload_size < LAGFX_IOSURFACE_CAPTURE_MAX_BYTES ?
                           hdr->payload_size : LAGFX_IOSURFACE_CAPTURE_MAX_BYTES;
-        g_cap_import.captured_len = to_copy;
-        memcpy(g_cap_import.bytes, hdr->payload, to_copy);
+        p->cap_counters.cap_import.captured_len = to_copy;
+        memcpy(p->cap_counters.cap_import.bytes, hdr->payload, to_copy);
     }
 
     if (!hdr->payload || hdr->payload_size < 16) {
         LAGFX_WARN("CmdImportIOSurfaceMachPort: payload too small (%u < 16)",
                     (unsigned)hdr->payload_size);
+        /* Mirror to file-scope static for the legacy zero-arg accessor. */
+        g_cap_import = p->cap_counters.cap_import;
         return LAGFX_HANDLER_OK;
     }
 
@@ -406,7 +424,9 @@ lagfx_handler_status_t lagfx_op_iosurface_import_mach_port(
     uint32_t remote_surface_id = le32(hdr->payload + 8);
     uint32_t local_surface_id = le32(hdr->payload + 12);
 
-    g_cap_import.surface_id = local_surface_id;
+    p->cap_counters.cap_import.surface_id = local_surface_id;
+    /* Mirror to file-scope static for the legacy zero-arg accessor. */
+    g_cap_import = p->cap_counters.cap_import;
 
     LAGFX_LOG("CmdImportIOSurfaceMachPort: local_task=%u remote_task=%u "
                "remote_surface=0x%x local_surface=0x%x",
@@ -444,30 +464,34 @@ lagfx_handler_status_t lagfx_op_iosurface_import_mach_port(
 
 lagfx_handler_status_t lagfx_op_iosurface_unmap(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    if (!hdr) return LAGFX_HANDLER_ERR_INTERNAL;
+    if (!p || !hdr) return LAGFX_HANDLER_ERR_INTERNAL;
 
-    g_cap_unmap.surface_id = 0;
-    g_cap_unmap.last_stamp = hdr->stamp;
-    g_cap_unmap.dispatch_count++;
-    g_cap_unmap.valid = true;
-    g_cap_unmap.payload_size = hdr->payload_size;
+    p->cap_counters.cap_unmap.surface_id = 0;
+    p->cap_counters.cap_unmap.last_stamp = hdr->stamp;
+    p->cap_counters.cap_unmap.dispatch_count++;
+    p->cap_counters.cap_unmap.valid = true;
+    p->cap_counters.cap_unmap.payload_size = hdr->payload_size;
     if (hdr->payload && hdr->payload_size > 0) {
         uint32_t to_copy = hdr->payload_size < LAGFX_IOSURFACE_CAPTURE_MAX_BYTES ?
                           hdr->payload_size : LAGFX_IOSURFACE_CAPTURE_MAX_BYTES;
-        g_cap_unmap.captured_len = to_copy;
-        memcpy(g_cap_unmap.bytes, hdr->payload, to_copy);
+        p->cap_counters.cap_unmap.captured_len = to_copy;
+        memcpy(p->cap_counters.cap_unmap.bytes, hdr->payload, to_copy);
     }
 
     if (!hdr->payload || hdr->payload_size < 8) {
         LAGFX_WARN("CmdUnmapIOSurface: payload too small (%u < 8)",
                     (unsigned)hdr->payload_size);
+        /* Mirror to file-scope static for the legacy zero-arg accessor. */
+        g_cap_unmap = p->cap_counters.cap_unmap;
         return LAGFX_HANDLER_OK;
     }
 
     uint32_t task_id = le32(hdr->payload + 0);
     uint32_t surface_id = le32(hdr->payload + 4);
 
-    g_cap_unmap.surface_id = surface_id;
+    p->cap_counters.cap_unmap.surface_id = surface_id;
+    /* Mirror to file-scope static for the legacy zero-arg accessor. */
+    g_cap_unmap = p->cap_counters.cap_unmap;
 
     LAGFX_LOG("CmdUnmapIOSurface: task=%u surface_id=0x%x", task_id, surface_id);
 

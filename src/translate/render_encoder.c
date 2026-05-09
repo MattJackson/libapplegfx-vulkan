@@ -51,15 +51,10 @@
  * vkCmdPushDescriptorSetKHR is an instance-level function pointer
  * that must be resolved via vkGetDeviceProcAddr because it comes
  * from VK_KHR_push_descriptor (promoted to core in Vulkan 1.4, but
- * still gated on a valid load). Cached per-device via a small
- * static-single-value cache — the library only owns one VkDevice
- * at a time in Phase 3 so the single-entry cache is sufficient.
- * See FIXME(phase-3-encoder-multi-device) if we ever grow a
- * multi-device case. */
-static struct {
-    VkDevice                         cached_for;
-    PFN_vkCmdPushDescriptorSetKHR    pfn;
-} g_push_desc_cache;
+ * still gated on a valid load). Cache lives on lagfx_vk_state
+ * (vk->push_desc_pfn) so each VkDevice carries its own pfn — fixes
+ * the single-VkDevice limitation that the previous file-scope static
+ * imposed. */
 
 /* Phase 3.A scaffold doesn't yet plumb the VkDevice down here (the
  * encoder state carries the command buffer, not the device). Phase
@@ -69,22 +64,20 @@ static struct {
  * and log their way forward. The attribute silences -Wunused on
  * aggressive toolchains (Alpine gcc 14 with Wextra). */
 static PFN_vkCmdPushDescriptorSetKHR
-resolve_push_desc(VkDevice device) __attribute__((unused));
+resolve_push_desc(struct lagfx_vk_state *vk) __attribute__((unused));
 
 static PFN_vkCmdPushDescriptorSetKHR
-resolve_push_desc(VkDevice device) {
-    if (device == VK_NULL_HANDLE) {
+resolve_push_desc(struct lagfx_vk_state *vk) {
+    if (!vk || vk->device == VK_NULL_HANDLE) {
         return NULL;
     }
-    if (g_push_desc_cache.cached_for == device
-        && g_push_desc_cache.pfn != NULL) {
-        return g_push_desc_cache.pfn;
+    if (vk->push_desc_pfn != NULL) {
+        return vk->push_desc_pfn;
     }
-    g_push_desc_cache.cached_for = device;
-    g_push_desc_cache.pfn =
+    vk->push_desc_pfn =
         (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(
-            device, "vkCmdPushDescriptorSetKHR");
-    return g_push_desc_cache.pfn;
+            vk->device, "vkCmdPushDescriptorSetKHR");
+    return vk->push_desc_pfn;
 }
 
 /* --- Argument-validation helper ------------------------------ */
@@ -281,13 +274,13 @@ lagfx_status_t lagfx_translate_render_bind_texture(
         return LAGFX_OK;
     }
 
-    /* We don't carry the VkDevice on the state explicitly; resolving
-     * the push-descriptor entry point requires vkGetDeviceProcAddr
-     * against the device that owns state->layout, which Phase 3.E
-     * plumbs on the pipeline-layout wrapper. For Phase 3.A we rely
-     * on a cache populated by an earlier resolve_push_desc() call
-     * and degrade to "record-only" when the cache is empty. */
-    PFN_vkCmdPushDescriptorSetKHR pfn = g_push_desc_cache.pfn;
+    /* The render state carries a back-pointer to the lagfx_vk_state
+     * that owns the VkDevice + layout. Use it to resolve / read the
+     * cached vkCmdPushDescriptorSetKHR entry point. Degrade to
+     * "record-only" if the resolver returns NULL (extension missing
+     * or device not yet ready). */
+    PFN_vkCmdPushDescriptorSetKHR pfn =
+        state->vk ? state->vk->push_desc_pfn : NULL;
     if (pfn == NULL) {
         LAGFX_WARN("translate_render_bind_texture: "
                    "vkCmdPushDescriptorSetKHR not resolved yet "
