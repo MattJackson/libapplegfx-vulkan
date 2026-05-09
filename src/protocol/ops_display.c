@@ -610,7 +610,7 @@ bool lagfx_display_tick_vblank(
 
         /* Read enable flag at ss[+0x104]. Guest writes 0xC when enable() completes. */
         uint32_t enabled_mask = 0u;
-        if (!write_memory(shell_opaque, ss_gpa + 0x104u, sizeof(enabled_mask), &enabled_mask)) {
+        if (!read_memory(shell_opaque, ss_gpa + 0x104u, sizeof(enabled_mask), &enabled_mask)) {
             continue;
         }
 
