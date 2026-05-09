@@ -1107,7 +1107,9 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
 
                     if (rc != LAGFX_HANDLER_OK || force_try_render) {
                         /* Fallback: treat as render for encType=0/1 (some macOS paths use compute path for render ops). */
+                        LAGFX_WARN("        [DEBUG] About to try render decoder opcode=0x%04x", inner_opcode);
                         int rc2 = lagfx_render_decoder_dispatch(p, inner_opcode, cmdbuf + ioff + 8u, ipl_len);
+                        LAGFX_WARN("        [DEBUG] Render decoder returned rc=%d", rc2);
 
                         if (rc2 != LAGFX_HANDLER_OK) {
                             LAGFX_WARN("        %s: encoder_type=%u compute rc=%d fallback rc=%d%s — skipping",
