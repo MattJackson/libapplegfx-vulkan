@@ -367,14 +367,14 @@ lagfx_handler_status_t lagfx_op_iosurface_lookup(
         return LAGFX_HANDLER_OK;
     }
 
-    lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)e->host_handle;
+(void)e; /* unused — placeholder for future resource registry integration */
 #ifdef LAGFX_HAVE_VULKAN
     LAGFX_LOG("CmdLookupIOSurface: found surface 0x%x", surface_id);
 #else
     LAGFX_LOG("CmdLookupIOSurface: found surface");
 #endif
 
-    return LAGFX_HANDLER_OK;
+return LAGFX_HANDLER_OK;
 }
 
 /* === CmdImportIOSurfaceMachPort (0x29) ======================= */
