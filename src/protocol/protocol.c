@@ -64,7 +64,8 @@
  * as a practical cap that covers all legitimate macOS commands while
  * preventing DoS via repeated large allocations. */
 #define LAGFX_DOORBELL_BOUNCE_BUFFER_SIZE 32768u
-static uint8_t doorbell_bounce_buffer[LAGFX_DOORBELL_BOUNCE_BUFFER_SIZE];
+/* Per-instance bounce buffer moved to lagfx_protocol_t in state.h:65536u
+ * to avoid concurrent MMIO corruption across devices/threads. */
 
 /* === Lifecycle ============================================== */
 
@@ -990,17 +991,12 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
                     /* Read the full cmd into a bounce buffer instead of malloc.
                      * Guest-controlled cmd_len is capped at 32 KiB to prevent DoS. */
-                    if (cmd_len > sizeof(doorbell_bounce_buffer)) {
+                    if (cmd_len > sizeof(p->doorbell_bounce_buffer)) {
                         LAGFX_ERR("doorbell ch=%u: cmd_len %u exceeds bounce buffer",
                                   ch, cmd_len);
                         break;
                     }
-                    uint8_t *cmd = doorbell_bounce_buffer;
-                    if (!cmd) {
-                        LAGFX_WARN("doorbell ch=%u: malloc(%u) failed",
-                                   ch, cmd_len);
-                        break;
-                    }
+                    uint8_t *cmd = p->doorbell_bounce_buffer;
                     {
                         bool ok = true;
                         uint32_t off = cur_rp;
@@ -1193,12 +1189,12 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     uint32_t payload_len = cmd_len - 12u;
                     uint8_t *payload_buf = NULL;
                     if (payload_len > 0u) {
-                        if (cmd_len > sizeof(doorbell_bounce_buffer)) {
+                        if (cmd_len > sizeof(p->doorbell_bounce_buffer)) {
                             LAGFX_ERR("doorbell ch=%u: cmd_len %u exceeds bounce buffer",
                                       ch, cmd_len);
                             break;
                         }
-                        payload_buf = doorbell_bounce_buffer;
+                        payload_buf = p->doorbell_bounce_buffer;
                         bool ok = true;
                         uint32_t off = cur_rp + 12u;
                         size_t got = 0;
@@ -1352,7 +1348,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         last_stamp = stamp;
                     }
 
-                    free(payload_buf);
+                    /* payload_buf points to per-instance p->doorbell_bounce_buffer, never malloc'd. */
                     cur_rp += cmd_len;
                     cmd_idx += 1;
                 }

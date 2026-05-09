@@ -277,6 +277,10 @@ struct lagfx_protocol {
     uint32_t compute_sampler_count;
     uint32_t compute_sampler_first;
 
+    /* Doorbell MMIO bounce buffer — per-protocol to avoid concurrent
+ * MMIO corruption across devices. Size = 65 KiB (ring is 64 KiB). */
+uint8_t doorbell_bounce_buffer[65536u];
+
     /* Stats / observability. */
     uint64_t total_cmds_seen;
     uint64_t total_cmds_completed;

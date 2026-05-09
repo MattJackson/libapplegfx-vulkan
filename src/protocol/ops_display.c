@@ -841,28 +841,6 @@ lagfx_handler_status_t lagfx_op_display_set_shared_page(
     g_shared_state.page_va     = page_va;
     g_shared_state.vblank_counter = 0u;
 
-    /* Invoke QEMU cursor_glyph callback so the cursor image updates. */
-    if (g_cursor_glyph.captured_len > 0 && p->dev) {
-        for (int i = 0; i < LAGFX_MAX_DISPLAYS; i++) {
-            if (p->dev->displays[i]) {
-                lagfx_display_t *disp = p->dev->displays[i];
-                if (disp->desc.callbacks.cursor_glyph) {
-                    lagfx_coord_t hotspot = {
-                        .x = (uint16_t)g_cursor_glyph.hot_x,
-                        .y = (uint16_t)g_cursor_glyph.hot_y
-                    };
-                    disp->desc.callbacks.cursor_glyph(
-                        disp->desc.callbacks.opaque,
-                        g_cursor_glyph.bytes,
-                        g_cursor_glyph.width,
-                        g_cursor_glyph.height,
-                        hotspot);
-                }
-                break;
-            }
-        }
-    }
-
     /* Best-effort zero the first 64 bytes of the mailbox page. */
     if (p->dev != NULL && p->dev->desc.shell.write_memory != NULL) {
         static const uint8_t zeros[64] = {0};
