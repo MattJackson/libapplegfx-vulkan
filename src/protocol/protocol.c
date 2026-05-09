@@ -905,7 +905,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 uint32_t last_stamp = 0u;
                 uint32_t cur_rp = read_ptr;
                 unsigned cmd_idx = 0;
-                LAGFX_LOG("doorbell ch=%u drain start: read_ptr=%u write_ptr=%u",
+                LAGFX_WARN("doorbell ch=%u drain start: read_ptr=%u write_ptr=%u",
                           ch, read_ptr, write_ptr);
                 while (cur_rp + 12u <= write_ptr) {
                     uint8_t hdr_bytes[12];
@@ -1047,7 +1047,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         rc = lagfx_protocol_dispatch_one_no_stamp(
                             p, cmd, cmd_len, &parsed);
                     }
-                    LAGFX_LOG("doorbell ch=%u cmd[%u]: opcode=0x%04x "
+                    LAGFX_WARN("doorbell ch=%u cmd[%u]: opcode=0x%04x "
                               "stamp=0x%08x len=%u rc=%d "
                               "extra_stamp_advance=%u "
                               "hdr_bytes=%02x %02x %02x %02x %02x %02x "
@@ -1059,9 +1059,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                               cmd[4], cmd[5], cmd[6], cmd[7],
                               cmd[8], cmd[9], cmd[10], cmd[11]);
 
-                    uint32_t effective = parsed.stamp
-                                         + p->extra_stamp_advance;
-                    LAGFX_LOG("doorbell ch=%u cmd[%u]: effective=0x%08x last_stamp=0x%08x",
+                  uint32_t effective = parsed.stamp
+                                          + p->extra_stamp_advance;
+                    LAGFX_WARN("doorbell ch=%u cmd[%u]: effective=0x%08x last_stamp=0x%08x",
                               ch, cmd_idx, effective, last_stamp);
                     if (effective > last_stamp) {
                         last_stamp = effective;
@@ -1072,7 +1072,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     cmd_idx += 1;
                 }
 
-                LAGFX_LOG("doorbell ch=%u drain done: %u cmd(s), final last_stamp=0x%08x",
+                LAGFX_WARN("doorbell ch=%u drain done: %u cmd(s), final last_stamp=0x%08x",
                           ch, cmd_idx, last_stamp);
 
                 uint32_t new_rp = cur_rp;
@@ -1217,7 +1217,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     parsed.payload_size = (uint16_t)payload_len;
                     parsed.payload      = payload_buf;
 
-                    LAGFX_LOG("doorbell ch=%u vchan cmd[%u]: "
+                    LAGFX_WARN("doorbell ch=%u vchan cmd[%u]: "
                               "opcode=0x%02x stamp=0x%08x len=%u",
                               ch, cmd_idx, opcode, stamp, cmd_len);
 
