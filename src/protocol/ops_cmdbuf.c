@@ -613,24 +613,63 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                           soff, task_id);
             }
 
-           if (segment_size == 0u
-                  || segment_size > (uint32_t)((size_t)length - soff - segment_start_offset)) {
-                LAGFX_WARN("    segment[%u]: bad size — bailing out", segment_idx);
-                break;
+          if (segment_size == 0u
+                   || segment_size > (uint32_t)((size_t)length - soff - segment_start_offset)) {
+                 LAGFX_WARN("    segment[%u]: bad size — bailing out", segment_idx);
+                 break;
+             }
+
+            /* Handle encoderType == 5: setProtectionOptions PREAMBLE.
+             * When [+0x04] == 5, the framework reads an extra uint64_t protectionOptions,
+             * then re-reads a fresh 8-byte segment header from that position and uses it. */
+            bool render_begin_pending;
+            size_t ioff;
+
+            if (encoder_type == 5u) {
+                 /* Read protectionOptions uint64_t from bytes +8..+15. */
+                 uint64_t protection_options =
+                     (uint64_t)lagfx_le32(cmdbuf + soff + segment_start_offset + 8) |
+                     ((uint64_t)lagfx_le32(cmdbuf + soff + segment_start_offset + 12) << 32);
+
+                 /* Re-read segment header from bytes +8 onward. */
+                 uint32_t new_segment_size = lagfx_le32(cmdbuf + soff + segment_start_offset + 8);
+                 encoder_type = cmdbuf[soff + segment_start_offset + 12]; /* [+0x04] of new header */
+
+                 LAGFX_WARN("    segment[%u]: encType=5 preamble — protectionOptions=0x%llx, "
+                            "new_header_size=%u new_encType=0x%02x (advancing by 8B)",
+                            segment_idx, (unsigned long long)protection_options,
+                            new_segment_size, encoder_type);
+
+                 /* Update segment boundaries to use the re-read header. */
+                 if (new_segment_size == 0u || new_segment_size > (uint32_t)((size_t)length - soff - segment_start_offset - 8)) {
+                     LAGFX_WARN("    segment[%u]: preamble new size invalid — bailing", segment_idx);
+                     break;
+                 }
+
+                /* Inner stream now starts at +16 from original offset (8B preamble + 8B new header). */
+                   render_begin_pending =
+                      ((encoder_type == 4u || encoder_type == 2u || encoder_type == 0u)
+                       && !p->render_enc.in_pass);
+
+                /* Inner command stream starts at offset +16 from segment_start (after 8B preamble + 8B new header). */
+                   ioff = soff + segment_start_offset + 16u;
+
+                 LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu encType=%u (post-preamble)",
+                           segment_idx, ioff, encoder_type);
+             } else {
+                /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
+                  * Inner stream starts at offset +8 from segment_start (after 8B header). */
+                 render_begin_pending =
+                    ((encoder_type == 4u || encoder_type == 2u || encoder_type == 0u)
+                     && !p->render_enc.in_pass);
+
+               /* Inner command stream starts at offset +8 from segment_start (after full 8B header).
+              * Header layout: size(4 @ +0), encType(1 @ +4), reuseFlag(1 @ +5), keepFlag(1 @ +6), pad(1 @ +7). */
+               ioff = soff + segment_start_offset + 8u;
+
+             LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu encType=%u",
+                       segment_idx, ioff, encoder_type);
             }
-
-          /* Walk inner cmds: 8-byte PGCmdHeader { u32 opcode; u32 totalLength }
-                 * Inner stream starts at offset +8 from segment_start (after 8B header). */
-               bool render_begin_pending =
-                  ((encoder_type == 4u || encoder_type == 2u || encoder_type == 0u)
-                   && !p->render_enc.in_pass);
-
-              /* Inner command stream starts at offset +8 from segment_start (after full 8B header).
-             * Header layout: size(4 @ +0), encType(1 @ +4), finalFlag(1 @ +5), reuseFlag(1 @ +6), pad(1 @ +7). */
-              size_t ioff = soff + segment_start_offset + 8u;
-
-            LAGFX_WARN("    segment[%u]: inner_stream_start=ioff=%zu encType=%u",
-                      segment_idx, ioff, encoder_type);
             size_t iend = soff + segment_size;
             unsigned inner_idx = 0;
            while (ioff + 8u <= iend) {
