@@ -1046,30 +1046,24 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                       * scaffolded — observation-only for now.
                       * 
                       * Fallback: some guests send render opcodes with encType=0,
-                      * so try render decoder if compute says unknown.
+                      * so try render decoder after compute to catch misclassified ops.
                       */
                     {
                         const uint8_t *cpl = cmdbuf + ioff + 8u;
                         int rc = lagfx_compute_decoder_dispatch(p, inner_opcode,
                                                                  cpl, ipl_len);
-                        /* If compute says unknown (rc != 0), try render decoder as fallback */
-                        if (rc != 0) {
-                            const uint8_t *ipl = cmdbuf + ioff + 8u;
-                            int rc2 = lagfx_render_decoder_dispatch(p, inner_opcode,
-                                                                    ipl, ipl_len);
-                            if (rc2 == 0) {
-                                LAGFX_TRACE("      inner[%u]: tried render fallback "
-                                          "for op=0x%04x (compute failed)",
-                                          inner_idx, inner_opcode);
-                            } else {
-                                LAGFX_TRACE("      inner[%u]: compute+render dispatch "
-                                          "both failed for op=0x%04x",
-                                          inner_idx, inner_opcode);
-                            }
+                        /* Always try render decoder as fallback since compute always returns 0.
+                         * This catches cases where guests send render opcodes with encType=0 */
+                        const uint8_t *ipl = cmdbuf + ioff + 8u;
+                        int rc2 = lagfx_render_decoder_dispatch(p, inner_opcode,
+                                                                ipl, ipl_len);
+                        if (rc2 == 0) {
+                            LAGFX_TRACE("      inner[%u]: tried render fallback "
+                                      "(compute returned %d)",
+                                      inner_idx, rc);
                         } else {
-                            LAGFX_TRACE("      inner[%u]: compute dispatch "
-                                      "op=0x%04x returned %d (continuing)",
-                                      inner_idx, inner_opcode, rc);
+                            LAGFX_TRACE("      inner[%u]: compute+render dispatch both failed",
+                                      inner_idx);
                         }
                     }
                 }
