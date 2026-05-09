@@ -200,15 +200,16 @@ lagfx_display_t *lagfx_display_new(lagfx_device_t *device,
               desc->name ? desc->name : "(null)",
               (int)disp->rt_ready, disp->rt_width, disp->rt_height);
 
-    /* rt_* fields are accessed in logs; ensure mutex is held. */
+    /* rt_* fields accessed under lock for thread safety. */
+    uint32_t w, h;
+    bool ready;
     LAGFX_DISPLAY_RT_LOCK(disp);
-    uint32_t w = disp->rt_width;
-    uint32_t h = disp->rt_height;
-    bool ready = disp->rt_ready;
+    w = disp->rt_width;
+    h = disp->rt_height;
+    ready = disp->rt_ready;
     LAGFX_DISPLAY_RT_UNLOCK(disp);
 
     return disp;
-}
 }
 
 void lagfx_display_free(lagfx_display_t *display) {

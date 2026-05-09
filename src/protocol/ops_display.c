@@ -71,17 +71,6 @@ static inline uint64_t lagfx_le64(const uint8_t *b) {
          | ((uint64_t)b[7] << 56);
 }
 
-static inline uint16_t lagfx_le16(const uint8_t *b) {
-    return (uint16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8));
-}
-
-static inline float lagfx_lef32(const uint8_t *b) {
-    uint32_t u = lagfx_le32(b);
-    float f;
-    memcpy(&f, &u, sizeof(f));
-    return f;
-}
-
 static inline void lagfx_put_le32(uint8_t *b, uint32_t v) {
     b[0] = (uint8_t)(v & 0xffu);
     b[1] = (uint8_t)((v >> 8) & 0xffu);
@@ -835,7 +824,7 @@ lagfx_handler_status_t lagfx_op_display_set_shared_page(
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
-    uint64_t page_va = read_le64(hdr->payload);
+    uint64_t page_va = lagfx_le64(hdr->payload);
 
     g_shared_state.installed   = true;
     g_shared_state.page_va     = page_va;
