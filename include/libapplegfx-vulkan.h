@@ -341,7 +341,8 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
 bool lagfx_display_tick_vblank(
     lagfx_device_t *dev,
     void *shell_opaque,
-    bool (*write_memory)(void *, uint64_t, uint64_t, const void *));
+    bool (*write_memory)(void *, uint64_t, uint64_t, const void *),
+    bool (*read_memory)(void *, uint64_t, uint64_t, void *));
 
 /* === Shader catalog (Phase 3.C scaffold) ======================
  *

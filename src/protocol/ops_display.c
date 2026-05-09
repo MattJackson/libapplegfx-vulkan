@@ -543,7 +543,7 @@ void lagfx_ops_display_reset(void) {
     memset(&g_icc_profile,       0, sizeof(g_icc_profile));
 }
 
-bool lagfx_ops_display_tick_vblank(
+static bool tick_vblank_counter_only(
     void *shell_opaque,
     bool (*write_memory)(void *, uint64_t, uint64_t, const void *)) {
     if (!g_shared_state.installed) {
@@ -827,40 +827,13 @@ lagfx_handler_status_t lagfx_op_display_cursor_glyph(
  *      counter after attach — prevents the spin-or-degrade failure
  *      mode called out in §14.6.
  *
- * Subsequent ticks are driven by lagfx_ops_display_tick_vblank —
- * called from the QEMU display timer at 60 Hz in the shell wire-up.
- * ---------------------------------------------------------------- */
+* Subsequent ticks are driven by tick_vblank_counter_only — the counter bump only. */
 
-#define LAGFX_SHARED_STATE_PAYLOAD_BYTES 8u
-
-lagfx_handler_status_t lagfx_op_display_set_shared_page(
-    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    if (!p || !hdr) {
-        return LAGFX_HANDLER_ERR_INTERNAL;
-    }
-    if (!hdr->payload ||
-        hdr->payload_size < LAGFX_SHARED_STATE_PAYLOAD_BYTES) {
-        LAGFX_WARN("CmdDisplaySetSharedStatePage: payload missing or too "
-                   "small (size=%u, need %u)",
-                   (unsigned)hdr->payload_size,
-                   LAGFX_SHARED_STATE_PAYLOAD_BYTES);
-        return LAGFX_HANDLER_ERR_SIZE;
-    }
-
-    uint64_t page_va = lagfx_le64(hdr->payload + 0);
-
-    g_shared_state.installed      = true;
-    g_shared_state.page_va        = page_va;
-    g_shared_state.vblank_counter = 0u;
-
-    if (p->dev != NULL && p->dev->desc.shell.write_memory != NULL
-         && p->dev->desc.shell.read_memory != NULL) {
+    if (p->dev != NULL && p->dev->desc.shell.write_memory != NULL) {
         static const uint8_t zeros[64] = {0};
         (void)p->dev->desc.shell.write_memory(
             p->dev->desc.shell.opaque, page_va, sizeof(zeros), zeros);
-        (void)lagfx_ops_display_tick_vblank(
-            p->dev->desc.shell.opaque, p->dev->desc.shell.write_memory,
-            p->dev->desc.shell.read_memory);
+        tick_vblank_counter_only(p->dev->desc.shell.opaque, p->dev->desc.shell.write_memory);
     } else {
         /* Shadow-only kick so "counter > 0" checks succeed before
          * any DMA path lands. */
