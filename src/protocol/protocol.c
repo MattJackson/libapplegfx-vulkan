@@ -20,31 +20,10 @@
  *   - CmdDefineChildFIFO-display-vchan-analysis.md: 44-byte descriptor
  *   - flows/display-init-flow.md, flows/display-swap-flow.md
  *
- * Current blocker (2026-04-30):
-  *   - ABBA deadlock: WindowServer holds FB workloop command gate,
-  *     waits for accel[+0x88] IOLock in doSetDisplayMode.
-  *     DisplayPipe holds accel[+0x88] IOLock (acquired in
-  *     process_online before connectionChange), waits for FB workloop
-  *     command gate. Fix attempts: commits 39a351c, aa91185,
-  *     40c1c7c, 7663ff1 — deadlock NOT resolved.
-  *     See journey/deadlock-abba-analysis.md.
-  *   - process_online analysis: DisplayPipe::process_online() is
-  *     the root cause — it acquires accel[+0x88] (an IOLock,
-  *     NOT a simple mutext) BEFORE calling connectionChange().
-  *     The FB workloop command gate is held by WindowServer's
-  *     IOFBSetDisplayModeAndDepth → doSetDisplayMode, which
-  *     waits for the same accel[+0x88] IOLock. Classic ABBA:
-  *     WS: FB gate → wants accel[+0x88]
-  *     DP: accel[+0x88] → wants FB gate (via connectionChange)
-  *   - Channel 3 not opened issue: IOAccelerator creates
-  *     channels 1-2 (compute) and 5+ (display), but channel 3
-  *     is never opened by the guest. This is expected — channel 3
-  *     would be another compute vchan, but macOS only uses 2
-  *     compute channels for this GPU configuration.
-  *   - Cursor opcodes 0x13/0x14 NOW DISPATCHED (commit 0511f24
-  *     wires up callbacks via protocol.c dispatch fix). Cursor
-  *     callbacks fire in QEMU but deadlock prevents full verification.
-  *     See cursor-rendering-stage-20.md §"Stage 20% status".
+ * Channel allocation note: IOAccelerator creates channels 1-2
+ * (compute) and 5+ (display); channel 3 is never opened by the
+ * guest because macOS only uses 2 compute channels for this GPU
+ * configuration.
  */
 
 #include "protocol.h"
@@ -66,6 +45,15 @@
 #define LAGFX_DOORBELL_BOUNCE_BUFFER_SIZE 32768u
 /* Per-instance bounce buffer moved to lagfx_protocol_t in state.h:65536u
  * to avoid concurrent MMIO corruption across devices/threads. */
+
+/* Little-endian u32 read with no alignment / strict-aliasing assumptions.
+ * Use for any decode of a 4-byte field out of an arbitrary byte buffer. */
+static inline uint32_t lagfx_le32(const uint8_t *b) {
+    return (uint32_t)b[0]
+         | ((uint32_t)b[1] << 8)
+         | ((uint32_t)b[2] << 16)
+         | ((uint32_t)b[3] << 24);
+}
 
 /* === Lifecycle ============================================== */
 
@@ -154,7 +142,7 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
  *   - Kext ISR reads BAR0+0x1018 (stamp bitmask), feeds to
  *     signalStamps() which calls commandWakeup(slot) per bit.
  *
- * Per-completion work (A4d, 2026-04-24):
+ * Per-completion work:
  *   1. Monotonically advance *stampBases[slot] via
  *      lagfx_advance_stamp_cell() — never regresses (floor=1).
  *   2. OR bit `slot` into pending_stamps_bitmask.
@@ -214,11 +202,11 @@ void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p,
     p->pending_stamps_bitmask |= (1u << slot);
 
     if (p->dev && p->dev->desc.shell.raise_interrupt) {
-        /* Per A4d (2026-04-24): the accelerator kext registers exactly
-         * one interrupt source at MSI-X vector 0. A single unified ISR
-         * demuxes stamps / displays / faults off BAR0 status regs. No
-         * separate "stamp-interrupt" vector exists; vec 1 hits another
-         * kext's ISR and breaks guest networking. Pin to vec 0. */
+        /* The accelerator kext registers exactly one interrupt source
+         * at MSI-X vector 0. A single unified ISR demuxes stamps /
+         * displays / faults off BAR0 status regs. No separate
+         * "stamp-interrupt" vector exists; vec 1 hits another kext's
+         * ISR and breaks guest networking. Pin to vec 0. */
         p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0u);
         p->interrupts_raised += 1;
         LAGFX_TRACE("complete_stamp[slot=%u]: cmd_stamp=0x%08x + IRQ vec=0 "
@@ -231,11 +219,11 @@ void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p,
 }
 
 void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
-    /* RootChannel completions land on slot 0. Confirmed A6e: every
-     * init-phase dispatcher-driven command emits `xor esi, esi` before
-     * writeStamp. Doorbell-driven completions for per-channel rings
-     * (ch >= 1) call lagfx_protocol_complete_stamp_slot directly with
-     * the per-channel slot. */
+    /* RootChannel completions land on slot 0. Every init-phase
+     * dispatcher-driven command emits `xor esi, esi` before writeStamp.
+     * Doorbell-driven completions for per-channel rings (ch >= 1) call
+     * lagfx_protocol_complete_stamp_slot directly with the per-channel
+     * slot. */
     lagfx_protocol_complete_stamp_slot(p, 0u, stamp);
 }
 
@@ -252,8 +240,6 @@ void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
  *     Commands start at ring_base_gpa + 0x40.
  *   - produced/consumed indices (u32 at baseNode+0/+4) are
  *     command counts, NOT byte offsets.
- *   - Implemented in commit b7f36bb (QEMU) + corresponding
- *     libapplegfx commit for the handler.
  *
  * WindowServer creates 5 sub-channels per display (Display0)
  * via opcode 0x04 (44-byte descriptor, see
@@ -602,14 +588,13 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
     /*
      * 0x102c — fault-pending status.
      *
-     * A4d (2026-04-24): the kext's unified ISR at MSI-X vec 0 reads
-     * this register to decide whether to walk the fault queue via
-     * handleFaultInterrupt. Non-zero = faults pending. Returning
-     * `last_completed_stamp` (our previous behavior) caused every ISR
-     * to spuriously drain the fault queue, which in turn would IOLog
-     * each entry and eventually escalate to terminate. Return 0
-     * unconditionally unless we actually have a fault to report;
-     * no fault path is wired yet.
+     * The kext's unified ISR at MSI-X vec 0 reads this register to
+     * decide whether to walk the fault queue via handleFaultInterrupt.
+     * Non-zero = faults pending. Returning `last_completed_stamp`
+     * causes every ISR to spuriously drain the fault queue, which in
+     * turn IOLogs each entry and eventually escalates to terminate.
+     * Return 0 unconditionally unless we actually have a fault to
+     * report; no fault path is wired yet.
      */
     if (offset == 0x102cu) {
         LAGFX_TRACE("mmio_read: 0x102c (fault_status) -> 0");
@@ -619,12 +604,12 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
     /*
      * 0x1018 — stamp-completion bitmask fed to signalStamps.
      *
-     * A4d (2026-04-24): bit N = stamp_id N completed since the last
-     * ISR read. Kext does xchg-with-0 on this register and passes the
-     * prior value to AppleParavirtEventMachine::signalStamps, which
-     * iterates set bits via bsf and calls commandWakeup(stamp_id) per
-     * bit. commandWakeup reads the actual stamp value from [EM+0x20]
-     * in kernel heap — we don't have to provide stamp values via DMA.
+     * Bit N = stamp_id N completed since the last ISR read. Kext does
+     * xchg-with-0 on this register and passes the prior value to
+     * AppleParavirtEventMachine::signalStamps, which iterates set bits
+     * via bsf and calls commandWakeup(stamp_id) per bit. commandWakeup
+     * reads the actual stamp value from [EM+0x20] in kernel heap — we
+     * don't have to provide stamp values via DMA.
      *
      * Return our pending-stamps bitmask and atomically clear it.
      */
@@ -638,14 +623,12 @@ uint32_t lagfx_protocol_mmio_read(lagfx_protocol_t *p, uint64_t offset) {
     /*
      * 0x1014 — display-interrupt bitmask fed to signalDisplays.
      *
-     * A4d (2026-04-24): same pattern as 0x1018, but the mask here
-     * targets AppleParavirtDisplayMachine. Bit N = display_id N has
-     * a completed transaction. No displays complete during the M3
-     * init path, so returning 0 is the correct behaviour until we
-     * wire display-transaction completions through a second bitmask.
+     * Same pattern as 0x1018, but the mask here targets
+     * AppleParavirtDisplayMachine. Bit N = display_id N has a
+     * completed transaction.
      */
     if (offset == LAGFX_REG_STAMP_CELL_1) {
-        /* xchg-and-clear, mirrors 0x1018 semantics (per A4d).
+        /* xchg-and-clear, mirrors 0x1018 semantics.
          * Bit N = display channel N has a completed transaction. Set by
          * the per-channel doorbell handler for display channels (ch>=5).
          * Per display0-cmd-actual-location.md, the display bitmask is
@@ -718,8 +701,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
     LAGFX_TRACE("mmio_write: off=0x%llx val=0x%08x",
               (unsigned long long)offset, value);
 
-    /* Primary-ring MMIO write map (resolved 2026-04-21 from live M2
-     * MMIO trace + Agent I disasm of Accelerator::setupCommandRing).
+    /* Primary-ring MMIO write map (Accelerator::setupCommandRing).
      *
      *   0x1000 W → ring_armed (1=enable). Kick only; doorbell advances
      *              happen via 0x1008.
@@ -797,7 +779,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
              * memo, advancing read_ptr is the operation the GPU-hang watchdog
              * is polling for at "Display0 written: 20 read: 0 cmd: 01...".
              *
-             * Display0 = ch_id 5 (per A10a: display_index+5). */
+             * Display0 = ch_id 5 (display_index+5). */
             unsigned ch = value;
             LAGFX_LOG("doorbell: per-channel ring ch=%u", ch);
             if (ch == 0u || ch >= 32u) {
@@ -822,18 +804,16 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                 return;
             }
 
-            /* Field order verified via QEMU monitor xp dump 2026-04-25 of
-             * Display0 (idx=5) descriptor at shared+0x450:
-             *   { write_ptr=0x14, read_ptr=0, ?=0, chan_id=5, ring_pfn=0x3d61a8 }
-             * Differs from agent's RE memo (which guessed
-             * {ring_pfn, read_ptr, write_ptr, len, flags}). The "GPU hang:
-             * Name DisplayN written: %u read: %u" log values match exactly:
-             * write_ptr is u32[0], read_ptr is u32[1]. */
-            uint32_t write_ptr = ((uint32_t *)descr)[0];
-            uint32_t read_ptr  = ((uint32_t *)descr)[1];
-            uint32_t mid       = ((uint32_t *)descr)[2];
-            uint32_t chan_id   = ((uint32_t *)descr)[3];
-            uint32_t ring_pfn  = ((uint32_t *)descr)[4];
+            /* Descriptor field order (Display0/idx=5 at shared+0x450):
+             *   { write_ptr, read_ptr, mid, chan_id, ring_pfn } as u32 LE.
+             * The "GPU hang: Name DisplayN written: %u read: %u" log
+             * values match exactly: write_ptr is u32[0], read_ptr is
+             * u32[1]. Decoded byte-wise to avoid strict-aliasing UB. */
+            uint32_t write_ptr = lagfx_le32(descr + 0);
+            uint32_t read_ptr  = lagfx_le32(descr + 4);
+            uint32_t mid       = lagfx_le32(descr + 8);
+            uint32_t chan_id   = lagfx_le32(descr + 12);
+            uint32_t ring_pfn  = lagfx_le32(descr + 16);
 
             LAGFX_LOG("doorbell ch=%u: descr wr=%u rd=%u mid=0x%x "
                       "chan_id=%u ring_pfn=0x%x",
@@ -861,7 +841,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
              * Display channels (ch 5..7) carry only setupSharedState; that
              * code path is below.
              *
-             * Wire format (CONFIRMED 2026-04-26 trace):
+             * Wire format:
              *   ring_data_gpa starts at page0[0]<<12 (PFN-array indirection).
              *   First cmd at ring_data_gpa + read_ptr; advance by hdr.length
              *   per cmd until cur_rp == write_ptr.
@@ -1174,9 +1154,9 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
                     if (cmd_len < 12u
                         || cmd_len > (write_ptr - cur_rp)) {
-                        LAGFX_WARN("doorbell ch=%u: bad cmd_len=%u "
-                                   "at rp=%u (wp=%u) — stopping walk",
-                                   ch, cmd_len, cur_rp, write_ptr);
+                        LAGFX_TRACE("doorbell ch=%u: bad cmd_len=%u "
+                                    "at rp=%u (wp=%u) — stopping walk",
+                                    ch, cmd_len, cur_rp, write_ptr);
                         break;
                     }
 
@@ -1258,20 +1238,17 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                      *     When seen, can fire deferred online events
                      *     (see display-tick_vblank in apple-gfx-common-linux.c).
                      *   0x04 = define_child_fifo (44-byte descriptor)
-                     *     See CmdDefineChildFIFO-display-vchan-analysis.md
-                     *     and commit b7f36bb for sub-channel PGFIFO drain.
+                     *     See CmdDefineChildFIFO-display-vchan-analysis.md.
                      *   0x06 = present-only (12 B, surface_id@+4)
                      *   0x07 = present+gamma (36 B, plane_id@+4)
                      *   Field order verified in DisplayPipe-submitTransaction-opcodes.md
                      *
                      * Cursor opcodes 0x13/0x14:
-                     *   Handled in ops_display.c (cursor_glyph, cursor_moved)
-                     *   but NOT wired in this display vchan switch yet.
+                     *   Handled in ops_display.c (cursor_glyph, cursor_moved).
                      *   Guest emits these on sub-channels; the main
-                     *   display vchan does NOT dispatch them.
+                     *   display vchan does NOT dispatch them via this loop.
                      *   See paravirt-re/display-pipe-enable-online-sequence.md §Q6
                      *   and cursor-rendering-stage-20.md.
-                     *   Cursor callbacks wired in QEMU via commit 0511f24.
                      */
                      switch (opcode) {
                         case 0x01u:
