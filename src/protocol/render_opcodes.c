@@ -295,8 +295,15 @@ static int render_op_set_render_pipeline_state(lagfx_protocol_t *p,
                                                   LAGFX_SHADER_COLOR_FILL,
                                                   (lagfx_vk_layout_stub_t)0);
 #endif
-            LAGFX_LOG("SetRenderPipelineState: bound pipeline ref=0x%08x "
-                       "(in_pass=true)", reference);
+            /* NOTE: this is a PLACEHOLDER bind — the actual Metal pipeline
+             * referenced by `reference` is NOT resolved (no pipeline resource
+             * table yet). We bound the COLOR_FILL passthrough with a NULL
+             * VkPipelineLayout. Stage 20% telemetry must not read GREEN off
+             * this line — see concern #5. */
+            LAGFX_LOG("SetRenderPipelineState: PLACEHOLDER bind ref=0x%08x "
+                       "(in_pass=true, layout=VK_NULL_HANDLE, "
+                       "pipeline=COLOR_FILL passthrough — resource table "
+                       "lookup not implemented)", reference);
         } else {
             LAGFX_TRACE("SetRenderPipelineState: deferred until render pass begins");
         }
@@ -405,8 +412,13 @@ static int render_op_set_vertex_buffers(lagfx_protocol_t *p,
                     vkCmdBindVertexBuffers(p->render_enc.cmdbuf,
                                            first, store_count,
                                            &p->dev->vk->dummy_vb, &offset);
-                    LAGFX_LOG("SetVertexBuffers: bound %u dummy buffers "
-                               "(first=%u, in_pass=true)",
+                    /* NOTE: PLACEHOLDER bind — the per-slot Metal buffer
+                     * `ref`s are NOT resolved (no buffer resource table yet).
+                     * All `store_count` slots get the same dummy_vb. Stage
+                     * 20% telemetry must not read GREEN off this line. */
+                    LAGFX_LOG("SetVertexBuffers: PLACEHOLDER bind %u slots "
+                               "to dummy_vb (first=%u, in_pass=true — "
+                               "real Metal buffer refs unresolved)",
                                store_count, first);
                 } else {
                     LAGFX_TRACE("SetVertexBuffers: no dummy_vb available");
@@ -462,18 +474,16 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
         if (p->render_enc.in_pass && p->render_enc.pipeline_bound) {
 #ifdef LAGFX_HAVE_VULKAN
             /* TODO: Resolve ref -> VkImageView once resource table exists.
-             * For now, attempt bind with NULL handles to show intent. */
+             * Until then, SKIP the bind entirely instead of calling
+             * lagfx_translate_render_bind_texture with VK_NULL_HANDLE — the
+             * translate layer rejects NULL view with LAGFX_ERR_INVALID_ARG
+             * anyway, and skipping makes telemetry reflect the truth: nothing
+             * is bound. Stage 20% telemetry must not read GREEN here. */
             for (uint32_t i = 0; i < store_count; ++i) {
                 uint32_t ref = p->render_enc.bound_fragment_textures[i];
-                /* Use VK_NULL_HANDLE for now - real impl needs
-                 * lagfx_texture_table_lookup(ref) -> VkImageView */
-                lagfx_translate_render_bind_texture(
-                    &p->render_enc,
-                    first + i,  /* binding matches Metal set(idx) */
-                    VK_NULL_HANDLE,  /* TODO: resolve from ref */
-                    VK_NULL_HANDLE); /* TODO: resolve sampler */
-                LAGFX_TRACE("SetFragmentTextures: bound[%u] ref=0x%08x "
-                             "(null handles - needs resource table)",
+                LAGFX_TRACE("SetFragmentTextures: SKIPPED bind[%u] ref=0x%08x "
+                             "(no texture resource table — VkImageView "
+                             "unresolved)",
                              first + i, ref);
             }
 #else
