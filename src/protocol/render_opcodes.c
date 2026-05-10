@@ -867,7 +867,6 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
     return 0;
 }
 
-const lagfx_render_pass_desc_t *
 const lagfx_render_pass_desc_t *lagfx_render_pass_desc_get(const lagfx_protocol_t *p) {
     (void)p;
     return &g_last_render_pass_desc;
