@@ -247,6 +247,13 @@ struct lagfx_protocol {
      * doorbell handler before each dispatch. */
     uint32_t extra_stamp_advance;
 
+    /* Current task ID from CmdExecIndirect2 header — used by inner
+     * opcode handlers when looking up resources in the registry.
+     * Set at the start of CmdExecIndirect2 processing and cleared
+     * on reset. For Stage 20% scaffold, we default to task_id=1
+     * (root channel) since proper task tracking isn't wired yet. */
+    uint32_t current_task_id;
+
     /* Handle tables. */
     lagfx_task_entry_t      tasks[LAGFX_MAX_TASKS];
     lagfx_childfifo_entry_t fifos[LAGFX_MAX_CHILDFIFOS];

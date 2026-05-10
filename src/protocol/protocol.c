@@ -119,6 +119,7 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->unknown_opcode_count = 0;
     p->interrupts_raised    = 0;
     p->last_completed_stamp = 0;
+    p->current_task_id      = 1; /* Default to root channel */
     p->read_ptr             = 0;
     p->write_ptr            = 0;
     p->pending_stamps_bitmask = 0;

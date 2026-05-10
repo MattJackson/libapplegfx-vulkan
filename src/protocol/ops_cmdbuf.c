@@ -395,10 +395,15 @@ lagfx_handler_status_t lagfx_op_exec_indirect2(
                    "(continuing fail-open)", task_id);
     }
 
-    LAGFX_TRACE("CmdExecIndirect2: taskID=%u descriptor_count=%u "
-              "resource_count=%u payload_size=%u stamp=0x%08x",
-              task_id, descriptor_count, resource_count,
-              (unsigned)hdr->payload_size, hdr->stamp);
+   LAGFX_TRACE("CmdExecIndirect2: taskID=%u descriptor_count=%u "
+               "resource_count=%u payload_size=%u stamp=0x%08x",
+               task_id, descriptor_count, resource_count,
+               (unsigned)hdr->payload_size, hdr->stamp);
+
+    /* Set current_task_id for inner opcode handlers to use when
+     * looking up resources in the registry. This is cleared on
+     * protocol_reset() and updated each time CmdExecIndirect2 fires. */
+    p->current_task_id = task_id;
 
     /* RE diagnostic: hex-dump full payload so we can see what's
      * actually on the wire and confirm or refute the task_id/ic/rc
