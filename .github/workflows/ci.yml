@@ -1,24 +1,50 @@
 name: CI
 
+# One workflow, one status badge. Consolidates the prior
+# ci.yml + build-type-matrix.yml + regression.yml into a single file.
+#
+# Coverage preserved from the previous three workflows:
+#   - Linux/glibc (Ubuntu) meson build + test + strict vulkan-* execution assert
+#   - Alpine 3.21 (musl) meson build + test (production container parity)
+#   - macOS meson build + test (stub Vulkan path; host-portability gate)
+#   - Sanitizers: clang + ASAN/UBSAN
+#   - clang-tidy (non-blocking until backlog cleared)
+#   - debug+release buildtype coverage (matrix dimension on Ubuntu)
+#   - m5-deadlock-detect (registered as a regular meson test, runs via meson test)
+#
+# Dropped (genuinely stub, no real coverage):
+#   - regression.yml "smoke test (headless)" — pure echo placeholder, needs guest VM
+#   - regression.yml integration-tests — echo placeholders for docker-in-docker
+#   - regression.yml coverage-report — wraps regression-run.sh which needs the guest VM
+#
+# Ubuntu 24.04 (noble) note: `vulkan-headers` is no longer a separate apt
+# package; the headers ship inside `libvulkan-dev`. Do NOT list
+# vulkan-headers on Ubuntu apt installs.
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
-# All jobs are named explicitly so GitHub's status check list shows per-job results.
-# Keep workflow name = `ci.yml` (referenced by repo status badge in README).
-
 jobs:
   # -------------------------------------------------------------------------
-  # Linux (Ubuntu / glibc) — meson setup + compile + full test suite.
-  # This is the reference platform for local dev and the CI "happy path".
-  # Expected: 7/7 tests pass (validated 2026-04-20 on portainer-1 Alpine; the
-  # Ubuntu and Alpine jobs should agree — any divergence is a glibc-vs-musl bug).
+  # Linux meson build matrix.
+  #   - ubuntu-latest × debug  → reference glibc happy path, full strict checks
+  #   - ubuntu-latest × release → catches NDEBUG-gated asserts + -O2 UB
+  #   - ubuntu-24.04 × {debug,release} → pins the noble apt-list shape
+  # Strict vulkan-* execution assertion runs on all rows (per
+  # feedback_validate_against_real_api.md — a green meson test is not enough;
+  # require >=1 PASS line per required vulkan test).
   # -------------------------------------------------------------------------
   linux-meson:
-    name: meson (ubuntu-latest, glibc)
-    runs-on: ubuntu-latest
+    name: meson (${{ matrix.os }}, ${{ matrix.build_type }}, glibc)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04]
+        build_type: [debug, release]
     steps:
       - uses: actions/checkout@v4
 
@@ -26,24 +52,30 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: apt-${{ runner.os }}-meson-v1-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: apt-${{ matrix.os }}-meson-v2-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            apt-${{ runner.os }}-meson-v1-
+            apt-${{ matrix.os }}-meson-v2-
 
       - name: Install build deps
+        # libvulkan-dev ships the Vulkan headers on Ubuntu 24.04 (noble);
+        # there is no separate vulkan-headers apt package there.
+        # vulkan-validationlayers gives us VK_LAYER_KHRONOS_validation,
+        # mesa-vulkan-drivers ships the lavapipe ICD JSON so tests actually
+        # get a VkInstance, glslang-tools + spirv-tools cover shader fixtures,
+        # clang is the preferred compiler (matches the sanitizers job).
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            meson ninja-build pkg-config \
-            libvulkan-dev vulkan-tools glslang-tools \
-            mesa-vulkan-drivers clang
+            meson ninja-build pkg-config clang \
+            libvulkan-dev vulkan-tools \
+            vulkan-validationlayers mesa-vulkan-drivers \
+            glslang-tools spirv-tools
 
       - name: Verify Vulkan toolchain
-        # Hard-fail if the apt install above did not yield a usable Vulkan
-        # pkg-config + loadable ICD. Without this the meson setup below
-        # silently falls back to the no-op stub path and every vulkan-*
-        # test SKIPs — which is exactly the M1 validation gap we're here
-        # to close.
+        # Hard-fail if apt did not yield a usable Vulkan pkg-config + loadable
+        # ICD. Without this the meson setup below silently falls back to the
+        # no-op stub path and every vulkan-* test SKIPs — exactly the M1
+        # validation gap we are here to close.
         run: |
           set -e
           echo "--- pkg-config vulkan ---"
@@ -54,15 +86,15 @@ jobs:
           echo "--- vulkaninfo --summary ---"
           vulkaninfo --summary | head -40
 
-      - name: Configure
-        run: meson setup build
+      - name: Configure (${{ matrix.build_type }})
+        run: meson setup build --buildtype=${{ matrix.build_type }}
 
       - name: Assert Vulkan detected by meson
-        # meson.build prints "Vulkan found — building real Vulkan init
-        # path" on success. If we fall through to the warning branch the
-        # vulkan-* tests will SKIP at configure time (they're gated on
-        # vulkan_dep.found()). Grep the meson log and hard-fail if the
-        # real path wasn't taken.
+        # meson.build prints "Vulkan found — building real Vulkan init path"
+        # on success. If we fall through to the warning branch the vulkan-*
+        # tests will SKIP at configure time (they're gated on
+        # vulkan_dep.found()). Grep the meson log and hard-fail if the real
+        # path wasn't taken.
         run: |
           set -e
           if grep -q "Vulkan not found" build/meson-logs/meson-log.txt; then
@@ -79,17 +111,11 @@ jobs:
         run: meson test -C build --print-errorlogs
 
       - name: Assert vulkan-* tests actually ran
-        # meson test registers the vulkan-init / vulkan-command /
-        # vulkan-render / translate-render tests at configure time when
-        # vulkan_dep was present. We additionally require them to have
-        # exit-0 status in the testlog — a SKIP or test-internal bail-out
-        # would mean either the ICD isn't loading or the test self-skipped
-        # on first vkEnum call, both of which are exactly what M1 needed
-        # to catch. meson writes a multi-line block per test:
-        #   test:         libapplegfx-vulkan:<name>
-        #   ...
-        #   result:       exit status 0
-        # so we python-parse that structure rather than trying to awk it.
+        # meson test registers the vulkan-init / vulkan-command / vulkan-render /
+        # translate-render tests at configure time when vulkan_dep was present.
+        # We additionally require them to have exit-0 status AND a non-zero
+        # PASS-line count — a SKIP or test-internal bail-out would mean either
+        # the ICD isn't loading or the test self-skipped on first vkEnum call.
         run: |
           set -e
           log=build/meson-logs/testlog.txt
@@ -103,9 +129,7 @@ jobs:
               "vulkan render",
               "translate render",
           ]
-          # Split on the "===== N/M =====" separators that meson uses.
           blocks = re.split(r"={10,}\s+\d+/\d+\s+={10,}", log)
-          # name -> (exit_status_line, body)
           info = {}
           for b in blocks:
               m = re.search(r"test:\s+[^:\s]+:([^\n]+)", b)
@@ -122,9 +146,6 @@ jobs:
               if status != "exit status 0":
                   problems.append(f"{name}: {status}")
                   continue
-              # Test returned 0 but may have internally self-skipped after
-              # failing to find a loadable ICD. Count SKIP vs PASS lines in
-              # its stdout; if it's pure-SKIP or majority-SKIP we flag it.
               skip_count = len(re.findall(r"^SKIP:", body, re.M))
               pass_count = len(re.findall(r"^PASS:", body, re.M))
               if pass_count == 0 and skip_count > 0:
@@ -152,15 +173,15 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: meson-testlog-linux
+          name: meson-testlog-${{ matrix.os }}-${{ matrix.build_type }}
           path: build/meson-logs/testlog.txt
           if-no-files-found: ignore
 
   # -------------------------------------------------------------------------
-  # Alpine 3.21 (musl) — same build as above but on the production container
-  # base image. Catches portability regressions (musl vs glibc: memfd_create
-  # ABI, pthread tunables, locale) before they bite in docker-macos.
-  # Runs inside a container so we get a real Alpine userland.
+  # Alpine 3.21 (musl) — same build as Linux/glibc but on the production
+  # container base image. Catches portability regressions (musl vs glibc:
+  # memfd_create ABI, pthread tunables, locale) before they bite in
+  # docker-macos. Runs inside a container for a real Alpine userland.
   # -------------------------------------------------------------------------
   alpine-meson:
     name: meson (alpine:3.21, musl)
@@ -173,21 +194,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apk
-          key: apk-alpine321-meson-v1-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: apk-alpine321-meson-v2-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            apk-alpine321-meson-v1-
+            apk-alpine321-meson-v2-
 
       - name: Install build deps
-        # vulkan-loader-dev ships /usr/lib/pkgconfig/vulkan.pc (the
-        # piece meson needs to set vulkan_dep.found() = true).
+        # vulkan-loader-dev ships /usr/lib/pkgconfig/vulkan.pc (the piece
+        # meson needs to set vulkan_dep.found() = true).
         # mesa-vulkan-swrast ships the lavapipe ICD JSON at
-        # /usr/share/vulkan/icd.d/lvp_icd.x86_64.json (the piece the
-        # loader needs at runtime to actually hand out a VkInstance).
-        # glslang + glslang-dev give us glslangValidator (used by
-        # air2spirv fixtures and any future shader compile tests).
-        # vulkan-tools provides `vulkaninfo` for the verification step
-        # below — without that we can't cheaply prove the toolchain
-        # actually works before running meson.
+        # /usr/share/vulkan/icd.d/lvp_icd.x86_64.json (the piece the loader
+        # needs at runtime to actually hand out a VkInstance).
+        # NOTE: Alpine still ships a separate vulkan-headers apk — keep it
+        # here. The "no separate headers package" rule applies to Ubuntu
+        # 24.04 apt only.
         run: |
           apk add --no-cache \
             build-base meson ninja pkgconf \
@@ -197,10 +216,6 @@ jobs:
             git bash python3
 
       - name: Verify Vulkan toolchain
-        # Hard-fail if the apk install above did not yield a usable
-        # Vulkan pkg-config + loadable ICD. Mirrors the linux-meson job
-        # so Alpine (production container base) and Ubuntu are held to
-        # the same standard.
         run: |
           set -e
           echo "--- pkg-config vulkan ---"
@@ -234,8 +249,6 @@ jobs:
         run: meson test -C build --print-errorlogs
 
       - name: Assert vulkan-* tests actually ran
-        # Same strict parser as the linux-meson job — requires exit 0 AND
-        # non-zero PASS-line count in each required test's stdout block.
         run: |
           set -e
           log=build/meson-logs/testlog.txt
@@ -290,7 +303,8 @@ jobs:
   # on the host dev platform (libapplegfx-vulkan is a Linux-first library but
   # the header-syntax / memory-task / protocol-dispatch tests must remain
   # host-portable so contributors can iterate on Apple hardware).
-  # Expected: 7/7 tests pass (validated locally 2026-04-20).
+  # Vulkan loader is not present on stock macOS runners; meson.build
+  # gracefully falls back to the stub init path (see meson.build §Deps).
   # -------------------------------------------------------------------------
   darwin-meson:
     name: meson (macos-latest)
@@ -304,9 +318,9 @@ jobs:
           path: |
             ~/Library/Caches/Homebrew
             /opt/homebrew/Cellar
-          key: brew-macos-meson-v1-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: brew-macos-meson-v2-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            brew-macos-meson-v1-
+            brew-macos-meson-v2-
 
       - name: Install build deps
         run: |
@@ -314,8 +328,6 @@ jobs:
           brew install meson ninja pkg-config
 
       - name: Configure
-        # Vulkan loader is not present on stock macOS runners; meson.build
-        # gracefully falls back to the stub init path (see meson.build §Deps).
         run: meson setup build
 
       - name: Compile
@@ -334,8 +346,8 @@ jobs:
 
   # -------------------------------------------------------------------------
   # Sanitizer job — Linux + clang + ASAN/UBSAN. Catches memory bugs (OOB,
-  # use-after-free) and undefined behavior (signed overflow, null deref)
-  # that the regular test run would miss. -Db_lundef=false is required for
+  # use-after-free) and undefined behavior (signed overflow, null deref) that
+  # the regular test run would miss. -Db_lundef=false is required for
   # meson+clang+asan to link shared libs correctly.
   # -------------------------------------------------------------------------
   sanitizers:
@@ -348,16 +360,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: apt-${{ runner.os }}-sanitizers-v1-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: apt-${{ runner.os }}-sanitizers-v2-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            apt-${{ runner.os }}-sanitizers-v1-
+            apt-${{ runner.os }}-sanitizers-v2-
 
       - name: Install build deps
+        # No separate vulkan-headers — headers ship in libvulkan-dev on
+        # current Ubuntu runners.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             meson ninja-build pkg-config clang \
-            libvulkan-dev vulkan-headers mesa-vulkan-drivers \
+            libvulkan-dev mesa-vulkan-drivers \
             vulkan-tools glslang-tools
 
       - name: Verify Vulkan toolchain
@@ -404,9 +418,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: apt-${{ runner.os }}-clangtidy-v1-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: apt-${{ runner.os }}-clangtidy-v2-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            apt-${{ runner.os }}-clangtidy-v1-
+            apt-${{ runner.os }}-clangtidy-v2-
 
       - name: Install clang-tidy
         run: |
