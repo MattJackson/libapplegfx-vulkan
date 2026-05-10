@@ -26,24 +26,23 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   # -------------------------------------------------------------------------
   # Linux meson build matrix.
   #   - ubuntu-latest × debug  → reference glibc happy path, full strict checks
   #   - ubuntu-latest × release → catches NDEBUG-gated asserts + -O2 UB
-  #   - ubuntu-24.04 × {debug,release} → pins the noble apt-list shape
-  # Strict vulkan-* execution assertion runs on all rows (per
+  # Strict vulkan-* execution assertion runs on both rows (per
   # feedback_validate_against_real_api.md — a green meson test is not enough;
   # require >=1 PASS line per required vulkan test).
   # -------------------------------------------------------------------------
   linux-meson:
-    name: meson (${{ matrix.os }}, ${{ matrix.build_type }}, glibc)
-    runs-on: ${{ matrix.os }}
+    name: meson (ubuntu-latest, ${{ matrix.build_type }}, glibc)
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04]
         build_type: [debug, release]
     steps:
       - uses: actions/checkout@v4
@@ -52,9 +51,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: apt-${{ matrix.os }}-meson-v2-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: apt-ubuntu-latest-meson-v2-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            apt-${{ matrix.os }}-meson-v2-
+            apt-ubuntu-latest-meson-v2-
 
       - name: Install build deps
         # libvulkan-dev ships the Vulkan headers on Ubuntu 24.04 (noble);
@@ -111,69 +110,14 @@ jobs:
         run: meson test -C build --print-errorlogs
 
       - name: Assert vulkan-* tests actually ran
-        # meson test registers the vulkan-init / vulkan-command / vulkan-render /
-        # translate-render tests at configure time when vulkan_dep was present.
-        # We additionally require them to have exit-0 status AND a non-zero
-        # PASS-line count — a SKIP or test-internal bail-out would mean either
-        # the ICD isn't loading or the test self-skipped on first vkEnum call.
-        run: |
-          set -e
-          log=build/meson-logs/testlog.txt
-          [ -f "$log" ] || { echo "::error::no testlog"; exit 1; }
-          python3 - "$log" <<'PY'
-          import re, sys
-          log = open(sys.argv[1]).read()
-          required = [
-              "vulkan init",
-              "vulkan command",
-              "vulkan render",
-              "translate render",
-          ]
-          blocks = re.split(r"={10,}\s+\d+/\d+\s+={10,}", log)
-          info = {}
-          for b in blocks:
-              m = re.search(r"test:\s+[^:\s]+:([^\n]+)", b)
-              r = re.search(r"result:\s+([^\n]+)", b)
-              if m and r:
-                  info[m.group(1).strip()] = (r.group(1).strip(), b)
-          problems = []
-          for name in required:
-              entry = info.get(name)
-              if entry is None:
-                  problems.append(f"{name}: NOT REGISTERED — Vulkan dep missing at configure time")
-                  continue
-              status, body = entry
-              if status != "exit status 0":
-                  problems.append(f"{name}: {status}")
-                  continue
-              skip_count = len(re.findall(r"^SKIP:", body, re.M))
-              pass_count = len(re.findall(r"^PASS:", body, re.M))
-              if pass_count == 0 and skip_count > 0:
-                  problems.append(
-                      f"{name}: exit 0 but 0 PASS + {skip_count} SKIP — "
-                      "test self-skipped (likely no loadable ICD at runtime)"
-                  )
-          if problems:
-              print("::error::required vulkan-* tests did not actually execute:")
-              for p in problems:
-                  print(f"  - {p}")
-              print("\nAll registered test results:")
-              for k, (s, _) in info.items():
-                  print(f"  {k}: {s}")
-              sys.exit(1)
-          print("All required vulkan-* tests executed and passed:")
-          for name in required:
-              s, body = info[name]
-              pc = len(re.findall(r"^PASS:", body, re.M))
-              sc = len(re.findall(r"^SKIP:", body, re.M))
-              print(f"  {name}: {s} ({pc} PASS, {sc} SKIP)")
-          PY
+        # See scripts/ci/assert-vulkan-tests.py for the logic.
+        run: python3 scripts/ci/assert-vulkan-tests.py build/meson-logs/testlog.txt
 
       - name: Upload testlog on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: meson-testlog-${{ matrix.os }}-${{ matrix.build_type }}
+          name: meson-testlog-ubuntu-latest-${{ matrix.build_type }}
           path: build/meson-logs/testlog.txt
           if-no-files-found: ignore
 
@@ -249,46 +193,7 @@ jobs:
         run: meson test -C build --print-errorlogs
 
       - name: Assert vulkan-* tests actually ran
-        run: |
-          set -e
-          log=build/meson-logs/testlog.txt
-          [ -f "$log" ] || { echo "::error::no testlog"; exit 1; }
-          python3 - "$log" <<'PY'
-          import re, sys
-          log = open(sys.argv[1]).read()
-          required = ["vulkan init", "vulkan command", "vulkan render", "translate render"]
-          blocks = re.split(r"={10,}\s+\d+/\d+\s+={10,}", log)
-          info = {}
-          for b in blocks:
-              m = re.search(r"test:\s+[^:\s]+:([^\n]+)", b)
-              r = re.search(r"result:\s+([^\n]+)", b)
-              if m and r:
-                  info[m.group(1).strip()] = (r.group(1).strip(), b)
-          problems = []
-          for name in required:
-              entry = info.get(name)
-              if entry is None:
-                  problems.append(f"{name}: NOT REGISTERED — Vulkan dep missing at configure time")
-                  continue
-              status, body = entry
-              if status != "exit status 0":
-                  problems.append(f"{name}: {status}")
-                  continue
-              pc = len(re.findall(r"^PASS:", body, re.M))
-              sc = len(re.findall(r"^SKIP:", body, re.M))
-              if pc == 0 and sc > 0:
-                  problems.append(f"{name}: exit 0 but 0 PASS + {sc} SKIP — self-skipped (no loadable ICD)")
-          if problems:
-              print("::error::required vulkan-* tests did not actually execute:")
-              for p in problems: print(f"  - {p}")
-              sys.exit(1)
-          print("All required vulkan-* tests executed and passed:")
-          for name in required:
-              s, body = info[name]
-              pc = len(re.findall(r"^PASS:", body, re.M))
-              sc = len(re.findall(r"^SKIP:", body, re.M))
-              print(f"  {name}: {s} ({pc} PASS, {sc} SKIP)")
-          PY
+        run: python3 scripts/ci/assert-vulkan-tests.py build/meson-logs/testlog.txt
 
       - name: Upload testlog on failure
         if: failure()
