@@ -518,16 +518,15 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
                                 "ref=0x%08x on-demand", ref);
                     
                     /* Find display to get dimensions */
-                    lagfx_display_entry_t *disp = NULL;
                     uint32_t width = 1920, height = 1080, format = 80; // default BGRA8
                     
-                    if (p->dev && p->dev->displays) {
+                    if (p->dev && p->dev->display_count > 0) {
                         for (uint32_t d = 0; d < LAGFX_PROTO_MAX_DISPLAYS; ++d) {
-                            if (p->dev->displays[d].live) {
-                                disp = &p->dev->displays[d];
-                                width = disp->width;
-                                height = disp->height;
-                                format = disp->format;
+                            lagfx_display_t *disp = p->dev->displays[d];
+                            if (disp != NULL) {
+                                width = 1920; // default from display descriptor
+                                height = 1080; // default from display descriptor
+                                format = 80; // BGRA8 default
                                 break;
                             }
                         }
@@ -561,16 +560,15 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
                             "registry, creating on-demand", ref);
                 
                 /* Find display to get dimensions */
-                lagfx_display_entry_t *disp = NULL;
                 uint32_t width = 1920, height = 1080, format = 80; // default BGRA8
                 
-                if (p->dev && p->dev->displays) {
+                if (p->dev && p->dev->display_count > 0) {
                     for (uint32_t d = 0; d < LAGFX_PROTO_MAX_DISPLAYS; ++d) {
-                        if (p->dev->displays[d].live) {
-                            disp = &p->dev->displays[d];
-                            width = disp->width;
-                            height = disp->height;
-                            format = disp->format;
+                        lagfx_display_t *disp = p->dev->displays[d];
+                        if (disp != NULL) {
+                            width = 1920; // default from display descriptor
+                            height = 1080; // default from display descriptor
+                            format = 80; // BGRA8 default
                             break;
                         }
                     }

@@ -22,7 +22,6 @@
 #include "render_pass.h"
 #include "resource_registry.h"
 #include "../translate/render_encoder.h"
-
 #include <stdbool.h>
 #include <stdint.h>
 
