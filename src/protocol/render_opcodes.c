@@ -481,6 +481,26 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
     if (count > 4)
         LAGFX_TRACE("  ... (%u more)", count - 4);
 
+    /* Debug: log display state for Stage 20 resource resolution */
+    if (p && p->dev) {
+        int live_count = 0;
+        uint32_t width = 1920, height = 1080, format = 80; // defaults
+        for (uint32_t d = 0; d < LAGFX_PROTO_MAX_DISPLAYS; ++d) {
+            if (p->dev->displays[d].live) {
+                live_count++;
+                width = p->dev->displays[d].width;
+                height = p->dev->displays[d].height;
+                format = p->dev->displays[d].format;
+                LAGFX_LOG("SetFragmentTextures: display[%u] live %ux%u fmt=%u",
+                          d, width, height, format);
+            }
+        }
+        if (live_count == 0) {
+            LAGFX_LOG("SetFragmentTextures: WARNING - no live displays found! Using defaults %ux%u fmt=%u",
+                      width, height, format);
+        }
+    }
+
     if (p) {
         uint32_t store_count = count;
         if (store_count > LAGFX_MAX_BOUND_FRAGMENT_TEXTURES) {
