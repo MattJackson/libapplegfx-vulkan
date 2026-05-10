@@ -287,16 +287,25 @@ static int render_op_set_render_pipeline_state(lagfx_protocol_t *p,
              * This is a known gap — Stage 20% "RenderPassDescriptor parse log GREEN"
              * passes only because actual binding work isn't wired yet (see concern #5).
              * Real rendering requires resource registry integration. */
-            lagfx_translate_render_bind_pipeline(&p->render_enc,
-                                                   LAGFX_SHADER_COLOR_FILL,
-                                                   VK_NULL_HANDLE);
+           lagfx_translate_render_bind_pipeline(&p->render_enc,
+                                                    LAGFX_SHADER_COLOR_FILL,
+                                                    VK_NULL_HANDLE);
 #else
             lagfx_translate_render_bind_pipeline(&p->render_enc,
-                                                  LAGFX_SHADER_COLOR_FILL,
-                                                  (lagfx_vk_layout_stub_t)0);
+                                                   LAGFX_SHADER_COLOR_FILL,
+                                                   (lagfx_vk_layout_stub_t)0);
 #endif
-            LAGFX_LOG("SetRenderPipelineState: bound pipeline ref=0x%08x "
-                       "(in_pass=true)", reference);
+            /* NOTE: this is a PLACEHOLDER bind — the actual Metal pipeline
+             * referenced by `reference` is NOT resolved (no pipeline resource
+             * table yet). We bound the COLOR_FILL passthrough with a NULL
+             * VkPipelineLayout. Stage 20% telemetry must not read GREEN off
+             * this line — see concern #5. */
+            LAGFX_LOG("SetRenderPipelineState: PLACEHOLDER bind ref=0x%08x "
+                      "(in_pass=true, layout=VK_NULL_HANDLE, "
+                      "pipeline=COLOR_FILL passthrough — resource table "
+                      "lookup not implemented)", reference);
+            LAGFX_ERR("SetRenderPipelineState: VK_NULL_HANDLE pipeline_layout "
+                      "placeholder — Stage 20% render bind not yet wired");
         } else {
             LAGFX_TRACE("SetRenderPipelineState: deferred until render pass begins");
         }
@@ -333,6 +342,8 @@ static int render_op_draw_primitives_64(lagfx_protocol_t *p,
                     "(vertexCount=%llu vertexStart=%llu)",
                     (unsigned long long)vertex_count,
                     (unsigned long long)vertex_start);
+        LAGFX_ERR("DrawPrimitives64: DRAW with VK_NULL_HANDLE placeholders "
+                  "(pipeline=COLOR_FILL stub, vb=dummy_vb — Stage 20% not wired)");
         lagfx_translate_render_draw(&p->render_enc,
                                      (uint32_t)vertex_count, 1,
                                      (uint32_t)vertex_start, 0);
@@ -401,13 +412,20 @@ static int render_op_set_vertex_buffers(lagfx_protocol_t *p,
                 /* TODO: Resolve ref -> VkBuffer once resource table exists.
                  * For now, bind the dummy vertex buffer from vk state. */
                 if (p->dev->vk->dummy_vb != VK_NULL_HANDLE) {
-                    VkDeviceSize offset = 0;
+                   VkDeviceSize offset = 0;
                     vkCmdBindVertexBuffers(p->render_enc.cmdbuf,
                                            first, store_count,
                                            &p->dev->vk->dummy_vb, &offset);
-                    LAGFX_LOG("SetVertexBuffers: bound %u dummy buffers "
-                               "(first=%u, in_pass=true)",
-                               store_count, first);
+                    /* NOTE: PLACEHOLDER bind — the per-slot Metal buffer
+                     * `ref`s are NOT resolved (no buffer resource table yet).
+                     * All `store_count` slots get the same dummy_vb. Stage
+                     * 20% telemetry must not read GREEN off this line. */
+                    LAGFX_LOG("SetVertexBuffers: PLACEHOLDER bind %u slots "
+                              "to dummy_vb (first=%u, in_pass=true — "
+                              "real Metal buffer refs unresolved)",
+                              store_count, first);
+                    LAGFX_ERR("SetVertexBuffers: VK_NULL_HANDLE buffer refs "
+                              "placeholder — Stage 20% vertex bind not wired");
                 } else {
                     LAGFX_TRACE("SetVertexBuffers: no dummy_vb available");
                 }
@@ -461,20 +479,22 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
 
         if (p->render_enc.in_pass && p->render_enc.pipeline_bound) {
 #ifdef LAGFX_HAVE_VULKAN
-            /* TODO: Resolve ref -> VkImageView once resource table exists.
-             * For now, attempt bind with NULL handles to show intent. */
+           /* TODO: Resolve ref -> VkImageView once resource table exists.
+             * Until then, SKIP the bind entirely instead of calling
+             * lagfx_translate_render_bind_texture with VK_NULL_HANDLE — the
+             * translate layer rejects NULL view with LAGFX_ERR_INVALID_ARG
+             * anyway, and skipping makes telemetry reflect the truth: nothing
+             * is bound. Stage 20% telemetry must not read GREEN here. */
             for (uint32_t i = 0; i < store_count; ++i) {
                 uint32_t ref = p->render_enc.bound_fragment_textures[i];
-                /* Use VK_NULL_HANDLE for now - real impl needs
-                 * lagfx_texture_table_lookup(ref) -> VkImageView */
-                lagfx_translate_render_bind_texture(
-                    &p->render_enc,
-                    first + i,  /* binding matches Metal set(idx) */
-                    VK_NULL_HANDLE,  /* TODO: resolve from ref */
-                    VK_NULL_HANDLE); /* TODO: resolve sampler */
-                LAGFX_TRACE("SetFragmentTextures: bound[%u] ref=0x%08x "
-                             "(null handles - needs resource table)",
-                             first + i, ref);
+                LAGFX_TRACE("SetFragmentTextures: SKIPPED bind[%u] ref=0x%08x "
+                            "(no texture resource table — VkImageView "
+                            "unresolved)",
+                            first + i, ref);
+            }
+            if (store_count > 0) {
+                LAGFX_ERR("SetFragmentTextures: SKIPPED all %u fragment textures "
+                          "— VK_NULL_HANDLE placeholders not wired for Stage 20%");
             }
 #else
             LAGFX_LOG("SetFragmentTextures: would bind %u textures "
@@ -577,6 +597,8 @@ static int render_op_draw_primitives_16(lagfx_protocol_t *p,
 
     if (p && p->render_enc.in_pass && vertex_count > 0) {
 #ifdef LAGFX_HAVE_VULKAN
+        LAGFX_ERR("DrawPrimitives16: DRAW with VK_NULL_HANDLE placeholders "
+                  "(pipeline=COLOR_FILL stub, vb=dummy_vb — Stage 20% not wired)");
         lagfx_translate_render_draw(&p->render_enc,
                                     vertex_count, 1,
                                     vertex_start, 0);
@@ -607,6 +629,8 @@ static int render_op_draw_indexed_primitives_64(lagfx_protocol_t *p,
 
     if (p && p->render_enc.in_pass && index_count > 0) {
 #ifdef LAGFX_HAVE_VULKAN
+        LAGFX_ERR("DrawIndexedPrimitives64: DRAW with VK_NULL_HANDLE placeholders "
+                  "(pipeline=COLOR_FILL stub, vb=dummy_vb — Stage 20% not wired)");
         uint32_t elem_size = (index_type == 0) ? 2u : 4u;
         uint32_t first_index = (uint32_t)(index_buf_offset / elem_size);
         lagfx_translate_render_draw_indexed(&p->render_enc,
@@ -842,12 +866,9 @@ static int render_op_set_vertex_buffers_with_stride(lagfx_protocol_t *p,
     return 0;
 }
 
-static lagfx_render_pass_desc_t g_last_render_pass_desc;
-
 static int render_op_describe_render_pass(lagfx_protocol_t *p,
                                           const uint8_t    *payload,
                                           size_t            len) {
-    (void)p;
     lagfx_render_pass_desc_t desc;
     memset(&desc, 0, sizeof(desc));
     int rc = lagfx_parse_render_pass_descriptor(payload, len, &desc);
@@ -856,7 +877,9 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                   rc, len);
         return rc;
     }
-    g_last_render_pass_desc = desc;
+    if (p) {
+        p->last_render_pass_desc = desc;
+    }
     LAGFX_WARN("render_op_describe_render_pass: depth=%u stencil=%u "
                "colors=%u rt=%llux%llu",
                desc.has_depth, desc.has_stencil,
@@ -867,8 +890,8 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
 }
 
 const lagfx_render_pass_desc_t *
-lagfx_render_pass_desc_get(void) {
-    return &g_last_render_pass_desc;
+lagfx_render_pass_desc_get(const lagfx_protocol_t *p) {
+    return p ? &p->last_render_pass_desc : NULL;
 }
 
 /* --- Draw instanced/base/patch/indirect variants --------------- */
