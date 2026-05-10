@@ -142,8 +142,8 @@ static void lagfx_cmdbuf_commit_empty_vk_submit(lagfx_protocol_t *p,
      if (!desc) {
          LAGFX_WARN("render_encoder_try_begin: no render pass descriptor");
          /* Auto-submit empty frame for Stage 20% visibility */
-         LAGFX_LOG("render_encoder_try_begin: auto-submitting empty frame "
-                   "for Stage 20% visibility");
+LAGFX_LOG("render_encoder_try_begin: auto-submitting empty frame "
+                  "for Stage 20%% visibility");
          lagfx_vk_end_frame(vk);
          return;
      }
