@@ -143,6 +143,17 @@ lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(
 
     uint64_t ss_gpa = ((uint64_t)ss_pfn << 12);
 
+    /* Store shared state GPA and mark display as installed so vblank
+     * timer can poll ss[0x104] for the online event. Per
+     * paravirt-re/library/online-event-simplification.md, macOS polls
+     * ss[0x104]==0xC immediately after setupSharedState. */
+    if (display_index < 16) {
+        p->dev->display_ss_gpa[display_index] = ss_gpa;
+        p->dev->display_ss_installed |= (1u << display_index);
+        LAGFX_LOG("vchan_setup_shared_state: installed display[%u] at gpa=0x%llx",
+                  display_index, (unsigned long long)ss_gpa);
+    }
+
     uint16_t port = (uint16_t)display_index;
     p->dev->desc.shell.write_memory(
         p->dev->desc.shell.opaque, ss_gpa + 0x12u,
@@ -165,6 +176,17 @@ lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(
     p->dev->desc.shell.write_memory(
         p->dev->desc.shell.opaque, ss_gpa + 0x00u,
         sizeof(conn_id), &conn_id);
+
+    /* CRITICAL: Write online event flag (ss[0x104]=0xC) immediately.
+     * Per paravirt-re/library/online-event-simplification.md §2, macOS
+     * polls this location and proceeds when it sees 0xC. Without this,
+     * macOS hangs waiting for the display to become online. */
+    uint32_t enabled = 0xCu;
+    p->dev->desc.shell.write_memory(
+        p->dev->desc.shell.opaque, ss_gpa + 0x104u,
+        sizeof(enabled), &enabled);
+    LAGFX_LOG("vchan_setup_shared_state: wrote ss[0x104]=0xC (online event) "
+              "for display[%u]", display_index);
 
     static const char mode_name[] = "1920x1080";
     p->dev->desc.shell.write_memory(
