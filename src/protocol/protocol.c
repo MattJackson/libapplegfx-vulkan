@@ -913,15 +913,15 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     }
                 }
 
-               uint32_t last_stamp = 0u;
-                bool all_cmds_accepted = true;
-            if (ring_pfn != 0u && write_ptr > read_ptr
-                && write_ptr <= 0x100000u) {
-                uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
+                uint32_t last_stamp = 0u;
+                bool saw_non_setup = false;
+                if (ring_pfn != 0u && write_ptr > read_ptr && write_ptr <= 0x100000u) {
+                    uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
 
-                uint32_t cur_rp = read_ptr;
-                unsigned cmd_idx = 0;
-                while (cur_rp + 12u <= write_ptr) {
+                    uint32_t cur_rp = read_ptr;
+                    unsigned cmd_idx = 0;
+                    while (cur_rp + 12u <= write_ptr) {
+
                     uint8_t hdr_bytes[12] = {0};
                     {
                         bool ok = true;
@@ -1147,6 +1147,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     cur_rp += cmd_len;
                     cmd_idx += 1;
                 }
+
 
                 uint32_t new_rp = cur_rp;
                 if (p->dev->desc.shell.write_memory) {
