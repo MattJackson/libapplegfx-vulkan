@@ -492,7 +492,6 @@ if (p && p->dev) {
                 LAGFX_LOG("SetFragmentTextures: display[%u] attached", d);
             }
         }
-        }
         if (live_count == 0) {
             LAGFX_LOG("SetFragmentTextures: WARNING - no live displays found! Using defaults %ux%u fmt=%u",
                       width, height, format);
