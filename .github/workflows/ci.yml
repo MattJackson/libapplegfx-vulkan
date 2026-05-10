@@ -35,9 +35,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             meson ninja-build pkg-config \
-            libvulkan-dev vulkan-headers mesa-vulkan-drivers \
-            vulkan-tools glslang-tools \
-            clang
+            libvulkan-dev vulkan-tools glslang-tools \
+            mesa-vulkan-drivers clang
 
       - name: Verify Vulkan toolchain
         # Hard-fail if the apt install above did not yield a usable Vulkan

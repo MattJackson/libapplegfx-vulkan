@@ -32,8 +32,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             meson ninja-build pkg-config clang \
-            libvulkan-dev vulkan-headers vulkan-tools \
-            vulkan-validationlayers mesa-vulkan-swrast \
+            libvulkan-dev vulkan-tools \
+            vulkan-validationlayers mesa-vulkan-drivers \
             glslang-tools spirv-tools
       - name: Configure (${{ matrix.build_type }})
         run: meson setup build --buildtype=${{ matrix.build_type }}

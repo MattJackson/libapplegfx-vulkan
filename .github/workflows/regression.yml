@@ -18,7 +18,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y meson ninja-build vulkan-tools libvulkan-dev
-          pip3 install vncdotool opencv-python-headless numpy
+          pip3 install vncdotool opencv-python numpy
       
       - name: Setup build
         run: |
