@@ -36,6 +36,7 @@
 /* ================================================================
  * Helper lookup — find memory type index (inlined from display.c pattern)
  * ================================================================ */
+#ifdef LAGFX_HAVE_VULKAN
 
 static uint32_t blit_find_memory_type(VkPhysicalDevice phys,
                                       uint32_t typeBits,
@@ -107,6 +108,8 @@ static void destroy_staging_buffer(struct lagfx_vk_state *vk_impl,
     if (mem != VK_NULL_HANDLE) vkFreeMemory(vk_impl->device, mem, NULL);
 }
 
+#endif /* LAGFX_HAVE_VULKAN */
+
 /* ================================================================
  * 0x141 FillTextureWithColor — vkCmdClearColorImage
  *
@@ -119,6 +122,8 @@ static void destroy_staging_buffer(struct lagfx_vk_state *vk_impl,
  *   +0x44  u32 pixel_format       (4 bytes: MTLPixelFormat enum)
  *   = 92 B total
  * ================================================================ */
+
+#ifdef LAGFX_HAVE_VULKAN
 
 lagfx_status_t lagfx_translate_blit_fill_texture_color(void *vk,
                                                        void *texture_ref,
@@ -255,7 +260,7 @@ lagfx_status_t lagfx_translate_blit_fill_texture_color(void *vk,
  *   +0x1c  MTLSize src_size         (12 bytes: width, height, depth)
  *   +0x28  u32 dst_slice            (4 bytes)
  *   +0x2c  u32 dst_level            (4 bytes)
- *   = 88 B total
+*   = 88 B total
  * ================================================================ */
 
 lagfx_status_t lagfx_translate_blit_copy_texture_to_texture(void *vk,
@@ -265,6 +270,9 @@ lagfx_status_t lagfx_translate_blit_copy_texture_to_texture(void *vk,
                                                             const MTLSize *src_size,
                                                             uint32_t dst_slice,
                                                             uint32_t dst_level) {
+#endif /* LAGFX_HAVE_VULKAN */
+
+#ifdef LAGFX_HAVE_VULKAN
     struct lagfx_vk_state *vk_impl = (struct lagfx_vk_state *)vk;
 
     if (!vk || !src_texture_ref || !dst_texture_ref
@@ -430,3 +438,5 @@ lagfx_status_t lagfx_translate_blit_copy_texture_to_texture(void *vk,
     return LAGFX_OK;
 }
 
+
+#endif /* LAGFX_HAVE_VULKAN */

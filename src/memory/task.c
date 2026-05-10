@@ -224,41 +224,29 @@ bool lagfx_task_map_host_memory(lagfx_task_t *task, uint64_t vm_offset,
     }
 
 #ifdef __linux__
-    /* === Option C: zero-copy aliasing via MAP_SHARED memfd ======
+    /* === Option C: zero-copy aliasing via MAP_FIXED on original pages ======
      *
-     * Instead of mremap (which requires the source VMA to be
-     * MAP_SHARED and fails with EINVAL on QEMU's private RAMBlocks),
-     * we create a dedicated MAP_SHARED memfd and mmap it at target.
-     * The host_addr contents are copied once, then both sides write
-     * through the same shared pages (via QEMU's copy-back path or
-     * direct DMA coherence if backend supports it).
-     *
-     * This guarantees coherence: guest writes via QEMU propagate to
-     * libapplegfx-vulkan because we use MAP_SHARED instead of trying
-     * to duplicate QEMU's private mapping. */
-    if (task->memfd < 0) {
-        task->memfd = task_create_memfd(task->reserved_size);
-        if (task->memfd < 0) {
-            return false;
-        }
+     * Use mremap to relocate host_addr's VMA to target, achieving TRUE
+     * bidirectional coherence (both pointers access same physical pages).
+     * Requires source VMA to be MAP_SHARED; fails with EINVAL for private. */
+
+    /* Try true aliasing via mremap: move/extend the original VMA to target.
+     * Works when host_addr is MAP_SHARED (memfd-backed, QEMU share=on). */
+    void *mapped = mremap((void *)host_addr, len, len,
+                          MREMAP_MAYMOVE | MREMAP_FIXED, target);
+    
+    if (mapped != MAP_FAILED && mapped == target) {
+        /* Success: host_addr and target now alias the same pages. */
+        return true;
     }
 
-    /* Map the memfd at target with MAP_SHARED for coherence. */
-    void *mapped = mmap(target, (size_t)len, prot,
-                        MAP_FIXED | MAP_SHARED, task->memfd,
-                        (off_t)vm_offset);
-    if (mapped == MAP_FAILED) {
-        LAGFX_ERR("mmap(MAP_SHARED) at offset %llu failed: %s",
-                (unsigned long long)vm_offset, strerror(errno));
-        return false;
-    }
-
-    /* Copy host_addr contents into the shared mapping. */
-    if (host_addr) {
-        memcpy(mapped, host_addr, (size_t)len);
-    }
-
-    return true;
+    /* mremap failed (likely private VMA or other constraint). Fall back to
+     * copy-on-map since we can't guarantee coherence for this case. */
+    LAGFX_WARN(
+        "lagfx_task_map_host_memory: mremap aliasing failed at offset %llu"
+        " — falling back to copy (coherence may not hold)",
+        (unsigned long long)vm_offset);
+    return task_map_via_copy(task, vm_offset, target, host_addr, len, prot);
 #else
     /* Non-Linux dev path (Darwin / others): no mremap, retain the
      * legacy copy-on-map behaviour. Production runs on Linux; the
