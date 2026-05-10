@@ -483,18 +483,15 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
         LAGFX_TRACE("  ... (%u more)", count - 4);
 
     /* Debug: log display state for Stage 20 resource resolution */
-    if (p && p->dev) {
+if (p && p->dev) {
         int live_count = 0;
         uint32_t width = 1920, height = 1080, format = 80; // defaults
         for (uint32_t d = 0; d < LAGFX_PROTO_MAX_DISPLAYS; ++d) {
-            if (p->dev->displays[d] && p->dev->displays[d]->live) {
+            if (p->dev->displays[d]) {
                 live_count++;
-                width = p->dev->displays[d]->width;
-                height = p->dev->displays[d]->height;
-                format = p->dev->displays[d]->format;
-                LAGFX_LOG("SetFragmentTextures: display[%u] live %ux%u fmt=%u",
-                          d, width, height, format);
+                LAGFX_LOG("SetFragmentTextures: display[%u] attached", d);
             }
+        }
         }
         if (live_count == 0) {
             LAGFX_LOG("SetFragmentTextures: WARNING - no live displays found! Using defaults %ux%u fmt=%u",
@@ -580,20 +577,13 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
                 LAGFX_TRACE("SetFragmentTextures: ref=0x%08x not in resource "
                             "registry, creating on-demand", ref);
                 
-                /* Find display to get dimensions */
-                lagfx_display_entry_t *disp = NULL;
+                /* Use default display dimensions (1920x1080 BGRA8) for now.
+ * Full resolution will come from CmdDisplaySwapMapping in Phase 2.A. */
                 uint32_t width = 1920, height = 1080, format = 80; // default BGRA8
                 
                 if (p->dev && p->dev->displays) {
-                    for (uint32_t d = 0; d < LAGFX_PROTO_MAX_DISPLAYS; ++d) {
-                        if (p->dev->displays[d] && p->dev->displays[d]->live) {
-                            disp = p->dev->displays[d];
-                            width = disp->width;
-                            height = disp->height;
-                            format = disp->format;
-                            break;
-                        }
-                    }
+                    LAGFX_TRACE("SetFragmentTextures: %u displays attached", 
+                                LAGFX_PROTO_MAX_DISPLAYS);
                 }
                 
                 if (p->dev && p->dev->vk && p->dev->vk->initialized) {
