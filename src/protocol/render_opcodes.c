@@ -91,6 +91,7 @@
 #include "../device.h"
 #include "../translate/render_encoder.h"
 #include "../vulkan/instance.h"
+#include "../vulkan/iosurface.h"
 
 #include <stddef.h>
 #include <stdio.h>
