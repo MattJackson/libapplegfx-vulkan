@@ -487,11 +487,11 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
         int live_count = 0;
         uint32_t width = 1920, height = 1080, format = 80; // defaults
         for (uint32_t d = 0; d < LAGFX_PROTO_MAX_DISPLAYS; ++d) {
-            if (p->dev->displays[d].live) {
+            if (p->dev->displays[d] && p->dev->displays[d]->live) {
                 live_count++;
-                width = p->dev->displays[d].width;
-                height = p->dev->displays[d].height;
-                format = p->dev->displays[d].format;
+                width = p->dev->displays[d]->width;
+                height = p->dev->displays[d]->height;
+                format = p->dev->displays[d]->format;
                 LAGFX_LOG("SetFragmentTextures: display[%u] live %ux%u fmt=%u",
                           d, width, height, format);
             }
@@ -586,8 +586,8 @@ static int render_op_set_fragment_textures(lagfx_protocol_t *p,
                 
                 if (p->dev && p->dev->displays) {
                     for (uint32_t d = 0; d < LAGFX_PROTO_MAX_DISPLAYS; ++d) {
-                        if (p->dev->displays[d].live) {
-                            disp = &p->dev->displays[d];
+                        if (p->dev->displays[d] && p->dev->displays[d]->live) {
+                            disp = p->dev->displays[d];
                             width = disp->width;
                             height = disp->height;
                             format = disp->format;
