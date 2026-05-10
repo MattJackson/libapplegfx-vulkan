@@ -647,10 +647,10 @@ if (p && p->dev) {
                         p->render_enc.in_pass,
                         p->render_enc.pipeline_bound);
         }
-    }
     return 0;
 }
 
+/* TEMP: placeholder for render_op_use_resources */
 static int render_op_use_resources(lagfx_protocol_t *p,
                                     const uint8_t    *payload,
                                     size_t            len) {
