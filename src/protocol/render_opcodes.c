@@ -1046,6 +1046,30 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
             lagfx_resource_entry_t *entry =
                 lagfx_resource_lookup(reg, desc.depth_texture_ref, p->current_task_id);
 
+            /* Auto-create depth surface if not found */
+            if (!entry || entry->type != LAGFX_RESOURCE_TYPE_TEXTURE) {
+#ifdef LAGFX_HAVE_VULKAN
+                if (p->dev && p->dev->vk) {
+                    lagfx_vk_iosurface_t *ios = NULL;
+                    lagfx_status_t st = lagfx_vk_iosurface_create(p->dev->vk, 1920, 1080, VK_FORMAT_D32_SFLOAT, &ios);
+                    if (st == LAGFX_OK && ios) {
+                        entry = lagfx_resource_lookup(reg, desc.depth_texture_ref, p->current_task_id);
+                        if (!entry || entry->type != LAGFX_RESOURCE_TYPE_TEXTURE) {
+                            lagfx_resource_register(reg, desc.depth_texture_ref, LAGFX_RESOURCE_TYPE_TEXTURE,
+                                                    p->current_task_id, 0u, (uint64_t)1920 * 1080 * 4);
+                            entry = lagfx_resource_lookup(reg, desc.depth_texture_ref, p->current_task_id);
+                            if (entry) {
+                                entry->host_handle = ios;
+                                LAGFX_LOG("render_op_describe_render_pass: auto-created depth surface 0x%x", desc.depth_texture_ref);
+                            } else {
+                                lagfx_vk_iosurface_destroy(p->dev->vk, ios);
+                            }
+                        }
+                    }
+                }
+#endif
+            }
+
             VkImageView view = VK_NULL_HANDLE;
             if (entry && entry->type == LAGFX_RESOURCE_TYPE_TEXTURE) {
                 VkImage image = (VkImage)(uintptr_t)entry->host_handle;
@@ -1085,6 +1109,30 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
             lagfx_resource_registry_t *reg = &p->resources;
             lagfx_resource_entry_t *entry =
                 lagfx_resource_lookup(reg, desc.stencil_texture_ref, p->current_task_id);
+
+            /* Auto-create stencil surface if not found */
+            if (!entry || entry->type != LAGFX_RESOURCE_TYPE_TEXTURE) {
+#ifdef LAGFX_HAVE_VULKAN
+                if (p->dev && p->dev->vk) {
+                    lagfx_vk_iosurface_t *ios = NULL;
+                    lagfx_status_t st = lagfx_vk_iosurface_create(p->dev->vk, 1920, 1080, VK_FORMAT_S8_UINT, &ios);
+                    if (st == LAGFX_OK && ios) {
+                        entry = lagfx_resource_lookup(reg, desc.stencil_texture_ref, p->current_task_id);
+                        if (!entry || entry->type != LAGFX_RESOURCE_TYPE_TEXTURE) {
+                            lagfx_resource_register(reg, desc.stencil_texture_ref, LAGFX_RESOURCE_TYPE_TEXTURE,
+                                                    p->current_task_id, 0u, (uint64_t)1920 * 1080);
+                            entry = lagfx_resource_lookup(reg, desc.stencil_texture_ref, p->current_task_id);
+                            if (entry) {
+                                entry->host_handle = ios;
+                                LAGFX_LOG("render_op_describe_render_pass: auto-created stencil surface 0x%x", desc.stencil_texture_ref);
+                            } else {
+                                lagfx_vk_iosurface_destroy(p->dev->vk, ios);
+                            }
+                        }
+                    }
+                }
+#endif
+            }
 
             VkImageView view = VK_NULL_HANDLE;
             if (entry && entry->type == LAGFX_RESOURCE_TYPE_TEXTURE) {
@@ -1127,6 +1175,32 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
             lagfx_resource_registry_t *reg = &p->resources;
             lagfx_resource_entry_t *entry =
                 lagfx_resource_lookup(reg, ref, p->current_task_id);
+
+            /* Auto-create surface if not found (guest may not send CmdCreateIOSurfaceBacking2) */
+            if (!entry || entry->type != LAGFX_RESOURCE_TYPE_TEXTURE) {
+#ifdef LAGFX_HAVE_VULKAN
+                if (p->dev && p->dev->vk) {
+                    lagfx_vk_iosurface_t *ios = NULL;
+                    lagfx_status_t st = lagfx_vk_iosurface_create(p->dev->vk, 1920, 1080, VK_FORMAT_B8G8R8A8_UNORM, &ios);
+                    if (st == LAGFX_OK && ios) {
+                        entry = lagfx_resource_lookup(reg, ref, p->current_task_id);
+                        if (!entry || entry->type != LAGFX_RESOURCE_TYPE_TEXTURE) {
+                            lagfx_resource_register(reg, ref, LAGFX_RESOURCE_TYPE_TEXTURE,
+                                                    p->current_task_id, 0u, (uint64_t)1920 * 1080 * 4);
+                            entry = lagfx_resource_lookup(reg, ref, p->current_task_id);
+                            if (entry) {
+                                entry->host_handle = ios;
+                                LAGFX_LOG("render_op_describe_render_pass: auto-created surface 0x%x", ref);
+                            } else {
+                                lagfx_vk_iosurface_destroy(p->dev->vk, ios);
+                            }
+                        }
+                    }
+                }
+#else
+                (void)ref; /* unused in non-Vulkan build */
+#endif
+            }
 
             VkImageView view = VK_NULL_HANDLE;
             if (entry && entry->type == LAGFX_RESOURCE_TYPE_TEXTURE) {
