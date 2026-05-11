@@ -23,6 +23,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef LAGFX_HAVE_VULKAN
+#  include <vulkan/vulkan.h>
+#endif
+
 #define LAGFX_MAX_RESOURCES 256u
 
 typedef enum {
