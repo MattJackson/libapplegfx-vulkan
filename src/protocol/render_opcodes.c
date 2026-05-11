@@ -1047,7 +1047,7 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                 lagfx_resource_lookup(reg, desc.depth_texture_ref, p->current_task_id);
 
             /* Auto-create depth surface if not found */
-            if (!entry || entry->type != LAGFX_RESOURCE_TYPE_TEXTURE) {
+            if (!entry) {
 #ifdef LAGFX_HAVE_VULKAN
                 if (p->dev && p->dev->vk) {
                     lagfx_vk_iosurface_t *ios = NULL;
@@ -1111,7 +1111,7 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                 lagfx_resource_lookup(reg, desc.stencil_texture_ref, p->current_task_id);
 
             /* Auto-create stencil surface if not found */
-            if (!entry || entry->type != LAGFX_RESOURCE_TYPE_TEXTURE) {
+            if (!entry) {
 #ifdef LAGFX_HAVE_VULKAN
                 if (p->dev && p->dev->vk) {
                     lagfx_vk_iosurface_t *ios = NULL;
@@ -1176,8 +1176,8 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
             lagfx_resource_entry_t *entry =
                 lagfx_resource_lookup(reg, ref, p->current_task_id);
 
-            /* Auto-create surface if not found (guest may not send CmdCreateIOSurfaceBacking2) */
-            if (!entry || entry->type != LAGFX_RESOURCE_TYPE_TEXTURE) {
+           /* Auto-create surface if not found (guest may not send CmdCreateIOSurfaceBacking2) */
+            if (!entry) {
 #ifdef LAGFX_HAVE_VULKAN
                 if (p->dev && p->dev->vk) {
                     lagfx_vk_iosurface_t *ios = NULL;
@@ -1194,6 +1194,11 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                             } else {
                                 lagfx_vk_iosurface_destroy(p->dev->vk, ios);
                             }
+                        }
+                    }
+                }
+#endif
+            }
                         }
                     }
                 }
