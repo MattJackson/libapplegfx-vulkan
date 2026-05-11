@@ -772,6 +772,77 @@ lagfx_handler_status_t lagfx_op_map_memory_immediate(
 }
 
 /* ===========================================================================
+ * ChannelEvent35 (0x35) — P2 log+ack stub
+ *
+ * Wire payload (12 B): {eventID, kind=1, counter}
+ * - eventID: +0x00 = call 0x14563376(this) (per-channel event-ID accessor)
+ * - kind:    +0x04 = literal 1
+ * - counter: +0x08 = this[+0x180] (monotonic event counter)
+ *
+ * Emitted on Immediate vchan from AppleParavirtGPU.kext's channel-event
+ * machine. Per RE at paravirt-re/library/journey/opcodes-0x35-0x36-0x39.md,
+ * this is a "first emit since counter became non-zero" notification. No
+ * per-task radix tree interaction — safe to log+ack stub until full
+ * semantics are REd.
+ * =========================================================================== */
+
+lagfx_handler_status_t lagfx_op_channel_event_35(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    (void)p;
+    if (!hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 12u) {
+        LAGFX_WARN("ChannelEvent35: payload too small (%u bytes)",
+                   (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_OK;
+    }
+
+    uint32_t event_id = lagfx_le32(hdr->payload + 0);
+    uint32_t kind     = lagfx_le32(hdr->payload + 4);
+    uint32_t counter  = lagfx_le32(hdr->payload + 8);
+
+    LAGFX_TRACE("ChannelEvent35: eventID=%u kind=%u counter=%u stamp=0x%08x",
+                event_id, kind, counter, hdr->stamp);
+
+    return LAGFX_HANDLER_OK;
+}
+
+/* ===========================================================================
+ * ChannelEvent36 (0x36) — P2 log+ack stub
+ *
+ * Wire payload (8 B): {counter, eventID}
+ * - counter: +0x00 = this[+0x180]   (monotonic event counter)
+ * - eventID: +0x04 = call 0x14563376(this) (per-channel event-ID accessor)
+ *
+ * Emitted on Immediate vchan from AppleParavirtGPU.kext's channel-event
+ * machine. Paired family with 0x35 — likely "channel event published bare".
+ * No per-task radix tree interaction — safe to log+ack stub until full
+ * semantics are REd.
+ * =========================================================================== */
+
+lagfx_handler_status_t lagfx_op_channel_event_36(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    (void)p;
+    if (!hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 8u) {
+        LAGFX_WARN("ChannelEvent36: payload too small (%u bytes)",
+                   (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_OK;
+    }
+
+    uint32_t counter  = lagfx_le32(hdr->payload + 0);
+    uint32_t event_id = lagfx_le32(hdr->payload + 4);
+
+    LAGFX_TRACE("ChannelEvent36: counter=%u eventID=%u stamp=0x%08x",
+                counter, event_id, hdr->stamp);
+
+    return LAGFX_HANDLER_OK;
+}
+
+/* ===========================================================================
  * CmdDeleteResource (0x08) — P2
  *
  * Payload layout UNKNOWN (min/max_payload=0 in the descriptor table).

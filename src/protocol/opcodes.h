@@ -261,8 +261,12 @@ lagfx_handler_status_t lagfx_op_define_host_task(lagfx_protocol_t *p,
                                                  const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_map_memory_immediate(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_channel_event_35(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_channel_event_36(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_delete_resource(lagfx_protocol_t *p,
-                                                 const lagfx_cmd_header_t *hdr);
+                                                  const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_op_set_object_placement(lagfx_protocol_t *p,
                                                       const lagfx_cmd_header_t *hdr);
 

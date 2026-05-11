@@ -192,9 +192,9 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_CHANNEL_EVENT_34,         "ChannelEvent34",
       LAGFX_PRIO_P2, 0,  0,  NULL },
     { LAGFX_OP_CHANNEL_EVENT_35,         "ChannelEvent35",
-      LAGFX_PRIO_P2, 0,  0,  NULL },
+      LAGFX_PRIO_P2, 12, 12, lagfx_op_channel_event_35 },
     { LAGFX_OP_CHANNEL_EVENT_36,         "ChannelEvent36",
-      LAGFX_PRIO_P2, 0,  0,  NULL },
+      LAGFX_PRIO_P2, 8,  8,  lagfx_op_channel_event_36 },
     /* 0x37 in the kext-side namespace is the same logical operation
      * as 0x20 in the dylib/host namespace — CmdExecIndirect2. The
      * kext emits 0x37 on per-channel rings (vchan/exec channels);
