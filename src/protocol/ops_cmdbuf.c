@@ -1083,9 +1083,11 @@ LAGFX_TRACE("    segment[%u]: dispatching inner op=0x%04x encType=%u",
                     }
                     if (render_begin_pending
                          && inner_opcode == 0x1au) {
+LAGFX_WARN("Stage 30: render_begin_pending=TRUE, calling try_begin for opcode 0x1a");
                         render_begin_pending = false;
-LAGFX_WARN("Stage 30: About to call lagfx_render_encoder_try_begin for opcode 0x1a");
                         lagfx_render_encoder_try_begin(p);
+                    } else if (inner_opcode == 0x1au) {
+LAGFX_WARN("Stage 30: render_begin_pending=FALSE (in_pass=%d), NOT calling try_begin", p->render_enc.in_pass);
                     }
                 } else if (encoder_type == 4u) {
                     /* Blit encoder (encType=4): buffer copies,
