@@ -1158,12 +1158,8 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
             }
         }
         
-        LAGFX_WARN("render_op_describe_render_pass: depth=%u stencil=%u colors=%u rt=%llux%llu views_created=%u",
-                   desc.has_depth, desc.has_stencil,
-                   desc.color_attachment_count,
-                   (unsigned long long)desc.render_target_width,
-                   (unsigned long long)desc.render_target_height,
-                   total_views);
+        LAGFX_WARN("0x1a: RenderPassDescriptor parsed — %u attachments",
+                   desc.has_depth + desc.has_stencil + desc.color_attachment_count);
     } else {
         LAGFX_WARN("render_op_describe_render_pass: depth=%u stencil=%u "
                    "colors=%u rt=%llux%llu",
