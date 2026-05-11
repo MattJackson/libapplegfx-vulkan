@@ -388,14 +388,14 @@ static void lagfx_drain_display_child_rings(lagfx_protocol_t *p,
 
             uint16_t opcode = (uint16_t)(hdr_bytes[0]
                                          | (hdr_bytes[1] << 8));
-            uint32_t cmd_len = (uint32_t)(hdr_bytes[4]
-                                          | (hdr_bytes[5] << 8)
-                                          | (hdr_bytes[6] << 16)
-                                          | (hdr_bytes[7] << 24));
-            uint32_t stamp = (uint32_t)(hdr_bytes[8]
-                                        | (hdr_bytes[9] << 8)
-                                        | (hdr_bytes[10] << 16)
-                                        | (hdr_bytes[11] << 24));
+            uint32_t cmd_len = (uint32_t)hdr_bytes[4]
+                              | ((uint32_t)hdr_bytes[5] << 8)
+                              | ((uint32_t)hdr_bytes[6] << 16)
+                              | ((uint32_t)hdr_bytes[7] << 24);
+            uint32_t stamp = (uint32_t)hdr_bytes[8]
+                            | ((uint32_t)hdr_bytes[9] << 8)
+                            | ((uint32_t)hdr_bytes[10] << 16)
+                            | ((uint32_t)hdr_bytes[11] << 24);
 
             if (cmd_len < 12u || cmd_len > entry_size) {
                 LAGFX_TRACE("child_ring[%u]: bad cmd_len=%u at cur=%u "
@@ -963,14 +963,14 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
                     uint16_t opcode = (uint16_t)(hdr_bytes[0]
                                                   | (hdr_bytes[1] << 8));
-                    uint32_t cmd_len =
-                        (uint32_t)(hdr_bytes[4] | (hdr_bytes[5] << 8)
-                                   | (hdr_bytes[6] << 16)
-                                   | (hdr_bytes[7] << 24));
-                    uint32_t stamp =
-                        (uint32_t)(hdr_bytes[8] | (hdr_bytes[9] << 8)
-                                   | (hdr_bytes[10] << 16)
-                                   | (hdr_bytes[11] << 24));
+                    uint32_t cmd_len = (uint32_t)hdr_bytes[4]
+                                      | ((uint32_t)hdr_bytes[5] << 8)
+                                      | ((uint32_t)hdr_bytes[6] << 16)
+                                      | ((uint32_t)hdr_bytes[7] << 24);
+                    uint32_t stamp = (uint32_t)hdr_bytes[8]
+                                    | ((uint32_t)hdr_bytes[9] << 8)
+                                    | ((uint32_t)hdr_bytes[10] << 16)
+                                    | ((uint32_t)hdr_bytes[11] << 24);
 
                     if (cmd_len < 12u
                         || cmd_len > (write_ptr - cur_rp)) {

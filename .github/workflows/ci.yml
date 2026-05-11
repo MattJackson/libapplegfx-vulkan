@@ -228,9 +228,17 @@ jobs:
             brew-macos-meson-v2-
 
       - name: Install build deps
+        # When the brew cache is restored, Cellar/* is present but the
+        # symlinks under $(brew --prefix)/bin may be missing — `brew
+        # install <pkg>` then silently no-ops (already installed) and
+        # the binary isn't on PATH. `brew link --overwrite` after the
+        # install forces the symlinks even on cache-hit.
         run: |
           brew update
-          brew install meson ninja pkg-config
+          brew install meson ninja pkg-config || true
+          brew link --overwrite meson ninja pkg-config
+          meson --version
+          ninja --version
 
       - name: Configure
         run: meson setup build
