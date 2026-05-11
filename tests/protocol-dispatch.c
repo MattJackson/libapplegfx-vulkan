@@ -808,8 +808,11 @@ static void test_map_memory2_handler(void) {
           "CmdMapMemory2(3 ranges) produced one shell.map_memory call "
           "(batched; callback internally iterates)");
 
-    /* Malformed: rangeCount=5 but payload only holds 1 range — reject. */
-    uint8_t bad[36];
+    /* Malformed: rangeCount=5 but payload only holds 1 range — reject.
+     * Buffer is 40B so put_le64 at +32 fits (writes bytes 32..39); the
+     * cmd's declared total_length is still 36, which is what the
+     * parser sees and rejects (count=5 needs 100B, payload has 24). */
+    uint8_t bad[40];
     build_header(bad, LAGFX_OP_MAP_MEMORY2, 0, 36, 0xb0000005u);
     put_le32(bad + 12, 42u);
     put_le64(bad + 16, 0ull);
