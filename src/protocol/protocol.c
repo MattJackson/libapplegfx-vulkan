@@ -231,12 +231,12 @@ void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p,
          * ISR and breaks guest networking. Pin to vec 0. */
         p->dev->desc.shell.raise_interrupt(p->dev->desc.shell.opaque, 0u);
         p->interrupts_raised += 1;
-        LAGFX_TRACE("complete_stamp[slot=%u]: cmd_stamp=0x%08x + IRQ vec=0 "
-                    "(pending_mask=0x%08x)",
-                    slot, stamp, p->pending_stamps_bitmask);
+        LAGFX_LOG("complete_stamp[slot=%u]: cmd_stamp=0x%08x + IRQ vec=0 "
+                  "(pending_mask=0x%08x)",
+                  slot, stamp, p->pending_stamps_bitmask);
     } else {
-        LAGFX_TRACE("complete_stamp[slot=%u]: cmd_stamp=0x%08x (no IRQ cb)",
-                    slot, stamp);
+        LAGFX_LOG("complete_stamp[slot=%u]: cmd_stamp=0x%08x (no IRQ cb)",
+                  slot, stamp);
     }
 }
 
