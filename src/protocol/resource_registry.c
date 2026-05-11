@@ -48,8 +48,12 @@ void lagfx_resource_register(lagfx_resource_registry_t *reg,
     e->type        = type;
     e->task_id     = task_id;
     e->host_handle = NULL;
+#ifdef LAGFX_HAVE_VULKAN
     e->image       = VK_NULL_HANDLE;
     e->view        = VK_NULL_HANDLE;
+#else
+    e->image       = NULL;
+#endif
     e->gpu_addr    = gpu_addr;
     e->size        = size;
 
