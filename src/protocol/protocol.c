@@ -871,11 +871,13 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
              * advance descr.read_ptr to write_ptr, advance stamp_cell[ch]
              * via the monotonic helper using the LAST cmd's stamp value,
              * set bitmask bit ch, raise IRQ once. */
-            if (ch >= 1u && ch <= 4u
+            if (ch >= 1u && ch <= 7u
                 && ring_pfn != 0u && write_ptr > read_ptr
                 && write_ptr <= 0x100000u) {
                 uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
-                uint32_t child_ring_size = 0x10000u;
+                /* Display channels (ch>=5) have 4 KiB rings; non-display
+                 * channels (ch=1..4) have 64 KiB rings. */
+                uint32_t child_ring_size = (ch >= 5u) ? 0x1000u : 0x10000u;
 
                 /* page0 is a u32 PFN-array; data_pfn[i] is at page0+i*4.
                  * Cmd at ring offset `off` lives in data_pfn[off/0x1000]
@@ -1035,24 +1037,96 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                                 "stamp=0x%08x len=%u",
                                 ch, cmd_idx, opcode, stamp, cmd_len);
 
-                    /* ch=1..4 carry the FULL PGFIFO opcode table
+                    /* Per-channel dispatch.
+                     *
+                     * ch=1..4 carry the FULL PGFIFO opcode table
                      * (CmdExecIndirect2 / CmdSyncResources / CmdMapMemory2,
-                     * etc) — NOT the display-vchan compact opcode namespace
-                     * (which is for ch>=5). Hand the full cmd to
-                     * lagfx_protocol_dispatch_one_no_stamp; it routes
-                     * through the registered opcode handlers without
-                     * advancing the stamp cell (caller does that once
-                     * after the whole drain). */
-                    lagfx_cmd_header_t parsed;
-                    p->extra_stamp_advance = 0u;
-                    int rc = lagfx_protocol_dispatch_one_no_stamp(
-                        p, p->doorbell_bounce_buffer, cmd_len, &parsed);
-                    (void)rc;
+                     * etc). Route through lagfx_protocol_dispatch_one_no_stamp,
+                     * which dispatches through the registered opcode handlers
+                     * WITHOUT auto-advancing the stamp cell (this loop's
+                     * post-drain code does that once at the end).
+                     *
+                     * ch=5..7 carry the display-vchan COMPACT opcode
+                     * namespace ({0x01, 0x02, 0x04, 0x06, 0x07, 0x13, 0x14,
+                     * 0x1e, 0x35, 0x36}). These go through their own
+                     * lagfx_op_vchan_* / lagfx_op_display_* handlers and
+                     * intentionally do NOT touch total_cmds_seen
+                     * (m4-doorbell-drain.c:425 asserts seen_after==seen_before
+                     * for ch=5). */
+                    lagfx_cmd_header_t parsed = (lagfx_cmd_header_t){
+                        .opcode       = opcode,
+                        .arg_count_8b = 0u,
+                        .length       = cmd_len,
+                        .stamp        = stamp,
+                        .payload_size = (uint16_t)payload_len,
+                        .payload      = (payload_len > 0u)
+                            ? (p->doorbell_bounce_buffer + 12u) : NULL,
+                    };
 
-                    uint32_t effective = parsed.stamp + p->extra_stamp_advance;
-                    if (effective > last_stamp) {
-                        last_stamp = effective;
+                    if (ch <= 4u) {
+                        p->extra_stamp_advance = 0u;
+                        int rc = lagfx_protocol_dispatch_one_no_stamp(
+                            p, p->doorbell_bounce_buffer, cmd_len, &parsed);
+                        (void)rc;
+                        uint32_t effective = parsed.stamp
+                                             + p->extra_stamp_advance;
+                        if (effective > last_stamp) {
+                            last_stamp = effective;
+                        }
+                    } else {
+                        /* ch=5..7 display-vchan compact opcode dispatch.
+                         * See PGFIFO-sub-channel-opcode-table.md and
+                         * DisplayPipe-submitTransaction-opcodes.md. */
+                        switch (opcode) {
+                        case 0x01u:
+                            lagfx_op_vchan_setup_shared_state(p, &parsed);
+                            break;
+                        case 0x02u:
+                            saw_non_setup = true;
+                            lagfx_op_vchan_display_submit(p, &parsed);
+                            break;
+                        case 0x04u:
+                            lagfx_op_display_define_child_fifo(p, &parsed);
+                            break;
+                        case 0x06u:
+                            saw_non_setup = true;
+                            lagfx_op_vchan_present(p, &parsed);
+                            break;
+                        case 0x07u:
+                            saw_non_setup = true;
+                            lagfx_op_vchan_present_gamma(p, &parsed);
+                            break;
+                        case 0x13u:
+                            lagfx_op_display_cursor_show(p, &parsed);
+                            break;
+                        case 0x14u:
+                            lagfx_op_display_cursor_glyph(p, &parsed);
+                            break;
+                        case 0x1eu:
+                            if (!p->display_1e_logged) {
+                                LAGFX_TRACE("doorbell ch=%u: display vchan "
+                                            "opcode 0x1e (extended, "
+                                            "unimplemented) at rp=%u len=%u",
+                                            ch, cur_rp, cmd_len);
+                                p->display_1e_logged = true;
+                            }
+                            break;
+                        case 0x35u:
+                        case 0x36u:
+                            lagfx_op_vchan_unknown_extended(p, &parsed,
+                                                            opcode);
+                            break;
+                        default:
+                            LAGFX_TRACE("doorbell ch=%u: unknown display "
+                                        "vchan opcode 0x%02x at rp=%u len=%u",
+                                        ch, opcode, cur_rp, cmd_len);
+                            break;
+                        }
+                        if (stamp > last_stamp) {
+                            last_stamp = stamp;
+                        }
                     }
+
                     cur_rp += cmd_len;
                     cmd_idx += 1;
                 }
