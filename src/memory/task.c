@@ -224,28 +224,69 @@ bool lagfx_task_map_host_memory(lagfx_task_t *task, uint64_t vm_offset,
     }
 
 #ifdef __linux__
-    /* === Option C: zero-copy aliasing via MAP_FIXED on original pages ======
+    /* === Option C: zero-copy aliasing via mremap duplicate-mapping ========
      *
-     * Use mremap to relocate host_addr's VMA to target, achieving TRUE
-     * bidirectional coherence (both pointers access same physical pages).
-     * Requires source VMA to be MAP_SHARED; fails with EINVAL for private. */
+     * Per docs/memory-coherence-audit.md, the correct semantics for this
+     * function are to make `target` alias the same physical pages that
+     * `host_addr` points at — not to copy. With a MAP_SHARED source VMA
+     * (QEMU's memfd-backed RAMBlock, or the test's MAP_SHARED memfd),
+     * `mremap(old_size=0)` duplicates the source mapping into `target` —
+     * both pointers then refer to the same physical pages. Guest writes
+     * via QEMU are immediately visible at the task VA and vice versa.
+     *
+     * Preconditions for the duplicate-mapping form:
+     *   - old_size == 0  (this is what triggers duplication, not move)
+     *   - source VMA carries MAP_SHARED (otherwise EINVAL)
+     *   - MREMAP_MAYMOVE | MREMAP_FIXED with new_address == target
+     *
+     * mremap with MREMAP_FIXED refuses to overlay an existing mapping
+     * (unlike mmap MAP_FIXED which silently replaces). We must munmap
+     * the PROT_NONE reservation at `target` first to make a hole, then
+     * mremap fills it. If mremap fails we restore the hole via fresh
+     * PROT_NONE mmap so the reservation isn't permanently punctured.
+     *
+     * Original size=len form (MOVE) is wrong: it invalidates host_addr
+     * at the source. Keep old_size=0 (DUPLICATE). */
+    if (munmap(target, (size_t)len) != 0) {
+        LAGFX_ERR(
+            "lagfx_task_map_host_memory: munmap(target) failed at "
+            "offset %llu: %s",
+            (unsigned long long)vm_offset, strerror(errno));
+        return false;
+    }
 
-    /* Try true aliasing via mremap: move/extend the original VMA to target.
-     * Works when host_addr is MAP_SHARED (memfd-backed, QEMU share=on). */
-    void *mapped = mremap((void *)host_addr, len, len,
-                          MREMAP_MAYMOVE | MREMAP_FIXED, target);
-    
-    if (mapped != MAP_FAILED && mapped == target) {
-        /* Success: host_addr and target now alias the same pages. */
+    void *aliased = mremap(host_addr, 0, (size_t)len,
+                            MREMAP_MAYMOVE | MREMAP_FIXED, target);
+    if (aliased != MAP_FAILED) {
+        /* mremap cannot set protection; apply requested prot now.
+         * Non-fatal if mprotect fails — caller still has an alias. */
+        if (mprotect(target, (size_t)len, prot) != 0) {
+            LAGFX_WARN(
+                "lagfx_task_map_host_memory: mprotect failed at "
+                "offset %llu: %s (continuing with source prot)",
+                (unsigned long long)vm_offset, strerror(errno));
+        }
         return true;
     }
 
-    /* mremap failed (likely private VMA or other constraint). Fall back to
-     * copy-on-map since we can't guarantee coherence for this case. */
+    int saved_errno = errno;
+
+    /* mremap failed. Restore the PROT_NONE reservation before
+     * falling back so the task VA stays intact. */
+    void *restored = mmap(target, (size_t)len, PROT_NONE,
+                           MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (restored == MAP_FAILED) {
+        LAGFX_ERR(
+            "lagfx_task_map_host_memory: failed to restore PROT_NONE "
+            "reservation at offset %llu after mremap failure: %s",
+            (unsigned long long)vm_offset, strerror(errno));
+        return false;
+    }
+
     LAGFX_WARN(
         "lagfx_task_map_host_memory: mremap aliasing failed at offset %llu"
-        " — falling back to copy (coherence may not hold)",
-        (unsigned long long)vm_offset);
+        ": %s — falling back to copy (coherence may not hold)",
+        (unsigned long long)vm_offset, strerror(saved_errno));
     return task_map_via_copy(task, vm_offset, target, host_addr, len, prot);
 #else
     /* Non-Linux dev path (Darwin / others): no mremap, retain the

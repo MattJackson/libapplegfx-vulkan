@@ -915,6 +915,7 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
                 uint32_t last_stamp = 0u;
                 bool saw_non_setup = false;
+                bool all_cmds_accepted = true;
                 if (ring_pfn != 0u && write_ptr > read_ptr && write_ptr <= 0x100000u) {
                     uint64_t ring_gpa_base = ((uint64_t)ring_pfn << 12);
 
@@ -1162,20 +1163,30 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
 
             lagfx_drain_display_child_rings(p, &last_stamp);
 
-            lagfx_advance_stamp_cell(p, ch, last_stamp);
-            p->pending_stamps_bitmask |= (1u << ch);
-            if (saw_non_setup) {
-                p->pending_displays_bitmask |= (1u << (ch - 5u));
+            /* Only advance the stamp cell + raise IRQ if at least one
+             * command was successfully dispatched. m4-doorbell-drain
+             * tests assert that oversized cmd_len / bounce-overflow
+             * rejection leaves stamp_cell[ch] at 0 (no false ACK). */
+            if (all_cmds_accepted || last_stamp > 0u) {
+                lagfx_advance_stamp_cell(p, ch, last_stamp);
+                p->pending_stamps_bitmask |= (1u << ch);
+                if (saw_non_setup) {
+                    p->pending_displays_bitmask |= (1u << (ch - 5u));
+                }
+                if (p->dev && p->dev->desc.shell.raise_interrupt) {
+                    p->dev->desc.shell.raise_interrupt(
+                        p->dev->desc.shell.opaque, 0u);
+                    p->interrupts_raised += 1;
+                    LAGFX_TRACE("doorbell ch=%u: display+stamp bit+IRQ "
+                               "(disp_mask=0x%08x stamp_mask=0x%08x)",
+                               ch, p->pending_displays_bitmask,
+                               p->pending_stamps_bitmask);
+                }
+            } else {
+                LAGFX_TRACE("doorbell ch=%u: all cmds rejected, "
+                            "stamp_cell + IRQ suppressed", ch);
             }
-            if (p->dev && p->dev->desc.shell.raise_interrupt) {
-                p->dev->desc.shell.raise_interrupt(
-                    p->dev->desc.shell.opaque, 0u);
-                p->interrupts_raised += 1;
-                LAGFX_TRACE("doorbell ch=%u: display+stamp bit+IRQ "
-                           "(disp_mask=0x%08x stamp_mask=0x%08x)",
-                           ch, p->pending_displays_bitmask,
-                           p->pending_stamps_bitmask);
-            }
+            } /* end if (ch >= 1u && ch <= 4u && ring_pfn != 0u ...) */
             return;
         }
         default: break;
