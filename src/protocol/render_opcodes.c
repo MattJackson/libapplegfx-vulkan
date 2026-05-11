@@ -1028,7 +1028,8 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
     }
     if (p) {
         p->last_render_pass_desc = desc;
-        
+
+#ifdef LAGFX_HAVE_VULKAN
         VkDevice device = NULL;
         if (p->dev && p->dev->vk) {
             device = p->dev->vk->device;
@@ -1037,18 +1038,18 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
             LAGFX_ERR("render_op_describe_render_pass: no vulkan device");
             return -1;
         }
-        
+
         uint32_t total_views = 0;
-        
+
         if (desc.has_depth) {
             lagfx_resource_registry_t *reg = &p->resources;
-            lagfx_resource_entry_t *entry = 
+            lagfx_resource_entry_t *entry =
                 lagfx_resource_lookup(reg, desc.depth_texture_ref, p->current_task_id);
-            
+
             VkImageView view = VK_NULL_HANDLE;
             if (entry && entry->type == LAGFX_RESOURCE_TYPE_TEXTURE) {
                 VkImage image = (VkImage)(uintptr_t)entry->host_handle;
-                
+
                 VkImageViewCreateInfo vci = {0};
                 vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
                 vci.image = image;
@@ -1063,7 +1064,7 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                 vci.subresourceRange.levelCount = 1;
                 vci.subresourceRange.baseArrayLayer = 0;
                 vci.subresourceRange.layerCount = 1;
-                
+
                 VkResult vr = vkCreateImageView(device, &vci, NULL, &view);
                 if (vr != VK_SUCCESS) {
                     LAGFX_ERR("render_op_describe_render_pass: depth texture ref=0x%x "
@@ -1079,16 +1080,16 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                            "not found or wrong type in registry", desc.depth_texture_ref);
             }
         }
-        
+
         if (desc.has_stencil) {
             lagfx_resource_registry_t *reg = &p->resources;
-            lagfx_resource_entry_t *entry = 
+            lagfx_resource_entry_t *entry =
                 lagfx_resource_lookup(reg, desc.stencil_texture_ref, p->current_task_id);
-            
+
             VkImageView view = VK_NULL_HANDLE;
             if (entry && entry->type == LAGFX_RESOURCE_TYPE_TEXTURE) {
                 VkImage image = (VkImage)(uintptr_t)entry->host_handle;
-                
+
                 VkImageViewCreateInfo vci = {0};
                 vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
                 vci.image = image;
@@ -1103,7 +1104,7 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                 vci.subresourceRange.levelCount = 1;
                 vci.subresourceRange.baseArrayLayer = 0;
                 vci.subresourceRange.layerCount = 1;
-                
+
                 VkResult vr = vkCreateImageView(device, &vci, NULL, &view);
                 if (vr != VK_SUCCESS) {
                     LAGFX_ERR("render_op_describe_render_pass: stencil texture ref=0x%x "
@@ -1119,18 +1120,18 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                            "not found or wrong type in registry", desc.stencil_texture_ref);
             }
         }
-        
+
         for (uint32_t i = 0; i < desc.color_attachment_count && i < LAGFX_RENDER_PASS_MAX_COLOR_ATTACHMENTS; ++i) {
             uint32_t ref = desc.colors[i].texture_ref;
-            
+
             lagfx_resource_registry_t *reg = &p->resources;
-            lagfx_resource_entry_t *entry = 
+            lagfx_resource_entry_t *entry =
                 lagfx_resource_lookup(reg, ref, p->current_task_id);
-            
+
             VkImageView view = VK_NULL_HANDLE;
             if (entry && entry->type == LAGFX_RESOURCE_TYPE_TEXTURE) {
                 VkImage image = (VkImage)(uintptr_t)entry->host_handle;
-                
+
                 VkImageViewCreateInfo vci = {0};
                 vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
                 vci.image = image;
@@ -1145,7 +1146,7 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                 vci.subresourceRange.levelCount = 1;
                 vci.subresourceRange.baseArrayLayer = 0;
                 vci.subresourceRange.layerCount = 1;
-                
+
                 VkResult vr = vkCreateImageView(device, &vci, NULL, &view);
                 if (vr != VK_SUCCESS) {
                     LAGFX_ERR("render_op_describe_render_pass: color[%u] texture ref=0x%x "
@@ -1160,9 +1161,18 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                            "not found or wrong type in registry", i, ref);
             }
         }
-        
+
         LAGFX_WARN("0x1a: RenderPassDescriptor parsed — %u attachments",
                    desc.has_depth + desc.has_stencil + desc.color_attachment_count);
+#else  /* !LAGFX_HAVE_VULKAN */
+        /* No Vulkan backend: parse the descriptor but skip image-view
+         * creation. The non-Vulkan build path is for macOS CI only and
+         * never reaches a live render pass. */
+        LAGFX_WARN("0x1a: RenderPassDescriptor parsed — depth=%u stencil=%u "
+                   "colors=%u (no-vulkan build, image views skipped)",
+                   desc.has_depth, desc.has_stencil,
+                   desc.color_attachment_count);
+#endif /* LAGFX_HAVE_VULKAN */
     } else {
         LAGFX_WARN("render_op_describe_render_pass: depth=%u stencil=%u "
                    "colors=%u rt=%llux%llu",
