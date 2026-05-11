@@ -1015,10 +1015,13 @@ static void test_metal_no_op_sequence(void) {
      *
      *     Same Phase 1 end-to-end note as step 4 applies — this path
      *     also drives lagfx_vk_submit_empty() when a device is attached. */
-    uint8_t exi[20];
-    build_header(exi, LAGFX_OP_EXEC_INDIRECT2, 0, 20, 0xe2e0004au);
-    put_le32(exi + 12, 1u);
-    put_le32(exi + 16, 0u);
+    /* Header (12B) + taskID(4B) + descriptor_count(4B) + resource_count(4B)
+     * = 24B minimum payload for CmdExecIndirect2. Count=0 for both. */
+    uint8_t exi[24];
+    build_header(exi, LAGFX_OP_EXEC_INDIRECT2, 0, 24, 0xe2e0004au);
+    put_le32(exi + 12, 1u);  /* taskID */
+    put_le32(exi + 16, 0u);  /* descriptor_count */
+    put_le32(exi + 20, 0u);  /* resource_count */
     lagfx_protocol_dispatch_one(p, exi, sizeof(exi));
 
     /* 5. CmdDeleteChildFIFO(fifoID=1). */
