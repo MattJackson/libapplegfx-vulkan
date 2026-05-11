@@ -1029,7 +1029,10 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
     if (p) {
         p->last_render_pass_desc = desc;
         
-        VkDevice device = lagfx_vulkan_device_get(p);
+        VkDevice device = NULL;
+        if (p->dev && p->dev->vk) {
+            device = p->dev->vk->device;
+        }
         if (!device) {
             LAGFX_ERR("render_op_describe_render_pass: no vulkan device");
             return -1;
