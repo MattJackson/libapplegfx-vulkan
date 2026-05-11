@@ -1082,8 +1082,9 @@ LAGFX_TRACE("    segment[%u]: dispatching inner op=0x%04x encType=%u",
                                   inner_idx, inner_opcode, rc);
                     }
                     if (render_begin_pending
-                        && inner_opcode == 0x1au) {
+                         && inner_opcode == 0x1au) {
                         render_begin_pending = false;
+LAGFX_WARN("Stage 30: About to call lagfx_render_encoder_try_begin for opcode 0x1a");
                         lagfx_render_encoder_try_begin(p);
                     }
                 } else if (encoder_type == 4u) {
