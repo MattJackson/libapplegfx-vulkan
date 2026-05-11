@@ -44,8 +44,12 @@ typedef struct {
     lagfx_resource_type_t type;
     uint32_t task_id;
     void    *host_handle;        /* For textures: points to lagfx_vk_iosurface_t* */
+#ifdef LAGFX_HAVE_VULKAN
     VkImage image;               /* Cached VkImage handle for quick access */
     VkImageView view;            /* Cached VkImageView handle for quick access */
+#else
+    void *image;                 /* Placeholder when Vulkan unavailable */
+#endif
     uint64_t gpu_addr;
     uint64_t size;
 } lagfx_resource_entry_t;
