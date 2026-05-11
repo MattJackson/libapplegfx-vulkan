@@ -1278,8 +1278,15 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
             }
         }
 
-        LAGFX_WARN("0x1a: RenderPassDescriptor parsed — %u attachments",
+       LAGFX_WARN("0x1a: RenderPassDescriptor parsed — %u attachments",
                    desc.has_depth + desc.has_stencil + desc.color_attachment_count);
+        
+        /* Stage 30+: Start render pass immediately when descriptor is parsed.
+         * This enables Metal command accumulation before submission. */
+        if (p && p->dev && p->dev->vk) {
+            LAGFX_WARN("Stage 30: Calling lagfx_render_encoder_try_begin for opcode 0x1a");
+            lagfx_render_encoder_try_begin(p);
+        }
 #else  /* !LAGFX_HAVE_VULKAN */
         /* No Vulkan backend: parse the descriptor but skip image-view
          * creation. The non-Vulkan build path is for macOS CI only and
@@ -1292,11 +1299,12 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
     } else {
         LAGFX_WARN("render_op_describe_render_pass: depth=%u stencil=%u "
                    "colors=%u rt=%llux%llu",
-                   desc.has_depth, desc.has_stencil,
-                   desc.color_attachment_count,
+                   desc.has_depth, desc.has_stencil, desc.color_attachment_count,
                    (unsigned long long)desc.render_target_width,
                    (unsigned long long)desc.render_target_height);
     }
+    return 0;
+}
     return 0;
 }
 
