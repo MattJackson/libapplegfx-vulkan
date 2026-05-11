@@ -1176,7 +1176,7 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
             lagfx_resource_entry_t *entry =
                 lagfx_resource_lookup(reg, ref, p->current_task_id);
 
-           /* Auto-create surface if not found (guest may not send CmdCreateIOSurfaceBacking2) */
+            /* Auto-create surface if not found (guest may not send CmdCreateIOSurfaceBacking2) */
             if (!entry) {
 #ifdef LAGFX_HAVE_VULKAN
                 if (p->dev && p->dev->vk) {
@@ -1194,11 +1194,6 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                             } else {
                                 lagfx_vk_iosurface_destroy(p->dev->vk, ios);
                             }
-                        }
-                    }
-                }
-#endif
-            }
                         }
                     }
                 }
