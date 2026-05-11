@@ -1018,6 +1018,7 @@ static int render_op_set_vertex_buffers_with_stride(lagfx_protocol_t *p,
 static int render_op_describe_render_pass(lagfx_protocol_t *p,
                                           const uint8_t    *payload,
                                           size_t            len) {
+LAGFX_ERR("render_op_describe_render_pass CALLED: p=%p dev=%p vk=%p", (void *)p, (void *)(p?p->dev:NULL), (void *)(p&&p->dev?p->dev->vk:NULL));
     lagfx_render_pass_desc_t desc;
     memset(&desc, 0, sizeof(desc));
     int rc = lagfx_parse_render_pass_descriptor(payload, len, &desc);
