@@ -440,3 +440,36 @@ lagfx_status_t lagfx_translate_blit_copy_texture_to_texture(void *vk,
 
 
 #endif /* LAGFX_HAVE_VULKAN */
+
+#ifndef LAGFX_HAVE_VULKAN
+/* Non-Vulkan host stubs. blit_opcodes.c calls these unconditionally;
+ * the real implementations live above inside LAGFX_HAVE_VULKAN. On
+ * non-Vulkan hosts (macOS CI runner, etc.) we satisfy the linker with
+ * stubs that return NOT_SUPPORTED so the library can build + run the
+ * non-Vulkan stub init path. */
+
+lagfx_status_t lagfx_translate_blit_fill_texture_color(void *vk,
+                                                       void *texture_ref,
+                                                       uint32_t level,
+                                                       uint32_t slice,
+                                                       const MTLOrigin *origin,
+                                                       const MTLSize *size,
+                                                       const double color[4],
+                                                       uint32_t pixel_format) {
+    (void)vk; (void)texture_ref; (void)level; (void)slice;
+    (void)origin; (void)size; (void)color; (void)pixel_format;
+    return LAGFX_ERR_BACKEND;
+}
+
+lagfx_status_t lagfx_translate_blit_copy_texture_to_texture(void *vk,
+                                                            void *src_texture_ref,
+                                                            void *dst_texture_ref,
+                                                            const MTLOrigin *src_origin,
+                                                            const MTLSize *src_size,
+                                                            uint32_t dst_slice,
+                                                            uint32_t dst_level) {
+    (void)vk; (void)src_texture_ref; (void)dst_texture_ref;
+    (void)src_origin; (void)src_size; (void)dst_slice; (void)dst_level;
+    return LAGFX_ERR_BACKEND;
+}
+#endif /* !LAGFX_HAVE_VULKAN */
