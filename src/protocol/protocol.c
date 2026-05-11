@@ -462,6 +462,22 @@ static void lagfx_drain_display_child_rings(lagfx_protocol_t *p,
                         "(%u cmd(s) drained)",
                         ri, consumed, cur, drained);
         }
+
+        /* Complete stamp for this channel after draining. This is the
+         * critical fix: without this, the kext's waitForStamp loops
+         * forever because stamps are never acknowledged. */
+        if (drained > 0) {
+            uint32_t slot = ri;  /* ring index == slot for display channels */
+            lagfx_protocol_complete_stamp_slot(p, slot, *io_last_stamp);
+            LAGFX_LOG("child_ring[%u]: completed stamp 0x%08x for slot %u "
+                      "(drained=%u cmds)",
+                      ri, *io_last_stamp, slot, drained);
+
+            /* Update per-channel highest stamp tracker */
+            if (ri < 32) {
+                p->per_channel_highest_stamp[ri] = *io_last_stamp;
+            }
+        }
     }
 }
 
