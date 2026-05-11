@@ -40,8 +40,11 @@ def main(logpath: str) -> int:
     blocks = re.split(r"={10,}\s+\d+/\d+\s+={10,}", log)
     info = {}
     for b in blocks:
-        m = re.search(r"test:\s+[^:\s]+:([^\n]+)", b)
-        r = re.search(r"result:\s+([^\n]+)", b)
+        # `meson test` testlog format: "test:         <name>" then
+        # "result:       <status>". Capture name = everything after the
+        # `test:` whitespace, trimmed.
+        m = re.search(r"^test:\s+(.+?)\s*$", b, re.M)
+        r = re.search(r"^result:\s+(.+?)\s*$", b, re.M)
         if m and r:
             info[m.group(1).strip()] = (r.group(1).strip(), b)
 
