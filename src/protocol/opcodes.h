@@ -5,7 +5,7 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Enumerates all 37 FIFO opcodes documented in
+ * Enumerates all 38 FIFO opcodes documented in
  * mos/paravirt-re/command-buffer-format.md §3. Each entry in the
  * descriptor table carries a name (for tracing), a priority band
  * (P0 = required for metal-no-op, P1 = side-effect, P2 = deferred),
@@ -76,7 +76,7 @@ typedef enum {
     /* --- Execution / Sync (0x20-0x26) --------------------------- */
     LAGFX_OP_EXEC_INDIRECT2           = 0x20,
     LAGFX_OP_EXEC_INDIRECT3           = 0x21,
-    LAGFX_OP_SYNCHRONIZE_RESOURCES    = 0x22,
+    LAGFX_OP_SYNCHRONIZE_RESOURCES    = 0x42,
     LAGFX_OP_SYNCHRONIZE_DISCARD      = 0x23,
     LAGFX_OP_SET_OBJECT_LIST          = 0x24,
     LAGFX_OP_SET_OBJECT_PLACEMENT     = 0x25,
@@ -98,6 +98,7 @@ typedef enum {
     LAGFX_OP_CHANNEL_EVENT_37         = 0x37, /* ChannelEventMachine-adjacent */
     LAGFX_OP_DEFINE_HOST_TASK         = 0x38,
     LAGFX_OP_MAP_MEMORY_IMMEDIATE     = 0x39, /* CmdMapMemoryImmediate, Immediate vchan; opcodes-0x35-0x36-0x39.md */
+    LAGFX_OP_UNMAP_MEMORY_IMMEDIATE   = 0x22, /* CmdUnmapMemoryImmediate, kext opcode on Immediate vchan */
     LAGFX_OP_GET_DEVICE_INFO_2        = 0x3a,
     LAGFX_OP_NEW_USER_CLIENT          = 0x3b,
     LAGFX_OP_UNKNOWN_3C               = 0x3c,
@@ -122,7 +123,7 @@ typedef enum {
  * claimed by CmdIOSurfaceCreate per §14.5) plus the 36 named §3
  * opcodes + 3 conjectured IOSurface ops (0x27/0x28/0x29 per §14.5) =
  * 14 + 36 + 3 = 53. */
-#define LAGFX_OPCODE_COUNT 53
+#define LAGFX_OPCODE_COUNT 54
 
 /* === Priority bands ============================================ */
 

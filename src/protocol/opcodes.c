@@ -217,6 +217,11 @@ static const lagfx_op_descriptor_t g_op_table[] = {
      * See paravirt-re/library/journey/opcodes-0x35-0x36-0x39.md. */
     { LAGFX_OP_MAP_MEMORY_IMMEDIATE,     "CmdMapMemoryImmediate",
       LAGFX_PRIO_P0, 20, 0,  lagfx_op_map_memory_immediate },
+    /* CmdUnmapMemoryImmediate — kext opcode 0x22 on the Immediate vchan.
+     * Unmaps VA range declarations after memory is released. Wire format:
+     *   [scatter blocks][20-byte trailer {u32 task_id, u64 vaBase, u64 vaLength}] */
+    { LAGFX_OP_UNMAP_MEMORY_IMMEDIATE,   "CmdUnmapMemoryImmediate",
+      LAGFX_PRIO_P0, 20, 0,  lagfx_op_unmap_memory_immediate },
     { LAGFX_OP_GET_DEVICE_INFO_2,        "CmdGetDeviceInfo2",
       LAGFX_PRIO_P0, 12, 12, lagfx_op_get_device_info_2 },
     { LAGFX_OP_NEW_USER_CLIENT,               "Unknown(0x3b)",
