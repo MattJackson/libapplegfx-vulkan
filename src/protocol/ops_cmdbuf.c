@@ -169,7 +169,7 @@ LAGFX_LOG("render_encoder_try_begin: auto-submitting empty frame "
      /* Stage 30+: Keep render pass open for real Metal command execution.
       * Commands accumulate in the command buffer until CmdExecIndirect2
       * completion or explicit end-render opcode triggers submission. */
-     LAGFX_LOG("render_encoder_try_begin: render pass opened, waiting "
+     LAGFX_WARN("render_encoder_try_begin: render pass opened, waiting "
                "for Metal commands (width=%u height=%u)",
                (uint32_t)desc->render_target_width,
                (uint32_t)desc->render_target_height);
