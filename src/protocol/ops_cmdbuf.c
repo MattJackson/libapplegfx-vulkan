@@ -1169,7 +1169,9 @@ LAGFX_WARN("Stage 30: render_begin_pending=FALSE (in_pass=%d), NOT calling try_b
                 inner_idx += 1;
             }
 
-            if (encoder_type == 2u) {
+            /* Stage 30+: End render pass for encType=2, 0, or 1 segments.
+             * macOS sends Metal commands via encType=0 (compute path), so we must handle all three. */
+            if (encoder_type == 2u || encoder_type == 0u || encoder_type == 1u) {
                 if (p->render_enc.in_pass) {
                     lagfx_translate_render_end(&p->render_enc);
                 }
