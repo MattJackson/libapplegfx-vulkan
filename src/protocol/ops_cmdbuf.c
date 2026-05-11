@@ -162,17 +162,17 @@ LAGFX_LOG("render_encoder_try_begin: auto-submitting empty frame "
      if (st != LAGFX_OK) {
          LAGFX_WARN("render_encoder_try_begin: render_begin failed (%d)",
                     (int)st);
-         /* Auto-submit empty frame for Stage 20% visibility */
          lagfx_vk_end_frame(vk);
          return;
      }
      
-     /* For Stage 20%, auto-end and submit after render pass setup.
-      * This produces a clear-colored screen even without draw calls,
-      * proving the rendering path works. Full implementation will
-      * wait for explicit end-render or draw commands. */
-     LAGFX_LOG("render_encoder_try_begin: auto-ending frame for Stage 20%%");
-     lagfx_vk_end_frame(vk);
+     /* Stage 30+: Keep render pass open for real Metal command execution.
+      * Commands accumulate in the command buffer until CmdExecIndirect2
+      * completion or explicit end-render opcode triggers submission. */
+     LAGFX_LOG("render_encoder_try_begin: render pass opened, waiting "
+               "for Metal commands (width=%u height=%u)",
+               (uint32_t)desc->render_target_width,
+               (uint32_t)desc->render_target_height);
  #else
      (void)p;
  #endif
