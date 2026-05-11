@@ -986,14 +986,17 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                     }
 
                     uint32_t payload_len = cmd_len - 12u;
-                    uint8_t *payload_buf = NULL;
+                    if (cmd_len > sizeof(p->doorbell_bounce_buffer)) {
+                        LAGFX_ERR("doorbell ch=%u: cmd_len %u exceeds bounce buffer",
+                                  ch, cmd_len);
+                        all_cmds_accepted = false; break;
+                    }
+                    /* Stitch header + payload into a contiguous buffer so we
+                     * can hand the FULL cmd to dispatch_one_no_stamp (which
+                     * needs cmd_bytes[0..cmd_len-1]). */
+                    memcpy(p->doorbell_bounce_buffer, hdr_bytes, 12u);
                     if (payload_len > 0u) {
-                        if (cmd_len > sizeof(p->doorbell_bounce_buffer)) {
-                            LAGFX_ERR("doorbell ch=%u: cmd_len %u exceeds bounce buffer",
-                                      ch, cmd_len);
-                            all_cmds_accepted = false; break;
-                        }
-                        payload_buf = p->doorbell_bounce_buffer;
+                        uint8_t *payload_buf = p->doorbell_bounce_buffer + 12u;
                         bool ok = true;
                         uint32_t off = cur_rp + 12u;
                         size_t got = 0;
@@ -1028,123 +1031,28 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
                         }
                     }
 
-                    lagfx_cmd_header_t parsed;
-                    parsed.opcode       = opcode;
-                    parsed.arg_count_8b = 0u;
-                    parsed.length       = cmd_len;
-                    parsed.stamp        = stamp;
-                    parsed.payload_size = (uint16_t)payload_len;
-                    parsed.payload      = payload_buf;
-
-                    LAGFX_TRACE("doorbell ch=%u vchan cmd[%u]: "
-                                "opcode=0x%02x stamp=0x%08x len=%u",
+                    LAGFX_TRACE("doorbell ch=%u cmd[%u]: opcode=0x%02x "
+                                "stamp=0x%08x len=%u",
                                 ch, cmd_idx, opcode, stamp, cmd_len);
 
-                    /* Display vchan compact opcode namespace:
-                     *   {0x01, 0x02, 0x04, 0x06, 0x07}
-                     * (NOT the full PGFIFO 0x00..0x44 table).
-                     *
-                     * RE (paravirt-re/PGFIFO-sub-channel-opcode-table.md,
-                     *     display-pipe-enable-online-sequence.md §Q6):
-                     *   0x01 = setupSharedState (display init)
-                     *     payload: ss[0x104] polled by guest after
-                     *     this opcode (re-followup-spec-gaps.md §5.1).
-                     *     Guest expects ss[0x104] != 0 (fPort set)
-                     *     before proceeding with IOFBSetDisplayModeAndDepth.
-                     *     See DisplayPipe-setupSharedState-summary.md.
-                     *   0x02 = display_submit (triggers framebuffer work)
-                     *     When seen, can fire deferred online events
-                     *     (see display-tick_vblank in apple-gfx-common-linux.c).
-                     *   0x04 = define_child_fifo (44-byte descriptor)
-                     *     See CmdDefineChildFIFO-display-vchan-analysis.md.
-                     *   0x06 = present-only (12 B, surface_id@+4)
-                     *   0x07 = present+gamma (36 B, plane_id@+4)
-                     *   Field order verified in DisplayPipe-submitTransaction-opcodes.md
-                     *
-                     * Cursor opcodes 0x13/0x14:
-                     *   Handled in ops_display.c (cursor_glyph, cursor_moved).
-                     *   Guest emits these on sub-channels; the main
-                     *   display vchan does NOT dispatch them via this loop.
-                     *   See paravirt-re/display-pipe-enable-online-sequence.md §Q6
-                     *   and cursor-rendering-stage-20.md.
-                     */
-                     switch (opcode) {
-                        case 0x01u:
-                            /* setupSharedState: writes ss[0x12]=fPort,
-                             * then stamp ACK (see DisplayPipe-setupSharedState-summary.md) */
-                            lagfx_op_vchan_setup_shared_state(
-                                p, &parsed);
-                            break;
-                        case 0x04u:
-                            /* define_child_fifo: 44-byte descriptor.
-                             * Registers sub-channel ring for PGFIFO dispatch.
-                             * See CmdDefineChildFIFO-display-vchan-analysis.md */
-                            lagfx_op_display_define_child_fifo(p, &parsed);
-                            break;
-                        case 0x02u:
-                            /* display_submit: triggers framebuffer work.
-                             * When seen, we can fire deferred online
-                             * events (see display_tick_vblank above). */
-                            saw_non_setup = true;
-                            lagfx_op_vchan_display_submit(
-                                p, &parsed);
-                            break;
-                        case 0x06u:
-                            /* present-only: {display_idx, surface_id, plane_id}
-                             * Field order: surface_id@+4, plane_id@+8
-                             * (swapped vs 0x07). See DisplayPipe-submitTransaction-opcodes.md */
-                            saw_non_setup = true;
-                            lagfx_op_vchan_present(p, &parsed);
-                            break;
-                        case 0x07u:
-                             /* present+gamma: {display_idx, plane_id, surface_id, ...}
-                              * Field order: plane_id@+4, surface_id@+8
-                              * (swapped vs 0x06). gamma_phys@+12. */
-                             saw_non_setup = true;
-                             lagfx_op_vchan_present_gamma(p, &parsed);
-                             break;
-                         case 0x13u:
-                             /* cursor_show: visibility + position.
-                              * Invokes QEMU dpy_mouse_set callback
-                              * for noVNC cursor visibility. */
-                             lagfx_op_display_cursor_show(p, &parsed);
-                             break;
-                         case 0x14u:
-                             /* cursor_glyph: shape/bitmap.
-                              * Invokes QEMU dpy_cursor_define callback
-                              * for noVNC cursor rendering. */
-                             lagfx_op_display_cursor_glyph(p, &parsed);
-                             break;
-                         case 0x1eu:
-                              /* Display vchan extended opcode (unknown semantics).
-                               * Log once per ring to avoid spam while guest initializes.
-                               * May be present/swap-related based on kext disasm. */
-                              if (!p->display_1e_logged) {
-                                  LAGFX_TRACE("doorbell ch=%u: display vchan opcode 0x1e "
-                                              "(extended, unimplemented) at rp=%u len=%u",
-                                              ch, cur_rp, cmd_len);
-                                  p->display_1e_logged = true;
-                              }
-                              break;
-                          case 0x35u:
-                          case 0x36u:
-                              /* Unknown extended opcodes from macOS boot.
-                               * Log once and ACK to avoid blocking dispatch. */
-                              lagfx_op_vchan_unknown_extended(p, &parsed, opcode);
-                              break;
-                          default:
-                             LAGFX_TRACE("doorbell ch=%u: unknown "
-                                         "display vchan opcode 0x%02x "
-                                         "at rp=%u len=%u",
-                                         ch, opcode, cur_rp, cmd_len);
-                             break;
-                    }
+                    /* ch=1..4 carry the FULL PGFIFO opcode table
+                     * (CmdExecIndirect2 / CmdSyncResources / CmdMapMemory2,
+                     * etc) — NOT the display-vchan compact opcode namespace
+                     * (which is for ch>=5). Hand the full cmd to
+                     * lagfx_protocol_dispatch_one_no_stamp; it routes
+                     * through the registered opcode handlers without
+                     * advancing the stamp cell (caller does that once
+                     * after the whole drain). */
+                    lagfx_cmd_header_t parsed;
+                    p->extra_stamp_advance = 0u;
+                    int rc = lagfx_protocol_dispatch_one_no_stamp(
+                        p, p->doorbell_bounce_buffer, cmd_len, &parsed);
+                    (void)rc;
 
-                    if (stamp > last_stamp) {
-                        last_stamp = stamp;
+                    uint32_t effective = parsed.stamp + p->extra_stamp_advance;
+                    if (effective > last_stamp) {
+                        last_stamp = effective;
                     }
-
-                    /* payload_buf points to per-instance p->doorbell_bounce_buffer, never malloc'd. */
                     cur_rp += cmd_len;
                     cmd_idx += 1;
                 }
