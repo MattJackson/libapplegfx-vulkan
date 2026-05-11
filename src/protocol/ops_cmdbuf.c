@@ -1191,10 +1191,25 @@ LAGFX_TRACE("    segment[%u]: dispatching inner op=0x%04x encType=%u",
      * max(target, cur+1), which naturally produces the correct sequence.
      * No extra_stamp_advance is needed — one command = one stamp. */
 
-    /* Ack the stamp regardless. Inner-opcode handlers will do their
-     * actual work (when implemented) before this point — for now the
-     * walk is observation-only. */
-    lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
-                                        hdr->stamp);
-    return LAGFX_HANDLER_OK;
+  /* Ack the stamp regardless. Inner-opcode handlers will do their
+      * actual work (when implemented) before this point — for now the
+      * walk is observation-only. */
+     lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
+                                         hdr->stamp);
+
+     /* Stage 30: Submit rendered frame to display after CmdExecIndirect2 completes.
+      * This pushes pixels from the render target to noVNC via shell callbacks. */
+#ifdef LAGFX_HAVE_VULKAN
+     if (p && p->dev) {
+         for (uint32_t d = 0; d < LAGFX_PROTO_MAX_DISPLAYS; ++d) {
+             lagfx_display_t *disp = p->dev->displays[d];
+             if (disp != NULL) {
+                 /* Scanout GPA is 0 because we use fallback path (shell.read_memory) */
+                 lagfx_display_submit_rendered_frame(disp, 0, 0);
+             }
+         }
+     }
+#endif
+
+     return LAGFX_HANDLER_OK;
 }

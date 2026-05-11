@@ -43,20 +43,22 @@ void lagfx_resource_register(lagfx_resource_registry_t *reg,
         return;
     }
 
-    lagfx_resource_entry_t *e = &reg->entries[reg->count++];
+   lagfx_resource_entry_t *e = &reg->entries[reg->count++];
     e->ref         = ref;
     e->type        = type;
     e->task_id     = task_id;
     e->host_handle = NULL;
+    e->image       = VK_NULL_HANDLE;
+    e->view        = VK_NULL_HANDLE;
     e->gpu_addr    = gpu_addr;
     e->size        = size;
 
     LAGFX_TRACE("resource_register: inserted ref=0x%x task=%u type=%u "
-                 "gpu_addr=0x%llx size=%llu (total=%u)",
-                 ref, task_id, (unsigned)type,
-                 (unsigned long long)gpu_addr,
-                 (unsigned long long)size,
-                 reg->count);
+                  "gpu_addr=0x%llx size=%llu (total=%u)",
+                  ref, task_id, (unsigned)type,
+                  (unsigned long long)gpu_addr,
+                  (unsigned long long)size,
+                  reg->count);
 }
 
 lagfx_resource_entry_t *lagfx_resource_lookup(lagfx_resource_registry_t *reg,

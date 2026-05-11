@@ -39,7 +39,9 @@ typedef struct {
     uint32_t ref;
     lagfx_resource_type_t type;
     uint32_t task_id;
-    void    *host_handle;
+    void    *host_handle;        /* For textures: points to lagfx_vk_iosurface_t* */
+    VkImage image;               /* Cached VkImage handle for quick access */
+    VkImageView view;            /* Cached VkImageView handle for quick access */
     uint64_t gpu_addr;
     uint64_t size;
 } lagfx_resource_entry_t;

@@ -1072,32 +1072,46 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
 
             VkImageView view = VK_NULL_HANDLE;
             if (entry && entry->type == LAGFX_RESOURCE_TYPE_TEXTURE) {
-                VkImage image = (VkImage)(uintptr_t)entry->host_handle;
+                /* host_handle points to lagfx_vk_iosurface_t* which contains both image and view */
+                lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)entry->host_handle;
+                VkImage image = ios ? ios->image : VK_NULL_HANDLE;
 
-                VkImageViewCreateInfo vci = {0};
-                vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-                vci.image = image;
-                vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-                vci.format = VK_FORMAT_D32_SFLOAT;
-                vci.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-                vci.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-                vci.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-                vci.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-                vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-                vci.subresourceRange.baseMipLevel = 0;
-                vci.subresourceRange.levelCount = 1;
-                vci.subresourceRange.baseArrayLayer = 0;
-                vci.subresourceRange.layerCount = 1;
-
-                VkResult vr = vkCreateImageView(device, &vci, NULL, &view);
-                if (vr != VK_SUCCESS) {
-                    LAGFX_ERR("render_op_describe_render_pass: depth texture ref=0x%x "
-                              "vkCreateImageView failed (%d)",
-                              desc.depth_texture_ref, (int)vr);
-                } else {
+                if (!image) {
+                    LAGFX_WARN("render_op_describe_render_pass: depth texture has no VkImage");
+                } else if (entry->view != VK_NULL_HANDLE) {
+                    /* Reuse cached view */
+                    view = entry->view;
                     total_views++;
-                    LAGFX_TRACE("render_op_describe_render_pass: created depth view 0x%lx",
+                    LAGFX_TRACE("render_op_describe_render_pass: reused cached depth view 0x%lx",
                                 (unsigned long)view);
+                } else {
+                    VkImageViewCreateInfo vci = {0};
+                    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                    vci.image = image;
+                    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                    vci.format = VK_FORMAT_D32_SFLOAT;
+                    vci.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+                    vci.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+                    vci.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+                    vci.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+                    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                    vci.subresourceRange.baseMipLevel = 0;
+                    vci.subresourceRange.levelCount = 1;
+                    vci.subresourceRange.baseArrayLayer = 0;
+                    vci.subresourceRange.layerCount = 1;
+
+                    VkResult vr = vkCreateImageView(device, &vci, NULL, &view);
+                    if (vr != VK_SUCCESS) {
+                        LAGFX_ERR("render_op_describe_render_pass: depth texture ref=0x%x "
+                                  "vkCreateImageView failed (%d)",
+                                  desc.depth_texture_ref, (int)vr);
+                    } else {
+                        total_views++;
+                        /* Cache the view for future use */
+                        entry->view = view;
+                        LAGFX_TRACE("render_op_describe_render_pass: created depth view 0x%lx",
+                                    (unsigned long)view);
+                    }
                 }
             } else {
                 LAGFX_WARN("render_op_describe_render_pass: depth texture ref=0x%x "
@@ -1136,32 +1150,46 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
 
             VkImageView view = VK_NULL_HANDLE;
             if (entry && entry->type == LAGFX_RESOURCE_TYPE_TEXTURE) {
-                VkImage image = (VkImage)(uintptr_t)entry->host_handle;
+                /* host_handle points to lagfx_vk_iosurface_t* which contains both image and view */
+                lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)entry->host_handle;
+                VkImage image = ios ? ios->image : VK_NULL_HANDLE;
 
-                VkImageViewCreateInfo vci = {0};
-                vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-                vci.image = image;
-                vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-                vci.format = VK_FORMAT_S8_UINT;
-                vci.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-                vci.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-                vci.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-                vci.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-                vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-                vci.subresourceRange.baseMipLevel = 0;
-                vci.subresourceRange.levelCount = 1;
-                vci.subresourceRange.baseArrayLayer = 0;
-                vci.subresourceRange.layerCount = 1;
-
-                VkResult vr = vkCreateImageView(device, &vci, NULL, &view);
-                if (vr != VK_SUCCESS) {
-                    LAGFX_ERR("render_op_describe_render_pass: stencil texture ref=0x%x "
-                              "vkCreateImageView failed (%d)",
-                              desc.stencil_texture_ref, (int)vr);
-                } else {
+                if (!image) {
+                    LAGFX_WARN("render_op_describe_render_pass: stencil texture has no VkImage");
+                } else if (entry->view != VK_NULL_HANDLE) {
+                    /* Reuse cached view */
+                    view = entry->view;
                     total_views++;
-                    LAGFX_TRACE("render_op_describe_render_pass: created stencil view 0x%lx",
+                    LAGFX_TRACE("render_op_describe_render_pass: reused cached stencil view 0x%lx",
                                 (unsigned long)view);
+                } else {
+                    VkImageViewCreateInfo vci = {0};
+                    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                    vci.image = image;
+                    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                    vci.format = VK_FORMAT_S8_UINT;
+                    vci.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+                    vci.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+                    vci.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+                    vci.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+                    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+                    vci.subresourceRange.baseMipLevel = 0;
+                    vci.subresourceRange.levelCount = 1;
+                    vci.subresourceRange.baseArrayLayer = 0;
+                    vci.subresourceRange.layerCount = 1;
+
+                    VkResult vr = vkCreateImageView(device, &vci, NULL, &view);
+                    if (vr != VK_SUCCESS) {
+                        LAGFX_ERR("render_op_describe_render_pass: stencil texture ref=0x%x "
+                                  "vkCreateImageView failed (%d)",
+                                  desc.stencil_texture_ref, (int)vr);
+                    } else {
+                        total_views++;
+                        /* Cache the view for future use */
+                        entry->view = view;
+                        LAGFX_TRACE("render_op_describe_render_pass: created stencil view 0x%lx",
+                                    (unsigned long)view);
+                    }
                 }
             } else {
                 LAGFX_WARN("render_op_describe_render_pass: stencil texture ref=0x%x "
@@ -1204,11 +1232,22 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
 
             VkImageView view = VK_NULL_HANDLE;
             if (entry && entry->type == LAGFX_RESOURCE_TYPE_TEXTURE) {
-                VkImage image = (VkImage)(uintptr_t)entry->host_handle;
+                /* host_handle points to lagfx_vk_iosurface_t* which contains both image and view */
+                lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)entry->host_handle;
+                VkImage image = ios ? ios->image : VK_NULL_HANDLE;
 
-                VkImageViewCreateInfo vci = {0};
-                vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-                vci.image = image;
+                if (!image) {
+                    LAGFX_WARN("render_op_describe_render_pass: color[%u] texture has no VkImage", i);
+                } else if (entry->view != VK_NULL_HANDLE) {
+                    /* Reuse cached view */
+                    view = entry->view;
+                    total_views++;
+                    LAGFX_TRACE("render_op_describe_render_pass: reused cached color[%u] view 0x%lx",
+                                i, (unsigned long)view);
+                } else {
+                    VkImageViewCreateInfo vci = {0};
+                    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                    vci.image = image;
                 vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
                 vci.format = VK_FORMAT_B8G8R8A8_UNORM;
                 vci.components.r = VK_COMPONENT_SWIZZLE_R;
@@ -1222,13 +1261,16 @@ static int render_op_describe_render_pass(lagfx_protocol_t *p,
                 vci.subresourceRange.layerCount = 1;
 
                 VkResult vr = vkCreateImageView(device, &vci, NULL, &view);
-                if (vr != VK_SUCCESS) {
-                    LAGFX_ERR("render_op_describe_render_pass: color[%u] texture ref=0x%x "
-                              "vkCreateImageView failed (%d)", i, ref, (int)vr);
-                } else {
-                    total_views++;
-                    LAGFX_TRACE("render_op_describe_render_pass: created color[%u] view 0x%lx",
-                                i, (unsigned long)view);
+                    if (vr != VK_SUCCESS) {
+                        LAGFX_ERR("render_op_describe_render_pass: color[%u] texture ref=0x%x "
+                                  "vkCreateImageView failed (%d)", i, ref, (int)vr);
+                    } else {
+                        total_views++;
+                        /* Cache the view for future use */
+                        entry->view = view;
+                        LAGFX_TRACE("render_op_describe_render_pass: created color[%u] view 0x%lx",
+                                    i, (unsigned long)view);
+                    }
                 }
             } else {
                 LAGFX_WARN("render_op_describe_render_pass: color[%u] texture ref=0x%x "
