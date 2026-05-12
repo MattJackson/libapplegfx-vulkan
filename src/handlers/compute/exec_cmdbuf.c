@@ -35,19 +35,30 @@ static inline uint64_t lagfx_le64(const uint8_t *b) {
  *                +0x08  u32 length (cmdbuf size in bytes)
  *                +0x0c  u32 _pad (zero) */
 
-/* Note: Function name is lagfx_compute_exec_cmdbuf for tests;
- * legacy alias lagfx_compute_exec_indirect2 removed. */
 lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
     
-    /* Minimum outer header is 16 bytes (task_id + descriptor_count + resource_count). */
-    if (!hdr->payload || hdr->payload_size < 12) {
-        LAGFX_WARN("CmdExecIndirect2: payload too small (%u)", (unsigned)hdr->payload_size);
-        return LAGFX_HANDLER_ERR_SIZE;
+    /* macOS may send minimal 8-byte CmdExecIndirect2 payloads for
+     * query/capability-checking mode. These contain just task_id and no
+     * descriptor/resource data. Accept these gracefully instead of
+     * reading out-of-bounds garbage as descriptor_count. */
+    if (!hdr->payload || hdr->payload_size < 8) {
+        LAGFX_TRACE("CmdExecIndirect2: empty payload (size=%u)", hdr->payload_size);
+        return LAGFX_HANDLER_OK;
     }
     
+    /* If payload is exactly 8 bytes, macOS is doing a minimal query.
+     * descriptor_count and resource_count are not present — treat as
+     * empty command (no descriptors, no resources). */
+    if (hdr->payload_size == 8) {
+        uint32_t task_id = lagfx_le32(hdr->payload);
+        LAGFX_TRACE("CmdExecIndirect2: minimal query payload taskID=%u", task_id);
+        return LAGFX_HANDLER_OK;
+    }
+    
+    /* Payload >= 12 bytes: safe to read descriptor_count and resource_count */
     uint32_t task_id       = lagfx_le32(hdr->payload + 0);
     uint32_t descriptor_count = lagfx_le32(hdr->payload + 4);
     uint32_t resource_count   = lagfx_le32(hdr->payload + 8);
