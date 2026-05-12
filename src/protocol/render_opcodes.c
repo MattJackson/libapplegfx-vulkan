@@ -2762,6 +2762,7 @@ static const lagfx_render_op_descriptor_t g_render_op_table[] = {
     { 0x1b, "UseHeapsWithStages",                         0, 0, render_op_use_heaps_with_stages },
     { 0x1c, "DrawIndexedInstancedBasePrimitives64_2",    48, 1, render_op_draw_indexed_instanced_base_primitives_64_2 },
     { 0x1d, "DrawIndexedInstancedBasePrimitives16_2",    20, 1, render_op_draw_indexed_instanced_base_primitives_16_2 },
+    { 0x3c, "CmdExecIndirect2Inner",                     16, 2, render_op_ack_stub },
 
     /* --- State-set family (0x65-0xa6) --------------------------- */
     { 0x65, "SetBlendColor",                             16, 0, render_op_set_blend_color },
