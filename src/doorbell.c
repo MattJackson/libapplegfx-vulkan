@@ -19,12 +19,6 @@ const doorbell_door_descriptor_t g_doorbell_doors[] = {
     /* Root channel write pointer (BAR0+0x1008) - primary ring FIFO doorbell */
     { .bar_offset = 0x1008u, .id = DOOR_PRIMARY_RING, .dispatch_fn = (void(*)(void*, uint32_t))primary_ring_door_dispatcher_dispatch },
     
-    /* Per-channel write pointers (BAR0+0x1004 + chan*4) - compute/display channels */
-    { .bar_offset = 0x1004u, .id = DOOR_PER_CHANNEL_0, .dispatch_fn = (void(*)(void*, uint32_t))channel_door_dispatcher_dispatch },
-    { .bar_offset = 0x1008u, .id = DOOR_PER_CHANNEL_1, .dispatch_fn = (void(*)(void*, uint32_t))channel_door_dispatcher_dispatch },
-    { .bar_offset = 0x100cu, .id = DOOR_PER_CHANNEL_2, .dispatch_fn = (void(*)(void*, uint32_t))channel_door_dispatcher_dispatch },
-    { .bar_offset = 0x1010u, .id = DOOR_PER_CHANNEL_3, .dispatch_fn = (void(*)(void*, uint32_t))channel_door_dispatcher_dispatch },
-    
     /* Channel ID selector (BAR0+0x1020) - routes to ch 0, compute (1-4), display (5+) */
     { .bar_offset = 0x1020u, .id = DOOR_CHANNEL, .dispatch_fn = (void(*)(void*, uint32_t))channel_door_dispatcher_dispatch },
 };
