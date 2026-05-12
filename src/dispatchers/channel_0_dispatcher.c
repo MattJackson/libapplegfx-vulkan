@@ -94,10 +94,10 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
 
         p->current_chan_id = ch_id;
         
-        /* Switch-case dispatch → direct ops_*.c calls (no opcode table lookup) */
+        /* Switch-case dispatch → direct handler calls (no opcode table lookup) */
         switch (opcode) {
         case 0x20:  /* CmdExecIndirect2 - Metal command buffer execution */
-            LAGFX_LOG("Channel0Dispatcher: CmdExecIndirect2");
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x20 (CmdExecIndirect2) → lagfx_compute_exec_indirect2");
             
             uint8_t *payload = malloc(length);
             if (!payload || length < 12u) {
@@ -129,7 +129,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x00:  /* CmdDefineTask2 */
-            LAGFX_LOG("Channel0Dispatcher: CmdDefineTask2");
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x00 (CmdDefineTask2) → lagfx_task_define_task2");
             if (length >= 24) {
                 uint8_t *payload = malloc(length);
                 if (payload && ok) {
@@ -158,6 +158,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x02:  /* CmdMapMemory2 */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x02 (CmdMapMemory2) → lagfx_memory_map_memory2");  /* CmdMapMemory2 */
             LAGFX_LOG("Channel0Dispatcher: CmdMapMemory2");
             if (length >= 20u) {
                 uint8_t *payload = malloc(length);
@@ -187,6 +188,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x03:  /* CmdUnmapMemory */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x03 (CmdUnmapMemory) → lagfx_memory_unmap_memory");  /* CmdUnmapMemory */
             LAGFX_LOG("Channel0Dispatcher: CmdUnmapMemory");
             if (length >= 20u) {
                 uint8_t *payload = malloc(length);
@@ -216,6 +218,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x04:  /* CmdDefineChildFIFO */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x04 (CmdDefineChildFIFO) → lagfx_memory_define_child_fifo");  /* CmdDefineChildFIFO */
             LAGFX_LOG("Channel0Dispatcher: CmdDefineChildFIFO");
             if (length >= 4) {
                 uint8_t *payload = malloc(length);
@@ -245,6 +248,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x0a:  /* CmdGetDeviceInfo */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x0a (CmdGetDeviceInfo) → lagfx_util_device_info");  /* CmdGetDeviceInfo */
             LAGFX_LOG("Channel0Dispatcher: CmdGetDeviceInfo");
             if (length >= 12) {
                 uint8_t *payload = malloc(length);
@@ -274,6 +278,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x10:  /* CmdDisplayAck */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x10 (CmdDisplayAck) → lagfx_display_ack");  /* CmdDisplayAck */
             LAGFX_LOG("Channel0Dispatcher: CmdDisplayAck");
             if (length >= 8) {
                 uint8_t *payload = malloc(length);
@@ -303,6 +308,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x13:  /* CmdDisplayCursorShow */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x13 (CmdDisplayCursorShow) → lagfx_display_cursor_show");  /* CmdDisplayCursorShow */
             LAGFX_LOG("Channel0Dispatcher: CmdDisplayCursorShow");
             if (length >= 16) {
                 uint8_t *payload = malloc(length);
@@ -332,6 +338,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x14:  /* CmdDisplayCursorGlyph */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x14 (CmdDisplayCursorGlyph) → lagfx_display_cursor_glyph");  /* CmdDisplayCursorGlyph */
             LAGFX_LOG("Channel0Dispatcher: CmdDisplayCursorGlyph");
             if (length >= 32) {
                 uint8_t *payload = malloc(length);
@@ -361,6 +368,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x17:  /* CmdDisplayTransaction3 */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x17 (CmdDisplayTransaction3) → lagfx_display_transaction3");  /* CmdDisplayTransaction3 */
             LAGFX_LOG("Channel0Dispatcher: CmdDisplayTransaction3");
             if (length >= 12) {
                 uint8_t *payload = malloc(length);
@@ -390,6 +398,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x19:  /* CmdDisplayCompositorParameters */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x19 (CmdDisplayCompositorParameters) → lagfx_display_compositor_params");  /* CmdDisplayCompositorParameters */
             LAGFX_LOG("Channel0Dispatcher: CmdDisplayCompositorParameters");
             if (length > 0) {
                 uint8_t *payload = malloc(length);
@@ -419,6 +428,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x1a:  /* CmdDisplaySetGuestICCProfile */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x1a (CmdDisplaySetGuestICCProfile) → lagfx_display_icc_profile");  /* CmdDisplaySetGuestICCProfile */
             LAGFX_LOG("Channel0Dispatcher: CmdDisplaySetGuestICCProfile");
             if (length > 0) {
                 uint8_t *payload = malloc(length);
@@ -448,6 +458,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x22:  /* CmdSynchronizeResources */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x22 (CmdSynchronizeResources) → lagfx_sync_synchronize_resources");  /* CmdSynchronizeResources */
             LAGFX_LOG("Channel0Dispatcher: CmdSynchronizeResources");
             if (length >= 8) {
                 uint8_t *payload = malloc(length);
@@ -477,6 +488,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x26:  /* CmdSetObjectAndPlacementList */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x26 (CmdSetObjectAndPlacementList) → lagfx_resource_set_placement");  /* CmdSetObjectAndPlacementList */
             LAGFX_LOG("Channel0Dispatcher: CmdSetObjectAndPlacementList");
             if (length > 0) {
                 uint8_t *payload = malloc(length);
@@ -506,6 +518,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x27:  /* CmdCreateIOSurfaceBacking2 */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x27 (CmdCreateIOSurfaceBacking2) → lagfx_resource_iosurface_create");  /* CmdCreateIOSurfaceBacking2 */
             LAGFX_LOG("Channel0Dispatcher: CmdCreateIOSurfaceBacking2");
             if (length > 0) {
                 uint8_t *payload = malloc(length);
@@ -535,6 +548,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x28:  /* CmdLookupIOSurface */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x28 (CmdLookupIOSurface) → lagfx_resource_iosurface_lookup");  /* CmdLookupIOSurface */
             LAGFX_LOG("Channel0Dispatcher: CmdLookupIOSurface");
             if (length > 0) {
                 uint8_t *payload = malloc(length);
@@ -564,6 +578,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
             break;
 
         case 0x11:  /* CmdNOP */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x11 (CmdNOP) → lagfx_util_nop");  /* CmdNOP */
             LAGFX_LOG("Channel0Dispatcher: CmdNOP");
             break;
 

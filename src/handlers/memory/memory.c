@@ -11,25 +11,25 @@
 
 lagfx_handler_status_t lagfx_memory_map_memory2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdMapMemory2 CALLED ===");
+    LAGFX_ERR("=== CMD_MAP_MEMORY_2 CALLED ===");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_memory_unmap_memory(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdUnmapMemory CALLED ===");
+    LAGFX_ERR("=== CMD_UNMAP_MEMORY CALLED ===");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_memory_define_child_fifo(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdDefineChildFIFO CALLED ===");
+    LAGFX_ERR("=== CMD_DEFINE_CHILD_FIFO CALLED ===");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_memory_delete_child_fifo(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdDeleteChildFIFO CALLED ===");
+    LAGFX_ERR("=== CMD_DELETE_CHILD_FIFO CALLED ===");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
