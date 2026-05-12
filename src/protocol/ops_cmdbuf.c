@@ -373,25 +373,50 @@ LAGFX_ERR("=== CMD_EXEC_INDIRECT2 CALLED ===");
      * mid-section was WRONG — live capture clearly shows 24-byte
      * records with no mid-section.  The "16B mid" was actually the
      * last 8 bytes of one record + first 8 bytes of the next. */
-    uint32_t task_id           = lagfx_le32(hdr->payload + 0);
-    uint32_t descriptor_count  = lagfx_le32(hdr->payload + 4);
-    uint32_t resource_count    = lagfx_le32(hdr->payload + 8);
+    /* macOS may send minimal 8-byte CmdExecIndirect2 payloads for
+      * query/capability-checking mode. These contain just task_id and no
+      * descriptor/resource data. Accept these gracefully instead of
+      * reading out-of-bounds garbage as descriptor_count. */
+     if (!hdr->payload || hdr->payload_size < 8) {
+         LAGFX_TRACE("CmdExecIndirect2: empty payload (size=%u)",
+                     hdr->payload_size);
+         lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
+                                             hdr->stamp);
+         return LAGFX_HANDLER_OK;
+     }
 
-    size_t off_descriptors = 12u;
-    size_t off_resources   = off_descriptors
-                             + (size_t)descriptor_count * 24u;
-    size_t end_resources   = off_resources + (size_t)resource_count * 16u;
+     uint32_t task_id           = lagfx_le32(hdr->payload + 0);
 
-    if (end_resources > (size_t)hdr->payload_size) {
-        LAGFX_WARN("CmdExecIndirect2: outer payload too small "
-                   "(taskID=%u descriptor_count=%u resource_count=%u "
-                   "need=%zu have=%u)",
-                   task_id, descriptor_count, resource_count,
-                   end_resources, (unsigned)hdr->payload_size);
-        lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
-                                            hdr->stamp);
-        return LAGFX_HANDLER_ERR_SIZE;
-    }
+     /* If payload is exactly 8 bytes, macOS is doing a minimal query.
+      * descriptor_count and resource_count are not present — treat as
+      * empty command (no descriptors, no resources). */
+     if (hdr->payload_size == 8) {
+         LAGFX_TRACE("CmdExecIndirect2: minimal query payload taskID=%u",
+                     task_id);
+         lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
+                                             hdr->stamp);
+         return LAGFX_HANDLER_OK;
+     }
+
+     /* Payload >= 12 bytes: safe to read descriptor_count and resource_count */
+     uint32_t descriptor_count  = lagfx_le32(hdr->payload + 4);
+     uint32_t resource_count    = lagfx_le32(hdr->payload + 8);
+
+     size_t off_descriptors = 12u;
+     size_t off_resources   = off_descriptors
+                              + (size_t)descriptor_count * 24u;
+     size_t end_resources   = off_resources + (size_t)resource_count * 16u;
+
+     if (end_resources > (size_t)hdr->payload_size) {
+         LAGFX_WARN("CmdExecIndirect2: outer payload too small "
+                    "(taskID=%u descriptor_count=%u resource_count=%u "
+                    "need=%zu have=%u)",
+                    task_id, descriptor_count, resource_count,
+                    end_resources, (unsigned)hdr->payload_size);
+         lagfx_cmdbuf_commit_empty_vk_submit(p, LAGFX_OP_EXEC_INDIRECT2,
+                                             hdr->stamp);
+         return LAGFX_HANDLER_ERR_SIZE;
+     }
 
     if (descriptor_count == 0 && resource_count == 0) {
         LAGFX_TRACE("CmdExecIndirect2: taskID=%u empty (no descriptors, "
