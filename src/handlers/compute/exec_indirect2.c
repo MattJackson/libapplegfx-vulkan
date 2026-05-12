@@ -10,6 +10,7 @@
  */
 
 #include "../handlers/handlers.h"
+#include "../device.h"
 #include "../common/log.h"
 #include <stdlib.h>
 #include <string.h>
