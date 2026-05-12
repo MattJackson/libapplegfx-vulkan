@@ -11,7 +11,7 @@
 
 static int g_initialized = 0;
 
-lagfx_protocol_t* lagfx_protocol_new(void) {
+lagfx_protocol_t* lagfx_protocol_new(struct lagfx_device *dev) {
     lagfx_protocol_t *p = calloc(1, sizeof(*p));
     if (!p) {
         LAGFX_ERR("protocol_new: out of memory");
@@ -19,6 +19,7 @@ lagfx_protocol_t* lagfx_protocol_new(void) {
     }
 
     p->magic = LAGFX_PROTOCOL_MAGIC;
+    p->dev = dev;  /* Set back-reference to device */
     
     /* Initialize dispatcher registry once */
     if (!g_initialized) {

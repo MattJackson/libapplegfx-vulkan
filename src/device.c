@@ -282,14 +282,13 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
 
    /* Phase 1.A.2: attach the protocol decoder. It owns the MMIO
       * shadow and ring geometry. */
-     lagfx_protocol_t *proto = lagfx_protocol_new();
+     lagfx_protocol_t *proto = lagfx_protocol_new(dev);
      if (!proto) {
          set_err(errp_out, "lagfx_device_new: protocol allocation failed");
          memset(dev, 0, sizeof(*dev));
          free(dev);
          return NULL;
      }
-     proto->dev = dev;  /* Set back-reference to device */
      dev->protocol_state = proto;
 
     /* Initialize STATUS_CONTROL (0x1000) to non-zero "FIFO enabled" value
