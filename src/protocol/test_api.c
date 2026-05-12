@@ -83,12 +83,12 @@ static int lagfx_test_dispatch_opcode(lagfx_protocol_t *p,
                 } else {
                     /* Try to allocate new resource slot */
                     for (uint32_t i = 0; i < LAGFX_MAX_RESOURCES; i++) {
-                        if (!p->resources.entries[i].live) {
+                        if (p->resources.entries[i].ref == 0) {
                             p->resources.entries[i].task_id = task_id;
                             p->resources.entries[i].gpu_addr = gpu_addr;
                             p->resources.entries[i].size = size;
                             p->resources.entries[i].type = LAGFX_RESOURCE_TYPE_BUFFER;
-                            p->resources.entries[i].live = true;
+                            p->resources.entries[i].ref = i + 1;
                             break;
                         }
                     }
