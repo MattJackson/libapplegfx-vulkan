@@ -35,9 +35,32 @@ static int lagfx_test_dispatch_opcode(lagfx_protocol_t *p,
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
-    /* Simple dispatch based on opcode — in full implementation this would
-     * call the appropriate handler. For tests, we just acknowledge receipt. */
-    (void)p;
+    /* Dispatch based on opcode — minimal handlers for test coverage */
+    switch (hdr->opcode) {
+        case LAGFX_OP_DEFINE_TASK2:
+            /* Minimal task registration - just mark slot as live with basic info */
+            if (p && hdr->payload_size >= 24) {
+                uint32_t task_id = *(uint32_t*)(hdr->payload + 0);
+                lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
+                if (!entry) {
+                    entry = lagfx_protocol_alloc_task_slot(p);
+                }
+                if (entry) {
+                    entry->id = task_id;
+                    entry->base_va = *(uint64_t*)(hdr->payload + 4);
+                    entry->length = *(uint64_t*)(hdr->payload + 12);
+                    entry->live = true;
+                }
+            }
+            return 0;
+
+        case LAGFX_OP_MAP_MEMORY_IMMEDIATE:
+        case LAGFX_OP_DELETE_TASK:
+        default:
+            /* Minimal stubs - just acknowledge receipt */
+            break;
+    }
+
     (void)cmd_bytes;
 
     return 0;  /* Success, handler ran */
