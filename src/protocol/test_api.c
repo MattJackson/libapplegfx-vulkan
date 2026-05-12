@@ -12,6 +12,7 @@
 
 #include "protocol.h"
 #include "common/log.h"
+#include "opcodes.h"    /* lagfx_cmd_header_t, LAGFX_HANDLER_ERR_SIZE */
 
 int lagfx_protocol_dispatch_one(lagfx_protocol_t *p,
                                 const uint8_t *cmd_bytes,
