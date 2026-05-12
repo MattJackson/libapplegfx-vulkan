@@ -26,6 +26,10 @@ struct lagfx_vk_state;
 #define LAGFX_DEVICE_MAGIC   0x4C414758u
 #define LAGFX_DISPLAY_MAGIC  0x4C414744u  /* "LAGD" */
 
+/* Minimal logging stubs - defined in device.c to avoid circular includes */
+extern void lagfx_log_impl(const char *fmt, ...);
+extern void lagfx_warn_impl(const char *fmt, ...);
+
 /* Hard cap on simultaneously attached displays per device. Apple's
  * PGDevice permits multiple (Pro Display XDR mirroring etc.) but in
  * practice Phase 1 only ever wires one. Grow as needed. */
@@ -51,7 +55,30 @@ struct lagfx_device {
     /* Protocol state (Phase 1.A.2) and Vulkan state (Phase 1.B). */
     void *protocol_state;
     struct lagfx_vk_state *vk;
+
+    /* Doorbell callback — QEMU calls this when BAR0+0x1020 is written */
+    void (*doorbell_callback)(void *opaque, uint8_t chan_id);
+    void *doorbell_opaque;
 };
+
+/* Validate a device handle — returns true if plausibly live. */
+static inline int lagfx_device_is_valid(const lagfx_device_t *d) {
+    return d != NULL && d->magic == LAGFX_DEVICE_MAGIC;
+}
+
+/* Doorbell write handler — called by QEMU when BAR0+0x1020 is written */
+static inline void lagfx_device_doorbell_write(lagfx_device_t *dev, uint8_t chan_id) {
+    if (!lagfx_device_is_valid(dev)) return;
+    
+    lagfx_log_impl("doorbell_write: device=%p channel=%u", (void *)dev, chan_id);
+    
+    /* Call back to registered doorbell handler */
+    if (dev->doorbell_callback && dev->doorbell_opaque) {
+        dev->doorbell_callback(dev->doorbell_opaque, chan_id);
+    } else {
+        lagfx_warn_impl("doorbell_write: no callback registered for device %p", (void *)dev);
+    }
+}
 
 /* Called by display.c when a display attaches/detaches. Returns 0
  * on success, negative lagfx_status_t on failure. */
@@ -59,10 +86,5 @@ int lagfx_device_attach_display(lagfx_device_t *device,
                                 lagfx_display_t *display);
 void lagfx_device_detach_display(lagfx_device_t *device,
                                  lagfx_display_t *display);
-
-/* Validate a device handle — returns true if plausibly live. */
-static inline int lagfx_device_is_valid(const lagfx_device_t *d) {
-    return d != NULL && d->magic == LAGFX_DEVICE_MAGIC;
-}
 
 #endif /* LIBAPPLEGFX_DEVICE_INTERNAL_H */

@@ -1,18 +1,20 @@
 /*
- * libapplegfx-vulkan — Root channel dispatcher (ch 0)
- * src/dispatchers/channel_0_dispatcher.c
+ * libapplegfx-vulkan — Display channel dispatcher (ch 5+)
+ * src/dispatchers/channel_display_dispatcher.c
  *
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#include "channel_0_dispatcher.h"
-#include "../device.h"
+#include "channel_display_dispatcher.h"
 #include "../doorbell.h"
+#include "../device.h"
 #include "../common/log.h"
 #include "protocol/opcodes.h"
 #include "protocol/state.h"
 #include "handlers/handlers.h"
+
+#include <stddef.h>
 
 /* Little-endian readers (guest protocol is LE). */
 static inline uint16_t read_le16(const uint8_t *b) {
@@ -30,70 +32,57 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
         return;
     }
 
-    LAGFX_TRACE("dispatch: opcode=0x%04x stamp=0x%08x", hdr->opcode, hdr->stamp);
+    LAGFX_TRACE("display dispatch: opcode=0x%04x stamp=0x%08x", hdr->opcode, hdr->stamp);
 
     switch (hdr->opcode) {
-        /* Task management */
-        case LAGFX_OP_DEFINE_TASK2:
-            lagfx_task_define_task2(p, hdr);
+        /* Display ack and state */
+        case LAGFX_OP_DISPLAY_ACK:
+            lagfx_display_ack(p, hdr);
             break;
-        case LAGFX_OP_DELETE_TASK:
-            lagfx_task_delete_task(p, hdr);
-            break;
-
-        /* Memory mapping */
-        case LAGFX_OP_MAP_MEMORY2:
-            lagfx_memory_map_memory2(p, hdr);
-            break;
-        case LAGFX_OP_UNMAP_MEMORY:
-            lagfx_memory_unmap_memory(p, hdr);
+        case LAGFX_OP_DISPLAY_SWAP_MAPPING:
+            lagfx_display_swap_mapping(p, hdr);
             break;
 
-        /* Device info queries */
-        case LAGFX_OP_GET_DEVICE_INFO:
-            lagfx_op_get_device_info(p, hdr);
+        /* Cursor rendering */
+        case LAGFX_OP_DISPLAY_CURSOR_GLYPH:
+            lagfx_display_cursor_glyph(p, hdr);
             break;
-        case LAGFX_OP_GET_DEVICE_INFO_2:
-            lagfx_op_get_device_info_2(p, hdr);
-            break;
-
-        /* Debug/NOP */
-        case LAGFX_OP_NOP:
-            lagfx_util_nop(p, hdr);
-            break;
-        case LAGFX_OP_DEBUG:
-            lagfx_op_debug(p, hdr);
+        case LAGFX_OP_DISPLAY_CURSOR_SHOW:
+            lagfx_display_cursor_show(p, hdr);
             break;
 
         default:
-            LAGFX_WARN("root dispatch: unknown opcode 0x%04x", hdr->opcode);
+            LAGFX_WARN("display dispatch: unknown opcode 0x%04x", hdr->opcode);
             p->unknown_opcode_count++;
             break;
     }
 }
 
-/* Drain ring buffer for root channel. Returns number of commands processed. */
-size_t channel_0_dispatcher_drain(lagfx_protocol_t *p) {
+/* Drain ring buffer for display channels. Returns number of commands processed. */
+size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
     if (!lagfx_protocol_is_valid(p)) {
         return 0;
     }
 
+    /* TODO: Get per-channel ring geometry from FIFO entry or protocol state. */
     if (!p->ring_armed || p->ring_size == 0u || p->ring_base_gpa == 0u) {
-        LAGFX_TRACE("root drain: ring not armed or invalid");
+        LAGFX_TRACE("display drain: ring not armed");
         return 0;
     }
 
-    /* Read doorbell (write pointer @ BAR0+0x1008). */
-    uint32_t write_ptr = p->reg[REG_WRITE_PTR];
+    /* Read doorbell for this channel. */
+    uint32_t write_ptr = p->reg[REG_WRITE_PTR + chan_id];
     if (write_ptr == 0u) {
         return 0;
     }
 
+    LAGFX_LOG("display drain: chan=%u doorbell=%u", chan_id, write_ptr);
+
     size_t cmds_processed = 0u;
-    const size_t max_cmds = 128u;
+    const size_t max_cmds = 64u;
     uint64_t ring_base_gpa = p->ring_base_gpa;
     size_t ring_size       = p->ring_size;
-    uint32_t read_ptr      = p->read_ptr;
+    uint32_t read_ptr      = 0u;
 
     for (size_t i = 0; i < max_cmds && cmds_processed < write_ptr; ++i) {
         /* Calculate command GPA. */
@@ -102,7 +91,7 @@ size_t channel_0_dispatcher_drain(lagfx_protocol_t *p) {
         /* Fetch 12-byte header from guest via shell.read_memory callback. */
         lagfx_cmd_header_wire_t wire_hdr;
         if (!p->dev || !((lagfx_device_t *)p->dev)->desc.shell.read_memory) {
-            LAGFX_WARN("root drain: no shell.read_memory callback available");
+            LAGFX_WARN("display drain: no shell.read_memory callback available");
             break;
         }
 
@@ -111,7 +100,7 @@ size_t channel_0_dispatcher_drain(lagfx_protocol_t *p) {
             cmd_gpa, sizeof(wire_hdr), &wire_hdr);
 
         if (!ok) {
-            LAGFX_WARN("root drain: read_memory failed for GPA 0x%llx", (unsigned long long)cmd_gpa);
+            LAGFX_WARN("display drain: read_memory failed for GPA 0x%llx", (unsigned long long)cmd_gpa);
             break;
         }
 
@@ -123,8 +112,7 @@ size_t channel_0_dispatcher_drain(lagfx_protocol_t *p) {
         hdr.arg_count_8b = wire_hdr.arg_count_8b;
         hdr.payload_size = (uint16_t)(wire_hdr.length > 12 ? wire_hdr.length - 12 : 0);
 
-        /* TODO: Fetch payload via shell.read_memory if length > 12.
-         * For now, leave payload NULL and let handlers handle missing data. */
+        /* TODO: Fetch payload via shell.read_memory if length > 12. */
 
         /* Dispatch command to handler. */
         dispatch_command(p, &hdr);
@@ -134,6 +122,5 @@ size_t channel_0_dispatcher_drain(lagfx_protocol_t *p) {
         read_ptr++;
     }
 
-    p->read_ptr = read_ptr;
     return cmds_processed;
 }

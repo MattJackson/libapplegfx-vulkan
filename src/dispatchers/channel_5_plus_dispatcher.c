@@ -12,7 +12,6 @@
 
 #include "channel_5_plus_dispatcher.h"
 #include "../device.h"
-#include "../protocol/protocol.h"
 #include "../protocol/state.h"
 #include "../handlers/handlers.h"
 #include "../common/log.h"

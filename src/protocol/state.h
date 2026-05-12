@@ -1,479 +1,169 @@
 /*
- * libapplegfx-vulkan — protocol decoder internal state
+ * libapplegfx-vulkan — Protocol state machine definition
  * src/protocol/state.h
  *
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Last updated: 2026-05-01
- *
- * Layout of the opaque lagfx_protocol_t struct. Used by protocol.c,
- * fifo.c, ops_*.c. Tests poke via the public accessors in
- * protocol.h. Private to src/protocol/.
+ * Core protocol struct and shared types used by all dispatchers/handlers.
  */
 
-#ifndef LIBAPPLEGFX_PROTOCOL_STATE_H
-#define LIBAPPLEGFX_PROTOCOL_STATE_H
+#ifndef LAGFX_PROTOCOL_STATE_H
+#define LAGFX_PROTOCOL_STATE_H
 
-#include "protocol.h"
-#include "opcodes.h"
-#include "ops_display.h"
-#include "ops_iosurface.h"
-#include "render_pass.h"
-#include "resource_registry.h"
-#include "../translate/render_encoder.h"
-#include <stdbool.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
 
-/* Table capacities — see phase-1a2-decoder-plan.md §5 and
- * phase-2-first-pixel-plan.md §4 (Phase 2.A display-path opcodes add
- * the displays[] table). */
-#define LAGFX_MAX_TASKS       16u
-#define LAGFX_MAX_CHILDFIFOS  16u
-#define LAGFX_MAX_INFLIGHT    32u
-#define LAGFX_PROTO_MAX_DISPLAYS 4u  /* tracks guest-visible displayID →
-                                      * current mapping + last txn.
-                                      * Matches device.h's cap; kept as a
-                                      * separate constant because state.h
-                                      * intentionally doesn't pull
-                                      * device.h (avoids circular-ish
-                                      * reach). */
+/* Resource registry must be defined before protocol struct uses it.
+ * Included here to avoid circular deps when state.h is included by handlers. */
+#include "resource_registry.h"
 
-/* Magic cookie for liveness checks; ASCII "LAPR" (Linux Apple PRotocol). */
-#define LAGFX_PROTOCOL_MAGIC  0x4C415052u
 
-/* lagfx_task_t is opaque to us at this layer; we hold a pointer only.
- * (Defined in libapplegfx-vulkan.h as an incomplete type.) */
-typedef struct lagfx_task lagfx_task_t;
+/* === Constants =================================================== */
+#define LAGFX_MAX_TASKS        64u     /* Max concurrent tasks */
+#define LAGFX_MAX_FIFOS        32u     /* Max child FIFOs */
+/* LAGFX_MAX_DISPLAYS defined in device.h; channels = root (0) + compute (1-4) + displays */
+#define LAGFX_MAX_CHANNELS     9      /* Root + 4 compute + up to 4 displays */
 
-#define LAGFX_MAX_VA_INTERVALS 256u
+/* Stamp slot mapping (per waitForStamp-mechanism-summary.md) */
+enum {
+    SLOT_ROOT_CHANNEL       = 0,   // ch 0 → root channel
+    SLOT_COMPUTE_1          = 1,   // ch 1 → compute vchan
+    SLOT_COMPUTE_2          = 2,   // ch 2 → compute vchan
+    SLOT_COMPUTE_3          = 3,   // (unused by macOS)
+    SLOT_COMPUTE_4          = 4,   // ch 4 → compute vchan
+    SLOT_DISPLAY_PIPE_0     = 5,   // display pipe 0
+};
 
+/* Register shadow indices (BAR0+0x1000..0x1FFF → idx 0..15) */
+enum {
+    REG_STATUS_CONTROL      = 0,   // BAR0+0x1000 - ring_armed
+    REG_RING_SIZE           = 1,   // BAR0+0x1004 - command ring size
+    REG_WRITE_PTR           = 2,   // BAR0+0x1008 - doorbell (primary)
+    REG_FIFO_FAULT_OFFSET   = 3,   // BAR0+0x100c - fault offset (read-only)
+    REG_START_OFFSET        = 4,   // BAR0+0x1010 - ring start offset
+    REG_SHARED_PAGE_PFN     = 5,   // BAR0+0x101c - shared page PFN
+    REG_STAMP_BITMASK       = 7,   // BAR0+0x1020 - stamp bitmask (read)
+    REG_BASE_PFN            = 8,   // BAR0+0x1030 - ring base PFN
+};
+
+/* === Wire Format Structures ====================================== */
+/* lagfx_cmd_header_t defined in opcodes.h with derived fields.
+ * The wire-format-only version is kept here for documentation. */
+
+// 12-byte command header on wire (per-command-buffer-format.md §2.1)
 typedef struct {
-    uint64_t va_base;
-    uint64_t gpa_base;
-    uint64_t length;
-} lagfx_va_interval_t;
+    uint16_t opcode;        // Outer opcode (0x00..0x44)
+    uint32_t length;        // Total command size including this header
+    uint32_t stamp;         // Stamp to ack on completion
+    uint8_t  arg_count_8b;  // Number of 64-bit arguments after payload
+    uint16_t payload_size;  // Payload bytes after 12-byte header
+} __attribute__((packed)) lagfx_cmd_header_wire_t;
 
+// Inner opcode (inside CmdExecIndirect2, 8-byte header)
 typedef struct {
-    uint32_t      id;
-    lagfx_task_t *shell_task;
-    uint64_t      base_va;
-    uint64_t      length;
-    bool          live;
+    uint32_t length;        // Total inner command size
+    uint32_t stamp;         // Stamp to ack
+    uint16_t opcode;        // Inner opcode (Render/Blit/Compute domain-specific)
+} __attribute__((packed)) lagfx_inner_cmd_header_t;
 
-    uint32_t      root_page_pfn;
-    uint32_t      heap_pfn;
-    uint32_t      heap_size;
-
-    lagfx_va_interval_t va_intervals[LAGFX_MAX_VA_INTERVALS];
-    uint32_t            va_interval_count;
+/* === Task Entry ================================================== */
+typedef struct {
+    uint32_t id;                /* Task ID (from CmdDefineTask2) */
+    uint64_t root_page_pfn;     // Root page PFN for VA→GPA translation
+    uint64_t base_va;           // Guest VA or shell-returned ptr low bits
+    uint32_t length;            // Task address space size in bytes
+    void *shell_task;           // Opaque handle passed to shell (if any)
+    bool live;                  /* Slot is in use */
 } lagfx_task_entry_t;
 
+/* === FIFO Entry ================================================== */
 typedef struct {
-    uint32_t id;
-    uint64_t buffer_va;
-    uint32_t size;
-    bool     live;
-    /* Phase 1.A.2 scaffold marker: set by CmdSynchronizeResources /
-     * other barrier ops to indicate the resource has been quiesced.
-     * Full sync semantics (per-resource barrier tracking) land in
-     * Phase 3. */
-    bool     synced;
-} lagfx_childfifo_entry_t;
+    uint32_t id;                /* Child FIFO ID (from CmdDefineChildFIFO) */
+    uint64_t ring_base_gpa;     // Ring base GPA for this child FIFO
+    uint32_t ring_size;         // Ring size in bytes
+    uint32_t entry_count;       // Number of entries in ring
+    bool live;                  // Whether this FIFO is active
+} lagfx_fifo_entry_t;
 
-/* Per-task resource sync scaffold. Phase 1.A.2 tracks only a monotonically
- * increasing counter of successful syncs per task (so tests can observe
- * that CmdSynchronizeResources for a known taskID actually reached the
- * task). Full per-resource barrier tracking is Phase 3 work. */
+/* === Display Child Ring ========================================== */
 typedef struct {
-    uint32_t stamp;
-    uint16_t opcode;
-    bool     completed;
-} lagfx_inflight_entry_t;
-
-/* Per-instance diagnostic state — replaces file-scope static singletons.
- * Each protocol instance tracks its own channel-drain history to avoid
- * cross-device aliasing (concern #7). */
-#define LAGFX_MAX_CHANNELS 32u
-
-/* Display-pipe tracking (Phase 2.A). Populated by CmdDisplaySwapMapping
- * (0x12) and updated by CmdDisplayTransaction3 (0x16); cleared when the
- * guest issues the matching CmdDisplayAck (0x10).
- *
- * Field layouts are PARTIAL-confidence per phase-2-first-pixel-plan.md
- * §4 (runtime capture on a booted VM would definitively confirm). The
- * guest emits one of these per guest-visible display; scanout backing is
- * a guest VA into task-mapped memory that the host later resolves via
- * shell.read_memory or the direct host-addr from map_memory.
- *
- * In Phase 2, this table is the decoder's source of truth for
- *   "which framebuffer should the shell read_frame pull from?"
- * Phase 2.B.6 will extend this with a pointer to the host-side
- * lagfx_vk_render_target_t once that type exists.
- */
-typedef struct {
-    uint32_t id;                  /* displayID (opaque; guest-chosen)     */
-    bool     live;                /* slot occupied                        */
-
-    /* Current mapping (latest CmdDisplaySwapMapping). */
-    uint64_t mapping_id;          /* monotonic per display; incremented
-                                   * on every swap (PARTIAL — runtime
-                                   * capture may reveal a more specific
-                                   * encoding).                          */
-    uint64_t buffer_va;           /* guest VA of scanout backing         */
-    uint64_t length;              /* total bytes of scanout (0 if unknown) */
-    uint32_t width;               /* px (0 if not carried on the wire)   */
-    uint32_t height;              /* px                                   */
-    uint32_t stride;              /* bytes per row                        */
-    uint32_t format;              /* LAGFX/PVG format enum; 0=BGRA8_UNORM */
-    bool     mapped;              /* a mapping has been registered        */
-
-    /* Most recent transaction submitted against this display. Cleared
-     * when the matching ack is received (tx_acked=true). */
-    uint32_t pending_transaction_id;
-    bool     transaction_pending;
-    bool     transaction_acked;
-
-    /* Summary of last transaction's first attachment, for Phase 2.A
-     * clear-colour parse + Phase 2.B consumption. */
-    uint32_t last_attachment_count;
-    uint8_t  last_load_action;    /* 0=dontcare,1=load,2=clear (Metal)   */
-    float    last_clear_rgba[4];
-
-    /* Phase 3.A scaffold: last pipeline handle observed from a
-     * KextCmdExecCmdbuf inner-opcode BIND_PIPELINE entry addressed to
-     * this display. Cleared to 0 on reset. Not yet bound to a
-     * VkShaderEXT — Phase 3.A.2 will translate this to
-     * vkCmdBindShadersEXT against a VkCommandBuffer. */
-    uint32_t last_pipeline;
-} lagfx_display_entry_t;
-
-/* Display-vchan sub-ring registered by opcode 0x04 (CmdDefineChildFIFO)
- * on display virtual channels (ch >= 5). Unlike compute channels where
- * 0x04 carries just a 4-byte fifoID, the display variant carries the
- * full ring geometry inline in a 44-byte descriptor.
- *
- * Up to 5 sub-rings are registered per display vchan during init. */
-#define LAGFX_MAX_DISPLAY_CHILD_RINGS 8u
-
-typedef struct {
-    uint64_t ring_base_gpa;
-    uint64_t ring_size;
-    uint32_t entry_count;
-    uint16_t read_stride;
-    uint16_t write_stride;
-    uint32_t ring_index;
-    bool     live;
+    uint64_t ring_base_gpa;     // Ring base GPA (separate from parent ring)
+    uint32_t ring_size;         // Ring size
+    uint32_t entry_count;       // Entry count
+    bool live;                  // Active flag
 } lagfx_display_child_ring_t;
 
-struct lagfx_protocol {
-    uint32_t magic;                 /* LAGFX_PROTOCOL_MAGIC */
-    struct lagfx_device *dev;       /* back-pointer for shell callbacks */
+/* === Handler Status ============================================== */
+/* Defined in opcodes.h to avoid duplication when including state.h. */
 
-    /* MMIO register shadow — 15 regs * 4 bytes, indexed by
-     * (offset - LAGFX_REG_BASE) / 4. Covers 0x1000..0x1038. */
-    uint32_t reg[LAGFX_REG_COUNT];
-
-    /* Ring geometry (populated via MMIO setter writes in the
-     * 0x1000..0x1034 bank, per paravirt-re/mmio-survival-recipe-v2.md):
-     *   0x1010 W → page_size (expected 0x1000)
-     *   0x101c W → ring_shared_page_pfn (shared/mailbox page)
-     *   0x1030 W → ring_base_pfn (64 KiB command ring PFN)
-     *   0x1000 W → kick / master enable (triggers drain)
-     * ring_base_gpa is computed as ring_base_pfn << 12 once the page
-     * size is known. */
-    bool     ring_armed;
-    uint32_t page_size;             /* assumed 4K */
-    uint32_t ring_start_offset;     /* from 0x1010 (setFifoStart); bytes */
-    uint32_t ring_shared_page_pfn;  /* from 0x101c write */
-    uint32_t ring_base_pfn;         /* from 0x1030 (setFifoBasePage) */
-    uint64_t ring_base_gpa;         /* (ring_base_pfn << 12) + ring_start_offset */
-    uint32_t ring_size;             /* from 0x1004 (setFifoLength); default 64 KiB */
-    uint32_t read_ptr;              /* decoder drain cursor (high-water mark) */
-    uint32_t write_ptr;             /* last-seen guest write ptr (doorbell) */
-    uint32_t last_completed_stamp;
-
-    /* Pending stamp-completion bitmask, per A4d (2026-04-24).
-     *
-     * The kext's unified ISR at vector 0 reads three BAR0 status regs:
-     *   0x1018 — stamp bitmask fed to AppleParavirtEventMachine::signalStamps
-     *   0x1014 — display bitmask fed to AppleParavirtDisplayMachine::signalDisplays
-     *   0x102c — fault-pending status (0 means no fault queued)
-     *
-     * Bit N of the 0x1018 mask indicates stamp_id N completed since the
-     * last ISR. signalStamps loops set bits via `bsf`, calls commandWakeup
-     * per stamp_id, which reads the actual stamp value from [EM+0x20]
-     * in kernel heap (NOT from a DMA page). Our job is simply to signal
-     * "which stamp IDs completed" via the bitmask and raise MSI-X.
-     *
-     * For the RootChannel single-sid case (the init path), stamp_id=0.
-     * So completing a root-ring command sets bit 0.
-     *
-     * Xchg-and-clear semantics: guest ISR reads 0x1018 and atomically
-     * clears the mask. We mirror that by returning the mask then zeroing
-     * the field. */
-    uint32_t pending_stamps_bitmask;
-
-    /* Pending display-completion bitmask, read at BAR0+0x1014.
-     *
-     * Per display0-cmd-actual-location.md (2026-04-25): display channels
-     * (Display0 = ch 5, Display1 = ch 6) signal completion via the
-     * display bitmask, NOT the stamp bitmask. Setting bit ch in this
-     * field tells the kext's display ISR (signalDisplays) to wake the
-     * wrangler thread.
-     *
-     * Same xchg-and-clear semantics as 0x1018. */
-    uint32_t pending_displays_bitmask;
-
-    /* GPA of the current in-flight command's header on the ring.
-     * Set by the drain immediately before calling dispatch_one so that
-     * handlers can DMA-write into the on-ring header (e.g. 0x3a writes
-     * actual_count to ring header +4 BEFORE stamp/IRQ fires — otherwise
-     * the guest services the IRQ and reads the stale length). */
-    uint64_t current_cmd_header_gpa;
-
-    /* CmdGetDeviceInfo2 (opcode 0x3a) count-writeback state.
-     * Used internally by the handler; see note above on the ordering
-     * requirement. */
-    uint32_t device_info_actual_count;
-
-    /* Extra stamp increments requested by the current handler.
-     * Set by lagfx_op_exec_cmdbuf when it processes render
-     * segments (encoder_type=2) that complete render passes.
-     * The per-channel doorbell handler reads this after
-     * dispatch_one_no_stamp and adds it to last_stamp before
-     * calling lagfx_advance_stamp_cell. Reset to 0 by the
-     * doorbell handler before each dispatch. */
-    uint32_t extra_stamp_advance;
-
-  /* Current task ID from KextCmdExecCmdbuf header — used by inner
-      * opcode handlers when looking up resources in the registry.
-      * Set at the start of KextCmdExecCmdbuf processing and cleared
-      * on reset. For Stage 20% scaffold, we default to task_id=1
-      * (root channel) since proper task tracking isn't wired yet. */
-     uint32_t current_task_id;
-
-    /* Current virtual channel ID (chan_id 1-12) from doorbell MMIO write.
-      * Used for per-channel opcode tracking and debugging two-phase submission pattern
-      * where descriptors arrive on one channel but resources may arrive on another. */
-     uint32_t current_chan_id;
-
-    /* Per-channel opcode namespace tracking — CRITICAL: opcodes are channel-specific!
-      * Opcode 0x32 on chan 1 ≠ opcode 0x32 on chan 5. This prevents treating same-opcode-
-      * values as identical when they live in different namespaces. Tracks which opcodes
-      * we've seen per channel so unknown cases can be logged without spam. */
-     uint8_t ch_opcode_seen[LAGFX_MAX_CHANNELS][256];  /* bitmask: bit=opcode, set when seen */
-    bool    ch_namespace_logged[LAGFX_MAX_CHANNELS];   /* prevent spam on first unknown per channel */
-
-     /* Handle tables. */
-    lagfx_task_entry_t      tasks[LAGFX_MAX_TASKS];
-    lagfx_childfifo_entry_t fifos[LAGFX_MAX_CHILDFIFOS];
-    lagfx_inflight_entry_t  inflight[LAGFX_MAX_INFLIGHT];
-    lagfx_display_entry_t   displays[LAGFX_PROTO_MAX_DISPLAYS];
-    lagfx_display_child_ring_t display_child_rings[LAGFX_MAX_DISPLAY_CHILD_RINGS];
-
-    /* Resource reference registry — maps (ref, task_id) to host-side
-     * resource metadata. Populated by outer opcodes and IOUserClient
-     * selectors; consumed by inner-opcode handlers resolving refs. */
+/* === Protocol State Structure ==================================== */
+typedef struct lagfx_protocol {
+    uint32_t magic;             // LAGFX_PROTOCOL_MAGIC for validation
+    
+    /* Device reference */
+    void *dev;                  // Back-reference to device (opaque here)
+    
+    /* Register shadow (BAR0+0x1000..0x1FFF → idx 0..15) */
+    uint32_t reg[16];           // Shadowed register values
+    
+    /* Ring geometry (set by MMIO, preserved across resets) */
+    uint64_t ring_base_pfn;     // Command ring base PFN (from BAR0+0x1030)
+    uint64_t ring_base_gpa;     // Computed: (pfn << 12) + start_offset
+    uint32_t ring_size;         // Ring size in bytes (BAR0+0x1004)
+    uint32_t ring_start_offset; // Offset within base page (BAR0+0x1010)
+    uint64_t ring_shared_page_pfn;  // Shared page PFN for descriptors
+    uint32_t page_size;         // Page size (observed: 0x1000)
+    
+    /* Ring pointers (updated by doorbells) */
+    uint32_t read_ptr;          // Last processed write pointer (root channel only)
+    uint32_t write_ptr;         // Current write pointer from doorbell (BAR0+0x1008)
+    
+    /* Per-channel tracking */
+    uint8_t current_chan_id;    // Set by channel_door_dispatcher on entry
+    
+    /* Ring armed flag (set by STATUS_CONTROL @ 0x1000) */
+    bool ring_armed;            // Whether ring is enabled for processing
+    
+    /* Stamp management */
+    uint32_t pending_stamps_bitmask;  // Bits set for slots needing IRQ
+    uint32_t last_completed_stamp;     // Most recent stamp value acked
+    uint32_t pending_displays_bitmask; // Display interrupt bitmask
+    
+    /* Task table (per CmdDefineTask2) */
+    lagfx_task_entry_t tasks[LAGFX_MAX_TASKS];
+    
+    /* FIFO table (per CmdDefineChildFIFO) */
+    lagfx_fifo_entry_t fifos[LAGFX_MAX_FIFOS];
+    
+    /* Display child rings */
+    lagfx_display_child_ring_t display_child_rings[16];  // Up to 16 displays
+    
+    /* Resource registry (per CmdMapMemory2, CmdDeleteResource, etc.) */
     lagfx_resource_registry_t resources;
-
-    /* Render encoder state — tracks lifecycle and dynamic state for
-     * the current MTLRenderCommandEncoder session (encoder_type=2).
-     * Zeroed at protocol init; managed by the segment walker in
-     * ops_cmdbuf.c and the render opcode handlers in render_opcodes.c. */
-    lagfx_translate_render_state_t render_enc;
-
-    /* Compute encoder state — tracks pipeline and resource bindings for
-     * the current MTLComputeCommandEncoder session (encoder_type=1).
-     * Zeroed at protocol init; managed by the segment walker in
-     * ops_cmdbuf.c and the compute opcode handlers in compute_opcodes.c. */
-    uint32_t compute_pipeline_ref;       /* current compute pipeline */
-    uint32_t compute_buffer_refs[32];   /* bound buffer refs */
-    uint32_t compute_buffer_count;
-    uint32_t compute_buffer_first;
-    uint32_t compute_texture_refs[32];  /* bound texture refs */
-    uint32_t compute_texture_count;
-    uint32_t compute_texture_first;
-    uint32_t compute_sampler_refs[32];  /* bound sampler refs */
-    uint32_t compute_sampler_count;
-    uint32_t compute_sampler_first;
-
-    /* Doorbell MMIO bounce buffer — per-protocol to avoid concurrent
-     * MMIO corruption across devices. Size = 65 KiB (ring is 64 KiB). */
-    uint8_t doorbell_bounce_buffer[65536u];
-
-    /* Stats / observability. */
+    
+    /* Command counters (for diagnostics) */
     uint64_t total_cmds_seen;
     uint64_t total_cmds_completed;
     uint64_t unknown_opcode_count;
-    uint64_t interrupts_raised;
+    
+} lagfx_protocol_t;
 
-    /* Phase 2.A display counters (observable by tests). */
-    uint64_t display_swaps_applied;
-    uint64_t display_transactions_submitted;
-    uint64_t display_acks_received;
-
-    /* Online event fires immediately when ss[0x104]==0xC is detected.
-     * Previous deferred approaches caused the counter to stick. */
-    uint32_t display_online_fired;
-
-    /* Display submit counter per display (bits 0-7: count for display 0,
-     * bits 8-15: count for display 1, etc.). Used for diagnostics only;
-     * online event now fires immediately when ss[0x104]==0xC. */
-    uint32_t display_submit_count;
-
-    /* Display vchan opcode 0x1e spam suppression flag — prevents repeated
-     * warnings for unknown extended opcodes while guest initializes.
-     * Set once per boot cycle and reset in protocol_reset(). */
-    bool display_1e_logged;
-
-    /* Per-channel highest stamp seen — used by the display tick handler
-     * to detect when a compute channel (ch=1) stamp cell has fallen
-     * behind and needs proactive advancement. Breaks the waitForStamp
-     * deadlock on slot 1 where EventMachine parks waiting for a stamp
-     * that never arrives because no doorbell fires on ch=1.
-     *
-     * Index is channel (1..4 for compute vchans). Updated in the
-     * per-channel doorbell handler in protocol.c. */
-    uint32_t per_channel_highest_stamp[32];
-
-    /* Per-protocol diagnostic state — replaces function-local statics
-     * in protocol.c so lagfx_protocol_reset actually clears them and
-     * concurrent protocols don't alias log/diagnostic counters. */
-    unsigned log_suppress[LAGFX_MAX_DISPLAY_CHILD_RINGS]; /* child-ring trace gate */
-    uint32_t ch_drained[LAGFX_MAX_CHANNELS];              /* per-channel first-drain marker */
-
-    /* Display-handler captures (Phase 2.A/2.C). Canonical per-protocol
-     * storage — handlers in ops_display.c write here. The legacy
-     * file-scope static accessors in ops_display.c keep a parallel
-     * "last-touched" mirror for the existing zero-arg public accessors
-     * declared in ops_display.h until those are migrated to take a
-     * protocol pointer. lagfx_protocol_reset zeroes the per-protocol
-     * copies; lagfx_ops_display_reset zeroes the static mirror. */
-    lagfx_cursor_show_state_t       cursor_show;
-    lagfx_cursor_glyph_state_t      cursor_glyph;
-    lagfx_shared_state_t            shared_state;
-    lagfx_compositor_params_state_t compositor_params;
-    lagfx_icc_profile_state_t       icc_profile;
-
-    /* IOSurface opcode capture counters — see ops_iosurface.c. Same
-     * dual-store pattern as the display captures above. */
-    struct {
-        lagfx_iosurface_capture_t cap_delete;
-        lagfx_iosurface_capture_t cap_create;
-        lagfx_iosurface_capture_t cap_lookup;
-        lagfx_iosurface_capture_t cap_import;
-        lagfx_iosurface_capture_t cap_unmap;
-    } cap_counters;
-
-    /* Set by CmdDefineChildFIFO (and the display-vchan equivalent) to
-     * signal that WindowServer has begun display init. Read by
-     * ops_display.c / ops_display_vchan.c gating logic. The static
-     * file-scope `g_cmd_define_fifo_called` in ops_queue.c remains as a
-     * legacy mirror because ops_display_vchan.c calls
-     * lagfx_ops_queue_set_cmddefine_called() without a protocol arg. */
-    bool cmd_define_fifo_called;
-
-    /* Last parsed render-pass descriptor (CmdDescribeRenderPass). Read
-     * by ops_cmdbuf.c via lagfx_render_pass_desc_get(p). Per-protocol
-     * so multi-device renderers don't alias each other's pass state. */
-    lagfx_render_pass_desc_t last_render_pass_desc;
-
-    /* Delayed ACK fields no longer used (simplified 2026-05-01).
-     * Kept for ABI compatibility; will remove after verifying stability. */
-    /* uint32_t delayed_ack_ch; */        /* channel (0 = no pending) */
-    /* uint32_t delayed_ack_stamp; */     /* stamp value to ACK */
-    /* uint32_t delayed_ack_ticks; */     /* vblank tick counter */
-};
-
-/* Internal helper — index into reg[] by MMIO offset. Returns -1 if
- * the offset is not a recognized register. */
-static inline int lagfx_protocol_reg_index(uint64_t offset) {
-    if (offset < LAGFX_REG_BASE || offset > LAGFX_REG_LAST) {
-        return -1;
-    }
-    if ((offset - LAGFX_REG_BASE) % 4u != 0u) {
-        return -1;
-    }
-    return (int)((offset - LAGFX_REG_BASE) / 4u);
-}
-
-static inline bool lagfx_protocol_is_valid(const lagfx_protocol_t *p) {
+/* Validation macro */
+#define LAGFX_PROTOCOL_MAGIC 0x4C414758u  /* "LAGX" */
+static inline int lagfx_protocol_is_valid(const lagfx_protocol_t *p) {
     return p != NULL && p->magic == LAGFX_PROTOCOL_MAGIC;
 }
 
-/* Completion path — writes the host-to-guest stamp cell (readable at
- * MMIO 0x1014) and raises the IRQ. Every command completes
- * unconditionally; the 12-byte header has no flags field and the
- * dylib's handler tails always call the "signal stamp" selector
- * (re-followup-spec-gaps.md §5.1).
- *
- * Stamp-cell writes are monotonic — internally clamped to
- * max(target, cur+1) with a non-zero floor, so a stale `stamp` value
- * coming from the ring (often 0 in practice) cannot regress the cell
- * and park the kext (see library/howto/how-to-host-stamp-completion.md
- * + library/m3-prod-readiness-audit.md HIGH item 1). */
-void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp);
-
-/* As above but for non-RootChannel completions (per-channel doorbells,
-  * Display0/1/2, vchan completions). `slot` indexes into the FIFO base
-  * page: cell GPA = (ring_base_pfn<<12) + slot*4. The pending-stamps
-  * bitmask bit set is bit `slot` (matches signalStamps's bsf
-  * iteration). */
-void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p,
-                                        uint32_t slot,
-                                        uint32_t stamp);
-
-/* Internal: monotonic stamp-cell advance for per-channel dispatchers.
-  * Called by channel dispatchers when
-  * draining rings. Never regresses (floor=1). */
-void lagfx_advance_stamp_cell(lagfx_protocol_t *p, uint32_t slot, uint32_t target);
-
-/* Per-channel variant of dispatch_one — runs the opcode handler but
- * does NOT auto-complete the stamp. Caller advances stamp_cell[ch] +
- * pending_stamps_bitmask + IRQ once after draining all cmds in the
- * ring. Returns the handler rc; the parsed cmd header is returned via
- * *out_hdr (non-NULL). Used by the per-channel doorbell handler at
- * BAR0+0x1020. */
-int lagfx_protocol_dispatch_one_no_stamp(lagfx_protocol_t *p,
-                                         const uint8_t *cmd_bytes,
-                                         size_t cmd_len,
-                                         lagfx_cmd_header_t *out_hdr);
-
-/* Translate a task-virtual device address to a guest-physical address
- * via the per-task root-page PFN-array (published by CmdDefineHostTask
- * 0x38). On success returns true and writes the GPA + how many bytes
- * are contiguous before the next page boundary (so callers can chunk
- * reads). On miss (no registered host-task or zero page entry),
- * returns false. The caller can then choose to fall back to treating
- * the dev_addr as a literal GPA, or fail.
- *
- * Used by the KextCmdExecCmdbuf segment walker to read per-resource
- * cmdBufs whose host_gpu_addr is a task-virtual address rather than a
- * literal GPA. */
-bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,
-                          uint64_t dev_addr, uint64_t *out_gpa,
-                          uint64_t *out_run_len);
-
-/* Radix-tree-only walk — skips interval table, used by
- * CmdMapMemoryImmediate to resolve GPAs before the interval is
- * populated. */
-bool lagfx_task_translate_radix(lagfx_protocol_t *p, uint32_t task_id,
-                                uint64_t dev_addr, uint64_t *out_gpa,
-                                uint64_t *out_run_len);
-
-/* === Task / FIFO table helpers =================================
- *
- * Tiny linear scans — the tables are small (16 and 8 entries) and
- * Phase 1.A.2 is single-threaded. All helpers return NULL on miss
- * or if the protocol handle is invalid. */
-
-static inline lagfx_task_entry_t *
-lagfx_protocol_find_task(lagfx_protocol_t *p, uint32_t task_id) {
-    if (!lagfx_protocol_is_valid(p)) {
+/* Task table helpers — inline for performance. */
+static inline lagfx_task_entry_t* lagfx_protocol_find_task(lagfx_protocol_t *p, uint32_t task_id) {
+    if (!p || !lagfx_protocol_is_valid(p)) {
         return NULL;
     }
-    for (unsigned i = 0; i < LAGFX_MAX_TASKS; ++i) {
+    /* Linear scan (task table is small: 64 entries). */
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS; ++i) {
         if (p->tasks[i].live && p->tasks[i].id == task_id) {
             return &p->tasks[i];
         }
@@ -481,33 +171,27 @@ lagfx_protocol_find_task(lagfx_protocol_t *p, uint32_t task_id) {
     return NULL;
 }
 
-static inline lagfx_task_entry_t *
-lagfx_protocol_alloc_task_slot(lagfx_protocol_t *p) {
-    if (!lagfx_protocol_is_valid(p)) {
+static inline lagfx_task_entry_t* lagfx_protocol_alloc_task_slot(lagfx_protocol_t *p) {
+    if (!p || !lagfx_protocol_is_valid(p)) {
         return NULL;
     }
-    for (unsigned i = 0; i < LAGFX_MAX_TASKS; ++i) {
+    /* Find first free slot. */
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS; ++i) {
         if (!p->tasks[i].live) {
-            /* Initialize with identity mapping as fallback: the kext does NOT
-             * send CmdDefineHostTask (opcode 0x38) to define task radix trees.
-             * Instead, it relies on VA interval fallback in lagfx_task_translate
-             * which uses gpa_base=va_base (identity mapping). root_page_pfn=1
-             * here is a placeholder that will fail radix translation but the
-             * VA interval path will succeed. Verified: CmdDefineHostTask never
-             * appears in production logs, tasks 0/1/2 work via identity GPA. */
-            p->tasks[i].root_page_pfn = 1u;
+            memset(&p->tasks[i], 0, sizeof(p->tasks[i]));
+            p->tasks[i].live = false; /* Mark as allocated but not live until populated */
             return &p->tasks[i];
         }
     }
-    return NULL;
+    return NULL; /* Table full */
 }
 
-static inline lagfx_childfifo_entry_t *
-lagfx_protocol_find_fifo(lagfx_protocol_t *p, uint32_t fifo_id) {
-    if (!lagfx_protocol_is_valid(p)) {
+/* FIFO table helpers. */
+static inline lagfx_fifo_entry_t* lagfx_protocol_find_fifo(lagfx_protocol_t *p, uint32_t fifo_id) {
+    if (!p || !lagfx_protocol_is_valid(p)) {
         return NULL;
     }
-    for (unsigned i = 0; i < LAGFX_MAX_CHILDFIFOS; ++i) {
+    for (uint32_t i = 0; i < LAGFX_MAX_FIFOS; ++i) {
         if (p->fifos[i].live && p->fifos[i].id == fifo_id) {
             return &p->fifos[i];
         }
@@ -515,60 +199,18 @@ lagfx_protocol_find_fifo(lagfx_protocol_t *p, uint32_t fifo_id) {
     return NULL;
 }
 
-static inline lagfx_childfifo_entry_t *
-lagfx_protocol_alloc_fifo_slot(lagfx_protocol_t *p) {
-    if (!lagfx_protocol_is_valid(p)) {
+static inline lagfx_fifo_entry_t* lagfx_protocol_alloc_fifo_slot(lagfx_protocol_t *p) {
+    if (!p || !lagfx_protocol_is_valid(p)) {
         return NULL;
     }
-    for (unsigned i = 0; i < LAGFX_MAX_CHILDFIFOS; ++i) {
+    for (uint32_t i = 0; i < LAGFX_MAX_FIFOS; ++i) {
         if (!p->fifos[i].live) {
+            memset(&p->fifos[i], 0, sizeof(p->fifos[i]));
+            p->fifos[i].live = false;
             return &p->fifos[i];
         }
     }
     return NULL;
 }
 
-static inline lagfx_display_entry_t *
-lagfx_protocol_find_display(lagfx_protocol_t *p, uint32_t display_id) {
-    if (!lagfx_protocol_is_valid(p)) {
-        return NULL;
-    }
-    for (unsigned i = 0; i < LAGFX_PROTO_MAX_DISPLAYS; ++i) {
-        if (p->displays[i].live && p->displays[i].id == display_id) {
-            return &p->displays[i];
-        }
-    }
-    return NULL;
-}
-
-static inline lagfx_display_entry_t *
-lagfx_protocol_alloc_display_slot(lagfx_protocol_t *p) {
-    if (!lagfx_protocol_is_valid(p)) {
-        return NULL;
-    }
-    for (unsigned i = 0; i < LAGFX_PROTO_MAX_DISPLAYS; ++i) {
-        if (!p->displays[i].live) {
-            return &p->displays[i];
-        }
-    }
-    return NULL;
-}
-
-/* Find-or-allocate: called from CmdDisplaySwapMapping and
- * CmdDisplayTransaction3 which both auto-register a previously-unseen
- * displayID rather than erroring. Matches dylib fail-open semantics
- * (command-buffer-format.md §6). */
-static inline lagfx_display_entry_t *
-lagfx_protocol_get_or_alloc_display(lagfx_protocol_t *p, uint32_t display_id) {
-    lagfx_display_entry_t *d = lagfx_protocol_find_display(p, display_id);
-    if (d) return d;
-    d = lagfx_protocol_alloc_display_slot(p);
-    if (d) {
-        /* Initialise — live is set by the caller after populating. */
-        *d = (lagfx_display_entry_t){0};
-        d->id = display_id;
-    }
-    return d;
-}
-
-#endif /* LIBAPPLEGFX_PROTOCOL_STATE_H */
+#endif /* LAGFX_PROTOCOL_STATE_H */

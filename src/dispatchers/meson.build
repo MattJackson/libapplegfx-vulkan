@@ -1,0 +1,17 @@
+# src/dispatchers/meson.build — Dispatcher routing sources
+#
+# Copyright © 2026 Matthew Jackson
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+lagfx_sources += files(
+  'primary_ring_door_dispatcher.h',
+  'primary_ring_door_dispatcher.c',   # BAR0+0x1008 → primary ring drain
+  'channel_door_dispatcher.h',
+  'channel_door_dispatcher.c',        # BAR0+0x1020 → routes by channel ID
+  'channel_0_dispatcher.h',
+  'channel_0_dispatcher.c',           # Root channel sub-dispatcher
+  'channel_compute_dispatcher.h',
+  'channel_compute_dispatcher.c',     # Compute channels (ch 1-4) sub-dispatcher
+  'channel_display_dispatcher.h',
+  'channel_display_dispatcher.c',     # Display channels (ch 5+) sub-dispatcher
+)

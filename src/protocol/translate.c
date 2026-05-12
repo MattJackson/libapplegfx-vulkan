@@ -39,7 +39,6 @@
  *     data_pfn = pte & 0x7fffffff
  */
 
-#include "protocol.h"
 #include "state.h"
 #include "../device.h"
 #include "../common/log.h"

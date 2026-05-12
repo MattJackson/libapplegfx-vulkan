@@ -1,39 +1,18 @@
 /*
- * libapplegfx-vulkan — Primary ring dispatcher (Channel 0)
+ * libapplegfx-vulkan — Root channel dispatcher (ch 0)
  * src/dispatchers/channel_0_dispatcher.h
  *
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
- *
- * Dispatcher for primary ring (channel 0). Handles KextCmdExecCmdbuf and routes
- * inner opcodes to render/blit/compute decoders via ops_cmdbuf.c logic.
  */
 
 #ifndef LAGFX_CHANNEL_0_DISPATCHER_H
 #define LAGFX_CHANNEL_0_DISPATCHER_H
 
-#include "base.h"
+#include <stddef.h>
+#include "protocol/state.h"
 
-/* Forward declarations - avoid circular includes */
-struct lagfx_protocol;
-typedef struct lagfx_protocol lagfx_protocol_t;
-
-/**
- * Primary ring dispatcher for channel 0.
- * Embeds base class as first member for polymorphism.
- * Handles KextCmdExecCmdbuf and delegates to ops_cmdbuf.c logic.
- */
-typedef struct {
-    lagfx_dispatcher_base_t base;   /* Base class (first!) */
-} lagfx_channel_0_dispatcher_t;
-
-/** Constructor pattern */
-lagfx_channel_0_dispatcher_t *channel_0_dispatcher_new(void);
-
-/** Ring dispatch — delegates to ops_cmdbuf.c KextCmdExecCmdbuf handler */
-void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
-                                        struct lagfx_protocol *p,
-                                        uint64_t descr_gpa,
-                                        uint8_t ch_id);
+/* Drain root channel ring buffer. Returns number of commands processed. */
+size_t channel_0_dispatcher_drain(lagfx_protocol_t *p);
 
 #endif /* LAGFX_CHANNEL_0_DISPATCHER_H */

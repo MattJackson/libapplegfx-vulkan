@@ -1,65 +1,44 @@
 /*
- * libapplegfx-vulkan — Handler declarations (logic layer, no routing)
+ * libapplegfx-vulkan — Handler declarations
  * src/handlers/handlers.h
  *
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
- *
- * All opcode handlers live here - pure logic functions with NO dispatcher code.
- * Dispatchers call these directly - no global opcode table lookup.
  */
 
 #ifndef LAGFX_HANDLERS_H
 #define LAGFX_HANDLERS_H
 
-#include "../protocol/state.h"
-#include <stdint.h>
+#include "../device.h"
+#include "protocol/ops_display.h"
+#include "protocol/resource_registry.h"
+#include "protocol/opcodes.h"
+#include "protocol/state.h"
 
-/* === Task Handlers (0x00, 0x01) ==================================== */
+/* === Task Handlers (opcode 0x00, 0x01) ============================ */
 lagfx_handler_status_t lagfx_task_define_task2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_task_delete_task(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
-/* === Memory Handlers (0x02-0x05) =================================== */
+/* === Memory Handlers (opcode 0x02-0x03) ========================== */
 lagfx_handler_status_t lagfx_memory_map_memory2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_memory_unmap_memory(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_memory_define_child_fifo(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_memory_delete_child_fifo(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
-/* === Compute Handlers (0x37-0x39) ================================= */
-lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+/* === Compute Handler (opcode 0x20) =============================== */
+lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
-/* === Memory Handlers (0x02-0x05 + 0x39) ============================= */
-lagfx_handler_status_t lagfx_memory_map_memory2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_memory_unmap_memory(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_memory_define_child_fifo(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_memory_map_memory_immediate(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-
-/* === Display Handlers (0x10-0x1a + vchan 5+) ========================= */
-lagfx_handler_status_t lagfx_display_ack(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_display_cursor_show(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_display_cursor_glyph(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_display_transaction3(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_display_compositor_params(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_display_icc_profile(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-
-/* === Display VChan Handlers (channels 5+) =========================== */
-lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_display_vchan_display_submit(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_display_define_child_fifo(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_display_vchan_present(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_display_vchan_present_gamma(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-
-/* === Sync Handlers (0x22) ========================================= */
+/* === Sync Handlers (opcode 0x42) ================================ */
 lagfx_handler_status_t lagfx_sync_synchronize_resources(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
-/* === Resource Handlers (0x26-0x28) ================================ */
-lagfx_handler_status_t lagfx_resource_set_placement(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_resource_iosurface_create(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_resource_iosurface_lookup(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+/* === Display Handlers (opcode 0x10-0x1a) ======================== */
+lagfx_handler_status_t lagfx_display_ack(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_swap_mapping(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_cursor_glyph(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_cursor_show(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
-/* === Utility Handlers ============================================= */
+/* === Utility Handlers ============================================ */
 lagfx_handler_status_t lagfx_util_nop(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_util_device_info(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_debug(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_get_device_info(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_op_get_device_info_2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
 #endif /* LAGFX_HANDLERS_H */
-

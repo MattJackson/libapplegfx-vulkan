@@ -11,7 +11,6 @@
 
 #include "unknown_dispatcher.h"
 #include "../device.h"
-#include "../protocol/protocol.h"
 #include "../protocol/state.h"
 #include "../common/log.h"
 

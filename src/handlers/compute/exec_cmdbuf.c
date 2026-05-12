@@ -1,122 +1,87 @@
 /*
- * libapplegfx-vulkan — Command buffer execution handler (compute path)
+ * libapplegfx-vulkan — Command buffer execution handler (opcode 0x18/0x20)
  * src/handlers/compute/exec_cmdbuf.c
+ *
+ * Copyright © 2026 Matthew Jackson
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-#include "../handlers/handlers.h"
-#include "../device.h"
-#include "../common/log.h"
-#include <stdlib.h>
-#include <string.h>
+#include "../handlers.h"
+#include "common/log.h"
 
-/* Helper: little-endian u32 read */
+/* Little-endian u32/u64 readers (ring is LE on all hosts). */
 static inline uint32_t lagfx_le32(const uint8_t *b) {
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
-           ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8)
+         | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
 }
 
-/* Handler for command buffer execution (opcode 0x37/0x3c on compute channels).
- * Executes pre-encoded Metal commands from GPU memory via lavapipe backend. */
-lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    LAGFX_LOG("=== CMDBUFFER EXECUTION CALLED ===");
-    
-    if (!p || !hdr) return LAGFX_HANDLER_ERR_INTERNAL;
+static inline uint64_t lagfx_le64(const uint8_t *b) {
+    return (uint64_t)b[0] | ((uint64_t)b[1] << 8)
+         | ((uint64_t)b[2] << 16) | ((uint64_t)b[3] << 24)
+         | ((uint64_t)b[4] << 32) | ((uint64_t)b[5] << 40)
+         | ((uint64_t)b[6] << 48) | ((uint64_t)b[7] << 56);
+}
 
-    /* Empty payload: metal-no-op alternate path */
-    if (!hdr->payload || hdr->payload_size < 8) {
-        LAGFX_TRACE("command buffer execution: stamp=0x%08x payload_size=%u (empty-list completion)",
-                    hdr->stamp, (unsigned)hdr->payload_size);
-        return LAGFX_HANDLER_OK;
+/* CmdExecIndirect2 outer payload format (confirmed 2026-04-28):
+ *   +0x00  u32 task_id
+ *   +0x04  u32 descriptor_count (24 B records)
+ *   +0x08  u32 resource_count (16 B records)
+ *   +0x0c+dc*24  descriptors[descriptor_count]
+ *                +0x00  u32 id (resource/object ref ID)
+ *                +0x04  u32 flags (0x100=invalidate, 1=sync)
+ *                +0x08  u64 reserved (zero)
+ *   +res  resources[resource_count]
+ *                +0x00  u64 host_gpu_addr (device VA, NOT GPA!)
+ *                +0x08  u32 length (cmdbuf size in bytes)
+ *                +0x0c  u32 _pad (zero) */
+
+lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
     }
-
-    /* Minimal query (8 bytes): task_id only */
-    if (hdr->payload_size == 8) {
-        uint32_t task_id = lagfx_le32(hdr->payload);
-        LAGFX_TRACE("command buffer execution: minimal query payload taskID=%u", task_id);
-        return LAGFX_HANDLER_OK;
-    }
-
-    /* Full payload parsing */
-    uint32_t descriptor_count  = lagfx_le32(hdr->payload + 4);
-    uint32_t resource_count    = lagfx_le32(hdr->payload + 8);
     
-    size_t off_descriptors = 12u;
-    size_t off_resources   = off_descriptors + (size_t)descriptor_count * 24u;
-    size_t end_resources   = off_resources + (size_t)resource_count * 16u;
-
-    if (end_resources > (size_t)hdr->payload_size) {
-        LAGFX_WARN("command buffer execution: outer payload too small "
-                   "(taskID=%u descriptor_count=%u resource_count=%u need=%zu have=%u)",
-                   lagfx_le32(hdr->payload + 0), descriptor_count, resource_count,
-                   end_resources, (unsigned)hdr->payload_size);
+    /* Minimum outer header is 16 bytes (task_id + descriptor_count + resource_count). */
+    if (!hdr->payload || hdr->payload_size < 12) {
+        LAGFX_WARN("CmdExecIndirect2: payload too small (%u)", (unsigned)hdr->payload_size);
         return LAGFX_HANDLER_ERR_SIZE;
     }
-
-    if (descriptor_count == 0 && resource_count == 0) {
-        LAGFX_TRACE("command buffer execution: taskID=%u empty stamp=0x%08x",
-                    lagfx_le32(hdr->payload + 0), hdr->stamp);
-        return LAGFX_HANDLER_OK;
+    
+    uint32_t task_id       = lagfx_le32(hdr->payload + 0);
+    uint32_t descriptor_count = lagfx_le32(hdr->payload + 4);
+    uint32_t resource_count   = lagfx_le32(hdr->payload + 8);
+    
+    LAGFX_LOG("CmdExecIndirect2: taskID=%u desc_count=%u res_count=%u payload_size=%u stamp=0x%08x",
+              task_id, descriptor_count, resource_count, (unsigned)hdr->payload_size, hdr->stamp);
+    
+    /* Validate payload size against descriptor+resource counts. */
+    uint32_t min_payload = 12 + 24 * descriptor_count + 16 * resource_count;
+    if (hdr->payload_size < min_payload) {
+        LAGFX_WARN("CmdExecIndirect2: payload too small for desc=%u res=%u (need %u, have %u)",
+                   descriptor_count, resource_count, min_payload, (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
     }
-
-    uint32_t task_id = lagfx_le32(hdr->payload + 0);
-    LAGFX_LOG("command buffer execution: processing taskID=%u descriptor_count=%u resource_count=%u",
-              task_id, descriptor_count, resource_count);
     
-    /* Set current_task_id for inner opcode handlers */
-    p->current_task_id = task_id;
-
-    /* Read resources and process cmdBufs */
-    uint32_t processed_resources = 0;
+    /* Look up task. Unknown taskID is fail-open (resource table may still be valid). */
+    lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
+    if (!task) {
+        LAGFX_WARN("CmdExecIndirect2: taskID=%u not found (continuing fail-open)", task_id);
+    }
     
-    LAGFX_TRACE("command buffer execution: begin processing %u descriptors, %u resources",
-                descriptor_count, resource_count);
-
-    /* Set current_task_id for inner opcode handlers */
-    p->current_task_id = task_id;
-
-    /* Read resources and process cmdBufs */
+    /* Validate resource table entries. Each is 16 bytes: u64 host_gpu_addr + u32 length + pad. */
+    const uint8_t *res_start = hdr->payload + 12 + 24 * descriptor_count;
     for (uint32_t i = 0; i < resource_count; ++i) {
-        const uint8_t *rec = hdr->payload + off_resources + (size_t)i * 16u;
-        uint64_t host_gpu_addr =
-            (uint64_t)lagfx_le32(rec + 0) | ((uint64_t)lagfx_le32(rec + 4) << 32);
-        uint32_t length = lagfx_le32(rec + 8);
-
-        if (length == 0u || p->dev == NULL || p->dev->desc.shell.read_memory == NULL) {
-            continue;
-        }
-
-        /* Read cmdBuf */
-        uint8_t *cmdbuf = malloc(length);
-        if (!cmdbuf) continue;
-
-        bool read_ok = false;
-        lagfx_task_entry_t *task = lagfx_protocol_find_task(p, task_id);
+        const uint8_t *r = res_start + 16 * i;
+        uint64_t host_gpu_addr = lagfx_le64(r + 0);
+        uint32_t length = lagfx_le32(r + 8);
         
-        if (task && task->shell_task) {
-            void *task_base = NULL; /* TODO: implement */
-            if (task_base && host_gpu_addr + length <= task->length) {
-                memcpy(cmdbuf, (const uint8_t *)task_base + host_gpu_addr, length);
-                read_ok = true;
-            }
-        }
-
-        if (!read_ok) {
-            /* TODO: radix tree translate + dma_memory_read path */
-            free(cmdbuf);
-            continue;
-        }
-
-        LAGFX_TRACE("resource[%u]: first_8bytes=%02x%02x%02x%02x %02x%02x%02x%02x",
-                    i, cmdbuf[0], cmdbuf[1], cmdbuf[2], cmdbuf[3],
-                    cmdbuf[4], cmdbuf[5], cmdbuf[6], cmdbuf[7]);
-
-        /* TODO: segment parsing → inner opcode dispatch → Vulkan/lavapipe */
-        
-        processed_resources++;
-        free(cmdbuf);
+        LAGFX_TRACE("CmdExecIndirect2 resource[%u]: addr=0x%llx len=%u", i,
+                    (unsigned long long)host_gpu_addr, length);
     }
-
-    LAGFX_TRACE("command buffer execution: completed, processed %u resources", processed_resources);
+    
+    /* TODO: For each resource, map host_gpu_addr via task radix tree or VA→GPA table,
+     *       then parse inner PGCmdHeader stream and dispatch to render/compute/blit decoders.
+     *       This requires the AIR translation runtime for full Metal command execution. */
+    
+    LAGFX_LOG("CmdExecIndirect2: completed validation (inner cmdbuf parsing TODO)");
     return LAGFX_HANDLER_OK;
 }
-

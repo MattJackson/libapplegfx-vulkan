@@ -8,7 +8,6 @@
 
 #include "channel_3_dispatcher.h"
 #include "../device.h"
-#include "../protocol/protocol.h"
 #include "../protocol/state.h"
 #include "../handlers/handlers.h"
 #include "../common/log.h"
@@ -161,7 +160,7 @@ void channel_3_dispatcher_ring_dispatch(lagfx_channel_3_dispatcher_t *d,
                     .payload = p->doorbell_bounce_buffer + 12u,
                 };
 
-                lagfx_op_define_host_task(p, &hdr);
+                lagfx_task_define_host_task(p, &hdr);
                 last_stamp = stamp;
             } else {
                 last_stamp = stamp;

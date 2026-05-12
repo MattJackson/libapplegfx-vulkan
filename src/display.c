@@ -54,6 +54,18 @@ static void set_err(char **errp_out, const char *msg) {
     *errp_out = buf;
 }
 
+/* Stub cursor state accessors (ops_display.c removed during handler refactor) */
+static lagfx_cursor_show_state_t g_cursor_show = { .visible = 0, .x = 0, .y = 0, .hot_x = 0, .hot_y = 0 };
+static lagfx_cursor_glyph_state_t g_cursor_glyph = { .valid = false, .width = 0, .height = 0, .bytes_per_row = 0, .hot_x = 0, .hot_y = 0, .captured_len = 0 };
+
+const lagfx_cursor_show_state_t *lagfx_ops_display_last_cursor_show(void) {
+    return &g_cursor_show;
+}
+
+const lagfx_cursor_glyph_state_t *lagfx_ops_display_last_cursor_glyph(void) {
+    return &g_cursor_glyph;
+}
+
 /* Phase 2.B render-target lifecycle helpers. Factored so the no-vulkan
  * build can stub them cleanly. */
 #ifdef LAGFX_HAVE_VULKAN
