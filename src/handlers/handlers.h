@@ -24,7 +24,12 @@ lagfx_handler_status_t lagfx_memory_map_memory2(lagfx_protocol_t *p, const lagfx
 lagfx_handler_status_t lagfx_memory_unmap_memory(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
 /* === Compute Handler (opcode 0x20) =============================== */
-lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+
+/* Legacy alias for backward compatibility. */
+static inline lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    return lagfx_compute_exec_cmdbuf(p, hdr);
+}
 
 /* === Sync Handlers (opcode 0x42) ================================ */
 lagfx_handler_status_t lagfx_sync_synchronize_resources(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);

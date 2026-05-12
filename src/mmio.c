@@ -17,7 +17,7 @@
  */
 
 #include "device.h"
-#include "protocol/protocol.h"
+#include "doorbell.h"
 #include "common/log.h"
 
 #include <stdint.h>
@@ -28,16 +28,9 @@ uint32_t lagfx_mmio_read(lagfx_device_t *device, uint64_t offset) {
         return 0;
     }
 
-    lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
-    if (!p) {
-        /* Decoder never attached (pre-1.A.2 shells or teardown race).
-         * Log and return 0 — guest sees "not yet ready". */
-        LAGFX_LOG("mmio_read: no decoder attached, off=0x%llx -> 0",
-                  (unsigned long long)offset);
-        return 0;
-    }
-
-    return lagfx_protocol_mmio_read(p, offset);
+    /* Reads are handled by QEMU's MMIO layer — we only do writes */
+    (void)offset;
+    return 0;
 }
 
 void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
@@ -47,6 +40,7 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
         return;
     }
 
+    /* Route doorbell writes through unified dispatcher */
     lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
     if (!p) {
         LAGFX_LOG("mmio_write: no decoder attached, off=0x%llx val=0x%08x",
@@ -54,5 +48,16 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
         return;
     }
 
-    lagfx_protocol_mmio_write(p, offset, value);
+    /* Map BAR offset to doorbell ID and dispatch */
+    if (offset == 0x1008ULL) {
+        doorbell_dispatch(p, DOOR_PRIMARY_RING, value);
+    } else if (offset == 0x1020ULL) {
+        doorbell_dispatch(p, DOOR_CHANNEL, value);
+    } else {
+        /* Config register write — just shadow it */
+        int idx = lagfx_reg_index(offset);
+        if (idx >= 0 && idx < 16) {
+            p->reg[idx] = value;
+        }
+    }
 }

@@ -35,7 +35,9 @@ static inline uint64_t lagfx_le64(const uint8_t *b) {
  *                +0x08  u32 length (cmdbuf size in bytes)
  *                +0x0c  u32 _pad (zero) */
 
-lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+/* Note: Function name is lagfx_compute_exec_cmdbuf for tests;
+ * legacy alias lagfx_compute_exec_indirect2 removed. */
+lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
