@@ -64,9 +64,43 @@ static int lagfx_test_dispatch_opcode(lagfx_protocol_t *p,
             return 0;
 
         case LAGFX_OP_MAP_MEMORY_IMMEDIATE:
+            /* Minimal MapMemoryImmediate registration for tests */
+            if (p && p->magic == LAGFX_PROTOCOL_MAGIC) {
+                uint32_t task_id = 0;
+                uint64_t gpu_addr = 0;
+                uint64_t size = 0;
+
+                if (hdr->payload_size >= 12) {
+                    task_id = *(uint32_t*)(hdr->payload + 0);
+                    gpu_addr = *(uint64_t*)(hdr->payload + 4);
+                    size = *(uint64_t*)(hdr->payload + 12);
+                }
+
+                lagfx_resource_entry_t *e = lagfx_resource_lookup(&p->resources, 0, task_id);
+                if (e) {
+                    e->gpu_addr = gpu_addr;
+                    e->size = size;
+                } else {
+                    /* Try to allocate new resource slot */
+                    for (uint32_t i = 0; i < LAGFX_MAX_RESOURCES; i++) {
+                        if (!p->resources.entries[i].live) {
+                            p->resources.entries[i].task_id = task_id;
+                            p->resources.entries[i].gpu_addr = gpu_addr;
+                            p->resources.entries[i].size = size;
+                            p->resources.entries[i].type = LAGFX_RESOURCE_TYPE_BUFFER;
+                            p->resources.entries[i].live = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            return 0;
+
         case LAGFX_OP_DELETE_TASK:
+            /* Minimal delete - just acknowledge */
+            return 0;
+
         default:
-            /* Minimal stubs - just acknowledge receipt */
             break;
     }
 
