@@ -18,6 +18,7 @@
 
 #include "device.h"
 #include "doorbell.h"
+#include "protocol/state.h"
 #include "common/log.h"
 
 #include <stdint.h>
@@ -39,6 +40,21 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
         LAGFX_ERR("mmio_write: invalid device %p", (void *)device);
         return;
     }
+
+    /* Log ALL MMIO writes for debugging */
+    LAGFX_LOG("MMIO_WRITE: BAR0+0x%llx = 0x%08x", 
+              offset & 0xFFFFULL, value);
+
+    /* Pass everything to doorbell — it handles routing via registry */
+    lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
+    if (!p) {
+        LAGFX_LOG("mmio_write: no decoder attached, off=0x%llx val=0x%08x",
+                  (unsigned long long)offset, value);
+        return;
+    }
+
+    doorbell_dispatch(p, offset, value);
+}
 
     /* Pass everything to doorbell — it handles routing via registry */
     lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
