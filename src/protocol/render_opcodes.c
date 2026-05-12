@@ -165,6 +165,34 @@ static int render_op_cmd_exec_indirect2_inner(lagfx_protocol_t *p,
     return 0;
 }
 
+/* Unknown opcode 0x2c handler — logs full payload for RE analysis.
+ * macOS sends this repeatedly with len=88 during render pass setup.
+ * TSV shows "<default/throw>" suggesting it may be an error case or
+ * unimplemented command that should throw on real hardware. */
+static int render_op_unknown_0x2c(lagfx_protocol_t *p,
+                                   const uint8_t    *payload,
+                                   size_t            len) {
+    (void)p;
+    if (!payload || len < 88u) {
+        LAGFX_WARN("Unknown(0x2c): payload too short (%zu < 88)", len);
+        return 0;
+    }
+
+    /* Log full 88-byte payload for RE analysis. Format: hex dump with
+     * byte offsets to help identify structure (u32 fields, u64 fields, etc.) */
+    char buf[88 * 3 + 1];
+    lagfx_hex_dump_bytes(buf, sizeof(buf), payload, 88);
+    
+    LAGFX_WARN("Unknown(0x2c): len=%zu payload=%s", len, buf);
+    
+    /* Absorb for now — TSV shows "<default/throw>" which may indicate
+     * this is an error case or unimplemented command. Real implementation
+     * requires RE of PGDeserializerRenderDecoder-decodeWithHeader to
+     * discover actual semantics. */
+    
+    return 0;
+}
+
 bool lagfx_render_op_is_stub(uint32_t opcode) {
     const lagfx_render_op_descriptor_t *d = lagfx_render_op_lookup(opcode);
     return d != NULL && d->default_handler == render_op_ack_stub;
@@ -2790,7 +2818,9 @@ static const lagfx_render_op_descriptor_t g_render_op_table[] = {
     { 0x1d, "DrawIndexedInstancedBasePrimitives16_2",    20, 1, render_op_draw_indexed_instanced_base_primitives_16_2 },
     /* TODO: RE opcode 0x1e-0x3b range — macOS sends 0x2c (len=88) repeatedly.
      * Stub for now to avoid crashes; add real handler once semantics discovered. */
-    { 0x2c, "Unknown(0x2c)",                             88, 0, render_op_ack_stub },
+    /* TODO: RE opcode 0x2c semantics — macOS sends repeatedly with len=88.
+ * TSV shows "<default/throw>" suggesting error case or unimplemented cmd. */
+    { 0x2c, "Unknown(0x2c)",                             88, 0, render_op_unknown_0x2c },
     { 0x3c, "CmdExecIndirect2Inner",                     20, 2, render_op_cmd_exec_indirect2_inner },
 
     /* --- State-set family (0x65-0xa6) --------------------------- */
