@@ -123,7 +123,7 @@ typedef enum {
  * claimed by CmdIOSurfaceCreate per §14.5) plus the 36 named §3
  * opcodes + 3 conjectured IOSurface ops (0x27/0x28/0x29 per §14.5) =
  * 14 + 36 + 3 = 53. */
-#define LAGFX_OPCODE_COUNT 54
+#define LAGFX_OPCODE_COUNT 51
 
 /* === Priority bands ============================================ */
 
