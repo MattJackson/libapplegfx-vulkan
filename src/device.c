@@ -273,7 +273,7 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
         return NULL;
     }
 
-    dev->magic = LAGFX_DEVICE_MAGIC;
+   dev->magic = LAGFX_DEVICE_MAGIC;
     dev->desc  = *desc;  /* shallow copy; callbacks are function pointers */
 
     dev->mmio_region_size = desc->mmio_region_size
@@ -281,10 +281,15 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
                               : LAGFX_MMIO_DEFAULT_SIZE;
 
    /* Phase 1.A.2: attach the protocol decoder. It owns the MMIO
-     * shadow and ring geometry. */
-    /* Protocol lifecycle removed - legacy protocol.c deleted */
-    /* dev->protocol_state = lagfx_protocol_new(dev); */
-    dev->protocol_state = NULL;
+      * shadow and ring geometry. */
+     /* Protocol lifecycle removed - legacy protocol.c deleted */
+     /* dev->protocol_state = lagfx_protocol_new(dev); */
+     dev->protocol_state = NULL;
+
+    /* Initialize STATUS_CONTROL (0x1000) to non-zero "FIFO enabled" value
+     * for Phase 1.A. tests that expect decoder to be live even without
+     * protocol state attached yet. Value of 1 = FIFO armed/enabled. */
+     g_reg_shadow[LAGFX_REG_STATUS_CONTROL] = 1u;
 
  /* Phase 1.B: Vulkan instance + device + queue. In no-vulkan builds
      * this is a no-op that still returns LAGFX_OK with a tiny placeholder
