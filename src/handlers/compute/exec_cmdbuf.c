@@ -96,5 +96,11 @@ lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagf
      *       This requires the AIR translation runtime for full Metal command execution. */
     
     LAGFX_LOG("CmdExecIndirect2: completed validation (inner cmdbuf parsing TODO)");
+    
+    /* Complete stamp to raise IRQ and advance ring state */
+    if (p && p->dev && hdr->stamp != 0) {
+        lagfx_protocol_complete_stamp_slot(p, 0, hdr->stamp);
+    }
+    
     return LAGFX_HANDLER_OK;
 }
