@@ -6,7 +6,7 @@
 lagfx_sources += files(
   'device.c',
   'display.c',
-  'mmio.c',
+  'doorbell.c',        # New: BAR0 write listener and dispatcher routing
   'version.c',
 )
 
@@ -15,6 +15,8 @@ lagfx_sources += files(
 
 subdir('common')
 subdir('protocol')
+subdir('dispatchers')
+subdir('handlers')
 subdir('vulkan')
 subdir('shaders')
 subdir('translate')
