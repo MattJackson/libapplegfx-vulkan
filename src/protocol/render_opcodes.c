@@ -178,12 +178,18 @@ static int render_op_unknown_0x2c(lagfx_protocol_t *p,
         return 0;
     }
 
-    /* Log full 88-byte payload for RE analysis. Format: hex dump with
-     * byte offsets to help identify structure (u32 fields, u64 fields, etc.) */
+    /* Inline hex dump of full 88-byte payload for RE analysis. Format:
+     * space-separated hex bytes (e.g., "1a 2b 3c ...") to help identify
+     * structure (u32 fields, u64 fields, etc.) */
     char buf[88 * 3 + 1];
-    lagfx_hex_dump_bytes(buf, sizeof(buf), payload, 88);
+    size_t pos = 0;
+    for (size_t i = 0; i < 88 && pos < sizeof(buf) - 4; ++i) {
+        int w = snprintf(buf + pos, sizeof(buf) - pos, "%s%02x", 
+                         i == 0 ? "" : " ", (unsigned)payload[i]);
+        if (w > 0) pos += (size_t)w;
+    }
     
-    LAGFX_WARN("Unknown(0x2c): len=%zu payload=%s", len, buf);
+    LAGFX_WARN("Unknown(0x2c): len=%zu payload=[%s]", len, buf);
     
     /* Absorb for now — TSV shows "<default/throw>" which may indicate
      * this is an error case or unimplemented command. Real implementation
