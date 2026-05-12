@@ -16,8 +16,7 @@
 #include "state.h"      /* lagfx_protocol_complete_stamp_slot, lagfx_protocol_is_valid */
 
 /* Simple opcode dispatch for test API — minimal implementation that matches
- * the full protocol.c behavior but without needing all the infrastructure.
- */
+ * the full protocol.c behavior but without needing all the infrastructure. */
 static int lagfx_test_dispatch_opcode(lagfx_protocol_t *p,
                                       const uint8_t *cmd_bytes, size_t cmd_len,
                                       lagfx_cmd_header_t *hdr) {
@@ -25,14 +24,14 @@ static int lagfx_test_dispatch_opcode(lagfx_protocol_t *p,
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
-    /* Parse header */
-    hdr->opcode = cmd_bytes[0];
-    hdr->chan_id = cmd_bytes[1];
+    /* Parse on-wire header */
+    hdr->opcode = *(uint16_t*)(cmd_bytes + 0);
+    hdr->arg_count_8b = *(uint16_t*)(cmd_bytes + 2);
     hdr->length = *(uint32_t*)(cmd_bytes + 4);
     hdr->stamp = *(uint32_t*)(cmd_bytes + 8);
 
     /* Check payload size */
-    if (hdr->length > cmd_len - 12) {
+    if (hdr->length > cmd_len || hdr->length < 12) {
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
@@ -101,6 +100,4 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset, uint32_t va
                 (unsigned long long)offset, value);
 }
 
-uint32_t lagfx_protocol_last_completed_stamp(const lagfx_protocol_t *p) {
-    return lagfx_protocol_is_valid(p) ? p->last_completed_stamp : 0u;
-}
+/* Note: lagfx_protocol_last_completed_stamp is defined as static inline in state.h */
