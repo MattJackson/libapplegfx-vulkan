@@ -205,10 +205,9 @@ static const lagfx_op_descriptor_t g_op_table[] = {
       * + per-resource cmdBuf segments behind the resource_table[]
       * host_gpu_addr entries. Route both to the same handler — now handled by
       * ComputeDispatcher on per-channel rings instead of direct opcode dispatch. */
-    /* CmdExecIndirect2/kext now routed through ComputeDispatcher (channels 1-4) — disabled in global table. */
-      /*    /* CmdExecIndirect2/kext: disabled in global table — routing via ComputeDispatcher (ch 1-4) only. */
+    /* CmdExecIndirect2/kext: disabled in global table — routing via ComputeDispatcher (ch 1-4) only. */
       /* { LAGFX_OP_CHANNEL_EVENT_37,         "CmdExecIndirect2/Kext(0x37)",
-        LAGFX_PRIO_P1, 0,  0,  lagfx_op_exec_indirect2 }, */ */
+        LAGFX_PRIO_P1, 0,  0,  lagfx_op_exec_indirect2 }, */
     { LAGFX_OP_DEFINE_HOST_TASK,         "CmdDefineHostTask",
       LAGFX_PRIO_P0, 16, 16, lagfx_op_define_host_task },
     /* CmdMapMemoryImmediate — kext opcode 0x39 on the Immediate vchan.

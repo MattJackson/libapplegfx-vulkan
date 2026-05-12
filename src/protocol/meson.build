@@ -45,6 +45,17 @@ lagfx_sources += files(
   '../dispatchers/unknown_dispatcher.c',
 )
 
+# Handler implementations (logic layer, no routing code)
+lagfx_sources += files(
+  '../handlers/handlers.h',
+  '../handlers/compute/exec_indirect2.c',
+  '../handlers/task/task.c',
+  '../handlers/memory/memory.c',
+  '../handlers/display/display.c',
+  '../handlers/sync/sync.c',
+  '../handlers/util/util.c',
+)
+
 # state.h / protocol.h / opcodes.h / fifo.h / render_opcodes.h /
 # render_decoder.h / render_pass.h are private to src/protocol/ — not
 # installed, reachable via the internal_include_dir declared in the

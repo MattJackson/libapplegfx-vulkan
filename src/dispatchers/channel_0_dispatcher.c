@@ -5,26 +5,26 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Dispatcher for primary ring (channel 0). Handles CmdExecIndirect2 and routes
- * inner opcodes to render/blit/compute decoders via ops_cmdbuf.c logic.
+ * Dispatcher for primary ring (channel 0). Full opcode namespace via switch-case,
+ * with direct calls to ops_*.c handlers — NO global opcode table lookup.
+ * All routing through dispatcher hierarchy enables clean debugging.
  */
 
 #include "channel_0_dispatcher.h"
 #include "../device.h"
 #include "../protocol/state.h"
+#include "../handlers/handlers.h"
 #include "../common/log.h"
 #include <stdlib.h>
 #include <string.h>
 
 /**
  * Channel 0 dispatcher for primary ring.
- * Handles CmdExecIndirect2 and delegates to ops_cmdbuf.c logic.
+ * Switch-case routing → direct ops_*.c handler calls (no opcode table).
  */
 lagfx_channel_0_dispatcher_t *channel_0_dispatcher_new(void) {
     lagfx_channel_0_dispatcher_t *d = calloc(1, sizeof(*d));
-    if (!d) {
-        return NULL;
-    }
+    if (!d) return NULL;
 
     d->base.name = "Channel0Dispatcher(primary ring)";
     d->base.channel_id_min = 0;
@@ -36,24 +36,22 @@ lagfx_channel_0_dispatcher_t *channel_0_dispatcher_new(void) {
 
 /**
  * Ring dispatch for channel 0 (primary ring).
- * Handles CmdExecIndirect2 and other primary ring opcodes via switch-case.
+ * Full opcode namespace via switch-case with direct ops_*.c calls.
  */
 void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
-                                        struct lagfx_protocol *p,
-                                        uint64_t descr_gpa,
-                                        uint8_t ch_id) {
+                                         struct lagfx_protocol *p,
+                                         uint64_t descr_gpa,
+                                         uint8_t ch_id) {
     (void)d;
     (void)ch_id;
 
     LAGFX_LOG("Channel0Dispatcher(ring): processing primary ring commands");
     
-    /* Read FIFO write pointer to get command stream */
     if (!p->dev || !p->dev->desc.shell.read_memory) {
         LAGFX_ERR("Channel0Dispatcher: no device or read_memory callback");
         return;
     }
 
-    /* Primary ring descriptor at +0x400 from shared page contains write pointer */
     uint8_t descr[20] = {0};
     if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
                                         descr_gpa, sizeof(descr), descr)) {
@@ -73,74 +71,511 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
         return;
     }
 
-    /* Drain commands from FIFO */
     uint32_t cur_rp = read_ptr;
     while (cur_rp + 12u <= write_ptr) {
-        /* Read command header */
         uint8_t hdr_bytes[12] = {0};
         bool ok = true;
-        size_t got = 0;
 
         for (size_t i = 0; i < 12 && ok; i++) {
             if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
                                                 descr_gpa + cur_rp + i, 1, &hdr_bytes[i])) {
-                LAGFX_WARN("Channel0Dispatcher: failed to read command header byte %zu", i);
+                LAGFX_WARN("Channel0Dispatcher: failed to read header byte %zu", i);
                 ok = false;
             }
         }
 
         if (!ok) break;
 
-        /* Parse command header */
         uint32_t opcode = (uint32_t)(hdr_bytes[0] | ((uint32_t)hdr_bytes[1] << 8));
-        uint32_t length = (uint32_t)(hdr_bytes[2] | ((uint32_t)hdr_bytes[3] << 8) |
-                                     ((uint32_t)hdr_bytes[4] << 16) | ((uint32_t)hdr_bytes[5] << 24));
+        uint32_t length = (uint32_t)(hdr_bytes[4] | ((uint32_t)hdr_bytes[5] << 8) |
+                                     ((uint32_t)hdr_bytes[6] << 16) | ((uint32_t)hdr_bytes[7] << 24));
 
         LAGFX_LOG("Channel0Dispatcher: opcode=0x%04x length=%u", opcode, length);
 
-        /* Dispatch based on opcode - switch-case per channel! */
+        p->current_chan_id = ch_id;
+        
+        /* Switch-case dispatch → direct ops_*.c calls (no opcode table lookup) */
         switch (opcode) {
-        case 0x20:  /* CmdExecIndirect2 */
-            LAGFX_LOG("Channel0Dispatcher: CmdExecIndirect2 → ops_cmdbuf.c");
-            p->current_chan_id = ch_id;
-
-            /* Read full command payload */
+        case 0x20:  /* CmdExecIndirect2 - Metal command buffer execution */
+            LAGFX_LOG("Channel0Dispatcher: CmdExecIndirect2");
+            
             uint8_t *payload = malloc(length);
-            if (payload) {
-                for (size_t i = 0; i < length && ok; i++) {
-                    if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
-                                                        descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
-                        LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
-                        ok = false;
-                    }
-                }
+            if (!payload || length < 12u) {
+                free(payload);
+                break;
+            }
 
-                if (ok) {
-                    /* Call legacy handler for now */
-                    lagfx_op_exec_indirect2(p, &((lagfx_cmd_header_t){
+            for (size_t i = 0; i < length && ok; i++) {
+                if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                    descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                    LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                    ok = false;
+                }
+            }
+
+               if (ok && length >= 12) {
+                    lagfx_cmd_header_t hdr = {
                         .opcode = opcode,
                         .length = length,
                         .stamp = 0,
                         .payload_size = length - 12u,
                         .arg_count_8b = 0,
                         .payload = payload + 12u
-                    }));
+                    };
+                    lagfx_compute_exec_indirect2(p, &hdr);
                 }
 
-                free(payload);
+            free(payload);
+            break;
+
+        case 0x00:  /* CmdDefineTask2 */
+            LAGFX_LOG("Channel0Dispatcher: CmdDefineTask2");
+            if (length >= 24) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_task_define_task2(p, &hdr);
+                    }
+                    free(payload);
+                }
             }
+            break;
+
+        case 0x02:  /* CmdMapMemory2 */
+            LAGFX_LOG("Channel0Dispatcher: CmdMapMemory2");
+            if (length >= 20u) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_memory_map_memory2(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x03:  /* CmdUnmapMemory */
+            LAGFX_LOG("Channel0Dispatcher: CmdUnmapMemory");
+            if (length >= 20u) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_memory_unmap_memory(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x04:  /* CmdDefineChildFIFO */
+            LAGFX_LOG("Channel0Dispatcher: CmdDefineChildFIFO");
+            if (length >= 4) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_memory_define_child_fifo(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x0a:  /* CmdGetDeviceInfo */
+            LAGFX_LOG("Channel0Dispatcher: CmdGetDeviceInfo");
+            if (length >= 12) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_util_device_info(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x10:  /* CmdDisplayAck */
+            LAGFX_LOG("Channel0Dispatcher: CmdDisplayAck");
+            if (length >= 8) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_display_ack(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x13:  /* CmdDisplayCursorShow */
+            LAGFX_LOG("Channel0Dispatcher: CmdDisplayCursorShow");
+            if (length >= 16) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_display_cursor_show(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x14:  /* CmdDisplayCursorGlyph */
+            LAGFX_LOG("Channel0Dispatcher: CmdDisplayCursorGlyph");
+            if (length >= 32) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_display_cursor_glyph(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x17:  /* CmdDisplayTransaction3 */
+            LAGFX_LOG("Channel0Dispatcher: CmdDisplayTransaction3");
+            if (length >= 12) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_display_transaction3(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x19:  /* CmdDisplayCompositorParameters */
+            LAGFX_LOG("Channel0Dispatcher: CmdDisplayCompositorParameters");
+            if (length > 0) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_display_compositor_params(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x1a:  /* CmdDisplaySetGuestICCProfile */
+            LAGFX_LOG("Channel0Dispatcher: CmdDisplaySetGuestICCProfile");
+            if (length > 0) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_display_icc_profile(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x22:  /* CmdSynchronizeResources */
+            LAGFX_LOG("Channel0Dispatcher: CmdSynchronizeResources");
+            if (length >= 8) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_sync_synchronize_resources(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x26:  /* CmdSetObjectAndPlacementList */
+            LAGFX_LOG("Channel0Dispatcher: CmdSetObjectAndPlacementList");
+            if (length > 0) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_resource_set_placement(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x27:  /* CmdCreateIOSurfaceBacking2 */
+            LAGFX_LOG("Channel0Dispatcher: CmdCreateIOSurfaceBacking2");
+            if (length > 0) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_resource_iosurface_create(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x28:  /* CmdLookupIOSurface */
+            LAGFX_LOG("Channel0Dispatcher: CmdLookupIOSurface");
+            if (length > 0) {
+                uint8_t *payload = malloc(length);
+                if (payload && ok) {
+                    for (size_t i = 0; i < length && ok; i++) {
+                        if (!p->dev->desc.shell.read_memory(p->dev->desc.shell.opaque,
+                                                            descr_gpa + cur_rp + 12u + i, 1, &payload[i])) {
+                            LAGFX_WARN("Channel0Dispatcher: failed to read payload byte %zu", i);
+                            ok = false;
+                        }
+                    }
+
+                    if (ok) {
+                        lagfx_cmd_header_t hdr = {
+                            .opcode = opcode,
+                            .length = length,
+                            .stamp = 0,
+                            .payload_size = length - 12u,
+                            .arg_count_8b = 0,
+                            .payload = payload + 12u
+                        };
+                        lagfx_resource_iosurface_lookup(p, &hdr);
+                    }
+                    free(payload);
+                }
+            }
+            break;
+
+        case 0x11:  /* CmdNOP */
+            LAGFX_LOG("Channel0Dispatcher: CmdNOP");
             break;
 
         default:
             LAGFX_WARN("Channel0Dispatcher: unknown primary ring opcode 0x%04x", opcode);
+            p->unknown_opcode_count++;
             break;
         }
 
-        /* Advance read pointer */
         cur_rp += length;
     }
 
-    /* Update read pointer in descriptor */
     LAGFX_LOG("Channel0Dispatcher: updated read_ptr=%u", cur_rp);
 }
 
