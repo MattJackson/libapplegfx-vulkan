@@ -204,7 +204,7 @@ endif
 # Render opcode tests - pipeline state setup (setPipelineState, blend constants).
 if fs.is_file(meson.current_source_dir() / 'render-opcode-pipeline.c')
   render_pipe_deps = [libapplegfx_vulkan_dep]
-  if vulkan.dep.found()
+  if vulkan_dep.found()
     render_pipe_deps += [vulkan_dep]
   endif
   render_pipeline_test = executable('render-opcode-pipeline',
