@@ -25,6 +25,16 @@ lagfx_sources += files(
   'ops_display_vchan.c',
 )
 
+# Dispatcher implementations (OOP-style polymorphic dispatch)
+lagfx_sources += files(
+  '../dispatchers/base.h',
+  '../dispatchers/registry.h',
+  '../dispatchers/registry.c',
+  '../dispatchers/compute_dispatcher.c',
+  '../dispatchers/display_vchan_dispatcher.c',
+  '../dispatchers/unknown_dispatcher.c',
+)
+
 # state.h / protocol.h / opcodes.h / fifo.h / render_opcodes.h /
 # render_decoder.h / render_pass.h are private to src/protocol/ — not
 # installed, reachable via the internal_include_dir declared in the

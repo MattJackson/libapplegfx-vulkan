@@ -246,14 +246,26 @@ struct lagfx_protocol {
      * doorbell handler before each dispatch. */
     uint32_t extra_stamp_advance;
 
-    /* Current task ID from CmdExecIndirect2 header — used by inner
-     * opcode handlers when looking up resources in the registry.
-     * Set at the start of CmdExecIndirect2 processing and cleared
-     * on reset. For Stage 20% scaffold, we default to task_id=1
-     * (root channel) since proper task tracking isn't wired yet. */
-    uint32_t current_task_id;
+  /* Current task ID from CmdExecIndirect2 header — used by inner
+      * opcode handlers when looking up resources in the registry.
+      * Set at the start of CmdExecIndirect2 processing and cleared
+      * on reset. For Stage 20% scaffold, we default to task_id=1
+      * (root channel) since proper task tracking isn't wired yet. */
+     uint32_t current_task_id;
 
-    /* Handle tables. */
+    /* Current virtual channel ID (chan_id 1-12) from doorbell MMIO write.
+      * Used for per-channel opcode tracking and debugging two-phase submission pattern
+      * where descriptors arrive on one channel but resources may arrive on another. */
+     uint32_t current_chan_id;
+
+    /* Per-channel opcode namespace tracking — CRITICAL: opcodes are channel-specific!
+      * Opcode 0x32 on chan 1 ≠ opcode 0x32 on chan 5. This prevents treating same-opcode-
+      * values as identical when they live in different namespaces. Tracks which opcodes
+      * we've seen per channel so unknown cases can be logged without spam. */
+     uint8_t ch_opcode_seen[LAGFX_MAX_CHANNELS][256];  /* bitmask: bit=opcode, set when seen */
+    bool    ch_namespace_logged[LAGFX_MAX_CHANNELS];   /* prevent spam on first unknown per channel */
+
+     /* Handle tables. */
     lagfx_task_entry_t      tasks[LAGFX_MAX_TASKS];
     lagfx_childfifo_entry_t fifos[LAGFX_MAX_CHILDFIFOS];
     lagfx_inflight_entry_t  inflight[LAGFX_MAX_INFLIGHT];
@@ -404,13 +416,18 @@ static inline bool lagfx_protocol_is_valid(const lagfx_protocol_t *p) {
 void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp);
 
 /* As above but for non-RootChannel completions (per-channel doorbells,
- * Display0/1/2, vchan completions). `slot` indexes into the FIFO base
- * page: cell GPA = (ring_base_pfn<<12) + slot*4. The pending-stamps
- * bitmask bit set is bit `slot` (matches signalStamps's bsf
- * iteration). */
+  * Display0/1/2, vchan completions). `slot` indexes into the FIFO base
+  * page: cell GPA = (ring_base_pfn<<12) + slot*4. The pending-stamps
+  * bitmask bit set is bit `slot` (matches signalStamps's bsf
+  * iteration). */
 void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p,
                                         uint32_t slot,
                                         uint32_t stamp);
+
+/* Internal: monotonic stamp-cell advance for per-channel dispatchers.
+  * Called by compute_dispatcher and display_vchan_dispatcher when
+  * draining rings. Never regresses (floor=1). */
+void lagfx_advance_stamp_cell(lagfx_protocol_t *p, uint32_t slot, uint32_t target);
 
 /* Per-channel variant of dispatch_one — runs the opcode handler but
  * does NOT auto-complete the stamp. Caller advances stamp_cell[ch] +

@@ -1,0 +1,294 @@
+/*
+ * libapplegfx-vulkan — channel dispatcher classes implementation
+ * src/protocol/dispatcher.c
+ *
+ * Copyright © 2026 Matthew Jackson
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Implements the OOP-style dispatcher hierarchy in C. Each channel group
+ * gets its own dispatcher subclass with its own opcode namespace.
+ */
+
+#include "protocol.h"
+#include "state.h"
+#include "opcodes.h"
+#include "../common/log.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+/* === Base Class ======================================================== */
+
+static int base_dispatch(lagfx_dispatcher_t *self, 
+                        const uint8_t *payload, size_t len) {
+    (void)self;
+    LAGFX_ERR("base dispatcher: should never be called directly");
+    return -1;
+}
+
+static void base_reset(lagfx_dispatcher_t *self) {
+    (void)self;
+    /* Base class has no state to reset */
+}
+
+/* === Compute/Render Dispatcher (Channels 1-4) ========================== */
+
+static int ch1_4_dispatch(lagfx_dispatcher_t *self, 
+                         const uint8_t *payload, size_t len);
+static void ch1_4_reset(lagfx_dispatcher_t *self);
+
+lagfx_compute_dispatcher_t *compute_dispatcher_new(void) {
+    lagfx_compute_dispatcher_t *d = calloc(1, sizeof(*d));
+    if (!d) {
+        return NULL;
+    }
+    
+    /* Initialize base class */
+    d->base.name = "ComputeDispatcher(ch1-4)";
+    d->base.channel_id_min = 1;
+    d->base.channel_id_max = 4;
+    d->base.dispatch = ch1_4_dispatch;
+    d->base.reset = ch1_4_reset;
+    
+    /* Initialize subclass state */
+    d->current_task_id = 0;
+    
+    return d;
+}
+
+static int ch1_4_dispatch(lagfx_dispatcher_t *self, 
+                         const uint8_t *payload, size_t len) {
+    lagfx_compute_dispatcher_t *d = (lagfx_compute_dispatcher_t *)self;
+    
+    if (!payload || len < 8) {
+        LAGFX_WARN("ComputeDispatcher: payload too short (%zu)", len);
+        return -1;
+    }
+    
+    /* Read outer opcode from first 2 bytes */
+    uint16_t opcode = (uint16_t)(payload[0] | (payload[1] << 8));
+    
+    LAGFX_TRACE("ComputeDispatcher(chan_id=%u): dispatching opcode=0x%04x len=%zu",
+               self->channel_id_min, opcode, len);
+    
+    /* Dispatch based on channel's opcode namespace */
+    switch (opcode) {
+    case 0x20:  /* CmdExecIndirect2 - outer opcode for compute channels */
+        LAGFX_LOG("ComputeDispatcher: CmdExecIndirect2 (outer) dispatching to ops_cmdbuf.c");
+        return lagfx_op_exec_indirect2(self, &d->base);
+        
+    case 0x37:  /* CmdExecIndirect2/Kext variant */
+        LAGFX_LOG("ComputeDispatcher: CmdExecIndirect2/Kext (0x37) dispatching to ops_cmdbuf.c");
+        return lagfx_op_exec_indirect2(self, &d->base);
+        
+    case 0x3c:  /* CmdExecIndirect2/Kext variant */
+        LAGFX_LOG("ComputeDispatcher: CmdExecIndirect2/Kext (0x3c) dispatching to ops_cmdbuf.c");
+        return lagfx_op_exec_indirect2(self, &d->base);
+        
+    case 0x39:  /* CmdMapMemoryImmediate */
+        LAGFX_LOG("ComputeDispatcher: CmdMapMemoryImmediate (0x39)");
+        return lagfx_op_map_memory_immediate(self, payload + 8, len - 8);
+        
+    case 0x22:  /* CmdSynchronizeResources */
+        LAGFX_LOG("ComputeDispatcher: CmdSynchronizeResources (0x22)");
+        return lagfx_op_synchronize_resources(self, payload + 8, len - 8);
+        
+    default:
+        /* Unknown opcode on compute channel namespace */
+        static uint32_t warn_count[5] = {0};
+        int idx = self->channel_id_min - 1;
+        
+        if (warn_count[idx] < 5) {
+            LAGFX_WARN("ComputeDispatcher(ch%u-%u): unknown outer opcode 0x%04x",
+                      self->channel_id_min, self->channel_id_max, opcode);
+            warn_count[idx]++;
+        } else if (warn_count[idx] == 5) {
+            LAGFX_WARN("ComputeDispatcher: suppressing further unknown opcodes");
+        }
+        
+        return 0;  /* Fail-open */
+    }
+}
+
+static void ch1_4_reset(lagfx_dispatcher_t *self) {
+    lagfx_compute_dispatcher_t *d = (lagfx_compute_dispatcher_t *)self;
+    d->current_task_id = 0;
+}
+
+/* === Display Vchan Dispatcher (Channels 5+) ============================ */
+
+static int display_vchan_dispatch(lagfx_dispatcher_t *self, 
+                                 const uint8_t *payload, size_t len);
+static void display_vchan_reset(lagfx_dispatcher_t *self);
+
+lagfx_display_vchan_dispatcher_t *display_vchan_dispatcher_new(void) {
+    lagfx_display_vchan_dispatcher_t *d = calloc(1, sizeof(*d));
+    if (!d) {
+        return NULL;
+    }
+    
+    /* Initialize base class */
+    d->base.name = "DisplayVchanDispatcher(ch5+)";
+    d->base.channel_id_min = 5;
+    d->base.channel_id_max = LAGFX_MAX_CHANNELS - 1;
+    d->base.dispatch = display_vchan_dispatch;
+    d->base.reset = display_vchan_reset;
+    
+    /* Initialize subclass state */
+    d->shared_state_pfn = 0;
+    d->child_fifo_count = 0;
+    
+    return d;
+}
+
+static int display_vchan_dispatch(lagfx_dispatcher_t *self, 
+                                 const uint8_t *payload, size_t len) {
+    lagfx_display_vchan_dispatcher_t *d = (lagfx_display_vchan_dispatcher_t *)self;
+    
+    if (!payload || len < 4) {
+        LAGFX_WARN("DisplayVchanDispatcher: payload too short (%zu)", len);
+        return -1;
+    }
+    
+    /* Display vchan uses compact opcode namespace (single byte opcodes) */
+    uint8_t opcode = payload[0];
+    
+    LAGFX_TRACE("DisplayVchanDispatcher(ch%u-%u): dispatching opcode=0x%02x len=%zu",
+               self->channel_id_min, self->channel_id_max, opcode, len);
+    
+    /* Dispatch based on display vchan opcode namespace */
+    switch (opcode) {
+    case 0x04:  /* CmdDefineChildFIFO */
+        return lagfx_op_vchan_setup_shared_state(self, payload, len);
+        
+    case 0x35:  /* CmdDisplayTransaction3 */
+        LAGFX_LOG("DisplayVchanDispatcher: CmdDisplayTransaction3 (0x35)");
+        return lagfx_op_display_transaction3(self, payload + 4, len - 4);
+        
+    case 0x02:  /* CmdDisplaySubmit */
+        return lagfx_op_vchan_display_submit(self, payload, len);
+        
+    case 0x06:  /* VChanPresent */
+        return lagfx_op_vchan_present(self, payload + 4, len - 4);
+        
+    case 0x13:  /* CmdDisplayCursorShow */
+        return lagfx_op_display_cursor_show(self, payload, len);
+        
+    case 0x14:  /* CmdDisplayCursorGlyph */
+        return lagfx_op_display_cursor_glyph(self, payload, len);
+        
+    default:
+        /* Unknown opcode on display vchan namespace */
+        static uint32_t warn_count[LAGFX_MAX_CHANNELS] = {0};
+        int idx = self->channel_id_min - 5;
+        
+        if (warn_count[idx] < 5) {
+            LAGFX_WARN("DisplayVchanDispatcher(ch%u-%u): unknown outer opcode 0x%02x",
+                      self->channel_id_min, self->channel_id_max, opcode);
+            warn_count[idx]++;
+        } else if (warn_count[idx] == 5) {
+            LAGFX_WARN("DisplayVchanDispatcher: suppressing further unknown opcodes");
+        }
+        
+        return 0;  /* Fail-open */
+    }
+}
+
+static void display_vchan_reset(lagfx_dispatcher_t *self) {
+    lagfx_display_vchan_dispatcher_t *d = (lagfx_display_vchan_dispatcher_t *)self;
+    d->shared_state_pfn = 0;
+    d->child_fifo_count = 0;
+}
+
+/* === Immediate Channel Dispatcher (Channel 2, optional standalone) ===== */
+
+static int immediate_dispatch(lagfx_dispatcher_t *self, 
+                             const uint8_t *payload, size_t len);
+static void immediate_reset(lagfx_dispatcher_t *self);
+
+lagfx_immediate_dispatcher_t *immediate_dispatcher_new(void) {
+    lagfx_immediate_dispatcher_t *d = calloc(1, sizeof(*d));
+    if (!d) {
+        return NULL;
+    }
+    
+    /* Initialize base class */
+    d->base.name = "ImmediateDispatcher(ch2)";
+    d->base.channel_id_min = 2;
+    d->base.channel_id_max = 2;
+    d->base.dispatch = immediate_dispatch;
+    d->base.reset = immediate_reset;
+    
+    /* Initialize subclass state */
+    d->va_mapping_count = 0;
+    
+    return d;
+}
+
+static int immediate_dispatch(lagfx_dispatcher_t *self, 
+                             const uint8_t *payload, size_t len) {
+    lagfx_immediate_dispatcher_t *d = (lagfx_immediate_dispatcher_t *)self;
+    
+    /* Immediate channel shares most opcodes with compute dispatcher */
+    /* Defer to compute dispatcher for now */
+    LAGFX_LOG("ImmediateDispatcher: deferring to ComputeDispatcher");
+    
+    return ch1_4_dispatch(self, payload, len);
+}
+
+static void immediate_reset(lagfx_dispatcher_t *self) {
+    lagfx_immediate_dispatcher_t *d = (lagfx_immediate_dispatcher_t *)self;
+    d->va_mapping_count = 0;
+}
+
+/* === Dispatcher Registry ================================================= */
+
+static struct {
+    uint8_t ch_min, ch_max;
+    lagfx_dispatcher_t *dispatcher;
+} g_channel_registry[LAGFX_MAX_CHANNELS] = {{0}};
+
+void lagfx_dispatcher_init(void) {
+    /* Initialize compute/render dispatcher (channels 1-4) */
+    lagfx_compute_dispatcher_t *compute_disp = compute_dispatcher_new();
+    if (compute_disp) {
+        for (int i = 1; i <= 4 && i < LAGFX_MAX_CHANNELS; i++) {
+            g_channel_registry[i].ch_min = 1;
+            g_channel_registry[i].ch_max = 4;
+            g_channel_registry[i].dispatcher = &compute_disp->base;
+        }
+    } else {
+        LAGFX_ERR("Failed to allocate compute dispatcher");
+    }
+    
+    /* Initialize display vchan dispatcher (channels 5+) */
+    lagfx_display_vchan_dispatcher_t *display_disp = display_vchan_dispatcher_new();
+    if (display_disp) {
+        for (int i = 5; i < LAGFX_MAX_CHANNELS; i++) {
+            g_channel_registry[i].ch_min = 5;
+            g_channel_registry[i].ch_max = LAGFX_MAX_CHANNELS - 1;
+            g_channel_registry[i].dispatcher = &display_disp->base;
+        }
+    } else {
+        LAGFX_ERR("Failed to allocate display vchan dispatcher");
+    }
+    
+    /* Optional: Immediate channel as standalone (currently shares with compute) */
+    lagfx_immediate_dispatcher_t *immediate_disp = immediate_dispatcher_new();
+    if (immediate_disp && 2 < LAGFX_MAX_CHANNELS) {
+        g_channel_registry[2].ch_min = 2;
+        g_channel_registry[2].ch_max = 2;
+        g_channel_registry[2].dispatcher = &immediate_disp->base;
+    }
+    
+    LAGFX_LOG("Dispatcher registry initialized: %d channel entries", 
+             LAGFX_MAX_CHANNELS);
+}
+
+lagfx_dispatcher_t *lagfx_dispatcher_lookup(uint8_t chan_id) {
+    if (chan_id == 0 || chan_id >= LAGFX_MAX_CHANNELS) {
+        return NULL;
+    }
+    
+    return g_channel_registry[chan_id].dispatcher;
+}
