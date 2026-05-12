@@ -226,8 +226,10 @@ static const lagfx_op_descriptor_t g_op_table[] = {
       LAGFX_PRIO_P0, 12, 12, lagfx_op_get_device_info_2 },
     { LAGFX_OP_NEW_USER_CLIENT,               "Unknown(0x3b)",
       LAGFX_PRIO_P2, 0,  0,  NULL },
-    { LAGFX_OP_UNKNOWN_3C,               "Unknown(0x3c)",
-      LAGFX_PRIO_P2, 0,  0,  NULL },
+    /* CmdExecIndirect2 variant — macOS 15.7.5 uses 0x3c on kext channels.
+     * Same semantics as 0x37: walks segments + dispatches inner opcodes. */
+    { LAGFX_OP_UNKNOWN_3C,               "CmdExecIndirect2/Kext(0x3c)",
+      LAGFX_PRIO_P1, 0,  0,  lagfx_op_exec_indirect2 },
     { LAGFX_OP_EXEC_INDIRECT_EXT_41,     "ExecIndirectExt41",
       LAGFX_PRIO_P2, 0,  0,  NULL },
 };
