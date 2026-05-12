@@ -1171,8 +1171,10 @@ LAGFX_WARN("Stage 30: render_begin_pending=FALSE (in_pass=%d), NOT calling try_b
 
             /* Stage 30+: End render pass for encType=2, 0, or 1 segments.
              * macOS sends Metal commands via encType=0 (compute path), so we must handle all three. */
+LAGFX_ERR("Stage 30: Checking encoder_type=%u in_pass=%d", (unsigned)encoder_type, p->render_enc.in_pass);
             if (encoder_type == 2u || encoder_type == 0u || encoder_type == 1u) {
                 if (p->render_enc.in_pass) {
+LAGFX_ERR("Stage 30: Calling translate_render_end for encoder_type=%u", (unsigned)encoder_type);
                     lagfx_translate_render_end(&p->render_enc);
                 }
 #ifdef LAGFX_HAVE_VULKAN
