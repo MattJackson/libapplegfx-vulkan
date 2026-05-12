@@ -1312,8 +1312,6 @@ LAGFX_ERR("render_op_describe_render_pass CALLED: p=%p dev=%p vk=%p", (void *)p,
     }
     return 0;
 }
-    return 0;
-}
 
 const lagfx_render_pass_desc_t *
 lagfx_render_pass_desc_get(const lagfx_protocol_t *p) {
