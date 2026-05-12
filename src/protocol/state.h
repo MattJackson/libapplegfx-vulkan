@@ -157,6 +157,9 @@ static inline int lagfx_protocol_is_valid(const lagfx_protocol_t *p) {
     return p != NULL && p->magic == LAGFX_PROTOCOL_MAGIC;
 }
 
+/* Stamp slot helpers — exported for tests. */
+extern void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p, uint32_t slot, uint32_t stamp);
+
 /* Task table helpers — inline for performance. */
 static inline lagfx_task_entry_t* lagfx_protocol_find_task(lagfx_protocol_t *p, uint32_t task_id) {
     if (!p || !lagfx_protocol_is_valid(p)) {
