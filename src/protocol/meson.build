@@ -9,6 +9,7 @@ lagfx_sources += files(
   'stamp.c',        # advance_stamp_cell, complete_stamp_slot
   'resource_registry.c',  # resource mapping table (CmdMapMemory2, etc.)
   'ops_misc.c',     # NOP, Debug, GetDeviceInfo handlers
+  'protocol.c',     # dispatch_one, mmio_read/write, legacy protocol functions
 )
 
 # ops_display.c uses old protocol state layout; removed during handler refactor
