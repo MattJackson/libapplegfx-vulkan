@@ -11,25 +11,25 @@
 
 lagfx_handler_status_t lagfx_sync_synchronize_resources(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdSynchronizeResources CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_resource_set_placement(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdSetObjectAndPlacementList CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_resource_iosurface_create(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdCreateIOSurfaceBacking2 CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_resource_iosurface_lookup(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdLookupIOSurface CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 

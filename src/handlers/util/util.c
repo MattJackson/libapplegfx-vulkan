@@ -11,13 +11,13 @@
 
 lagfx_handler_status_t lagfx_util_nop(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdNOP CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* NOP - always success */
 }
 
 lagfx_handler_status_t lagfx_util_device_info(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdGetDeviceInfo CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 

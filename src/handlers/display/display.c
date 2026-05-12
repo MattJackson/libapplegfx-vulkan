@@ -11,37 +11,37 @@
 
 lagfx_handler_status_t lagfx_display_ack(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdDisplayAck CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_display_cursor_show(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdDisplayCursorShow CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_display_cursor_glyph(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdDisplayCursorGlyph CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_display_transaction3(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdDisplayTransaction3 CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_display_compositor_params(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdDisplayCompositorParameters CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
 lagfx_handler_status_t lagfx_display_icc_profile(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     (void)p;
-    LAGFX_ERR("=== CmdDisplaySetGuestICCProfile CALLED ===");
+    LAGFX_TRACE("handler: executing logic function");
     return LAGFX_HANDLER_OK; /* TODO: implement */
 }
 
