@@ -126,7 +126,7 @@ static void lagfx_cmdbuf_commit_empty_vk_submit(lagfx_protocol_t *p,
     }
 }
 
-  static void lagfx_render_encoder_try_begin(lagfx_protocol_t *p) {
+  void lagfx_render_encoder_try_begin(lagfx_protocol_t *p) {
  #ifdef LAGFX_HAVE_VULKAN
      if (!p->dev || !p->dev->vk || !p->dev->vk->initialized) {
          return;

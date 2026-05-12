@@ -93,6 +93,9 @@
 #include "../vulkan/instance.h"
 #include "../vulkan/iosurface.h"
 
+/* Forward declaration from ops_cmdbuf.c */
+void lagfx_render_encoder_try_begin(struct lagfx_protocol *p);
+
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
