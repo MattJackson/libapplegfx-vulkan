@@ -30,10 +30,19 @@ static int lagfx_test_dispatch_opcode(lagfx_protocol_t *p,
     hdr->length = *(uint32_t*)(cmd_bytes + 4);
     hdr->stamp = *(uint32_t*)(cmd_bytes + 8);
 
+    /* Calculate payload and arg fields */
+    hdr->payload_size = hdr->length - 12;
+    hdr->arg_count_8b = (hdr->arg_count_8b * 8);  /* Convert to bytes for consistency */
+    if (hdr->payload_size > cmd_len - 12) {
+        hdr->payload_size = cmd_len - 12;  /* Clamp to actual available data */
+    }
+
     /* Check payload size */
     if (hdr->length > cmd_len || hdr->length < 12) {
         return LAGFX_HANDLER_ERR_SIZE;
     }
+
+    hdr->payload = cmd_bytes + 12;
 
     /* Dispatch based on opcode — minimal handlers for test coverage */
     switch (hdr->opcode) {
