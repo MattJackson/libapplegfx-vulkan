@@ -100,4 +100,19 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset, uint32_t va
                 (unsigned long long)offset, value);
 }
 
+void lagfx_protocol_stats(const lagfx_protocol_t *p,
+                          uint64_t *total_cmds_seen_out,
+                          uint64_t *total_cmds_completed_out,
+                          uint64_t *unknown_opcode_count_out) {
+    if (!lagfx_protocol_is_valid(p)) {
+        if (total_cmds_seen_out)      *total_cmds_seen_out = 0;
+        if (total_cmds_completed_out) *total_cmds_completed_out = 0;
+        if (unknown_opcode_count_out) *unknown_opcode_count_out = 0;
+        return;
+    }
+    if (total_cmds_seen_out)      *total_cmds_seen_out = p->total_cmds_seen;
+    if (total_cmds_completed_out) *total_cmds_completed_out = p->total_cmds_completed;
+    if (unknown_opcode_count_out) *unknown_opcode_count_out = p->unknown_opcode_count;
+}
+
 /* Note: lagfx_protocol_last_completed_stamp is defined as static inline in state.h */
