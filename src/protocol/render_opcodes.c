@@ -92,6 +92,7 @@
 #include "../translate/render_encoder.h"
 #include "../vulkan/instance.h"
 #include "../vulkan/iosurface.h"
+#include "../memory/task.h"
 
 /* Forward declaration from ops_cmdbuf.c */
 void lagfx_render_encoder_try_begin(struct lagfx_protocol *p);
@@ -131,11 +132,36 @@ static uint16_t read_le16(const uint8_t *p) {
 }
 
 static int render_op_ack_stub(lagfx_protocol_t *p,
-                              const uint8_t    *payload,
-                              size_t            len) {
+                               const uint8_t    *payload,
+                               size_t            len) {
     (void)p;
     (void)payload;
     (void)len;
+    return 0;
+}
+
+/* Recursive CmdExecIndirect2Inner handler — re-enters render decoder
+ * with inner command buffer from resource pointer. */
+static int render_op_cmd_exec_indirect2_inner(lagfx_protocol_t *p,
+                                               const uint8_t    *payload,
+                                               size_t            len) {
+    if (!p || !payload || len < 8u) {
+        LAGFX_WARN("CmdExecIndirect2Inner: payload too short (len=%zu)", len);
+        return 0;
+    }
+
+    uint32_t resource_id = read_le32(payload + 0);
+    uint32_t pad         = read_le32(payload + 4);
+    
+    LAGFX_TRACE("CmdExecIndirect2Inner: resource_id=%u pad=0x%08x", 
+                resource_id, pad);
+
+    /* For Stage 30%, defer recursive execution until proper VA→GPA translation.
+     * macOS sends 20-byte payload with resource ID pointing to nested command buffer. */
+    
+    LAGFX_TRACE("CmdExecIndirect2Inner: absorbing (deferred recursion for resource %u)", 
+                resource_id);
+    
     return 0;
 }
 
@@ -2762,7 +2788,7 @@ static const lagfx_render_op_descriptor_t g_render_op_table[] = {
     { 0x1b, "UseHeapsWithStages",                         0, 0, render_op_use_heaps_with_stages },
     { 0x1c, "DrawIndexedInstancedBasePrimitives64_2",    48, 1, render_op_draw_indexed_instanced_base_primitives_64_2 },
     { 0x1d, "DrawIndexedInstancedBasePrimitives16_2",    20, 1, render_op_draw_indexed_instanced_base_primitives_16_2 },
-    { 0x3c, "CmdExecIndirect2Inner",                     16, 2, render_op_ack_stub },
+    { 0x3c, "CmdExecIndirect2Inner",                     20, 2, render_op_cmd_exec_indirect2_inner },
 
     /* --- State-set family (0x65-0xa6) --------------------------- */
     { 0x65, "SetBlendColor",                             16, 0, render_op_set_blend_color },
