@@ -156,7 +156,4 @@ void lagfx_protocol_stats(const lagfx_protocol_t *p,
                           uint64_t *total_cmds_completed_out,
                           uint64_t *unknown_opcode_count_out);
 
-/* Query the last completed stamp (tests + observability). */
-uint32_t lagfx_protocol_last_completed_stamp(const lagfx_protocol_t *p);
-
 #endif /* LIBAPPLEGFX_PROTOCOL_H */

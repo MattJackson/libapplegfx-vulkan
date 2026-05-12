@@ -157,6 +157,11 @@ static inline int lagfx_protocol_is_valid(const lagfx_protocol_t *p) {
     return p != NULL && p->magic == LAGFX_PROTOCOL_MAGIC;
 }
 
+/* Accessor for last completed stamp - used by tests. */
+static inline uint32_t lagfx_protocol_last_completed_stamp(const lagfx_protocol_t *p) {
+    return lagfx_protocol_is_valid(p) ? p->last_completed_stamp : 0u;
+}
+
 /* Task table helpers — static inline for performance. */
 static inline lagfx_task_entry_t* lagfx_protocol_find_task(lagfx_protocol_t *p, uint32_t task_id) {
     if (!p || !lagfx_protocol_is_valid(p)) return NULL;
