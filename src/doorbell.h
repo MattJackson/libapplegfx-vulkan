@@ -43,10 +43,7 @@ typedef struct {
 extern const doorbell_door_descriptor_t g_doorbell_doors[];
 extern const size_t g_doorbell_door_count;
 
-/* Lookup: given BAR offset, find which door handles it */
-const doorbell_door_descriptor_t* doorbell_lookup_by_offset(uint64_t offset);
-
-/* Dispatch: call the appropriate dispatcher for this BAR write (with protocol state) */
-void doorbell_dispatch(void *protocol_state, doorbell_door_id_t id, uint32_t data);
+/* Dispatch: given BAR0+offset and value, dispatch to appropriate handler */
+void doorbell_dispatch(void *protocol_state, uint64_t bar_offset, uint32_t data);
 
 #endif /* LAGFX_DOORBELL_H */

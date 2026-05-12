@@ -27,7 +27,7 @@ const size_t g_doorbell_door_count = sizeof(g_doorbell_doors) / sizeof(doorbell_
 
 /* === Registry Lookup ============================================== */
 
-const doorbell_door_descriptor_t* doorbell_lookup_by_offset(uint64_t offset) {
+static const doorbell_door_descriptor_t* doorbell_lookup_by_offset_internal(uint64_t offset) {
     for (size_t i = 0; i < g_doorbell_door_count; i++) {
         if (g_doorbell_doors[i].bar_offset == offset) {
             return &g_doorbell_doors[i];
@@ -36,17 +36,20 @@ const doorbell_door_descriptor_t* doorbell_lookup_by_offset(uint64_t offset) {
     return NULL;
 }
 
+/* Public lookup function */
+const doorbell_door_descriptor_t* doorbell_lookup_by_offset(uint64_t offset) {
+    return doorbell_lookup_by_offset_internal(offset);
+}
+
 /* === Dispatch Entry Point ========================================= */
 
-void doorbell_dispatch(void *protocol_state, doorbell_door_id_t id, uint32_t data) {
-    if (id >= DOOR_CHANNEL + 1) {
-        LAGFX_WARN("doorbell_dispatch: unknown door type %u", id);
-        return;
-    }
-
-    const doorbell_door_descriptor_t* door = &g_doorbell_doors[id];
+void doorbell_dispatch(void *protocol_state, uint64_t bar_offset, uint32_t data) {
+    /* Look up which dispatcher handles this BAR offset */
+    const doorbell_door_descriptor_t* door = doorbell_lookup_by_offset_internal(bar_offset);
+    
     if (!door || !door->dispatch_fn) {
-        LAGFX_WARN("doorbell_dispatch: no handler for door type %u", id);
+        LAGFX_TRACE("doorbell_dispatch: no handler for BAR0+0x%llx, data=0x%x", 
+                    bar_offset & 0xFFFFULL, data);
         return;
     }
 

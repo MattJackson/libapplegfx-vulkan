@@ -40,7 +40,7 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
         return;
     }
 
-    /* Route doorbell writes through unified dispatcher */
+    /* Pass everything to doorbell — it handles routing via registry */
     lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
     if (!p) {
         LAGFX_LOG("mmio_write: no decoder attached, off=0x%llx val=0x%08x",
@@ -48,21 +48,5 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
         return;
     }
 
-    /* Try to find a door that handles this offset */
-    const doorbell_door_descriptor_t *door = doorbell_lookup_by_offset(offset);
-    if (door && door->dispatch_fn) {
-        LAGFX_LOG("mmio_write: BAR0+0x%llx → door 0x%x, dispatch", 
-                  offset & 0xFFFFULL, door->id);
-        door->dispatch_fn(p, value);
-        return;
-    }
-
-    /* Not a doorbell — shadow config register and return */
-    int idx = lagfx_reg_index(offset);
-    if (idx >= 0 && idx < 16) {
-        p->reg[idx] = value;
-        LAGFX_TRACE("mmio_write: config reg[%d]=0x%x", idx, value);
-    } else {
-        LAGFX_WARN("mmio_write: unknown offset 0x%llx", (unsigned long long)offset);
-    }
+    doorbell_dispatch(p, DOOR_CHANNEL, value);
 }

@@ -157,13 +157,56 @@ static inline int lagfx_protocol_is_valid(const lagfx_protocol_t *p) {
     return p != NULL && p->magic == LAGFX_PROTOCOL_MAGIC;
 }
 
+/* Task table helpers — static inline for performance. */
+static inline lagfx_task_entry_t* lagfx_protocol_find_task(lagfx_protocol_t *p, uint32_t task_id) {
+    if (!p || !lagfx_protocol_is_valid(p)) return NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS; ++i) {
+        if (p->tasks[i].live && p->tasks[i].id == task_id) {
+            return &p->tasks[i];
+        }
+    }
+    return NULL;
+}
+
+static inline lagfx_task_entry_t* lagfx_protocol_alloc_task_slot(lagfx_protocol_t *p) {
+    if (!p || !lagfx_protocol_is_valid(p)) return NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS; ++i) {
+        if (!p->tasks[i].live) {
+            memset(&p->tasks[i], 0, sizeof(p->tasks[i]));
+            p->tasks[i].live = false;
+            return &p->tasks[i];
+        }
+    }
+    return NULL;
+}
+
+/* FIFO table helpers. */
+static inline lagfx_fifo_entry_t* lagfx_protocol_find_fifo(lagfx_protocol_t *p, uint32_t fifo_id) {
+    if (!p || !lagfx_protocol_is_valid(p)) return NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_FIFOS; ++i) {
+        if (p->fifos[i].live && p->fifos[i].id == fifo_id) {
+            return &p->fifos[i];
+        }
+    }
+    return NULL;
+}
+
+static inline lagfx_fifo_entry_t* lagfx_protocol_alloc_fifo_slot(lagfx_protocol_t *p) {
+    if (!p || !lagfx_protocol_is_valid(p)) return NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_FIFOS; ++i) {
+        if (!p->fifos[i].live) {
+            memset(&p->fifos[i], 0, sizeof(p->fifos[i]));
+            p->fifos[i].live = false;
+            return &p->fifos[i];
+        }
+    }
+    return NULL;
+}
+
 /* Stamp slot helpers — exported for tests. */
 extern void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p, uint32_t slot, uint32_t stamp);
 
-/* Back-compat wrapper — completes slot 0 with given stamp value. */
-static inline void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp) {
-    if (!lagfx_protocol_is_valid(p)) return;
-    lagfx_protocol_complete_stamp_slot(p, SLOT_ROOT_CHANNEL, stamp);
-}
+/* Back-compat wrapper — completes slot 0 with given stamp value (defined in stamp.c). */
+extern void lagfx_protocol_complete_stamp(lagfx_protocol_t *p, uint32_t stamp);
 
 #endif /* LAGFX_PROTOCOL_STATE_H */
