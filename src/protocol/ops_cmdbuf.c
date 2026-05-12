@@ -339,6 +339,7 @@ document has been updated to reflect the actual wire format observed in live tra
 
 lagfx_handler_status_t lagfx_op_exec_indirect2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+LAGFX_ERR("=== CMD_EXEC_INDIRECT2 CALLED ===");
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
