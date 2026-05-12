@@ -15,9 +15,13 @@
 #include "device.h"
 #include "doorbell.h"
 #include "display.h"
+#include "protocol/state.h"  /* lagfx_protocol_t typedef */
 #include "vulkan/instance.h"
 #include "shaders/catalog.h"
 #include "common/log.h"
+
+/* Forward decl for protocol lifecycle function (defined in lifecycle.c) */
+lagfx_protocol_t *lagfx_protocol_new(struct lagfx_device *dev);
 #include "protocol/state.h"
 #include "doorbell.h"
 
