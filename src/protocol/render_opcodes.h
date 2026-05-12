@@ -161,7 +161,7 @@ typedef enum {
 /* The on-wire opcode is u32; the per-decoder validity check
  * (`<= 0xa6` for Render — see inner-opcode-format.md §6) bounds it.
  * We expose the table count and a sentinel here. */
-#define LAGFX_RENDER_OPCODE_COUNT  96u
+#define LAGFX_RENDER_OPCODE_COUNT  97u
 #define LAGFX_RENDER_OPCODE_MAX    0xa6u
 
 /* === Handler signature ========================================
