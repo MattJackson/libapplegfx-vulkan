@@ -2788,6 +2788,9 @@ static const lagfx_render_op_descriptor_t g_render_op_table[] = {
     { 0x1b, "UseHeapsWithStages",                         0, 0, render_op_use_heaps_with_stages },
     { 0x1c, "DrawIndexedInstancedBasePrimitives64_2",    48, 1, render_op_draw_indexed_instanced_base_primitives_64_2 },
     { 0x1d, "DrawIndexedInstancedBasePrimitives16_2",    20, 1, render_op_draw_indexed_instanced_base_primitives_16_2 },
+    /* TODO: RE opcode 0x1e-0x3b range — macOS sends 0x2c (len=88) repeatedly.
+     * Stub for now to avoid crashes; add real handler once semantics discovered. */
+    { 0x2c, "Unknown(0x2c)",                             88, 0, render_op_ack_stub },
     { 0x3c, "CmdExecIndirect2Inner",                     20, 2, render_op_cmd_exec_indirect2_inner },
 
     /* --- State-set family (0x65-0xa6) --------------------------- */
