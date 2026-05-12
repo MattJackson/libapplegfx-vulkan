@@ -37,7 +37,10 @@
 #include "../dispatchers/base.h"
 #include "../dispatchers/registry.h"
 #include "../dispatchers/channel_0_dispatcher.h"
-#include "../dispatchers/compute_dispatcher.h"
+#include "../dispatchers/channel_1_dispatcher.h"
+#include "../dispatchers/channel_2_dispatcher.h"
+#include "../dispatchers/channel_3_dispatcher.h"
+#include "../dispatchers/channel_4_dispatcher.h"
 #include "../dispatchers/display_vchan_dispatcher.h"
 #include "../dispatchers/unknown_dispatcher.h"
 
@@ -854,15 +857,21 @@ case 0x1020u: {
                   descr_gpa = shared_gpa + 0x400u + 20u * (ch - 1u);
               }
               
-              /* Call dispatcher's ring_dispatch method */
-if (d->name && strstr(d->name, "UnknownDispatcher") != NULL) {
-    unknown_dispatcher_ring_dispatch((lagfx_unknown_dispatcher_t *)d, p, descr_gpa, ch);
-} else if (ch == 0) {
+              /* Call dispatcher's ring_dispatch method via polymorphic dispatch */
+if (ch == 0) {
     channel_0_dispatcher_ring_dispatch((lagfx_channel_0_dispatcher_t *)d, p, descr_gpa, ch);
-} else if (ch >= 1 && ch <= 4) {
-    compute_dispatcher_ring_dispatch((lagfx_compute_dispatcher_t *)d, p, descr_gpa, ch);
+} else if (ch == 1) {
+    channel_1_dispatcher_ring_dispatch((lagfx_channel_1_dispatcher_t *)d, p, descr_gpa, ch);
+} else if (ch == 2) {
+    channel_2_dispatcher_ring_dispatch((lagfx_channel_2_dispatcher_t *)d, p, descr_gpa, ch);
+} else if (ch == 3) {
+    channel_3_dispatcher_ring_dispatch((lagfx_channel_3_dispatcher_t *)d, p, descr_gpa, ch);
+} else if (ch == 4) {
+    channel_4_dispatcher_ring_dispatch((lagfx_channel_4_dispatcher_t *)d, p, descr_gpa, ch);
 } else if (ch >= 5) {
     display_vchan_dispatcher_ring_dispatch((lagfx_display_vchan_dispatcher_t *)d, p, descr_gpa, ch);
+} else if (d->name && strstr(d->name, "UnknownDispatcher") != NULL) {
+    unknown_dispatcher_ring_dispatch((lagfx_unknown_dispatcher_t *)d, p, descr_gpa, ch);
 }
 return;
           }

@@ -115,10 +115,10 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_DISPLAY_EXT_1E,           "Unknown(0x1e)",
       LAGFX_PRIO_P2, 0, 0, NULL },
 
-    /* --- Execution / Sync (0x20-0x26) ----------------------- */
-    { LAGFX_OP_EXEC_INDIRECT2,        "CmdExecIndirect2",
-      LAGFX_PRIO_P1, 0, 0, lagfx_op_exec_indirect2 },
-    { LAGFX_OP_EXEC_INDIRECT3,        "CmdExecIndirect3",
+   /* --- Execution / Sync (0x20-0x26) ----------------------- */
+     { LAGFX_OP_EXEC_INDIRECT2,        "CmdExecIndirect2",
+       LAGFX_PRIO_P1, 0, 0, lagfx_op_exec_indirect2 },
+     { LAGFX_OP_EXEC_INDIRECT3,        "CmdExecIndirect3",
       LAGFX_PRIO_P2, 0, 0, NULL },
     { LAGFX_OP_SYNCHRONIZE_RESOURCES, "CmdSynchronizeResources",
       LAGFX_PRIO_P0, 8, 0, lagfx_op_synchronize_resources },
@@ -196,18 +196,15 @@ static const lagfx_op_descriptor_t g_op_table[] = {
     { LAGFX_OP_CHANNEL_EVENT_36,         "ChannelEvent36",
       LAGFX_PRIO_P2, 8,  8,  lagfx_op_channel_event_36 },
     /* 0x37 in the kext-side namespace is the same logical operation
-     * as 0x20 in the dylib/host namespace — CmdExecIndirect2. The
-     * kext emits 0x37 on per-channel rings (vchan/exec channels);
-     * the dylib emits 0x20 on the RootChannel. Both carry the same
-     * outer payload {task_id, invalidate_count, resource_count, ...}
-     * + per-resource cmdBuf segments behind the resource_table[]
-     * host_gpu_addr entries. Route both to the same handler — the
-     * one that walks segments + dispatches inner opcodes. Per
-     * paravirt-re/library/M4-inner-opcode-implementation-guide.md
-     * §1.1 ("FIFO opcode 0x37 in kext == 0x20 in PG/dylib FIFO
-     * mapping"). */
-    { LAGFX_OP_CHANNEL_EVENT_37,         "CmdExecIndirect2/Kext(0x37)",
-      LAGFX_PRIO_P1, 0,  0,  lagfx_op_exec_indirect2 },
+      * as 0x20 in the dylib/host namespace — CmdExecIndirect2. The
+      * kext emits 0x37 on per-channel rings (vchan/exec channels);
+      * the dylib emits 0x20 on the RootChannel. Both carry the same
+      * outer payload {task_id, invalidate_count, resource_count, ...}
+      * + per-resource cmdBuf segments behind the resource_table[]
+      * host_gpu_addr entries. Route both to the same handler — now handled by
+      * ComputeDispatcher on per-channel rings instead of direct opcode dispatch. */
+     { LAGFX_OP_CHANNEL_EVENT_37,         "CmdExecIndirect2/Kext(0x37)",
+       LAGFX_PRIO_P1, 0,  0,  lagfx_op_exec_indirect2 },
     { LAGFX_OP_DEFINE_HOST_TASK,         "CmdDefineHostTask",
       LAGFX_PRIO_P0, 16, 16, lagfx_op_define_host_task },
     /* CmdMapMemoryImmediate — kext opcode 0x39 on the Immediate vchan.
@@ -226,10 +223,10 @@ static const lagfx_op_descriptor_t g_op_table[] = {
       LAGFX_PRIO_P0, 12, 12, lagfx_op_get_device_info_2 },
     { LAGFX_OP_NEW_USER_CLIENT,               "Unknown(0x3b)",
       LAGFX_PRIO_P2, 0,  0,  NULL },
-    /* CmdExecIndirect2 variant — macOS 15.7.5 uses 0x3c on kext channels.
-     * Same semantics as 0x37: walks segments + dispatches inner opcodes. */
-    { LAGFX_OP_UNKNOWN_3C,               "CmdExecIndirect2/Kext(0x3c)",
-      LAGFX_PRIO_P1, 0,  0,  lagfx_op_exec_indirect2 },
+   /* CmdExecIndirect2 variant — macOS 15.7.5 uses 0x3c on kext channels.
+      * Same semantics as 0x37: now handled by ComputeDispatcher on per-channel rings. */
+     { LAGFX_OP_UNKNOWN_3C,               "CmdExecIndirect2/Kext(0x3c)",
+       LAGFX_PRIO_P1, 0,  0,  lagfx_op_exec_indirect2 },
     { LAGFX_OP_EXEC_INDIRECT_EXT_41,     "ExecIndirectExt41",
       LAGFX_PRIO_P2, 0,  0,  NULL },
 };

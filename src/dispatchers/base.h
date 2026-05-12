@@ -39,4 +39,18 @@ static inline void lagfx_dispatcher_reset(lagfx_dispatcher_base_t *d) {
     (void)d;
 }
 
+/**
+ * Polymorphic ring dispatch — call through function pointer stored in protocol.
+ * The doorbell handler sets p->current_dispatcher_func before calling.
+ */
+typedef void (*lagfx_ring_dispatch_fn)(void *disp, struct lagfx_protocol *p,
+                                       uint64_t descr_gpa, uint8_t ch_id);
+
+static inline void lagfx_dispatcher_ring_dispatch(lagfx_dispatcher_base_t *d,
+                                                  struct lagfx_protocol *p,
+                                                  uint64_t descr_gpa,
+                                                  uint8_t ch_id) {
+    (void)d; (void)p; (void)descr_gpa; (void)ch_id;
+}
+
 #endif /* LAGFX_DISPATCHER_BASE_H */

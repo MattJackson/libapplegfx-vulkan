@@ -34,6 +34,14 @@ lagfx_sources += files(
   '../dispatchers/display_vchan_dispatcher.c',
   '../dispatchers/channel_0_dispatcher.h',
   '../dispatchers/channel_0_dispatcher.c',
+  '../dispatchers/channel_1_dispatcher.h',
+  '../dispatchers/channel_1_dispatcher.c',
+  '../dispatchers/channel_2_dispatcher.h',
+  '../dispatchers/channel_2_dispatcher.c',
+  '../dispatchers/channel_3_dispatcher.h',
+  '../dispatchers/channel_3_dispatcher.c',
+  '../dispatchers/channel_4_dispatcher.h',
+  '../dispatchers/channel_4_dispatcher.c',
   '../dispatchers/unknown_dispatcher.c',
 )
 

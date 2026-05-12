@@ -12,7 +12,10 @@
 #include "base.h"
 #include "../protocol/state.h"
 #include "channel_0_dispatcher.h"
-#include "compute_dispatcher.h"
+#include "channel_1_dispatcher.h"
+#include "channel_2_dispatcher.h"
+#include "channel_3_dispatcher.h"
+#include "channel_4_dispatcher.h"
 #include "display_vchan_dispatcher.h"
 #include "unknown_dispatcher.h"
 #include "../common/log.h"
@@ -28,12 +31,11 @@ void lagfx_dispatcher_registry_init(void) {
     /* Channel 0: Primary ring dispatcher */
     g_dispatchers[0] = (lagfx_dispatcher_base_t *)channel_0_dispatcher_new();
     
-    /* Channels 1-4: Compute/Render dispatchers (share same instance) */
-    lagfx_dispatcher_base_t *compute_disp = (lagfx_dispatcher_base_t *)compute_dispatcher_new();
-    g_dispatchers[1] = compute_disp;
-    g_dispatchers[2] = compute_disp;
-    g_dispatchers[3] = compute_disp;
-    g_dispatchers[4] = compute_disp;
+    /* Channels 1-4: Individual compute/render dispatchers (per-channel stamp tracking) */
+    g_dispatchers[1] = (lagfx_dispatcher_base_t *)channel_1_dispatcher_new();
+    g_dispatchers[2] = (lagfx_dispatcher_base_t *)channel_2_dispatcher_new();
+    g_dispatchers[3] = (lagfx_dispatcher_base_t *)channel_3_dispatcher_new();
+    g_dispatchers[4] = (lagfx_dispatcher_base_t *)channel_4_dispatcher_new();
     
     /* Channels 5+: Display vchan dispatchers */
     lagfx_dispatcher_base_t *display_disp = (lagfx_dispatcher_base_t *)display_vchan_dispatcher_new();
@@ -43,8 +45,11 @@ void lagfx_dispatcher_registry_init(void) {
     
     LAGFX_LOG("Dispatcher registry: %d channels", LAGFX_MAX_CHANNELS);
      LAGFX_LOG("  - Channel 0   -> Channel0Dispatcher (primary ring)");
-     LAGFX_LOG("  - Channels 1-4 -> ComputeDispatcher");
-     LAGFX_LOG("  - Channels 5+   -> DisplayVchanDispatcher");
+     LAGFX_LOG("  - Channel 1   -> Channel1Dispatcher (compute/render)");
+     LAGFX_LOG("  - Channel 2   -> Channel2Dispatcher (compute/render)");
+     LAGFX_LOG("  - Channel 3   -> Channel3Dispatcher (compute/render)");
+     LAGFX_LOG("  - Channel 4   -> Channel4Dispatcher (compute/render)");
+     LAGFX_LOG("  - Channels 5+ -> DisplayVchanDispatcher");
      LAGFX_LOG("  - Unregistered → unknown_dispatcher fallback");
 }
 
