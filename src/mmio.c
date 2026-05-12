@@ -48,16 +48,21 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
         return;
     }
 
-    /* Map BAR offset to doorbell ID and dispatch */
-    if (offset == 0x1008ULL) {
-        doorbell_dispatch(p, DOOR_PRIMARY_RING, value);
-    } else if (offset == 0x1020ULL) {
-        doorbell_dispatch(p, DOOR_CHANNEL, value);
+    /* Try to find a door that handles this offset */
+    const doorbell_door_descriptor_t *door = doorbell_lookup_by_offset(offset);
+    if (door && door->dispatch_fn) {
+        LAGFX_LOG("mmio_write: BAR0+0x%llx → door 0x%x, dispatch", 
+                  offset & 0xFFFFULL, door->id);
+        door->dispatch_fn(p, value);
+        return;
+    }
+
+    /* Not a doorbell — shadow config register and return */
+    int idx = lagfx_reg_index(offset);
+    if (idx >= 0 && idx < 16) {
+        p->reg[idx] = value;
+        LAGFX_TRACE("mmio_write: config reg[%d]=0x%x", idx, value);
     } else {
-        /* Config register write — just shadow it */
-        int idx = lagfx_reg_index(offset);
-        if (idx >= 0 && idx < 16) {
-            p->reg[idx] = value;
-        }
+        LAGFX_WARN("mmio_write: unknown offset 0x%llx", (unsigned long long)offset);
     }
 }
