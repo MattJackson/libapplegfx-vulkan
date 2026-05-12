@@ -1282,12 +1282,15 @@ LAGFX_ERR("render_op_describe_render_pass CALLED: p=%p dev=%p vk=%p", (void *)p,
        LAGFX_WARN("0x1a: RenderPassDescriptor parsed — %u attachments",
                    desc.has_depth + desc.has_stencil + desc.color_attachment_count);
         
-        /* Stage 30+: Start render pass immediately when descriptor is parsed.
-         * This enables Metal command accumulation before submission. */
-        if (p && p->dev && p->dev->vk) {
-            LAGFX_WARN("Stage 30: Calling lagfx_render_encoder_try_begin for opcode 0x1a");
-            lagfx_render_encoder_try_begin(p);
-        }
+       /* Stage 30+: Start render pass immediately when descriptor is parsed.
+          * This enables Metal command accumulation before submission. */
+         LAGFX_WARN("Stage 30 DEBUG: p=%p dev=%p vk=%p", (void*)p, (void*)p->dev, (void*)(p ? p->dev : NULL)->vk);
+         if (p && p->dev && p->dev->vk) {
+             LAGFX_WARN("Stage 30: Calling lagfx_render_encoder_try_begin for opcode 0x1a");
+             lagfx_render_encoder_try_begin(p);
+         } else {
+             LAGFX_ERR("Stage 30 FAIL: p=%p dev=%p vk=%p", (void*)p, (void*)p->dev, (void*)(p ? p->dev : NULL)->vk);
+         }
 #else  /* !LAGFX_HAVE_VULKAN */
         /* No Vulkan backend: parse the descriptor but skip image-view
          * creation. The non-Vulkan build path is for macOS CI only and
