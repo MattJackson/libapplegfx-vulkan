@@ -32,8 +32,6 @@ lagfx_sources += files(
   '../dispatchers/registry.c',
   '../dispatchers/compute_dispatcher.c',
   '../dispatchers/display_vchan_dispatcher.c',
-  '../dispatchers/channel_0_dispatcher.h',
-  '../dispatchers/channel_0_dispatcher.c',
   '../dispatchers/unknown_dispatcher.c',
 )
 

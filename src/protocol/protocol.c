@@ -36,6 +36,7 @@
 #include "../common/log.h"
 #include "../dispatchers/base.h"
 #include "../dispatchers/registry.h"
+#include "../dispatchers/channel_0_dispatcher.h"
 #include "../dispatchers/compute_dispatcher.h"
 #include "../dispatchers/display_vchan_dispatcher.h"
 #include "../dispatchers/unknown_dispatcher.h"
@@ -816,43 +817,55 @@ void lagfx_protocol_mmio_write(lagfx_protocol_t *p, uint64_t offset,
             return;
         }
 case 0x1020u: {
-             /* Per-channel doorbell. Use dispatcher registry for polymorphic
-              * routing — known channels (1-4 compute, 5+ display) go to their
-              * dispatchers; unregistered channels automatically route through
-              * unknown_dispatcher for logging/debugging. */
-             unsigned ch = value;
-             
-             if (ch >= LAGFX_MAX_CHANNELS) {
-                 LAGFX_TRACE("doorbell ch=%u: out of range", ch);
-                 return;
-             }
+              /* Per-channel doorbell. Use dispatcher registry for polymorphic
+               * routing — channel 0 (primary ring) goes to Channel0Dispatcher,
+               * channels 1-4 go to ComputeDispatcher, channels 5+ go to DisplayVchanDispatcher.
+               * Unregistered channels automatically route through unknown_dispatcher. */
+              unsigned ch = value;
+              
+              if (ch >= LAGFX_MAX_CHANNELS) {
+                  LAGFX_TRACE("doorbell ch=%u: out of range", ch);
+                  return;
+              }
 
-             /* Set current channel ID for per-channel opcode tracking */
-             p->current_chan_id = ch;
-             
-             /* Look up dispatcher by channel ID — polymorphic dispatch! */
-             lagfx_dispatcher_base_t *d = lagfx_dispatcher_lookup(ch);
-             if (!d) {
-                 LAGFX_WARN("doorbell: no dispatcher for channel %u -> routing to unknown_dispatcher", ch);
-                 d = (lagfx_dispatcher_base_t *)unknown_dispatcher_new();
-             }
+              /* Set current channel ID for per-channel opcode tracking */
+              p->current_chan_id = ch;
+              
+              /* Look up dispatcher by channel ID — polymorphic dispatch! */
+              lagfx_dispatcher_base_t *d = lagfx_dispatcher_lookup(ch);
+              if (!d) {
+                  LAGFX_WARN("doorbell: no dispatcher for channel %u -> routing to unknown_dispatcher", ch);
+                  d = (lagfx_dispatcher_base_t *)unknown_dispatcher_new();
+              }
 
-              LAGFX_LOG("doorbell ch=%u: dispatching to %s", ch, d->name);
-             
-             /* Delegate ring drain and command dispatch to dispatcher */
-             uint64_t shared_gpa = (uint64_t)p->ring_shared_page_pfn << 12;
-             uint64_t descr_gpa = shared_gpa + 0x400u + 20u * (ch - 1u);
-             
-             /* Call dispatcher's ring_dispatch method */
+               LAGFX_LOG("doorbell ch=%u: dispatching to %s", ch, d->name);
+              
+              /* Delegate ring drain and command dispatch to dispatcher */
+              uint64_t shared_gpa = (uint64_t)p->ring_shared_page_pfn << 12;
+              
+              /* Channel 0 uses primary ring FIFO — descriptor at +0x400 from shared page.
+               * Channels 1+ use per-channel sub-channels — descriptor at +0x400 + 20*(ch-1). */
+              uint64_t descr_gpa;
+              if (ch == 0) {
+                  /* Primary ring: descriptor is the FIFO write pointer itself,
+                   * not a separate channel descriptor. Use shared page + 0x400 as base. */
+                  descr_gpa = shared_gpa + 0x400u;
+              } else {
+                  descr_gpa = shared_gpa + 0x400u + 20u * (ch - 1u);
+              }
+              
+              /* Call dispatcher's ring_dispatch method */
 if (d->name && strstr(d->name, "UnknownDispatcher") != NULL) {
     unknown_dispatcher_ring_dispatch((lagfx_unknown_dispatcher_t *)d, p, descr_gpa, ch);
+} else if (ch == 0) {
+    channel_0_dispatcher_ring_dispatch((lagfx_channel_0_dispatcher_t *)d, p, descr_gpa, ch);
 } else if (ch >= 1 && ch <= 4) {
     compute_dispatcher_ring_dispatch((lagfx_compute_dispatcher_t *)d, p, descr_gpa, ch);
 } else if (ch >= 5) {
     display_vchan_dispatcher_ring_dispatch((lagfx_display_vchan_dispatcher_t *)d, p, descr_gpa, ch);
 }
 return;
-         }
+          }
         default: break;
     }
 }
