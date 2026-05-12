@@ -289,7 +289,7 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
     /* Initialize STATUS_CONTROL (0x1000) to non-zero "FIFO enabled" value
      * for Phase 1.A. tests that expect decoder to be live even without
      * protocol state attached yet. Value of 1 = FIFO armed/enabled. */
-     g_reg_shadow[LAGFX_REG_STATUS_CONTROL] = 1u;
+     g_reg_shadow[0] = 1u;
 
  /* Phase 1.B: Vulkan instance + device + queue. In no-vulkan builds
      * this is a no-op that still returns LAGFX_OK with a tiny placeholder
