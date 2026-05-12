@@ -55,14 +55,3 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
 
     doorbell_dispatch(p, offset, value);
 }
-
-    /* Pass everything to doorbell — it handles routing via registry */
-    lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
-    if (!p) {
-        LAGFX_LOG("mmio_write: no decoder attached, off=0x%llx val=0x%08x",
-                  (unsigned long long)offset, value);
-        return;
-    }
-
-    doorbell_dispatch(p, DOOR_CHANNEL, value);
-}
