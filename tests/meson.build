@@ -133,22 +133,22 @@ if fs.is_file(meson.current_source_dir() / 'resource-registry.c')
   test('resource registry', resource_registry_test)
 endif
 
-# M3 stamp-helper unit tests. Covers lagfx_advance_stamp_cell (driven
+# Stamp helper unit tests. Covers lagfx_advance_stamp_cell (driven
 # indirectly via complete_stamp_slot, which is its only public caller),
 # lagfx_protocol_complete_stamp_slot, and the slot=0 wrapper
-# lagfx_protocol_complete_stamp. See tests/m3-stamp-helpers.c header.
-if fs.is_file(meson.current_source_dir() / 'm3-stamp-helpers.c')
-  m3_stamp_deps = [libapplegfx_vulkan_dep]
+# lagfx_protocol_complete_stamp. See tests/stamp-helpers.c header.
+if fs.is_file(meson.current_source_dir() / 'stamp-helpers.c')
+  stamp_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
-    m3_stamp_deps += [vulkan_dep]
+    stamp_deps += [vulkan_dep]
   endif
-  m3_stamp_helpers_test = executable('m3-stamp-helpers',
-    'm3-stamp-helpers.c',
+  stamp_helpers_test = executable('stamp-helpers',
+    'stamp-helpers.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : m3_stamp_deps,
+    dependencies : stamp_deps,
     build_by_default : true,
   )
-  test('m3 stamp helpers', m3_stamp_helpers_test)
+  test('stamp helpers', stamp_helpers_test)
 endif
 
 # M4 task-translate + define_host_task unit tests. Covers
@@ -169,168 +169,101 @@ if fs.is_file(meson.current_source_dir() / 'm4-task-translate.c')
   test('m4 task translate', m4_task_translate_test)
 endif
 
-# M5 deadlock detection tests. Regression suite for ABBA deadlock between
+# Deadlock detection tests. Regression suite for ABBA deadlock between
 # WindowServer and DisplayPipe. Tests online event timing (must be IMMEDIATE,
 # not deferred), stamp ACK latency (<10ms), and device creation timeout (<5s).
-if fs.is_file(meson.current_source_dir() / 'm5-deadlock-detect.c')
-  m5_deadlock_deps = [libapplegfx_vulkan_dep]
+if fs.is_file(meson.current_source_dir() / 'deadlock-detect.c')
+  deadlock_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
-    m5_deadlock_deps += [vulkan_dep]
+    deadlock_deps += [vulkan_dep]
   endif
-  m5_deadlock_detect_test = executable('m5-deadlock-detect',
-    'm5-deadlock-detect.c',
+  deadlock_detect_test = executable('deadlock-detect',
+    'deadlock-detect.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : m5_deadlock_deps,
+    dependencies : deadlock_deps,
     build_by_default : true,
   )
-  test('m5 deadlock detection', m5_deadlock_detect_test)
+  test('deadlock detection', deadlock_detect_test)
 endif
 
-# M4 Render opcode unit tests. Covers top 10 most-used render opcodes:
-# CmdDrawIndexedPrimitive (0x08), CmdSetPrimitiveTopology (0x14),
-# CmdBindIndexBuffer (0x24), CmdDrawInstanced (0x28), CmdSetViewport (0x34),
-# CmdBindPipeline (0x3C), plus edge cases (invalid payload, cross-page VA).
-if fs.is_file(meson.current_source_dir() / 'm4-render-opcodes.c')
-  render_op_deps = [libapplegfx_vulkan_dep]
+# Render opcode tests - drawPrimitives family (most used opcodes).
+if fs.is_file(meson.current_source_dir() / 'render-opcode-draw.c')
+  render_draw_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
-    render_op_deps += [vulkan_dep]
+    render_draw_deps += [vulkan_dep]
   endif
-  m4_render_opcodes_test = executable('m4-render-opcodes',
-    'm4-render-opcodes.c',
+  render_draw_test = executable('render-opcode-draw',
+    'render-opcode-draw.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : render_op_deps,
+    dependencies : render_draw_deps,
     build_by_default : true,
   )
-  test('m4 render opcodes (top 10)', m4_render_opcodes_test)
+  test('render opcode draw', render_draw_test)
 endif
 
-# M4 Blit operation unit tests. Covers CmdCopyImage, CmdResolveImage,
-# CmdClearColorImage with various source/dest combinations and edge cases.
-if fs.is_file(meson.current_source_dir() / 'm4-blit-opcodes.c')
-  blit_op_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    blit_op_deps += [vulkan_dep]
+# Render opcode tests - pipeline state setup (setPipelineState, blend constants).
+if fs.is_file(meson.current_source_dir() / 'render-opcode-pipeline.c')
+  render_pipe_deps = [libapplegfx_vulkan_dep]
+  if vulkan.dep.found()
+    render_pipe_deps += [vulkan_dep]
   endif
-  m4_blit_opcodes_test = executable('m4-blit-opcodes',
-    'm4-blit-opcodes.c',
+  render_pipeline_test = executable('render-opcode-pipeline',
+    'render-opcode-pipeline.c',
     include_directories : [include_dir, internal_include_dir],
-    dependencies : blit_op_deps,
+    dependencies : render_pipe_deps,
     build_by_default : true,
   )
-  test('m4 blit opcodes (basic)', m4_blit_opcodes_test)
+  test('render opcode pipeline', render_pipeline_test)
 endif
 
-# M4 Compute shader dispatch tests. Covers CmdDispatch, CmdDispatchIndirect
-# with various workgroup sizes and resource bindings.
-if fs.is_file(meson.current_source_dir() / 'm4-compute-opcodes.c')
-  compute_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    compute_deps += [vulkan_dep]
-  endif
-  m4_compute_opcodes_test = executable('m4-compute-opcodes',
-    'm4-compute-opcodes.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : compute_deps,
-    build_by_default : true,
-  )
-  test('m4 compute opcodes (basic)', m4_compute_opcodes_test)
-endif
-
-# M4 ExecIndirect2 outer-payload parser, segment walker, and 0x1cc reply
-# writer tests. Confirms the kext-side 0x37 layout (12B header + 16B
-# invalidates + 16B reserved + 16B resources), the encType=4/0x1cc reply
-# path, and the corner cases (offset oob, buffer_id oob, encType=2 no
-# reply, multi-segment, bad segment_size, inner totalLength<8).
-if fs.is_file(meson.current_source_dir() / 'm4-execindirect2-parser.c')
+# ExecIndirect2 outer-payload parser tests. Validates CmdExecIndirect2
+# payload parsing (task_id, descriptor_count, resource_count), query mode
+# with minimal payloads, and empty completion handling.
+if fs.is_file(meson.current_source_dir() / 'cmdexecindirect2-parser.c')
   execind_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
     execind_deps += [vulkan_dep]
   endif
-  m4_execindirect2_test = executable('m4-execindirect2-parser',
-    'm4-execindirect2-parser.c',
+  execind_test = executable('cmdexecindirect2-parser',
+    'cmdexecindirect2-parser.c',
     include_directories : [include_dir, internal_include_dir],
     dependencies : execind_deps,
     build_by_default : true,
   )
-  test('m4 execindirect2 parser', m4_execindirect2_test)
+  test('execindirect2 parser', execind_test)
 endif
 
-# M4 per-channel doorbell-drain tests (BAR0+0x1020). Exercises the
-# ch=1..4 ring-walk + dispatch_one_no_stamp branch, the ch=5..7
-# setupSharedState branch, the page0[0] PFN-array indirection vs the
-# +0x1000 fallback, and multi-cmd drain w/ last_stamp capture.
-if fs.is_file(meson.current_source_dir() / 'm4-doorbell-drain.c')
+# Per-channel doorbell-drain tests (BAR0+0x1020). Exercises the ch=1..4
+# ring-walk + dispatch_one_no_stamp branch, the ch=5..7 setupSharedState
+# branch, the page0[0] PFN-array indirection vs the +0x1000 fallback,
+# and multi-cmd drain w/ last_stamp capture.
+if fs.is_file(meson.current_source_dir() / 'doorbell-drain.c')
   doorbell_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
     doorbell_deps += [vulkan_dep]
   endif
-  m4_doorbell_drain_test = executable('m4-doorbell-drain',
-    'm4-doorbell-drain.c',
+  doorbell_test = executable('doorbell-drain',
+    'doorbell-drain.c',
     include_directories : [include_dir, internal_include_dir],
     dependencies : doorbell_deps,
     build_by_default : true,
   )
-  test('m4 doorbell drain', m4_doorbell_drain_test)
+  test('doorbell drain', doorbell_test)
 endif
 
-# M1 shader catalog unit tests - LRU eviction and lookup.
+# Shader catalog unit tests - LRU eviction and lookup.
 if fs.is_file(meson.current_source_dir() / 'm1-shader-catalog.c')
   shader_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
     shader_deps += [vulkan_dep]
   endif
-  m1_shader_catalog_test = executable('m1-shader-catalog',
+  shader_catalog_test = executable('m1-shader-catalog',
     'm1-shader-catalog.c',
     include_directories : [include_dir, internal_include_dir],
     dependencies : shader_deps,
     build_by_default : true,
   )
-  test('m1 shader catalog', m1_shader_catalog_test)
-endif
-
-# M4 render opcode tests - drawPrimitives family (most used opcodes).
-if fs.is_file(meson.current_source_dir() / 'm4-render-opcode-draw.c')
-  render_draw_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    render_draw_deps += [vulkan_dep]
-  endif
-  m4_render_draw_test = executable('m4-render-opcode-draw',
-    'm4-render-opcode-draw.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : render_draw_deps,
-    build_by_default : true,
-  )
-  test('m4 render opcode draw', m4_render_draw_test)
-endif
-
-# M4 render opcode tests - pipeline state setup (setPipelineState, blend constants).
-if fs.is_file(meson.current_source_dir() / 'm4-render-opcode-pipeline.c')
-  render_pipe_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    render_pipe_deps += [vulkan_dep]
-  endif
-  m4_render_pipeline_test = executable('m4-render-opcode-pipeline',
-    'm4-render-opcode-pipeline.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : render_pipe_deps,
-    build_by_default : true,
-  )
-  test('m4 render opcode pipeline', m4_render_pipeline_test)
-endif
-
-# M5 display vchan tests - CmdDefineChildFIFO/CmdDisplayTransaction3 (M5 Stage 10%).
-if fs.is_file(meson.current_source_dir() / 'm5-display-vchan.c')
-  vchan_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    vchan_deps += [vulkan_dep]
-  endif
-  m5_display_vchan_test = executable('m5-display-vchan',
-    'm5-display-vchan.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : vchan_deps,
-    build_by_default : true,
-  )
-  test('m5 display vchan', m5_display_vchan_test)
+  test('shader catalog', shader_catalog_test)
 endif
 
 # Optional lavapipe smoke test — only built when vulkan is present.
