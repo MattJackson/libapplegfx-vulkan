@@ -94,8 +94,8 @@ void channel_2_dispatcher_ring_dispatch(lagfx_channel_2_dispatcher_t *d,
         p->current_chan_id = ch_id;
         
         switch (opcode) {
-        case 0x37:  /* KextCmdExecCmdbuf/Kext */
-            LAGFX_LOG("Channel2Dispatcher(ch%u): KextCmdExecCmdbuf/Kext → ops_cmdbuf.c", ch_id);
+        case 0x37:  /* CmdExecIndirect2/Kext */
+            LAGFX_LOG("Channel2Dispatcher(ch%u): CmdExecIndirect2/Kext → ops_cmdbuf.c", ch_id);
             p->extra_stamp_advance = 0;
             
             uint32_t payload_len = length - 12u;
@@ -124,7 +124,7 @@ void channel_2_dispatcher_ring_dispatch(lagfx_channel_2_dispatcher_t *d,
                     .payload = p->doorbell_bounce_buffer + 12u,
                 };
                 
-                lagfx_compute_exec_cmdbuf(p, &hdr);
+                lagfx_compute_exec_indirect2(p, &hdr);
                 last_stamp = stamp;
             } else {
                 last_stamp = stamp;

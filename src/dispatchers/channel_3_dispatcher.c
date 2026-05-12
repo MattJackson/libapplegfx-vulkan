@@ -10,6 +10,7 @@
 #include "../device.h"
 #include "../protocol/protocol.h"
 #include "../protocol/state.h"
+#include "../handlers/handlers.h"
 #include "../common/log.h"
 
 #include <stdlib.h>
@@ -93,8 +94,8 @@ void channel_3_dispatcher_ring_dispatch(lagfx_channel_3_dispatcher_t *d,
         p->current_chan_id = ch_id;
         
         switch (opcode) {
-        case 0x37:  /* CmdExecIndirect2/Kext */
-            LAGFX_LOG("Channel3Dispatcher(ch%u): CmdExecIndirect2/Kext → ops_cmdbuf.c", ch_id);
+        case 0x37:  /* KextCmdExecCmdbuf/Kext */
+            LAGFX_LOG("Channel3Dispatcher(ch%u): KextCmdExecCmdbuf/Kext → ops_cmdbuf.c", ch_id);
             p->extra_stamp_advance = 0;
             
             uint32_t payload_len = length - 12u;
@@ -114,17 +115,17 @@ void channel_3_dispatcher_ring_dispatch(lagfx_channel_3_dispatcher_t *d,
             }
 
             if (ok) {
-                lagfx_cmd_header_t parsed = {
+                lagfx_cmd_header_t hdr = {
                     .opcode = opcode,
-                    .arg_count_8b = 0,
                     .length = length,
                     .stamp = stamp,
                     .payload_size = payload_len,
+                    .arg_count_8b = 0,
                     .payload = p->doorbell_bounce_buffer + 12u,
                 };
                 
-                lagfx_protocol_dispatch_one_no_stamp(p, p->doorbell_bounce_buffer, length, &parsed);
-                last_stamp = parsed.stamp + p->extra_stamp_advance;
+                lagfx_compute_exec_cmdbuf(p, &hdr);
+                last_stamp = stamp;
             } else {
                 last_stamp = stamp;
             }
@@ -151,17 +152,17 @@ void channel_3_dispatcher_ring_dispatch(lagfx_channel_3_dispatcher_t *d,
             }
 
             if (ok) {
-                lagfx_cmd_header_t parsed = {
+                lagfx_cmd_header_t hdr = {
                     .opcode = opcode,
-                    .arg_count_8b = 0,
                     .length = length,
                     .stamp = stamp,
                     .payload_size = payload_len,
+                    .arg_count_8b = 0,
                     .payload = p->doorbell_bounce_buffer + 12u,
                 };
 
-                lagfx_protocol_dispatch_one_no_stamp(p, p->doorbell_bounce_buffer, length, &parsed);
-                last_stamp = parsed.stamp + p->extra_stamp_advance;
+                lagfx_op_define_host_task(p, &hdr);
+                last_stamp = stamp;
             } else {
                 last_stamp = stamp;
             }
@@ -188,17 +189,17 @@ void channel_3_dispatcher_ring_dispatch(lagfx_channel_3_dispatcher_t *d,
             }
 
             if (ok) {
-                lagfx_cmd_header_t parsed = {
+                lagfx_cmd_header_t hdr = {
                     .opcode = opcode,
-                    .arg_count_8b = 0,
                     .length = length,
                     .stamp = stamp,
                     .payload_size = payload_len,
+                    .arg_count_8b = 0,
                     .payload = p->doorbell_bounce_buffer + 12u,
                 };
 
-                lagfx_protocol_dispatch_one_no_stamp(p, p->doorbell_bounce_buffer, length, &parsed);
-                last_stamp = parsed.stamp + p->extra_stamp_advance;
+                lagfx_memory_map_memory_immediate(p, &hdr);
+                last_stamp = stamp;
             } else {
                 last_stamp = stamp;
             }

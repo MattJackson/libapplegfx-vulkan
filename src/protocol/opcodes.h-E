@@ -284,7 +284,7 @@ void lagfx_ops_queue_set_cmddefine_called(void);
 /* ops_cmdbuf.c — stubs (P0/P1 TODO). */
 lagfx_handler_status_t lagfx_op_synchronize_resources(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_op_exec_cmdbuf(
+lagfx_handler_status_t lagfx_op_exec_indirect2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
 /* ops_display.c — Phase 2.A real (partial-layout) handlers. */

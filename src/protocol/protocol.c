@@ -31,7 +31,6 @@
 #include "opcodes.h"
 #include "fifo.h"
 #include "ops_display.h"
-#include "ops_display_vchan.h"
 #include "../device.h"
 #include "../common/log.h"
 #include "../dispatchers/base.h"
@@ -41,7 +40,7 @@
 #include "../dispatchers/channel_2_dispatcher.h"
 #include "../dispatchers/channel_3_dispatcher.h"
 #include "../dispatchers/channel_4_dispatcher.h"
-#include "../dispatchers/display_vchan_dispatcher.h"
+#include "../dispatchers/channel_5_plus_dispatcher.h"
 #include "../dispatchers/unknown_dispatcher.h"
 
 #include <stdlib.h>
@@ -869,7 +868,7 @@ if (ch == 0) {
 } else if (ch == 4) {
     channel_4_dispatcher_ring_dispatch((lagfx_channel_4_dispatcher_t *)d, p, descr_gpa, ch);
 } else if (ch >= 5) {
-    display_vchan_dispatcher_ring_dispatch((lagfx_display_vchan_dispatcher_t *)d, p, descr_gpa, ch);
+    channel_5_plus_dispatcher_ring_dispatch((lagfx_channel_5_plus_dispatcher_t *)d, p, descr_gpa, ch);
 } else if (d->name && strstr(d->name, "UnknownDispatcher") != NULL) {
     unknown_dispatcher_ring_dispatch((lagfx_unknown_dispatcher_t *)d, p, descr_gpa, ch);
 }

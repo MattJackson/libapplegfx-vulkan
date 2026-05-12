@@ -1,12 +1,6 @@
 /*
- * libapplegfx-vulkan — CmdExecIndirect2 handler (compute path)
- * src/handlers/compute/exec_indirect2.c
- *
- * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
- *
- * Pure logic - NO dispatcher code, NO opcode table lookup.
- * Called by compute_dispatcher for opcodes 0x37/0x3c on channels 1-4.
+ * libapplegfx-vulkan — Command buffer execution handler (compute path)
+ * src/handlers/compute/exec_cmdbuf.c
  */
 
 #include "../handlers/handlers.h"
@@ -21,16 +15,16 @@ static inline uint32_t lagfx_le32(const uint8_t *b) {
            ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
 }
 
-/* Handler for CmdExecIndirect2 (opcode 0x37/0x3c on compute channels).
- * Handles Metal command buffer execution via lavapipe backend. */
-lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    LAGFX_ERR("=== CMD_EXEC_INDIRECT2 CALLED ===");
+/* Handler for command buffer execution (opcode 0x37/0x3c on compute channels).
+ * Executes pre-encoded Metal commands from GPU memory via lavapipe backend. */
+lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    LAGFX_LOG("=== CMDBUFFER EXECUTION CALLED ===");
     
     if (!p || !hdr) return LAGFX_HANDLER_ERR_INTERNAL;
 
     /* Empty payload: metal-no-op alternate path */
     if (!hdr->payload || hdr->payload_size < 8) {
-        LAGFX_TRACE("CmdExecIndirect2: stamp=0x%08x payload_size=%u (empty-list completion)",
+        LAGFX_TRACE("command buffer execution: stamp=0x%08x payload_size=%u (empty-list completion)",
                     hdr->stamp, (unsigned)hdr->payload_size);
         return LAGFX_HANDLER_OK;
     }
@@ -38,7 +32,7 @@ lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol_t *p, const l
     /* Minimal query (8 bytes): task_id only */
     if (hdr->payload_size == 8) {
         uint32_t task_id = lagfx_le32(hdr->payload);
-        LAGFX_TRACE("CmdExecIndirect2: minimal query payload taskID=%u", task_id);
+        LAGFX_TRACE("command buffer execution: minimal query payload taskID=%u", task_id);
         return LAGFX_HANDLER_OK;
     }
 
@@ -51,7 +45,7 @@ lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol_t *p, const l
     size_t end_resources   = off_resources + (size_t)resource_count * 16u;
 
     if (end_resources > (size_t)hdr->payload_size) {
-        LAGFX_WARN("CmdExecIndirect2: outer payload too small "
+        LAGFX_WARN("command buffer execution: outer payload too small "
                    "(taskID=%u descriptor_count=%u resource_count=%u need=%zu have=%u)",
                    lagfx_le32(hdr->payload + 0), descriptor_count, resource_count,
                    end_resources, (unsigned)hdr->payload_size);
@@ -59,14 +53,23 @@ lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol_t *p, const l
     }
 
     if (descriptor_count == 0 && resource_count == 0) {
-        LAGFX_TRACE("CmdExecIndirect2: taskID=%u empty stamp=0x%08x",
+        LAGFX_TRACE("command buffer execution: taskID=%u empty stamp=0x%08x",
                     lagfx_le32(hdr->payload + 0), hdr->stamp);
         return LAGFX_HANDLER_OK;
     }
 
     uint32_t task_id = lagfx_le32(hdr->payload + 0);
-    LAGFX_LOG("CmdExecIndirect2: processing taskID=%u descriptor_count=%u resource_count=%u",
+    LAGFX_LOG("command buffer execution: processing taskID=%u descriptor_count=%u resource_count=%u",
               task_id, descriptor_count, resource_count);
+    
+    /* Set current_task_id for inner opcode handlers */
+    p->current_task_id = task_id;
+
+    /* Read resources and process cmdBufs */
+    uint32_t processed_resources = 0;
+    
+    LAGFX_TRACE("command buffer execution: begin processing %u descriptors, %u resources",
+                descriptor_count, resource_count);
 
     /* Set current_task_id for inner opcode handlers */
     p->current_task_id = task_id;
@@ -109,9 +112,11 @@ lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol_t *p, const l
 
         /* TODO: segment parsing → inner opcode dispatch → Vulkan/lavapipe */
         
+        processed_resources++;
         free(cmdbuf);
     }
 
+    LAGFX_TRACE("command buffer execution: completed, processed %u resources", processed_resources);
     return LAGFX_HANDLER_OK;
 }
 

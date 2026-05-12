@@ -16,7 +16,7 @@
 #include "channel_2_dispatcher.h"
 #include "channel_3_dispatcher.h"
 #include "channel_4_dispatcher.h"
-#include "display_vchan_dispatcher.h"
+#include "channel_5_plus_dispatcher.h"
 #include "unknown_dispatcher.h"
 #include "../common/log.h"
 
@@ -38,7 +38,7 @@ void lagfx_dispatcher_registry_init(void) {
     g_dispatchers[4] = (lagfx_dispatcher_base_t *)channel_4_dispatcher_new();
     
     /* Channels 5+: Display vchan dispatchers */
-    lagfx_dispatcher_base_t *display_disp = (lagfx_dispatcher_base_t *)display_vchan_dispatcher_new();
+    lagfx_dispatcher_base_t *display_disp = (lagfx_dispatcher_base_t *)channel_5_plus_dispatcher_new();
     for (int i = 5; i < LAGFX_MAX_CHANNELS; i++) {
         g_dispatchers[i] = display_disp;
     }

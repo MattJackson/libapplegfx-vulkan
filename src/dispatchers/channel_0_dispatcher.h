@@ -5,7 +5,7 @@
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Dispatcher for primary ring (channel 0). Handles CmdExecIndirect2 and routes
+ * Dispatcher for primary ring (channel 0). Handles KextCmdExecCmdbuf and routes
  * inner opcodes to render/blit/compute decoders via ops_cmdbuf.c logic.
  */
 
@@ -21,7 +21,7 @@ typedef struct lagfx_protocol lagfx_protocol_t;
 /**
  * Primary ring dispatcher for channel 0.
  * Embeds base class as first member for polymorphism.
- * Handles CmdExecIndirect2 and delegates to ops_cmdbuf.c logic.
+ * Handles KextCmdExecCmdbuf and delegates to ops_cmdbuf.c logic.
  */
 typedef struct {
     lagfx_dispatcher_base_t base;   /* Base class (first!) */
@@ -30,7 +30,7 @@ typedef struct {
 /** Constructor pattern */
 lagfx_channel_0_dispatcher_t *channel_0_dispatcher_new(void);
 
-/** Ring dispatch — delegates to ops_cmdbuf.c CmdExecIndirect2 handler */
+/** Ring dispatch — delegates to ops_cmdbuf.c KextCmdExecCmdbuf handler */
 void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
                                         struct lagfx_protocol *p,
                                         uint64_t descr_gpa,

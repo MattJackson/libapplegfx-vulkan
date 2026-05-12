@@ -8,30 +8,30 @@ lagfx_sources += files(
   'translate.c',
   'fifo.c',
   'opcodes.c',
-  'ops_misc.c',
-  'ops_device.c',
-  'ops_queue.c',
-  'ops_cmdbuf.c',
-  'ops_display.c',
-  'ops_iosurface.c',
+  'ops_device.c',      # Device operations (define_task, delete_task, etc.)
+  'ops_queue.c',       # Queue operations  
+  'ops_display.c',     # Display operations (cursor, transaction3, etc.)
+  'ops_iosurface.c',   # iOSurface operations
+  'ops_misc.c',        # Miscellaneous operations
+  'ops_cmdbuf.c',      # Command buffer execution + synchronize_resources
+  'blit_opcodes.c',    # Blit opcode table + lookup functions
+  'compute_opcodes.c', # Compute opcode table + lookup functions
+  'render_opcodes.c',  # Render opcode table + lookup functions
   'resource_registry.c',
-  'blit_opcodes.c',
   'blit_decoder.c',
-  'compute_opcodes.c',
   'compute_decoder.c',
-  'render_opcodes.c',
   'render_decoder.c',
   'render_pass.c',
-  'ops_display_vchan.c',
 )
+
+# Note: ops_*.c files still needed - opcodes.c references functions in these files
 
 # Dispatcher implementations (OOP-style polymorphic dispatch)
 lagfx_sources += files(
   '../dispatchers/base.h',
   '../dispatchers/registry.h',
   '../dispatchers/registry.c',
-  '../dispatchers/compute_dispatcher.c',
-  '../dispatchers/display_vchan_dispatcher.c',
+  '../dispatchers/channel_5_plus_dispatcher.c',
   '../dispatchers/channel_0_dispatcher.h',
   '../dispatchers/channel_0_dispatcher.c',
   '../dispatchers/channel_1_dispatcher.h',
@@ -45,13 +45,13 @@ lagfx_sources += files(
   '../dispatchers/unknown_dispatcher.c',
 )
 
-# Handler implementations (logic layer, no routing code)
+# Handler implementations (logic layer, no routing code) - single unified handler file
 lagfx_sources += files(
   '../handlers/handlers.h',
-  '../handlers/compute/exec_indirect2.c',
+  '../handlers/compute/exec_cmdbuf.c',
   '../handlers/task/task.c',
   '../handlers/memory/memory.c',
-  '../handlers/display/display.c',
+  '../handlers/display/display.c',  # All display handlers (vchan + regular)
   '../handlers/sync/sync.c',
   '../handlers/util/util.c',
 )

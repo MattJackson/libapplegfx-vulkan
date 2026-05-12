@@ -1,6 +1,6 @@
 /*
  * libapplegfx-vulkan — Display VChan channel dispatcher (Channels 5+)
- * src/dispatchers/display_vchan_dispatcher.c
+ * src/dispatchers/channel_5_plus_dispatcher.c
  *
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -10,32 +10,23 @@
  * so we log which channel each opcode came from for debugging.
  */
 
-#include "display_vchan_dispatcher.h"
+#include "channel_5_plus_dispatcher.h"
 #include "../device.h"
 #include "../protocol/protocol.h"
 #include "../protocol/state.h"
-#include "../protocol/opcodes.h"
+#include "../handlers/handlers.h"
 #include "../common/log.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-/* Forward declarations for display vchan opcode handlers */
-lagfx_handler_status_t lagfx_op_vchan_setup_shared_state(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_op_vchan_display_submit(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_op_display_define_child_fifo(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_op_vchan_present(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_op_vchan_present_gamma(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_op_display_cursor_show(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
-lagfx_handler_status_t lagfx_op_display_cursor_glyph(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
 /* Stamp cell advancement — defined in protocol.c, exported via state.h. */
 void lagfx_advance_stamp_cell(lagfx_protocol_t *p, uint32_t slot, uint32_t target);
 
 /* === Constructor ======================================================== */
 
-lagfx_display_vchan_dispatcher_t *display_vchan_dispatcher_new(void) {
-    lagfx_display_vchan_dispatcher_t *d = calloc(1, sizeof(*d));
+lagfx_channel_5_plus_dispatcher_t *channel_5_plus_dispatcher_new(void) {
+    lagfx_channel_5_plus_dispatcher_t *d = calloc(1, sizeof(*d));
     if (!d) return NULL;
     
     d->base.name = "DisplayVchanDispatcher(ch5+)";
@@ -47,7 +38,7 @@ lagfx_display_vchan_dispatcher_t *display_vchan_dispatcher_new(void) {
 
 /* === Ring Dispatch — log per-channel, delegate ========================== */
 
-void display_vchan_dispatcher_ring_dispatch(lagfx_display_vchan_dispatcher_t *d,
+void channel_5_plus_dispatcher_ring_dispatch(lagfx_channel_5_plus_dispatcher_t *d,
                                            struct lagfx_protocol *p,
                                            uint64_t descr_gpa,
                                            uint8_t ch_id) {
@@ -212,28 +203,28 @@ void display_vchan_dispatcher_ring_dispatch(lagfx_display_vchan_dispatcher_t *d,
         
         switch (opcode) {
         case 0x01u:
-            lagfx_op_vchan_setup_shared_state(p, &parsed);
+            lagfx_display_vchan_setup_shared_state(p, &parsed);
             break;
         case 0x02u:
             saw_non_setup = true;
-            lagfx_op_vchan_display_submit(p, &parsed);
+            lagfx_display_vchan_display_submit(p, &parsed);
             break;
         case 0x04u:
-            lagfx_op_display_define_child_fifo(p, &parsed);
+            lagfx_display_define_child_fifo(p, &parsed);
             break;
         case 0x06u:
             saw_non_setup = true;
-            lagfx_op_vchan_present(p, &parsed);
+            lagfx_display_vchan_present(p, &parsed);
             break;
         case 0x07u:
             saw_non_setup = true;
-            lagfx_op_vchan_present_gamma(p, &parsed);
+            lagfx_display_vchan_present_gamma(p, &parsed);
             break;
         case 0x13u:
-            lagfx_op_display_cursor_show(p, &parsed);
+            lagfx_display_cursor_show(p, &parsed);
             break;
         case 0x14u:
-            lagfx_op_display_cursor_glyph(p, &parsed);
+            lagfx_display_cursor_glyph(p, &parsed);
             break;
         default:
             LAGFX_TRACE("DisplayVchanDispatcher(ch%u): unknown opcode 0x%04x", ch_id, opcode);

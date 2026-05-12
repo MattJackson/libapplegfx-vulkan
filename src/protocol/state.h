@@ -141,7 +141,7 @@ typedef struct {
     float    last_clear_rgba[4];
 
     /* Phase 3.A scaffold: last pipeline handle observed from a
-     * CmdExecIndirect2 inner-opcode BIND_PIPELINE entry addressed to
+     * KextCmdExecCmdbuf inner-opcode BIND_PIPELINE entry addressed to
      * this display. Cleared to 0 on reset. Not yet bound to a
      * VkShaderEXT — Phase 3.A.2 will translate this to
      * vkCmdBindShadersEXT against a VkCommandBuffer. */
@@ -238,7 +238,7 @@ struct lagfx_protocol {
     uint32_t device_info_actual_count;
 
     /* Extra stamp increments requested by the current handler.
-     * Set by lagfx_op_exec_indirect2 when it processes render
+     * Set by lagfx_op_exec_cmdbuf when it processes render
      * segments (encoder_type=2) that complete render passes.
      * The per-channel doorbell handler reads this after
      * dispatch_one_no_stamp and adds it to last_stamp before
@@ -246,9 +246,9 @@ struct lagfx_protocol {
      * doorbell handler before each dispatch. */
     uint32_t extra_stamp_advance;
 
-  /* Current task ID from CmdExecIndirect2 header — used by inner
+  /* Current task ID from KextCmdExecCmdbuf header — used by inner
       * opcode handlers when looking up resources in the registry.
-      * Set at the start of CmdExecIndirect2 processing and cleared
+      * Set at the start of KextCmdExecCmdbuf processing and cleared
       * on reset. For Stage 20% scaffold, we default to task_id=1
       * (root channel) since proper task tracking isn't wired yet. */
      uint32_t current_task_id;
@@ -425,7 +425,7 @@ void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p,
                                         uint32_t stamp);
 
 /* Internal: monotonic stamp-cell advance for per-channel dispatchers.
-  * Called by compute_dispatcher and display_vchan_dispatcher when
+  * Called by channel dispatchers when
   * draining rings. Never regresses (floor=1). */
 void lagfx_advance_stamp_cell(lagfx_protocol_t *p, uint32_t slot, uint32_t target);
 
@@ -448,7 +448,7 @@ int lagfx_protocol_dispatch_one_no_stamp(lagfx_protocol_t *p,
  * returns false. The caller can then choose to fall back to treating
  * the dev_addr as a literal GPA, or fail.
  *
- * Used by the CmdExecIndirect2 segment walker to read per-resource
+ * Used by the KextCmdExecCmdbuf segment walker to read per-resource
  * cmdBufs whose host_gpu_addr is a task-virtual address rather than a
  * literal GPA. */
 bool lagfx_task_translate(lagfx_protocol_t *p, uint32_t task_id,

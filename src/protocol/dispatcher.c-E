@@ -37,8 +37,8 @@ static int ch1_4_dispatch(lagfx_dispatcher_t *self,
                          const uint8_t *payload, size_t len);
 static void ch1_4_reset(lagfx_dispatcher_t *self);
 
-lagfx_compute_dispatcher_t *compute_dispatcher_new(void) {
-    lagfx_compute_dispatcher_t *d = calloc(1, sizeof(*d));
+lagfx_channel_1_to_4_dispatcher_t *channel_1_to_4_dispatcher_new(void) {
+    lagfx_channel_1_to_4_dispatcher_t *d = calloc(1, sizeof(*d));
     if (!d) {
         return NULL;
     }
@@ -58,7 +58,7 @@ lagfx_compute_dispatcher_t *compute_dispatcher_new(void) {
 
 static int ch1_4_dispatch(lagfx_dispatcher_t *self, 
                          const uint8_t *payload, size_t len) {
-    lagfx_compute_dispatcher_t *d = (lagfx_compute_dispatcher_t *)self;
+    lagfx_channel_1_to_4_dispatcher_t *d = (lagfx_channel_1_to_4_dispatcher_t *)self;
     
     if (!payload || len < 8) {
         LAGFX_WARN("ComputeDispatcher: payload too short (%zu)", len);
@@ -111,7 +111,7 @@ static int ch1_4_dispatch(lagfx_dispatcher_t *self,
 }
 
 static void ch1_4_reset(lagfx_dispatcher_t *self) {
-    lagfx_compute_dispatcher_t *d = (lagfx_compute_dispatcher_t *)self;
+    lagfx_channel_1_to_4_dispatcher_t *d = (lagfx_channel_1_to_4_dispatcher_t *)self;
     d->current_task_id = 0;
 }
 
@@ -121,8 +121,8 @@ static int display_vchan_dispatch(lagfx_dispatcher_t *self,
                                  const uint8_t *payload, size_t len);
 static void display_vchan_reset(lagfx_dispatcher_t *self);
 
-lagfx_display_vchan_dispatcher_t *display_vchan_dispatcher_new(void) {
-    lagfx_display_vchan_dispatcher_t *d = calloc(1, sizeof(*d));
+lagfx_channel_5_plus_dispatcher_t *channel_5_plus_dispatcher_new(void) {
+    lagfx_channel_5_plus_dispatcher_t *d = calloc(1, sizeof(*d));
     if (!d) {
         return NULL;
     }
@@ -143,7 +143,7 @@ lagfx_display_vchan_dispatcher_t *display_vchan_dispatcher_new(void) {
 
 static int display_vchan_dispatch(lagfx_dispatcher_t *self, 
                                  const uint8_t *payload, size_t len) {
-    lagfx_display_vchan_dispatcher_t *d = (lagfx_display_vchan_dispatcher_t *)self;
+    lagfx_channel_5_plus_dispatcher_t *d = (lagfx_channel_5_plus_dispatcher_t *)self;
     
     if (!payload || len < 4) {
         LAGFX_WARN("DisplayVchanDispatcher: payload too short (%zu)", len);
@@ -195,7 +195,7 @@ static int display_vchan_dispatch(lagfx_dispatcher_t *self,
 }
 
 static void display_vchan_reset(lagfx_dispatcher_t *self) {
-    lagfx_display_vchan_dispatcher_t *d = (lagfx_display_vchan_dispatcher_t *)self;
+    lagfx_channel_5_plus_dispatcher_t *d = (lagfx_channel_5_plus_dispatcher_t *)self;
     d->shared_state_pfn = 0;
     d->child_fifo_count = 0;
 }
@@ -250,7 +250,7 @@ static struct {
 
 void lagfx_dispatcher_init(void) {
     /* Initialize compute/render dispatcher (channels 1-4) */
-    lagfx_compute_dispatcher_t *compute_disp = compute_dispatcher_new();
+    lagfx_channel_1_to_4_dispatcher_t *compute_disp = channel_1_to_4_dispatcher_new();
     if (compute_disp) {
         for (int i = 1; i <= 4 && i < LAGFX_MAX_CHANNELS; i++) {
             g_channel_registry[i].ch_min = 1;
@@ -262,7 +262,7 @@ void lagfx_dispatcher_init(void) {
     }
     
     /* Initialize display vchan dispatcher (channels 5+) */
-    lagfx_display_vchan_dispatcher_t *display_disp = display_vchan_dispatcher_new();
+    lagfx_channel_5_plus_dispatcher_t *display_disp = channel_5_plus_dispatcher_new();
     if (display_disp) {
         for (int i = 5; i < LAGFX_MAX_CHANNELS; i++) {
             g_channel_registry[i].ch_min = 5;

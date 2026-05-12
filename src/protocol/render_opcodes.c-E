@@ -66,7 +66,7 @@
  *      see ops_cmdbuf.c for per-opcode implementation status.
  *
  * Render opcode handlers are called from ops_cmdbuf.c when the
- * guest emits KextCmdExecCmdbuf (opcode 0x20) on a sub-channel.
+ * guest emits CmdExecIndirect2 (opcode 0x20) on a sub-channel.
  * The PGDeserializerRenderDecoder dispatches inner opcodes 0x00..0xa6.
  * See paravirt-re/library/state-machines/render-decoder-handlers.tsv
  * for the authoritative opcode table with body sizes.
@@ -140,26 +140,26 @@ static int render_op_ack_stub(lagfx_protocol_t *p,
     return 0;
 }
 
-/* Recursive command buffer inner handler — re-enters render decoder
+/* Recursive CmdExecIndirect2Inner handler — re-enters render decoder
  * with inner command buffer from resource pointer. */
-static int lagfx_op_exec_cmdbuf_inner(lagfx_protocol_t *p,
+static int render_op_cmd_exec_indirect2_inner(lagfx_protocol_t *p,
                                                const uint8_t    *payload,
                                                size_t            len) {
     if (!p || !payload || len < 8u) {
-        LAGFX_WARN("command buffer inner: payload too short (len=%zu)", len);
+        LAGFX_WARN("CmdExecIndirect2Inner: payload too short (len=%zu)", len);
         return 0;
     }
 
     uint32_t resource_id = read_le32(payload + 0);
     uint32_t pad         = read_le32(payload + 4);
     
-    LAGFX_TRACE("command buffer inner: resource_id=%u pad=0x%08x", 
+    LAGFX_TRACE("CmdExecIndirect2Inner: resource_id=%u pad=0x%08x", 
                 resource_id, pad);
 
     /* For Stage 30%, defer recursive execution until proper VA→GPA translation.
      * macOS sends 20-byte payload with resource ID pointing to nested command buffer. */
     
-    LAGFX_TRACE("command buffer inner: absorbing (deferred recursion for resource %u)", 
+    LAGFX_TRACE("CmdExecIndirect2Inner: absorbing (deferred recursion for resource %u)", 
                 resource_id);
     
     return 0;
@@ -2827,7 +2827,7 @@ static const lagfx_render_op_descriptor_t g_render_op_table[] = {
     /* TODO: RE opcode 0x2c semantics — macOS sends repeatedly with len=88.
  * TSV shows "<default/throw>" suggesting error case or unimplemented cmd. */
     { 0x2c, "Unknown(0x2c)",                             88, 0, render_op_unknown_0x2c },
-    { 0x3c, "command buffer inner",                     20, 2, lagfx_op_exec_cmdbuf_inner },
+    { 0x3c, "CmdExecIndirect2Inner",                     20, 2, render_op_cmd_exec_indirect2_inner },
 
     /* --- State-set family (0x65-0xa6) --------------------------- */
     { 0x65, "SetBlendColor",                             16, 0, render_op_set_blend_color },

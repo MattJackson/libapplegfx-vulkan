@@ -96,8 +96,8 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
         
         /* Switch-case dispatch → direct handler calls (no opcode table lookup) */
         switch (opcode) {
-        case 0x20:  /* CmdExecCmdbuf - Metal command buffer execution */
-            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x20 (CmdExecCmdbuf) → lagfx_compute_exec_cmdbuf");
+        case 0x20:  /* CmdExecIndirect2 - Metal command buffer execution */
+            LAGFX_LOG("Channel0Dispatcher: routing opcode 0x20 (CmdExecIndirect2) → lagfx_compute_exec_indirect2");
             
             uint8_t *payload = malloc(length);
             if (!payload || length < 12u) {
@@ -122,7 +122,7 @@ void channel_0_dispatcher_ring_dispatch(lagfx_channel_0_dispatcher_t *d,
                         .arg_count_8b = 0,
                         .payload = payload + 12u
                     };
-                    lagfx_compute_exec_cmdbuf(p, &hdr);
+                    lagfx_compute_exec_indirect2(p, &hdr);
                 }
 
             free(payload);

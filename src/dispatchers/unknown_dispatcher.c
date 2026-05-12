@@ -13,7 +13,6 @@
 #include "../device.h"
 #include "../protocol/protocol.h"
 #include "../protocol/state.h"
-#include "../protocol/opcodes.h"
 #include "../common/log.h"
 
 #include <stdlib.h>
