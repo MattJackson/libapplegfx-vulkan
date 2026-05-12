@@ -895,8 +895,3 @@ void lagfx_protocol_stats(const lagfx_protocol_t *p,
     if (unknown_opcode_count_out) *unknown_opcode_count_out = p->unknown_opcode_count;
 }
 
-uint32_t lagfx_protocol_last_completed_stamp(const lagfx_protocol_t *p) {
-    return lagfx_protocol_is_valid(p) ? p->last_completed_stamp : 0u;
-}
-
-
