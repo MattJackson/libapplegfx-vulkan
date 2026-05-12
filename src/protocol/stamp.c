@@ -7,10 +7,8 @@
  */
 
 #include "state.h"
+#include "../device.h"  /* Full lagfx_device definition for shell callback access */
 #include "../common/log.h"
-
-/* Forward declaration for device type (defined in device.h) */
-struct lagfx_device;
 
 /* Monotonic stamp-cell advance — never regresses */
 void lagfx_advance_stamp_cell(lagfx_protocol_t *p, uint32_t slot, uint32_t target) {
@@ -20,7 +18,7 @@ void lagfx_advance_stamp_cell(lagfx_protocol_t *p, uint32_t slot, uint32_t targe
     uint64_t cell_addr = p->ring_base_gpa + (slot * 4);
     uint32_t cur = 0u;
     
-    struct lagfx_device *dev = (struct lagfx_device *)p->dev;
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
     if (dev && dev->desc.shell.read_memory) {
         if (!dev->desc.shell.read_memory(dev->desc.shell.opaque, cell_addr, 4, &cur)) {
             LAGFX_LOG("stamp_cell[%u]: read failed at 0x%llx, using cur=0", slot, (long long)cell_addr);
@@ -60,7 +58,7 @@ void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p, uint32_t slot, uint
     p->pending_stamps_bitmask |= (1u << slot);
 
     /* Raise interrupt if shell callback is available */
-    struct lagfx_device *dev = (struct lagfx_device *)p->dev;
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
     if (dev && dev->desc.shell.raise_interrupt) {
         dev->desc.shell.raise_interrupt(dev->desc.shell.opaque, 0u);
     }
