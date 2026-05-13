@@ -182,22 +182,42 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset, uint32_t value) {
     }
 }
 
-/* Minimal logging stubs for device.h macros */
+/* Global log file handle — opened lazily on first write */
+static FILE *lagfx_log_file = NULL;
+
+/* Internal logging function — single source of truth for all lagfx logging.
+ * Opens /tmp/lagfx.log once, flushes after every write to ensure real-time
+ * visibility in Docker logs. Falls back to stderr if file open fails. */
+static void lagfx_log_internal(const char *prefix, const char *fmt, va_list args) {
+    /* Lazy-open log file on first write */
+    if (!lagfx_log_file) {
+        lagfx_log_file = fopen("/tmp/lagfx.log", "a");
+        if (!lagfx_log_file) {
+            /* Fallback to stderr if we can't open file */
+            lagfx_log_file = stderr;
+        }
+    }
+    
+    va_list args_copy;
+    va_copy(args_copy, args);
+    fprintf(lagfx_log_file, "LAGFX [%s] ", prefix);
+    vfprintf(lagfx_log_file, fmt, args_copy);
+    fprintf(lagfx_log_file, "\n");
+    fflush(lagfx_log_file);  /* Ensure immediate flush for real-time visibility */
+    va_end(args_copy);
+}
+
 void lagfx_log_impl(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    fprintf(stderr, "LAGFX [device] ");
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, "\n");
+    lagfx_log_internal("device", fmt, args);
     va_end(args);
 }
 
 void lagfx_warn_impl(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    fprintf(stderr, "LAGFX [device WARN] ");
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, "\n");
+    lagfx_log_internal("WARN", fmt, args);
     va_end(args);
 }
 
