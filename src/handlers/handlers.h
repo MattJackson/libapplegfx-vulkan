@@ -34,7 +34,19 @@ static inline lagfx_handler_status_t lagfx_compute_exec_indirect2(lagfx_protocol
 /* === Sync Handlers (opcode 0x42) ================================ */
 lagfx_handler_status_t lagfx_sync_synchronize_resources(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
-/* === Display Handlers (opcode 0x10-0x1a) ======================== */
+/* === VChan Display Handlers (opcode 0x01, 0x02, 0x04, 0x06, 0x07) */
+lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_vchan_display_submit(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_define_child_fifo(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_vchan_present(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_vchan_present_gamma(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+
+/* === Legacy Display Handlers (opcode 0x10-0x1a) ================= */
 lagfx_handler_status_t lagfx_display_ack(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_display_swap_mapping(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 lagfx_handler_status_t lagfx_display_cursor_glyph(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);

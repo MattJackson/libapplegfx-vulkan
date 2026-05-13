@@ -35,6 +35,23 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
     LAGFX_TRACE("display dispatch: opcode=0x%04x stamp=0x%08x", hdr->opcode, hdr->stamp);
 
     switch (hdr->opcode) {
+        /* VChan display opcodes (compact namespace for ch 5+) */
+        case 0x01u:  // setupSharedState
+            lagfx_display_vchan_setup_shared_state(p, hdr);
+            break;
+        case 0x02u:  // displaySubmit
+            lagfx_display_vchan_display_submit(p, hdr);
+            break;
+        case 0x04u:  // CmdDefineChildFIFO
+            lagfx_display_define_child_fifo(p, hdr);
+            break;
+        case 0x06u:  // present
+            lagfx_display_vchan_present(p, hdr);
+            break;
+        case 0x07u:  // present+gamma
+            lagfx_display_vchan_present_gamma(p, hdr);
+            break;
+
         /* Display ack and state */
         case LAGFX_OP_DISPLAY_ACK:
             lagfx_display_ack(p, hdr);

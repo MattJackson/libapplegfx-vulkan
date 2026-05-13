@@ -121,3 +121,202 @@ lagfx_handler_status_t lagfx_display_cursor_show(lagfx_protocol_t *p, const lagf
     
     return LAGFX_HANDLER_OK;
 }
+
+/* ================================================================
+ * VChan Display Opcodes (0x01, 0x02, 0x04, 0x06, 0x07)
+ * Sent on display channels ch 5+ using compact opcode namespace
+ * ================================================================ */
+
+lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 8) {
+        LAGFX_WARN("vchan_setup_shared_state: payload too small (%u, need 8)", (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint32_t display_index = lagfx_le32(hdr->payload + 0);
+    uint32_t ss_pfn        = lagfx_le32(hdr->payload + 4);
+
+    LAGFX_LOG("vchan_setup_shared_state: display[%u] ss_pfn=0x%x stamp=0x%08x",
+              display_index, ss_pfn, hdr->stamp);
+
+    if (ss_pfn == 0u) {
+        LAGFX_WARN("vchan_setup_shared_state: ss_pfn=0 for display[%u]", display_index);
+        return LAGFX_HANDLER_ERR_STATE;
+    }
+
+    /* Store shared state GPA and mark as installed */
+    uint64_t ss_gpa = ((uint64_t)ss_pfn << 12);
+    if (display_index < 16 && p->dev != NULL) {
+        lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+        dev->display_ss_gpa[display_index] = ss_gpa;
+        dev->display_ss_installed |= (1u << display_index);
+        LAGFX_LOG("vchan_setup_shared_state: installed display[%u] at gpa=0x%llx",
+                  display_index, (unsigned long long)ss_gpa);
+    }
+
+    /* Write shared state page fields */
+    if (!p->dev || !((lagfx_device_t *)p->dev)->desc.shell.write_memory) {
+        return LAGFX_HANDLER_OK;
+    }
+
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    uint16_t port = (uint16_t)display_index;
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x12u, sizeof(port), &port);
+
+    uint32_t resp_code = 0u;
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x1cu, sizeof(resp_code), &resp_code);
+
+    uint32_t conn_id = 1u;
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x00u, sizeof(conn_id), &conn_id);
+
+    /* CRITICAL: Write online event flag IMMEDIATELY */
+    uint32_t enabled = 0xCu;
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x104u, sizeof(enabled), &enabled);
+    LAGFX_LOG("vchan_setup_shared_state: wrote ss[+0x104]=0xC (online event) for display[%u]", display_index);
+
+    /* Write mode info */
+    static const char mode_name[] = "1920x1080";
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x04u, sizeof(mode_name), mode_name);
+
+    uint16_t width  = 1920u;
+    uint16_t height = 1080u;
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x14u, sizeof(width), &width);
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x16u, sizeof(height), &height);
+
+    uint16_t cursor_max = 64u;
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x18u, sizeof(cursor_max), &cursor_max);
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x1au, sizeof(cursor_max), &cursor_max);
+
+    uint32_t fb_len = 1920u * 1080u * 4u;
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x20u, sizeof(fb_len), &fb_len);
+
+    /* Set pending online bit (ss[+0x100]=0x4) */
+    uint32_t pending = 0x4u;
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x100u, sizeof(pending), &pending);
+
+    return LAGFX_HANDLER_OK;
+}
+
+lagfx_handler_status_t lagfx_display_vchan_display_submit(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    
+    uint32_t display_index = 0u;
+    uint32_t arg2          = 0u;
+    if (hdr->payload && hdr->payload_size >= 8u) {
+        display_index = lagfx_le32(hdr->payload + 0);
+        arg2          = lagfx_le32(hdr->payload + 4);
+    }
+
+    LAGFX_LOG("vchan_display_submit: display[%u] arg2=0x%08x stamp=0x%08x",
+              display_index, arg2, hdr->stamp);
+
+    /* Probe framebuffer to verify guest rendered content */
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    if (arg2 != 0u && dev && dev->desc.shell.read_memory && display_index < 8u) {
+        static unsigned probe_count;
+        probe_count++;
+        if (probe_count <= 4 || probe_count % 100 == 0) {
+            uint64_t fb_base = (uint64_t)arg2 << 12;
+            uint8_t probe[16] = {0};
+            bool ok = dev->desc.shell.read_memory(
+                dev->desc.shell.opaque, fb_base + 0x400u, 16, probe);
+            uint32_t sum = 0;
+            for (int i = 0; i < 16; ++i) {
+                sum += probe[i];
+            }
+            LAGFX_LOG("vchan_display_submit: fb probe @0x%llx+0x400 ok=%d sum=%u bytes=%02x%02x...",
+                      (unsigned long long)fb_base, ok, sum, probe[0], probe[1]);
+        }
+    }
+
+    return LAGFX_HANDLER_OK;
+}
+
+lagfx_handler_status_t lagfx_display_define_child_fifo(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 44u) {
+        LAGFX_WARN("vchan CmdDefineChildFIFO: payload too small (%u, need 44)", (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint64_t ring_base = lagfx_le64(hdr->payload + 8);
+    uint64_t ring_size = lagfx_le64(hdr->payload + 16);
+    uint32_t entry_count = lagfx_le32(hdr->payload + 24);
+
+    LAGFX_LOG("vchan CmdDefineChildFIFO: display[%u] ring_base=0x%llx size=0x%x entries=%u stamp=0x%08x",
+              p->current_chan_id - 5, (unsigned long long)ring_base, (uint32_t)ring_size, entry_count, hdr->stamp);
+
+    /* TODO: Store child FIFO geometry for sub-channel command delivery */
+    
+    return LAGFX_HANDLER_OK;
+}
+
+lagfx_handler_status_t lagfx_display_vchan_present(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 12u) {
+        LAGFX_WARN("vchan_present: payload too small (%u, need 12)", (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint32_t display_index = lagfx_le32(hdr->payload + 0);
+    uint32_t surface_id    = lagfx_le32(hdr->payload + 4);
+    uint32_t plane_id      = lagfx_le32(hdr->payload + 8);
+
+    LAGFX_LOG("vchan_present: display[%u] surface=0x%x plane=%u stamp=0x%08x",
+              display_index, surface_id, plane_id, hdr->stamp);
+
+    /* TODO: Call lagfx_vk_display_present_surface() for Vulkan scanout */
+    
+    return LAGFX_HANDLER_OK;
+}
+
+lagfx_handler_status_t lagfx_display_vchan_present_gamma(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
+    
+    if (!p || !hdr) {
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+    if (!hdr->payload || hdr->payload_size < 36u) {
+        LAGFX_WARN("vchan_present_gamma: payload too small (%u, need 36)", (unsigned)hdr->payload_size);
+        return LAGFX_HANDLER_ERR_SIZE;
+    }
+
+    uint32_t display_index = lagfx_le32(hdr->payload + 0);
+    uint32_t plane_id      = lagfx_le32(hdr->payload + 4);
+    uint32_t surface_id    = lagfx_le32(hdr->payload + 8);
+
+    LAGFX_LOG("vchan_present_gamma: display[%u] surface=0x%x gamma_len=%u stamp=0x%08x",
+              display_index, surface_id, lagfx_le32(hdr->payload + 20), hdr->stamp);
+
+    /* TODO: Upload gamma table and call lagfx_vk_display_present_surface() */
+    
+    return LAGFX_HANDLER_OK;
+}

@@ -3,7 +3,7 @@
 # Copyright © 2026 Matthew Jackson
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-lagfx_sources += files(
+  lagfx_sources += files(
   'primary_ring_door_dispatcher.h',
   'primary_ring_door_dispatcher.c',   # BAR0+0x1008 → primary ring drain
   'channel_door_dispatcher.h',
@@ -13,5 +13,7 @@ lagfx_sources += files(
   'channel_compute_dispatcher.h',
   'channel_compute_dispatcher.c',     # Compute channels (ch 1-4) sub-dispatcher
   'channel_display_dispatcher.h',
-  'channel_display_dispatcher.c',     # Display channels (ch 5+) sub-dispatcher
+  'channel_display_dispatcher.c',     # Display channels (ch 5+) sub-dispatcher — routes vchan opcodes 0x01-0x07
 )
+
+# channel_5_plus_dispatcher.c removed: references old protocol state fields not present in new architecture

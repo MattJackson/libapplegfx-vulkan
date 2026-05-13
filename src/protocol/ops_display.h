@@ -147,4 +147,16 @@ lagfx_handler_status_t lagfx_op_display_compositor_params(
 lagfx_handler_status_t lagfx_op_display_set_icc_profile(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
 
+/* VChan display opcode handlers (compact namespace for ch 5+) */
+lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_vchan_display_submit(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_define_child_fifo(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_vchan_present(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+lagfx_handler_status_t lagfx_display_vchan_present_gamma(
+    lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr);
+
 #endif /* LIBAPPLEGFX_PROTOCOL_OPS_DISPLAY_H */

@@ -9,8 +9,7 @@ lagfx_sources += files(
   'stamp.c',        # advance_stamp_cell, complete_stamp_slot
   'resource_registry.c',  # resource mapping table (CmdMapMemory2, etc.)
   'ops_misc.c',     # NOP, Debug, GetDeviceInfo handlers
+  # ops_display.c removed: uses old protocol state layout (lagfx_display_entry_t renamed to lagfx_display_mode_t)
+  # Legacy handlers moved to src/handlers/display/display.c for vchan opcodes (0x01-0x07)
   'test_api.c',     # Test API exports: dispatch_one, mmio_read/write
 )
-
-# ops_display.c uses old protocol state layout; removed during handler refactor
-# TODO: update to use new protocol architecture before re-enabling
