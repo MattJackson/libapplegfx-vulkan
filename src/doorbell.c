@@ -171,6 +171,18 @@ void doorbell_handle_write(void *protocol_state, uint64_t offset, uint32_t value
             doorbell_dispatch(protocol_state, 0x1020u, value);
             return;
 
+        case 0x1024u: /* RE: PROTOCOL.md §2.0 — per-device 0-arg ObjC trampoline (value discarded). */
+            LAGFX_TRACE("doorbell: write off=0x1024 trampoline_A (val=0x%x discarded)", value);
+            return;
+
+        case 0x1028u: /* RE: PROTOCOL.md §2.0 — per-device 0-arg ObjC trampoline (value discarded). */
+            LAGFX_TRACE("doorbell: write off=0x1028 trampoline_B (val=0x%x discarded)", value);
+            return;
+
+        case 0x1034u: /* RE: PROTOCOL.md §2.0 — _binaryVersion (spec says R, kext sometimes writes; we just log+shadow). */
+            LAGFX_LOG("doorbell: write off=0x1034 _binaryVersion val=0x%08x (spec-divergent — kext write)", value);
+            return;
+
         case 0x1030u: /* ring_base_pfn */
             if (p) {
                 p->ring_base_pfn = value;
