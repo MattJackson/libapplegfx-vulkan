@@ -709,6 +709,12 @@ static void test_doorbell_ch1_cmd_len_exceeds_bounce_buffer(void) {
 /* === main ============================================================ */
 
 int main(void) {
+#ifndef __linux__
+    fprintf(stderr, "doorbell drain requires Linux (Vulkan lavapipe); skipping on %s\n", 
+            sizeof(__APPLE__) ? "macOS" : "unknown");
+    return 77;
+#endif
+
     fprintf(stdout, "tests/m4-doorbell-drain: starting\n");
 
     test_doorbell_ch1_walks_ring_one_cmd();

@@ -275,6 +275,12 @@ static bool replay_file(lagfx_protocol_t *p, const char *path,
 /* === Test entry ============================================= */
 
 int main(int argc, char **argv) {
+#ifndef __linux__
+    fprintf(stderr, "trace replay requires Linux (Vulkan lavapipe); skipping on %s\n", 
+            sizeof(__APPLE__) ? "macOS" : "unknown");
+    return 77;
+#endif
+
     const char *trace_path = NULL;
     if (argc >= 2) {
         trace_path = argv[1];

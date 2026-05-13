@@ -136,6 +136,12 @@ static int test_thread_count_one(void) {
 }
 
 int main(void) {
+#ifndef __linux__
+    fprintf(stderr, "gpu cores requires Linux (Vulkan lavapipe); skipping on %s\n", 
+            sizeof(__APPLE__) ? "macOS" : "unknown");
+    return 77;
+#endif
+
     fprintf(stdout, "=== libapplegfx-vulkan gpu_cores plumbing ===\n");
     fprintf(stdout, "build: %s\n", lagfx_build_info());
 

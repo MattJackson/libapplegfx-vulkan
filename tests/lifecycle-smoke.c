@@ -58,6 +58,12 @@ static void cb_cursor_moved(void *o) { (void)o; }
 static void cb_cursor_show(void *o, bool s) { (void)o; (void)s; }
 
 int main(void) {
+#ifndef __linux__
+    fprintf(stderr, "lifecycle smoke requires Linux (Vulkan lavapipe); skipping on %s\n", 
+            sizeof(__APPLE__) ? "macOS" : "unknown");
+    return 77;
+#endif
+
     fprintf(stdout, "=== libapplegfx-vulkan lifecycle smoke ===\n");
     fprintf(stdout, "build: %s\n", lagfx_build_info());
     fprintf(stdout, "version: %d.%d.%d\n",

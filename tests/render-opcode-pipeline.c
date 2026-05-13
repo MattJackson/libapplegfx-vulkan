@@ -298,6 +298,12 @@ static void test_pipeline_invalid_payload(void) {
 /* === main ============================================================ */
 
 int main(void) {
+#ifndef __linux__
+    fprintf(stderr, "render opcode pipeline requires Linux (Vulkan lavapipe); skipping on %s\n", 
+            sizeof(__APPLE__) ? "macOS" : "unknown");
+    return 77;
+#endif
+
     fprintf(stdout, "tests/m4-render-opcode-pipeline: starting\n");
 
     /* CmdSetPipelineState tests. */

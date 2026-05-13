@@ -391,6 +391,12 @@ static void test_reset_clears_resources(void) {
 /* === main ================================================== */
 
 int main(void) {
+#ifndef __linux__
+    fprintf(stderr, "resource registry requires Linux (Vulkan lavapipe); skipping on %s\n", 
+            sizeof(__APPLE__) ? "macOS" : "unknown");
+    return 77;
+#endif
+
     test_register_lookup();
     test_register_update();
     test_unregister();

@@ -385,6 +385,12 @@ static void test_complete_stamp_wrapper_routes_to_slot0(void) {
 /* === main ============================================================ */
 
 int main(void) {
+#ifndef __linux__
+    fprintf(stderr, "stamp helpers require Linux (Vulkan lavapipe); skipping on %s\n", 
+            sizeof(__APPLE__) ? "macOS" : "unknown");
+    return 77;
+#endif
+
     fprintf(stdout, "tests/m3-stamp-helpers: starting\n");
 
     test_advance_cur0_target5();
