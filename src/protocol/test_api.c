@@ -64,16 +64,19 @@ static int lagfx_test_dispatch_opcode(lagfx_protocol_t *p,
             return 0;
 
         case LAGFX_OP_MAP_MEMORY_IMMEDIATE:
-            /* Minimal MapMemoryImmediate registration for tests */
+            /* Minimal MapMemoryImmediate registration for tests.
+             * Wire format: trailer at END of payload (last 20 bytes). */
             if (p && p->magic == LAGFX_PROTOCOL_MAGIC) {
                 uint32_t task_id = 0;
                 uint64_t gpu_addr = 0;
                 uint64_t size = 0;
 
-                if (hdr->payload_size >= 12) {
-                    task_id = *(uint32_t*)(hdr->payload + 0);
-                    gpu_addr = *(uint64_t*)(hdr->payload + 4);
-                    size = *(uint64_t*)(hdr->payload + 12);
+                if (hdr->payload_size >= 20) {
+                    /* Trailer is at end of payload */
+                    size_t off = hdr->payload_size - 20u;
+                    task_id = *(uint32_t*)(hdr->payload + off + 0);
+                    gpu_addr = *(uint64_t*)(hdr->payload + off + 4);
+                    size = *(uint64_t*)(hdr->payload + off + 12);
                 }
 
                 lagfx_resource_entry_t *e = lagfx_resource_lookup(&p->resources, 0, task_id);

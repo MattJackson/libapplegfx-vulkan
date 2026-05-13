@@ -169,6 +169,8 @@ static void arm_ring(lagfx_device_t *dev, m3_shell_t *shell,
                      uint32_t ring_pfn) {
     shell->ring_base_pfn = ring_pfn;  /* Set before MMIO so callbacks can find the page */
     shell->writes_return_value = 1;
+    /* Zero out ring_start_offset first (default might be non-zero). */
+    lagfx_mmio_write(dev, 0x1010u, 0u);
     /* MMIO write 0x1030 -> ring_base_pfn (and ring_base_gpa). */
     lagfx_mmio_write(dev, 0x1030u, ring_pfn);
 }

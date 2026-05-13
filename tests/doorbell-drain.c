@@ -195,7 +195,7 @@ static void arm_doorbell_state(lagfx_device_t *dev,
     /* 0x1030 -> ring_base_pfn (so stamp_cell writes have a base too). */
     lagfx_mmio_write(dev, 0x1030u, ring_base_pfn);
     /* 0x1010 -> ring_start_offset = 0x1000 (default). */
-    lagfx_mmio_write(dev, 0x1010u, 0x1000u);
+    lagfx_mmio_write(dev, 0x1010u, 0u); /* Zero ring_start_offset */
 }
 
 /* === Item 9 tests ===================================================== */
