@@ -118,18 +118,20 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
          * AppleParavirtGPUControl never publishes into ioreg. */
 
         case LAGFX_OP_DEFINE_CHILD_CHANNEL: {
-            /* CmdDefineChildChannel (0x30) — kext-side analogue of
-             * 0x04 CmdDefineChildFIFO with a much larger payload
-             * (0x400 bytes observed). Per pre-refactor ops_queue.c
-             * + the routing comment in opcodes.c §M2+ table, the
-             * child_id sits at +4 (NOT +0). Ring geometry comes
+            /* CmdDefineChildChannel (0x30) — kext-side child-FIFO
+             * registration. Live wire shows 4-byte payload (bare
+             * u32 child_id at +0), same shape as 0x04
+             * CmdDefineChildFIFO. The pre-refactor opcodes.c
+             * comment claimed "0x400-byte payload, child_id at +4"
+             * was based on a stale observation; current macOS
+             * 15.7.5 emits the compact form. Ring geometry comes
              * from MMIO setters, not the payload. */
-            if (!hdr->payload || hdr->payload_size < 8u) {
+            if (!hdr->payload || hdr->payload_size < 4u) {
                 LAGFX_WARN("CmdDefineChildChannel: payload too small (%u)",
                            (unsigned)hdr->payload_size);
                 break;
             }
-            uint32_t child_id = ch0_read_le32(hdr->payload + 4);
+            uint32_t child_id = ch0_read_le32(hdr->payload + 0);
             lagfx_fifo_entry_t *entry = lagfx_protocol_find_fifo(p, child_id);
             if (entry) {
                 LAGFX_LOG("CmdDefineChildChannel: child_id=%u (re-using slot) stamp=0x%08x",

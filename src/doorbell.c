@@ -185,6 +185,43 @@ void doorbell_handle_write(void *protocol_state, uint64_t offset, uint32_t value
                       p ? p->ring_size : 0u);
             return;
 
+        /* === Secondary capability bank (PROTOCOL.md §2.1) =====
+         * The kext writes to these as part of EFI mode publish /
+         * capability negotiation. Shadow store (already done above)
+         * is the entire side effect — read-back returns the shadow.
+         * Documented offsets get explicit cases per
+         * reference_lagfx_mmio_handler.md rule 1; do not let them
+         * fall to default-warn even when the body is just a log
+         * line.
+         */
+        case 0x1200u: /* RE: PROTOCOL.md §2.1 — _efi boot-state */
+            LAGFX_LOG("sec_cap: 0x1200 efi_boot_state val=0x%08x", value);
+            return;
+
+        case 0x1210u: /* RE: PROTOCOL.md §2.1 — queue-control capability */
+            LAGFX_LOG("sec_cap: 0x1210 queue_control val=0x%08x", value);
+            return;
+
+        case 0x1214u: /* RE: PROTOCOL.md §2.1 — capability bits */
+            LAGFX_LOG("sec_cap: 0x1214 capability_bits val=0x%08x", value);
+            return;
+
+        case 0x1218u: /* RE: PROTOCOL.md §2.1 / 2.2 — setEFIFramebufferMode mode_class */
+            LAGFX_LOG("sec_cap: 0x1218 setEFIFramebufferMode mode_class=0x%08x", value);
+            return;
+
+        case 0x121cu: { /* RE: PROTOCOL.md §2.1 / 2.2 — setEFIModeSelect (H<<16)|W */
+            uint32_t height = value >> 16;
+            uint32_t width  = value & 0xFFFFu;
+            LAGFX_LOG("sec_cap: 0x121c setEFIModeSelect %ux%u (raw=0x%08x)",
+                      width, height, value);
+            return;
+        }
+
+        case 0x1228u: /* RE: PROTOCOL.md §2.1 — capability bits (u32 at +0x5a0) */
+            LAGFX_LOG("sec_cap: 0x1228 capability_bits_2 val=0x%08x", value);
+            return;
+
         default:
             LAGFX_WARN("doorbell: unhandled MMIO write offset=0x%llx value=0x%08x",
                        (unsigned long long)offset, value);
