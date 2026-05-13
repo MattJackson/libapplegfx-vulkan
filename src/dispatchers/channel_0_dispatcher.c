@@ -201,6 +201,87 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
             break;
         }
 
+        /* === Core opcodes carried by the pre-refactor opcodes.c
+         *     table but never observed on the live wire today. Logged
+         *     + acked so a future RE pass sees them in /tmp/lagfx.log
+         *     rather than via the "unknown opcode" channel. */
+
+        case LAGFX_OP_DEFINE_CHILD_FIFO:     /* 0x04 — superseded by ch-side 0x30 */
+            LAGFX_LOG("ch0: 0x04 CmdDefineChildFIFO stamp=0x%08x payload=%u (dylib-side; log-ack)",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DELETE_CHILD_FIFO:     /* 0x05 */
+            LAGFX_LOG("ch0: 0x05 CmdDeleteChildFIFO stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_INVALIDATE_RESOURCES:  /* 0x06 */
+            LAGFX_LOG("ch0: 0x06 CmdInvalidateResources stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DISCARD_RESOURCES:     /* 0x07 */
+            LAGFX_LOG("ch0: 0x07 CmdDiscardResources stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DELETE_RESOURCE:       /* 0x08 */
+            LAGFX_LOG("ch0: 0x08 CmdDeleteResource stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_REPLACE_PHYSICAL:      /* 0x09 */
+            LAGFX_LOG("ch0: 0x09 CmdReplacePhysical stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_GET_COMPUTE_INFO:      /* 0x0b */
+            LAGFX_LOG("ch0: 0x0b CmdGetComputeInfo stamp=0x%08x payload=%u "
+                      "(TODO: Stage 30 reply table)",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DELAY:                 /* 0x0c */
+            LAGFX_LOG("ch0: 0x0c CmdDelay stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_EXEC_INDIRECT3:        /* 0x21 — newer variant of 0x20 */
+            LAGFX_LOG("ch0: 0x21 CmdExecIndirect3 stamp=0x%08x payload=%u "
+                      "(TODO: Stage 30 dispatch via compute_exec)",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_SYNCHRONIZE_RESOURCES: /* 0x42 */
+            LAGFX_LOG("ch0: 0x42 CmdSynchronizeResources stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_SYNCHRONIZE_DISCARD:   /* 0x23 */
+            LAGFX_LOG("ch0: 0x23 CmdSynchronizeDiscard stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_HEAP_TEX_SIZE_ALIGN:   /* 0x80 */
+            LAGFX_LOG("ch0: 0x80 CmdHeapTexSizeAndAlign stamp=0x%08x payload=%u "
+                      "(TODO: Stage 30 reply via info_replies analogue)",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_RESET_RASTERIZATION_RATE: /* 0x81 */
+            LAGFX_LOG("ch0: 0x81 CmdResetRasterizationRate stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DELETE_SHARED_TEX_BACK:  /* 0x82 */
+            LAGFX_LOG("ch0: 0x82 CmdDeleteSharedTextureBacking stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_FREE_VIRTUAL_CHANNEL:  /* 0x31 — pairs 0x30 */
+            LAGFX_LOG("ch0: 0x31 CmdFreeVirtualChannel stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_NEW_USER_CLIENT:       /* 0x3b */
+            LAGFX_LOG("ch0: 0x3b CmdNewUserClient stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_UNKNOWN_3C:            /* 0x3c — outer variant (RE pending) */
+            LAGFX_LOG("ch0: 0x3c CmdUnknown3C stamp=0x%08x payload=%u (RE pending)",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_EXEC_INDIRECT_EXT_41:  /* 0x41 */
+            LAGFX_LOG("ch0: 0x41 CmdExecIndirectExt41 stamp=0x%08x payload=%u",
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+
         case LAGFX_OP_DEFINE_HOST_TASK: {
             /* CmdDefineHostTask (0x38) — pre-refactor ops_device.c
              * lagfx_op_define_host_task. 16-byte payload:

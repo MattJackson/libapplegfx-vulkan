@@ -91,6 +91,19 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
         case LAGFX_OP_DISPLAY_ACK:           /* 0x10 */
             lagfx_display_ack(p, hdr);
             break;
+        case LAGFX_OP_DISPLAY_SET_PROPERTIES: /* 0x11 */
+            /* RE: command-buffer-format.md §3.5 — display mode commit
+             * (resolution / refresh / colour space). Pre-refactor
+             * lagfx_op_display_set_properties at b652199~1:src/protocol/
+             * ops_display.c (deleted in commit 4b46de9 because the
+             * dispatcher refactor moved the responsibility, but the
+             * post-refactor display handler doesn't implement it).
+             * Log + ack until macOS observed to fire it. */
+            LAGFX_LOG("display: 0x11 CmdDisplaySetProperties ch=%u stamp=0x%08x payload=%u "
+                      "(M6 log-ack stub; TODO: Stage 30 mode commit)",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
         case LAGFX_OP_DISPLAY_SWAP_MAPPING:  /* 0x12 */
             lagfx_display_swap_mapping(p, hdr);
             break;
@@ -99,6 +112,72 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
             break;
         case LAGFX_OP_DISPLAY_CURSOR_GLYPH:  /* 0x14 */
             lagfx_display_cursor_glyph(p, hdr);
+            break;
+        case LAGFX_OP_DISPLAY_TRANSACTION2_DEP: /* 0x15 */
+            /* RE: pre-refactor lagfx_op_display_transaction2_dep (deprecated
+             * variant of 0x16; same dispatch). Log + ack. */
+            LAGFX_LOG("display: 0x15 CmdDisplayTransaction2 (dep) ch=%u stamp=0x%08x payload=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DISPLAY_TRANSACTION3:  /* 0x16 */
+            /* RE: command-buffer-format.md §3.10 — surface attach for
+             * present. Pre-refactor lagfx_op_display_transaction3 had
+             * a 12 + 32*N (legacy) or 16 + 44*N (layered) shape parser
+             * that fed compositor state; the post-refactor present
+             * path lives in src/handlers/display/display.c (vchan
+             * opcode 0x06). When SkyLight starts driving the §3
+             * compositor path this needs reinstatement. */
+            LAGFX_LOG("display: 0x16 CmdDisplayTransaction3 ch=%u stamp=0x%08x payload=%u "
+                      "(log-ack; TODO: Stage 30 compositor reinstatement)",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DISPLAY_SET_SHARED_PAGE: /* 0x17 */
+            /* RE: command-buffer-format.md §3.6 — install the vblank
+             * mailbox page. Pre-refactor parsed `u64 page_va` at +0
+             * and zeroed the first 64 bytes via shell.write_memory.
+             * The vchan-compact opcode 0x01 (setupSharedState) covers
+             * the same operation on the live display vchans, so this
+             * §3 variant is currently unused. */
+            LAGFX_LOG("display: 0x17 CmdDisplaySetSharedPage ch=%u stamp=0x%08x payload=%u "
+                      "(log-ack; superseded by vchan 0x01)",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DISPLAY_SLEEP_STATE:   /* 0x18 */
+            /* RE: command-buffer-format.md §3.11 — display sleep / wake.
+             * Pre-refactor was log-only. */
+            LAGFX_LOG("display: 0x18 CmdDisplaySleepState ch=%u stamp=0x%08x payload=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DISPLAY_COMPOSITOR_PARAMS: /* 0x19 */
+            /* RE: §14.10 cosmetic — gamma / blend curve. Pre-refactor
+             * captured payload + display_id into p->compositor_params
+             * for diagnostics; post-refactor state.h doesn't carry
+             * that struct. Log + ack. */
+            LAGFX_LOG("display: 0x19 CmdDisplayCompositorParameters ch=%u stamp=0x%08x payload=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DISPLAY_SET_ICC_PROFILE: /* 0x1a */
+            /* RE: §14.11 cosmetic — ICC profile install. Pre-refactor
+             * captured display_id / profile_va / profile_size into
+             * p->icc_profile; not reachable from post-refactor state.h.
+             * Log + ack. NOTE: shares the value 0x1a with the Render
+             * inner opcode RenderDescribeRenderPass, but the wire
+             * paths are disjoint — this is the outer-FIFO §3 opcode. */
+            LAGFX_LOG("display: 0x1a CmdDisplaySetICCProfile ch=%u stamp=0x%08x payload=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_DISPLAY_EXT_1E:        /* 0x1e */
+            /* RE: §13.5 display-adjacent extended (kext-only). Pre-
+             * refactor was log-only — semantics never confirmed. */
+            LAGFX_LOG("display: 0x1e CmdDisplayExt1E ch=%u stamp=0x%08x payload=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
             break;
 
         default:
