@@ -29,6 +29,7 @@
 #include "protocol/opcodes.h"
 #include "protocol/state.h"
 #include "handlers/handlers.h"
+#include "handlers/iosurface/iosurface.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -105,6 +106,28 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
          * exec handler — reuse it. */
         case LAGFX_OP_EXEC_INDIRECT2:  /* 0x20 */
             lagfx_compute_exec_indirect2(p, hdr);
+            break;
+
+        /* === IOSurface family (0x26-0x2a) ============================
+         * RE: PROTOCOL.md §14.5; pre-refactor src/protocol/ops_iosurface.c
+         * at b652199~1. The kext / dylib emit these on the root channel
+         * for IOSurface lifecycle. Real backing-VkImage allocation is
+         * Stage 30 work; for now we maintain the resource_registry
+         * mapping so cross-task lookup / import / unmap stay coherent. */
+        case LAGFX_OP_DELETE_IOSURFACE_BACKING:   /* 0x26 */
+            lagfx_iosurface_delete_backing2(p, hdr);
+            break;
+        case LAGFX_OP_IOSURFACE_CREATE:           /* 0x27 */
+            lagfx_iosurface_create_backing2(p, hdr);
+            break;
+        case LAGFX_OP_IOSURFACE_LOOKUP:           /* 0x28 */
+            lagfx_iosurface_lookup(p, hdr);
+            break;
+        case LAGFX_OP_IOSURFACE_UPDATE:           /* 0x29 — CmdImportIOSurfaceMachPort */
+            lagfx_iosurface_import_mach_port(p, hdr);
+            break;
+        case LAGFX_OP_IOSURFACE_UNMAP:            /* 0x2a */
+            lagfx_iosurface_unmap(p, hdr);
             break;
 
         /* === Kext extended opcodes (0x30..0x3a) =====================

@@ -29,6 +29,7 @@
 #include "protocol/opcodes.h"
 #include "protocol/state.h"
 #include "handlers/handlers.h"
+#include "handlers/iosurface/iosurface.h"
 
 #include <stddef.h>
 
@@ -104,9 +105,10 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                       (unsigned)hdr->payload_size);
             break;
         case LAGFX_OP_IOSURFACE_LOOKUP:       /* 0x28 */
-            LAGFX_LOG("compute: 0x28 CmdIOSurfaceLookup ch=%u stamp=0x%08x payload_size=%u",
-                      (unsigned)p->current_chan_id, hdr->stamp,
-                      (unsigned)hdr->payload_size);
+            /* Live evidence shows 0x28 on compute channels too — route
+             * to the real lookup handler so resource_registry stays
+             * in sync with the cross-task IOSurface lifecycle. */
+            lagfx_iosurface_lookup(p, hdr);
             break;
         case LAGFX_OP_CHANNEL_EVENT_34:       /* 0x34 */
         case LAGFX_OP_CHANNEL_EVENT_35:       /* 0x35 */

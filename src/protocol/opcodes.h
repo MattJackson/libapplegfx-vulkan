@@ -84,7 +84,8 @@ typedef enum {
     /* --- IOSurface family (0x27-0x29) ---------------------- */
     LAGFX_OP_IOSURFACE_CREATE         = 0x27,
     LAGFX_OP_IOSURFACE_LOOKUP         = 0x28,
-    LAGFX_OP_IOSURFACE_UPDATE         = 0x29,
+    LAGFX_OP_IOSURFACE_UPDATE         = 0x29, /* alias: CmdImportIOSurfaceMachPort */
+    LAGFX_OP_IOSURFACE_UNMAP          = 0x2a,
 
     /* --- M2+ extended range (0x30-0x41) -------------------------
      * Kext-only opcodes (never emitted by the dylib). Observed via
