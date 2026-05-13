@@ -27,6 +27,7 @@ lagfx_protocol_t *lagfx_protocol_new(struct lagfx_device *dev);
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <unistd.h>
 
 /* MSIX range (4 KB) — shell owns it; we never see writes below this. */
 #define LAGFX_MSIX_RANGE_END 0x1000u
@@ -67,7 +68,25 @@ static void lagfx_log_internal(const char *prefix, const char *fmt, va_list args
             lagfx_log_file = stderr;
         }
     }
-    
+
+    /* Self-test startup banner — emitted exactly once, before the
+     * triggering log line. Bypasses level gates by design: this is a
+     * sanity check that every channel is wired, not gated content. If
+     * a level goes missing after a config change, the banner at the
+     * top of the file makes the regression obvious. */
+    static int banner_emitted = 0;
+    if (!banner_emitted) {
+        banner_emitted = 1;
+        fprintf(lagfx_log_file,
+                "LAGFX [INIT ] pid=%d level=%s build=%s — /tmp/lagfx.log opened\n"
+                "LAGFX [ERROR] startup-banner channel test\n"
+                "LAGFX [WARN ] startup-banner channel test\n"
+                "LAGFX [INFO ] startup-banner channel test\n"
+                "LAGFX [trace] startup-banner channel test (silent unless LAGFX_LOG_LEVEL=trace)\n",
+                (int)getpid(), lagfx_level_name(), __DATE__ " " __TIME__);
+        fflush(lagfx_log_file);
+    }
+
     va_list args_copy;
     va_copy(args_copy, args);
     fprintf(lagfx_log_file, "LAGFX [%s] ", prefix);

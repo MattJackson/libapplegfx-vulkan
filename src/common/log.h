@@ -50,6 +50,14 @@ static inline int lagfx_log_level(void) {
     return cached;
 }
 
+static inline const char *lagfx_level_name(void) {
+    switch (lagfx_log_level()) {
+        case LAGFX_LOG_LVL_TRACE: return "trace";
+        case LAGFX_LOG_LVL_INFO:  return "info";
+        default:                  return "warn";
+    }
+}
+
 /* Implementations live in device.c; they route through lagfx_log_internal
  * which writes to /tmp/lagfx.log (with stderr fallback) and flushes after
  * every line. Macros call these so logs survive when QEMU runs as a
