@@ -1,12 +1,28 @@
 /*
- * libapplegfx-vulkan — Doorbell routing (BAR0 write listener)
+ * libapplegfx-vulkan — Doorbell routing (BAR0 write/read entry point)
  * src/doorbell.h
  *
  * Copyright © 2026 Matthew Jackson
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * Listens to BAR offset writes and routes them to appropriate door dispatchers.
- * This is the SINGLE entry point for all MMIO doorbell traffic.
+ * Listens to BAR offset writes and routes them to appropriate door
+ * dispatchers. This module owns the SINGLE entry point for all MMIO
+ * doorbell traffic — both the actual ring/channel doorbells AND the
+ * surrounding state-register writes (STATUS_CONTROL, ring geometry,
+ * shared-page PFN, etc.). Any handling outside doorbell_handle_write /
+ * doorbell_handle_read is by definition wrong and should be moved in.
+ *
+ * The architecture is:
+ *
+ *   QEMU BAR0 write/read  →  lagfx_mmio_write/read (thin shim in device.c)
+ *                         →  doorbell_handle_write / doorbell_handle_read
+ *                            ├── state-only registers: update protocol state
+ *                            │   + register shadow
+ *                            └── actual doorbells (0x1008, 0x1020):
+ *                                doorbell_dispatch → registry → dispatcher
+ *
+ * Anything unmapped is logged as an unhandled warning so the gap is
+ * visible in /tmp/lagfx.log rather than silently ignored.
  */
 
 #ifndef LAGFX_DOORBELL_H
@@ -43,7 +59,30 @@ typedef struct {
 extern const doorbell_door_descriptor_t g_doorbell_doors[];
 extern const size_t g_doorbell_door_count;
 
-/* Dispatch: given BAR0+offset and value, dispatch to appropriate handler */
+/* === Unified MMIO entry points ====================================
+ *
+ * The single inbound choke point for every BAR0 write/read above the
+ * MSI-X region. lagfx_mmio_write/read in device.c are thin shims that
+ * forward straight to these. Any new register or doorbell goes here,
+ * not in device.c.
+ *
+ * `protocol_state` is the (void *) handle from device->protocol_state
+ * (really a lagfx_protocol_t *); doorbell.c casts internally.
+ */
+void     doorbell_handle_write(void *protocol_state, uint64_t offset, uint32_t value);
+uint32_t doorbell_handle_read (void *protocol_state, uint64_t offset);
+
+/* One-shot init for the register shadow / decoder defaults. Called
+ * from lagfx_device_new after lagfx_protocol_new. Owns any startup
+ * register values (e.g. STATUS_CONTROL=1) that used to be poked into
+ * g_reg_shadow directly from device.c. */
+void doorbell_init(void *protocol_state);
+
+/* Dispatch: given a BAR offset (must be a registered doorbell offset)
+ * and value, dispatch to the matching dispatcher. Called internally
+ * by doorbell_handle_write for 0x1008 and 0x1020; left exported for
+ * test fixtures that want to drive the dispatcher directly without
+ * going through MMIO. */
 void doorbell_dispatch(void *protocol_state, uint64_t bar_offset, uint32_t data);
 
 #endif /* LAGFX_DOORBELL_H */

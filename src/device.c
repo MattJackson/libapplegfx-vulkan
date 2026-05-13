@@ -22,164 +22,34 @@
 
 /* Forward decl for protocol lifecycle function (defined in lifecycle.c) */
 lagfx_protocol_t *lagfx_protocol_new(struct lagfx_device *dev);
-#include "protocol/state.h"
-#include "doorbell.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 
-/* MSIX range (4 KB) */
+/* MSIX range (4 KB) — shell owns it; we never see writes below this. */
 #define LAGFX_MSIX_RANGE_END 0x1000u
 
-/* Helper: map BAR0 offset to register array index (0..15 for 0x1000..0x1FFF) */
-static inline int lagfx_reg_index(uint64_t offset) {
-    if (offset < LAGFX_MSIX_RANGE_END || offset >= 0x2000) return -1;
-    int idx = ((int)(offset & 0xFFF)) / 4;
-    return (idx >= 0 && idx < 16) ? idx : -1;
-}
-
-/* Register shadow for MMIO reads/writes */
-static uint32_t g_reg_shadow[16];
+/* === MMIO shims =================================================
+ *
+ * Thin pass-throughs to the unified doorbell entry point. ALL inbound
+ * register/doorbell traffic flows through doorbell_handle_write /
+ * doorbell_handle_read so we have one place to dispatch, log, and
+ * surface unhandled offsets. If you need to add a new register, do it
+ * in doorbell.c — do NOT special-case it here.
+ */
 
 uint32_t lagfx_mmio_read(lagfx_device_t *device, uint64_t offset) {
-    if (!lagfx_device_is_valid(device)) {
-        return 0;
-    }
-
-    /* MSI-X table — shell owns it */
-    if (offset < LAGFX_MSIX_RANGE_END) {
-        return 0;
-    }
-
-    int idx = lagfx_reg_index(offset);
-    if (idx < 0) {
-        LAGFX_TRACE("mmio_read: unmapped offset 0x%llx", (unsigned long long)offset);
-        return 0;
-    }
-
-    uint32_t value = g_reg_shadow[idx];
-
-    /* Special handling for status bits */
-    if (offset == 0x1018u && device->protocol_state) {
-        /* Stamp bitmask - xchg-and-clear semantics */
-        lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
-        uint32_t mask = p->pending_stamps_bitmask;
-        p->pending_stamps_bitmask = 0u;
-        LAGFX_TRACE("mmio_read: 0x1018 stamp_bitmask -> 0x%x", mask);
-        return mask;
-    }
-
-    if (offset == 0x1014u && device->protocol_state) {
-        /* Display bitmask - xchg-and-clear */
-        lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
-        uint32_t mask = p->pending_displays_bitmask;
-        p->pending_displays_bitmask = 0u;
-        LAGFX_TRACE("mmio_read: 0x1014 display_bitmask -> 0x%x", mask);
-        return mask;
-    }
-
-    /* Capability gate */
-    if (offset == 0x122cu) {
-        return 9u;  /* Modern paravirt path */
-    }
-
-    LAGFX_TRACE("mmio_read: off=0x%llx idx=%d -> 0x%08x",
-              (unsigned long long)offset, idx, value);
-    return value;
+    if (!lagfx_device_is_valid(device)) return 0;
+    if (offset < LAGFX_MSIX_RANGE_END) return 0;  /* MSI-X — shell owns */
+    return doorbell_handle_read(device->protocol_state, offset);
 }
 
 void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset, uint32_t value) {
-    if (!lagfx_device_is_valid(device)) {
-        return;
-    }
-
-    /* MSI-X range — shell's problem */
-    if (offset < LAGFX_MSIX_RANGE_END) {
-        return;
-    }
-
-    int idx = lagfx_reg_index(offset);
-    if (idx < 0) {
-        LAGFX_TRACE("mmio_write: unmapped offset 0x%llx val=0x%08x",
-                  (unsigned long long)offset, value);
-        return;
-    }
-
-    /* Shadow the write */
-    g_reg_shadow[idx] = value;
-
-    LAGFX_TRACE("mmio_write: off=0x%llx idx=%d val=0x%08x",
-              (unsigned long long)offset, idx, value);
-
-    /* Primary-ring MMIO handlers */
-    switch (idx) {
-        case 0:  /* STATUS_CONTROL @ 0x1000 */
-            if (device->protocol_state) {
-                lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
-                p->ring_armed = (value != 0u);
-            }
-            return;
-
-        case 1:  /* ring_size @ 0x1004 */
-            if (device->protocol_state) {
-                lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
-                p->ring_size = value ? value : 0x10000u;
-            }
-            return;
-
-        case 2:  /* doorbell @ 0x1008 - route via doorbell.c */
-            if (device->protocol_state) {
-                LAGFX_LOG("doorbell: primary ring wp=0x%x → doorbell_dispatch", value);
-            }
-            /* Delegate to doorbell.c for dispatcher routing */
-            doorbell_dispatch(device->protocol_state, DOOR_PRIMARY_RING, value);
-            return;
-
-        case 4:  /* ring_start_offset @ 0x1010 */
-            if (device->protocol_state) {
-                lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
-                p->ring_start_offset = value;
-                p->page_size = 0x1000u;
-                p->ring_base_gpa = ((uint64_t)p->ring_base_pfn << 12) + p->ring_start_offset;
-            }
-            return;
-
-        case 5:  /* ring_shared_page_pfn @ 0x101c */
-            if (device->protocol_state) {
-                lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
-                p->ring_shared_page_pfn = value;
-            }
-            return;
-
-        case 7:  /* ring_base_pfn @ 0x1030 */
-            if (device->protocol_state) {
-                lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
-                p->ring_base_pfn = value;
-                p->ring_base_gpa = ((uint64_t)value << 12) + p->ring_start_offset;
-                if (p->ring_size == 0u) {
-                    p->ring_size = 0x10000u;
-                }
-            }
-            return;
-
-        case 8:  /* doorbell @ 0x1020 - route via doorbell.c */
-        {
-            if (device->protocol_state) {
-                lagfx_protocol_t *p = (lagfx_protocol_t *)device->protocol_state;
-                p->current_chan_id = value;
-                
-                LAGFX_LOG("doorbell @ 0x1020: ch=%u → doorbell_dispatch", value);
-            }
-            
-            /* Delegate to doorbell.c for dispatcher routing (with protocol state) */
-            doorbell_dispatch(device->protocol_state, DOOR_CHANNEL, value);
-            return;
-        }
-
-        default: break;
-    }
+    if (!lagfx_device_is_valid(device)) return;
+    if (offset < LAGFX_MSIX_RANGE_END) return;  /* MSI-X — shell owns */
+    doorbell_handle_write(device->protocol_state, offset, value);
 }
 
 /* Global log file handle — opened lazily on first write */
@@ -329,10 +199,12 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
      }
      dev->protocol_state = proto;
 
-    /* Initialize STATUS_CONTROL (0x1000) to non-zero "FIFO enabled" value
-     * for Phase 1.A. tests that expect decoder to be live even without
-     * protocol state attached yet. Value of 1 = FIFO armed/enabled. */
-     g_reg_shadow[0] = 1u;
+    /* Hand off register-shadow ownership to doorbell.c. This sets
+     * STATUS_CONTROL (0x1000) to 1 so the decoder reads back as
+     * "FIFO armed/enabled" from the very first lagfx_mmio_read,
+     * matching Phase 1.A lifecycle-smoke expectations. The shadow
+     * lives entirely inside doorbell.c — device.c does not touch it. */
+    doorbell_init(proto);
 
  /* Phase 1.B: Vulkan instance + device + queue. In no-vulkan builds
      * this is a no-op that still returns LAGFX_OK with a tiny placeholder
