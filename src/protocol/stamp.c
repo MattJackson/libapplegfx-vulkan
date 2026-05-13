@@ -10,12 +10,26 @@
 #include "../device.h"  /* Full lagfx_device definition for shell callback access */
 #include "../common/log.h"
 
-/* Monotonic stamp-cell advance — never regresses */
+/* Monotonic stamp-cell advance — never regresses.
+ *
+ * Stamp cell GPA per PROTOCOL.md §6.1 is:
+ *
+ *   cell_gpa = (ring_base_pfn << 12) + slot * 4
+ *
+ * NOT `ring_base_gpa + slot*4`. The latter is wrong because
+ * `ring_base_gpa = (ring_base_pfn << 12) + ring_start_offset`, which
+ * pushes the stamp cell into the command FIFO ring page instead of
+ * the stampBases[] page. Without this distinction the kext parks in
+ * waitForStamp forever because `*stampBases[slot]` (a different page
+ * from where we wrote) never advances. See also
+ * stampBases-runtime-address.md and the howto/how-to-host-stamp-
+ * completion.md canonical implementation.
+ */
 void lagfx_advance_stamp_cell(lagfx_protocol_t *p, uint32_t slot, uint32_t target) {
     if (!lagfx_protocol_is_valid(p)) return;
-    
-    /* Read current value from guest memory at ring_base_gpa + slot*4 */
-    uint64_t cell_addr = p->ring_base_gpa + (slot * 4);
+
+    /* (ring_base_pfn << 12) + slot*4 — NOT ring_base_gpa. */
+    uint64_t cell_addr = ((uint64_t)p->ring_base_pfn << 12) + (slot * 4);
     uint32_t cur = 0u;
     
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
