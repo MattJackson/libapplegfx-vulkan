@@ -71,11 +71,17 @@ typedef struct {
 
 /* === Task Entry ================================================== */
 typedef struct {
-    uint32_t id;                /* Task ID (from CmdDefineTask2) */
+    uint32_t id;                /* Task ID (from CmdDefineTask2 / CmdDefineHostTask) */
     uint64_t root_page_pfn;     // Root page PFN for VA→GPA translation
+                                // (set by CmdDefineHostTask 0x38)
     uint64_t base_va;           // Guest VA or shell-returned ptr low bits
     uint32_t length;            // Task address space size in bytes
     void *shell_task;           // Opaque handle passed to shell (if any)
+    /* Resource heap (set by CmdSetResourceHeap 0x33). Per kext disasm
+     * the kext provides a (heap_pfn, heap_size) tuple per task; we
+     * record it as a hint for later resource lookups. */
+    uint32_t heap_pfn;
+    uint32_t heap_size;
     bool live;                  /* Slot is in use */
 } lagfx_task_entry_t;
 

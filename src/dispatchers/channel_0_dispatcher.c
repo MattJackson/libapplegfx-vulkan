@@ -47,6 +47,26 @@ static inline uint32_t read_le32(const uint8_t *b) {
 #define LAGFX_CH0_DRAIN_MAX_CMDS 128u
 #define LAGFX_CH0_MAX_CMD_BYTES  4096u
 
+/* === Inline helpers for ch0 extended opcodes (kext-only namespace) ===
+ *
+ * These three opcodes (0x30, 0x33, 0x38) are the kext's initial setup
+ * burst — without responses the kext never publishes
+ * AppleParavirtGPUControl into ioreg. Wire formats and semantics
+ * recovered from the pre-refactor `lagfx_op_*` family in
+ * `git show af87e8c~1:src/protocol/ops_device.c` and `ops_queue.c`,
+ * adapted to the current `lagfx_protocol_t` field layout.
+ *
+ * Per reference_lagfx_mmio_handler.md rule 2: these are inline in the
+ * switch arm because the live readback verifying them is what we're
+ * about to do (the inflight ioreg test). If 0x30/0x33/0x38 prove out
+ * end-to-end after this batch, they can promote to named helpers.
+ */
+
+static inline uint32_t ch0_read_le32(const uint8_t *b) {
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8)
+         | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
 /* Dispatch a single command to the appropriate handler. Handlers
  * return a status; on OK (or fail-open SIZE/STATE errors) we still
  * raise the stamp so the guest doesn't park forever in waitForStamp.
@@ -91,6 +111,113 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
         case LAGFX_OP_DEBUG:
             lagfx_op_debug(p, hdr);
             break;
+
+        /* === Kext extended opcodes (0x30..0x3a) =====================
+         * The kext fires four 0x30 + one 0x33 + one 0x38 in its
+         * initial setup burst. Without these responses
+         * AppleParavirtGPUControl never publishes into ioreg. */
+
+        case LAGFX_OP_DEFINE_CHILD_CHANNEL: {
+            /* CmdDefineChildChannel (0x30) — kext-side analogue of
+             * 0x04 CmdDefineChildFIFO with a much larger payload
+             * (0x400 bytes observed). Per pre-refactor ops_queue.c
+             * + the routing comment in opcodes.c §M2+ table, the
+             * child_id sits at +4 (NOT +0). Ring geometry comes
+             * from MMIO setters, not the payload. */
+            if (!hdr->payload || hdr->payload_size < 8u) {
+                LAGFX_WARN("CmdDefineChildChannel: payload too small (%u)",
+                           (unsigned)hdr->payload_size);
+                break;
+            }
+            uint32_t child_id = ch0_read_le32(hdr->payload + 4);
+            lagfx_fifo_entry_t *entry = lagfx_protocol_find_fifo(p, child_id);
+            if (entry) {
+                LAGFX_LOG("CmdDefineChildChannel: child_id=%u (re-using slot) stamp=0x%08x",
+                          child_id, hdr->stamp);
+            } else {
+                entry = lagfx_protocol_alloc_fifo_slot(p);
+                if (!entry) {
+                    LAGFX_WARN("CmdDefineChildChannel: fifo table full (max=%u)",
+                               LAGFX_MAX_FIFOS);
+                    break;
+                }
+                entry->id   = child_id;
+                entry->live = true;
+                LAGFX_LOG("CmdDefineChildChannel: child_id=%u registered stamp=0x%08x",
+                          child_id, hdr->stamp);
+            }
+            break;
+        }
+
+        case LAGFX_OP_SET_RESOURCE_HEAP: {
+            /* CmdSetResourceHeap (0x33) — pre-refactor ops_device.c
+             * lagfx_op_set_resource_heap. 12-byte payload:
+             *   +0  u32 task_id
+             *   +4  u32 heap_pfn
+             *   +8  u32 heap_size
+             * Records the heap hint onto the task entry so later
+             * resource lookups can locate the kext-side heap. The
+             * task may not yet be defined (CmdDefineHostTask
+             * sometimes lands AFTER this); fail-open in that case. */
+            if (!hdr->payload || hdr->payload_size < 12u) {
+                LAGFX_WARN("CmdSetResourceHeap: payload too small (%u)",
+                           (unsigned)hdr->payload_size);
+                break;
+            }
+            uint32_t task_id   = ch0_read_le32(hdr->payload + 0);
+            uint32_t heap_pfn  = ch0_read_le32(hdr->payload + 4);
+            uint32_t heap_size = ch0_read_le32(hdr->payload + 8);
+            lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
+            if (entry) {
+                entry->heap_pfn  = heap_pfn;
+                entry->heap_size = heap_size;
+                LAGFX_LOG("CmdSetResourceHeap: taskID=%u heap_pfn=0x%x heap_size=0x%x stamp=0x%08x",
+                          task_id, heap_pfn, heap_size, hdr->stamp);
+            } else {
+                LAGFX_LOG("CmdSetResourceHeap: taskID=%u not found "
+                          "(deferred; heap_pfn=0x%x heap_size=0x%x) stamp=0x%08x",
+                          task_id, heap_pfn, heap_size, hdr->stamp);
+            }
+            break;
+        }
+
+        case LAGFX_OP_DEFINE_HOST_TASK: {
+            /* CmdDefineHostTask (0x38) — pre-refactor ops_device.c
+             * lagfx_op_define_host_task. 16-byte payload:
+             *   +0  u32 slot_index    (task_id = slot_index >> 1)
+             *   +4  u32 reserved      (handleHint low half)
+             *   +8  u32 flags         (handleHint high half)
+             *   +12 u32 root_page_pfn
+             *
+             * Allocates/re-uses a task entry, stamps root_page_pfn
+             * onto it. This is the page-table-base anchor the host
+             * needs to walk the 3-level radix for VA→GPA on this
+             * task's resources. */
+            if (!hdr->payload || hdr->payload_size < 16u) {
+                LAGFX_WARN("CmdDefineHostTask: payload too small (%u)",
+                           (unsigned)hdr->payload_size);
+                break;
+            }
+            uint32_t slot_index    = ch0_read_le32(hdr->payload + 0);
+            uint32_t root_page_pfn = ch0_read_le32(hdr->payload + 12);
+            uint32_t task_id       = slot_index >> 1;
+
+            lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
+            if (!entry) {
+                entry = lagfx_protocol_alloc_task_slot(p);
+                if (!entry) {
+                    LAGFX_WARN("CmdDefineHostTask: task table full (max=%u)",
+                               LAGFX_MAX_TASKS);
+                    break;
+                }
+                entry->id   = task_id;
+                entry->live = true;
+            }
+            entry->root_page_pfn = (uint64_t)root_page_pfn;
+            LAGFX_LOG("CmdDefineHostTask: taskID=%u root_page_pfn=0x%x stamp=0x%08x",
+                      task_id, root_page_pfn, hdr->stamp);
+            break;
+        }
 
         default:
             LAGFX_WARN("ch0 dispatch: unknown opcode 0x%04x stamp=0x%08x",
