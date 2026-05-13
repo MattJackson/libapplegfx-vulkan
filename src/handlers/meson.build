@@ -14,6 +14,7 @@ lagfx_sources += files(
   
   # Compute handler (opcode 0x20)
   'compute/exec_cmdbuf.c',
+  'compute/info_replies.c',
   
   # Sync handler (opcode 0x42)
   'sync/sync.c',

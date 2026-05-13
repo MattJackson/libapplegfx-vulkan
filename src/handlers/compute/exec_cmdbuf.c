@@ -26,6 +26,7 @@
  */
 
 #include "../handlers.h"
+#include "info_replies.h"
 #include "common/log.h"
 
 #include <stdint.h>
@@ -179,11 +180,21 @@ static void inner_observe_render_pass(const uint8_t *segment_payload,
 }
 
 /* Walk one segment's PGCmdHeader stream. Returns number of inner
- * commands observed. Stops on first malformed header. */
-static size_t inner_walk_segment(uint8_t encoder_type,
+ * commands observed. Stops on first malformed header.
+ *
+ * Threaded args (for InfoDecoder reply dispatch on encType=4, opcodes
+ * 0x1c2..0x1d0): the outer CmdExecIndirect2 resource_table base +
+ * count, and the resolved task. These let info_replies.c resolve
+ * buffer_id → buffer_dev_addr → reply target GPA. NULL/0 disables
+ * info-reply dispatch (observation-only fallback). */
+static size_t inner_walk_segment(lagfx_protocol_t *p,
+                                  uint8_t encoder_type,
                                   const uint8_t *segment_bytes,
                                   size_t segment_len,
-                                  uint32_t stamp) {
+                                  uint32_t stamp,
+                                  const uint8_t *outer_resources,
+                                  uint32_t resource_count,
+                                  const lagfx_task_entry_t *task) {
     if (segment_len < 8u || segment_bytes == NULL) return 0;
 
     size_t off = 0;
@@ -197,15 +208,38 @@ static size_t inner_walk_segment(uint8_t encoder_type,
             break;
         }
 
-        LAGFX_TRACE("inner_walk: encType=%u opcode=0x%02x len=%u off=%zu",
-                    (unsigned)encoder_type, (unsigned)(opcode & 0xffu),
-                    total_len, off);
+        /* Inner opcode key: most inner opcodes pack into the low byte
+         * (Render/Compute/Blit ranges all <= 0xa6), but the Info family
+         * occupies 0x1c2..0x1d0 which require the low 16 bits. Use the
+         * full u32 for the InfoDecoder check, low byte for Stage 20. */
+        uint32_t opcode_full  = opcode;
+        uint8_t  opcode_byte  = (uint8_t)(opcode & 0xffu);
+
+        LAGFX_TRACE("inner_walk: encType=%u opcode=0x%04x (byte=0x%02x) len=%u off=%zu",
+                    (unsigned)encoder_type, (unsigned)(opcode_full & 0xffffu),
+                    (unsigned)opcode_byte, total_len, off);
 
         /* Stage 20% checkpoint — render-pass descriptor sighting. */
-        if (encoder_type == 2u && (opcode & 0xffu) == LAGFX_INNER_OP_RENDER_DESCRIBE_RENDER_PASS) {
+        if (encoder_type == 2u && opcode_byte == LAGFX_INNER_OP_RENDER_DESCRIBE_RENDER_PASS) {
             const uint8_t *body = segment_bytes + off + 8u;
             size_t body_len = total_len - 8u;
             inner_observe_render_pass(body, body_len, stamp);
+        }
+
+        /* InfoDecoder reply dispatch — encType=4 + opcode 0x1c2..0x1d0.
+         * See info_replies.c for the per-opcode reply contracts. The
+         * dispatch writes the reply via shell.write_memory; without
+         * this, SkyLight aborts in MetalShader::CopyPipelineState. */
+        if (encoder_type == 4u
+            && (opcode_full & 0xffffu) >= 0x1c2u
+            && (opcode_full & 0xffffu) <= 0x1d0u) {
+            const uint8_t *body = segment_bytes + off + 8u;
+            size_t body_len = total_len - 8u;
+            lagfx_info_dispatch(p,
+                                opcode_full & 0xffffu,
+                                body, body_len,
+                                outer_resources, resource_count,
+                                task, task_translate);
         }
 
         observed++;
@@ -250,7 +284,9 @@ static void exec_walk_resource(lagfx_protocol_t *p,
                                 const lagfx_task_entry_t *task,
                                 uint64_t host_gpu_addr,
                                 uint32_t length,
-                                uint32_t stamp) {
+                                uint32_t stamp,
+                                const uint8_t *outer_resources,
+                                uint32_t resource_count) {
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
     if (!dev || !dev->desc.shell.read_memory) return;
     if (length == 0u || length > (1u << 22)) {
@@ -300,9 +336,11 @@ static void exec_walk_resource(lagfx_protocol_t *p,
     size_t inner_len = segment_size > 8u ? segment_size - 8u : 0u;
     if (inner_len > to_read - inner_off) inner_len = to_read - inner_off;
 
-    size_t inner_count = inner_walk_segment(encoder_type,
+    size_t inner_count = inner_walk_segment(p, encoder_type,
                                               buf + inner_off,
-                                              inner_len, stamp);
+                                              inner_len, stamp,
+                                              outer_resources,
+                                              resource_count, task);
     LAGFX_LOG("exec_walk: encType=%u inner_cmds_observed=%zu",
               (unsigned)encoder_type, inner_count);
 }
@@ -351,7 +389,10 @@ lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagf
         LAGFX_TRACE("CmdExecIndirect2: taskID=%u not found (fail-open)", task_id);
     }
 
-    /* Walk each resource's cmdbuf for the Stage-20 inner observation. */
+    /* Walk each resource's cmdbuf for the Stage-20 inner observation
+     * AND InfoDecoder reply dispatch. Pass the outer resource_table
+     * base + count so info_replies.c can resolve buffer_id → target
+     * GPA for pipeline-state info queries. */
     const uint8_t *res_start = hdr->payload + 12u + 24u * descriptor_count;
     for (uint32_t i = 0; i < resource_count; ++i) {
         const uint8_t *r = res_start + 16u * i;
@@ -361,7 +402,8 @@ lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagf
         LAGFX_TRACE("CmdExecIndirect2 resource[%u]: addr=0x%llx len=%u",
                     i, (unsigned long long)host_gpu_addr, res_length);
 
-        exec_walk_resource(p, task, host_gpu_addr, res_length, hdr->stamp);
+        exec_walk_resource(p, task, host_gpu_addr, res_length, hdr->stamp,
+                            res_start, resource_count);
     }
 
     LAGFX_LOG("CmdExecIndirect2: completed taskID=%u (observation-only)",
