@@ -50,8 +50,12 @@ bool lagfx_timer_tick_vblank(
         /* Read enable flag at ss[+0x104]. Guest writes 0xC when enable() completes. */
         uint32_t enabled_mask = 0u;
         if (!read_memory(shell_opaque, ss_gpa + 0x104u, sizeof(enabled_mask), &enabled_mask)) {
+            LAGFX_LOG("timer_tick_vblank: display[%u] skip (no read)", i);
             continue;
         }
+
+        /* DEBUG: Log every tick to confirm timer fires */
+        LAGFX_LOG("timer_tick_vblank: display[%u] ss[+0x104]=%08X", i, enabled_mask);
 
         /* Check if display just enabled (ss[+0x104] == 0xC). */
         if (enabled_mask == 0xCu && !(dev->display_ss_enabled & (1u << i))) {
