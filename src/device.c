@@ -210,7 +210,7 @@ static void lagfx_log_internal(const char *prefix, const char *fmt, va_list args
 void lagfx_log_impl(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    lagfx_log_internal("device", fmt, args);
+    lagfx_log_internal("INFO", fmt, args);
     va_end(args);
 }
 
@@ -218,6 +218,20 @@ void lagfx_warn_impl(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     lagfx_log_internal("WARN", fmt, args);
+    va_end(args);
+}
+
+void lagfx_err_impl(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    lagfx_log_internal("ERROR", fmt, args);
+    va_end(args);
+}
+
+void lagfx_trace_impl(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    lagfx_log_internal("trace", fmt, args);
     va_end(args);
 }
 

@@ -50,24 +50,35 @@ static inline int lagfx_log_level(void) {
     return cached;
 }
 
+/* Implementations live in device.c; they route through lagfx_log_internal
+ * which writes to /tmp/lagfx.log (with stderr fallback) and flushes after
+ * every line. Macros call these so logs survive when QEMU runs as a
+ * non-PID-1 process inside docker (where its stderr would otherwise be
+ * dropped). */
+extern void lagfx_log_impl(const char *fmt, ...)
+    __attribute__((format(printf, 1, 2)));
+extern void lagfx_warn_impl(const char *fmt, ...)
+    __attribute__((format(printf, 1, 2)));
+extern void lagfx_err_impl(const char *fmt, ...)
+    __attribute__((format(printf, 1, 2)));
+extern void lagfx_trace_impl(const char *fmt, ...)
+    __attribute__((format(printf, 1, 2)));
+
 #define LAGFX_LOG(fmt, ...) \
     do { \
         if (lagfx_log_level() >= LAGFX_LOG_LVL_INFO) { \
-            fprintf(stderr, "[lagfx] " fmt "\n", ##__VA_ARGS__); \
+            lagfx_log_impl(fmt, ##__VA_ARGS__); \
         } \
     } while (0)
 
 #define LAGFX_TRACE(fmt, ...) \
     do { \
         if (lagfx_log_level() >= LAGFX_LOG_LVL_TRACE) { \
-            fprintf(stderr, "[lagfx trace] " fmt "\n", ##__VA_ARGS__); \
+            lagfx_trace_impl(fmt, ##__VA_ARGS__); \
         } \
     } while (0)
 
-#define LAGFX_WARN(fmt, ...) \
-    fprintf(stderr, "[lagfx warn] " fmt "\n", ##__VA_ARGS__)
-
-#define LAGFX_ERR(fmt, ...) \
-    fprintf(stderr, "[lagfx error] " fmt "\n", ##__VA_ARGS__)
+#define LAGFX_WARN(fmt, ...) lagfx_warn_impl(fmt, ##__VA_ARGS__)
+#define LAGFX_ERR(fmt, ...)  lagfx_err_impl(fmt, ##__VA_ARGS__)
 
 #endif /* LIBAPPLEGFX_COMMON_LOG_H */
