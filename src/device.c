@@ -200,7 +200,7 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
         return NULL;
     }
 
-   dev->magic = LAGFX_DEVICE_MAGIC;
+    dev->magic = LAGFX_DEVICE_MAGIC;
     dev->desc  = *desc;  /* shallow copy; callbacks are function pointers */
 
     dev->mmio_region_size = desc->mmio_region_size

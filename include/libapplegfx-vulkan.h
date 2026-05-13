@@ -45,9 +45,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Forward declaration for timer API (defined fully in src/device.h). */
-typedef struct lagfx_device lagfx_device_t;
-
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -69,9 +69,9 @@ static inline int lagfx_device_is_valid(const lagfx_device_t *d) {
 /* Doorbell write handler — called by QEMU when BAR0+0x1020 is written */
 static inline void lagfx_device_doorbell_write(lagfx_device_t *dev, uint8_t chan_id) {
     if (!lagfx_device_is_valid(dev)) return;
-    
+
     lagfx_log_impl("doorbell_write: device=%p channel=%u", (void *)dev, chan_id);
-    
+
     /* Call back to registered doorbell handler */
     if (dev->doorbell_callback && dev->doorbell_opaque) {
         dev->doorbell_callback(dev->doorbell_opaque, chan_id);

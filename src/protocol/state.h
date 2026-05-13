@@ -111,13 +111,13 @@ typedef struct {
 /* === Protocol State Structure ==================================== */
 typedef struct lagfx_protocol {
     uint32_t magic;             // LAGFX_PROTOCOL_MAGIC for validation
-    
+
     /* Device reference */
     void *dev;                  // Back-reference to device (opaque here)
-    
+
     /* Register shadow (BAR0+0x1000..0x1FFF → idx 0..15) */
     uint32_t reg[16];           // Shadowed register values
-    
+
     /* Ring geometry (set by MMIO, preserved across resets) */
     uint64_t ring_base_pfn;     // Command ring base PFN (from BAR0+0x1030)
     uint64_t ring_base_gpa;     // Computed: (pfn << 12) + start_offset
@@ -125,39 +125,39 @@ typedef struct lagfx_protocol {
     uint32_t ring_start_offset; // Offset within base page (BAR0+0x1010)
     uint64_t ring_shared_page_pfn;  // Shared page PFN for descriptors
     uint32_t page_size;         // Page size (observed: 0x1000)
-    
+
     /* Ring pointers (updated by doorbells) */
     uint32_t read_ptr;          // Last processed write pointer (root channel only)
     uint32_t write_ptr;         // Current write pointer from doorbell (BAR0+0x1008)
-    
+
     /* Per-channel tracking */
     uint8_t current_chan_id;    // Set by channel_door_dispatcher on entry
-    
+
     /* Ring armed flag (set by STATUS_CONTROL @ 0x1000) */
     bool ring_armed;            // Whether ring is enabled for processing
-    
+
     /* Stamp management */
     uint32_t pending_stamps_bitmask;  // Bits set for slots needing IRQ
     uint32_t last_completed_stamp;     // Most recent stamp value acked
     uint32_t pending_displays_bitmask; // Display interrupt bitmask
-    
+
     /* Task table (per CmdDefineTask2) */
     lagfx_task_entry_t tasks[LAGFX_MAX_TASKS];
-    
+
     /* FIFO table (per CmdDefineChildFIFO) */
     lagfx_fifo_entry_t fifos[LAGFX_MAX_FIFOS];
-    
+
     /* Display child rings */
     lagfx_display_child_ring_t display_child_rings[16];  // Up to 16 displays
-    
+
     /* Resource registry (per CmdMapMemory2, CmdDeleteResource, etc.) */
     lagfx_resource_registry_t resources;
-    
+
     /* Command counters (for diagnostics) */
     uint64_t total_cmds_seen;
     uint64_t total_cmds_completed;
     uint64_t unknown_opcode_count;
-    
+
 } lagfx_protocol_t;
 
 /* Validation macro */

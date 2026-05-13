@@ -13,7 +13,7 @@
 
 void primary_ring_door_dispatcher_dispatch(void *protocol_state, uint32_t data) {
     lagfx_protocol_t *p = (lagfx_protocol_t *)protocol_state;
-    
+
     if (!lagfx_protocol_is_valid(p)) {
         LAGFX_WARN("primary_ring: invalid protocol state");
         return;
@@ -21,7 +21,7 @@ void primary_ring_door_dispatcher_dispatch(void *protocol_state, uint32_t data) 
 
     /* Data is the write pointer value from BAR0+0x1008.
      * This triggers a drain of the root channel ring buffer. */
-    
+
     LAGFX_LOG("primary_ring_door: write_ptr=0x%08x", data);
 
     /* Update protocol state with new write pointer */

@@ -12,13 +12,13 @@
 #include "device.h"
 
 /* Called by QEMU at ~60Hz from a host timer.
- * 
+ *
  * Parameters:
  *   - dev: the libapplegfx-vulkan device state (contains display_ss_gpa[])
  *   - shell_opaque: AppleGFXLinuxState* — passed back to shell callbacks
  *   - write_memory: callback to write to guest MMIO space
  *   - read_memory:  callback to read from guest MMIO space
- * 
+ *
  * Returns: true if online IRQ was raised, false otherwise.
  */
 bool lagfx_timer_tick_vblank(

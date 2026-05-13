@@ -40,7 +40,7 @@ void lagfx_advance_stamp_cell(lagfx_protocol_t *p, uint32_t slot, uint32_t targe
     /* (ring_base_pfn << 12) + slot*4 — NOT ring_base_gpa. */
     uint64_t cell_addr = ((uint64_t)p->ring_base_pfn << 12) + (slot * 4);
     uint32_t cur = 0u;
-    
+
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
     if (dev && dev->desc.shell.read_memory) {
         if (!dev->desc.shell.read_memory(dev->desc.shell.opaque, cell_addr, 4, &cur)) {
@@ -50,11 +50,11 @@ void lagfx_advance_stamp_cell(lagfx_protocol_t *p, uint32_t slot, uint32_t targe
         /* Shell has no read_memory callback — tests can inspect cell value directly */
         LAGFX_LOG("stamp_cell[%u]: no read_memory callback, using cur=0", slot);
     }
-    
+
     /* Write max(target, cur+1), floor of 1 */
     uint32_t next = target > cur ? target : cur + 1;
     if (next < 1) next = 1;
-    
+
     if (dev && dev->desc.shell.write_memory) {
         if (!dev->desc.shell.write_memory(dev->desc.shell.opaque, cell_addr, 4, &next)) {
             LAGFX_LOG("stamp_cell[%u]: write failed at 0x%llx", slot, (long long)cell_addr);

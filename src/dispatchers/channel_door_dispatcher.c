@@ -15,7 +15,7 @@
 
 void channel_door_dispatcher_dispatch(void *protocol_state, uint32_t data) {
     lagfx_protocol_t *p = (lagfx_protocol_t *)protocol_state;
-    
+
     if (!lagfx_protocol_is_valid(p)) {
         LAGFX_WARN("channel_door: invalid protocol state");
         return;

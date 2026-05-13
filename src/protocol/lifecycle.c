@@ -20,7 +20,7 @@ lagfx_protocol_t* lagfx_protocol_new(struct lagfx_device *dev) {
 
     p->magic = LAGFX_PROTOCOL_MAGIC;
     p->dev = dev;  /* Set back-reference to device */
-    
+
     /* Initialize dispatcher registry once */
     if (!g_initialized) {
         g_initialized = 1;
@@ -28,30 +28,30 @@ lagfx_protocol_t* lagfx_protocol_new(struct lagfx_device *dev) {
 
     /* Set initial register shadow (STATUS_CONTROL: present + ready) */
     p->reg[REG_STATUS_CONTROL] = 0x3u;
-    
+
     LAGFX_LOG("protocol_new: created");
     return p;
 }
 
 void lagfx_protocol_free(lagfx_protocol_t *p) {
     if (!lagfx_protocol_is_valid(p)) return;
-    
+
     LAGFX_LOG("protocol_free: seen=%llu completed=%llu",
               (unsigned long long)p->total_cmds_seen,
               (unsigned long long)p->total_cmds_completed);
-    
+
     memset(p, 0, sizeof(*p));
     free(p);
 }
 
 void lagfx_protocol_reset(lagfx_protocol_t *p) {
     if (!lagfx_protocol_is_valid(p)) return;
-    
+
     /* Clear tables and inflight state; preserve ring geometry */
     memset(p->tasks, 0, sizeof(p->tasks));
     memset(p->fifos, 0, sizeof(p->fifos));
     memset(p->display_child_rings, 0, sizeof(p->display_child_rings));
-    
+
     p->total_cmds_seen = 0;
     p->total_cmds_completed = 0;
     p->unknown_opcode_count = 0;

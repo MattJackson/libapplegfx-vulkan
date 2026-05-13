@@ -14,7 +14,7 @@ lagfx_handler_status_t lagfx_sync_synchronize_resources(lagfx_protocol_t *p, con
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
-    
+
     /* CmdSynchronizeResources payload (variable):
      *   +0  u32 task_id
      *   +4  u32 range_count (8-byte records: {u64 gpa, u64 length}) */
@@ -22,22 +22,22 @@ lagfx_handler_status_t lagfx_sync_synchronize_resources(lagfx_protocol_t *p, con
         LAGFX_WARN("CmdSynchronizeResources: payload too small (%u)", (unsigned)hdr->payload_size);
         return LAGFX_HANDLER_ERR_SIZE;
     }
-    
+
     uint32_t task_id   = lagfx_le32(hdr->payload + 0);
     uint32_t range_count = lagfx_le32(hdr->payload + 4);
-    
+
     /* Validate: each range is 8 bytes. */
     if (range_count > ((uint32_t)hdr->payload_size - 8u) / 8u) {
         LAGFX_WARN("CmdSynchronizeResources: range_count=%u exceeds payload", range_count);
         return LAGFX_HANDLER_ERR_SIZE;
     }
-    
+
     LAGFX_LOG("CmdSynchronizeResources: taskID=%u range_count=%u stamp=0x%08x",
               task_id, range_count, hdr->stamp);
-    
+
     /* TODO: Flush host cache for each {gpa, length} range in guest memory.
      *       This ensures guest sees all writes before stamp completes. */
-    
+
     return LAGFX_HANDLER_OK;
 }
 
@@ -45,7 +45,7 @@ lagfx_handler_status_t lagfx_display_swap_mapping(lagfx_protocol_t *p, const lag
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
-    
+
     /* CmdDisplaySwapMapping payload (40 bytes):
      *   +0  u32 display_id
      *   +4  u32 scanout_length
@@ -60,7 +60,7 @@ lagfx_handler_status_t lagfx_display_swap_mapping(lagfx_protocol_t *p, const lag
         LAGFX_WARN("CmdDisplaySwapMapping: payload too small (%u)", (unsigned)hdr->payload_size);
         return LAGFX_HANDLER_ERR_SIZE;
     }
-    
+
     uint32_t display_id   = lagfx_le32(hdr->payload + 0);
     uint32_t scanout_len  = lagfx_le32(hdr->payload + 4);
     uint64_t scanout_gpa  = lagfx_le64(hdr->payload + 8);
@@ -69,15 +69,15 @@ lagfx_handler_status_t lagfx_display_swap_mapping(lagfx_protocol_t *p, const lag
     uint32_t format       = lagfx_le32(hdr->payload + 24);
     uint32_t stride       = lagfx_le32(hdr->payload + 28);
     uint64_t scanout_off  = lagfx_le64(hdr->payload + 32);
-    
+
     LAGFX_LOG("CmdDisplaySwapMapping: display_id=%u scanout_gpa=0x%llx len=%u "
               "fb=%ux%d format=0x%x stride=%u offset=0x%llx",
               display_id, (unsigned long long)scanout_gpa, scanout_len,
               fb_width, fb_height, format, stride, (unsigned long long)scanout_off);
-    
+
     /* TODO: Register scanout buffer with QEMU display shell via
      *       shell.register_scanout(display_id, gpa, width, height, stride).
      *       This enables noVNC to read framebuffer pixels. */
-    
+
     return LAGFX_HANDLER_OK;
 }

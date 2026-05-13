@@ -14,7 +14,7 @@ lagfx_handler_status_t lagfx_display_ack(lagfx_protocol_t *p, const lagfx_cmd_he
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
-    
+
     /* CmdDisplayAck payload (8 bytes):
      *   +0  u32 display_id
      *   +4  u32 frame_id (present sequence number) */
@@ -22,16 +22,16 @@ lagfx_handler_status_t lagfx_display_ack(lagfx_protocol_t *p, const lagfx_cmd_he
         LAGFX_WARN("CmdDisplayAck: payload too small (%u)", (unsigned)hdr->payload_size);
         return LAGFX_HANDLER_ERR_SIZE;
     }
-    
+
     uint32_t display_id = lagfx_le32(hdr->payload + 0);
     uint32_t frame_id   = lagfx_le32(hdr->payload + 4);
-    
+
     LAGFX_LOG("CmdDisplayAck: display_id=%u frame_id=%u stamp=0x%08x",
               display_id, frame_id, hdr->stamp);
-    
+
     /* TODO: Match frame_id to pending transactions; advance vblank counter;
      *       notify guest via stamp completion that present is complete. */
-    
+
     return LAGFX_HANDLER_OK;
 }
 
@@ -39,7 +39,7 @@ lagfx_handler_status_t lagfx_display_cursor_glyph(lagfx_protocol_t *p, const lag
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
-    
+
     /* CmdDisplayCursorGlyph payload (32 bytes):
      *   +0  u32 display_id
      *   +4  u32 width
@@ -52,7 +52,7 @@ lagfx_handler_status_t lagfx_display_cursor_glyph(lagfx_protocol_t *p, const lag
         LAGFX_WARN("CmdDisplayCursorGlyph: payload too small (%u)", (unsigned)hdr->payload_size);
         return LAGFX_HANDLER_ERR_SIZE;
     }
-    
+
     uint32_t display_id   = lagfx_le32(hdr->payload + 0);
     uint32_t width        = lagfx_le32(hdr->payload + 4);
     uint32_t height       = lagfx_le32(hdr->payload + 8);
@@ -60,13 +60,13 @@ lagfx_handler_status_t lagfx_display_cursor_glyph(lagfx_protocol_t *p, const lag
     uint32_t hot_x        = lagfx_le32(hdr->payload + 16);
     uint32_t hot_y        = lagfx_le32(hdr->payload + 20);
     uint64_t glyph_va     = lagfx_le64(hdr->payload + 24);
-    
+
     LAGFX_LOG("CmdDisplayCursorGlyph: display_id=%u %ux%d bpr=%u hot=(%u,%u) va=0x%llx",
               display_id, width, height, bytes_per_row, hot_x, hot_y, (unsigned long long)glyph_va);
-    
+
     /* TODO: Read glyph pixels from guest VA via shell.read_memory; upload to Vulkan cursor texture;
      *       update g_cursor_glyph state for lagfx_display_submit_clear_color. */
-    
+
     return LAGFX_HANDLER_OK;
 }
 
@@ -74,7 +74,7 @@ lagfx_handler_status_t lagfx_display_cursor_show(lagfx_protocol_t *p, const lagf
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
-    
+
     /* CmdDisplayCursorShow payload (16 bytes):
      *   +0  u32 display_id
      *   +4  int16_t x (signed screen coords)
@@ -86,23 +86,23 @@ lagfx_handler_status_t lagfx_display_cursor_show(lagfx_protocol_t *p, const lagf
         LAGFX_WARN("CmdDisplayCursorShow: payload too small (%u)", (unsigned)hdr->payload_size);
         return LAGFX_HANDLER_ERR_SIZE;
     }
-    
+
     uint32_t display_id = lagfx_le32(hdr->payload + 0);
     int16_t x           = (int16_t)lagfx_le16(hdr->payload + 4);
     int16_t y           = (int16_t)lagfx_le16(hdr->payload + 6);
     uint32_t visible    = lagfx_le32(hdr->payload + 8);
     uint16_t hot_x      = lagfx_le16(hdr->payload + 12);
     uint16_t hot_y      = lagfx_le16(hdr->payload + 14);
-    
+
     LAGFX_LOG("CmdDisplayCursorShow: display_id=%u pos=(%d,%d) visible=%u hot=(%u,%u)",
               display_id, x, y, visible, hot_x, hot_y);
-    
+
     /* Update cursor state for lagfx_display_submit_clear_color. */
     extern const lagfx_cursor_show_state_t *lagfx_ops_display_last_cursor_show(void);
     (void)display_id; (void)x; (void)y; (void)visible; (void)hot_x; (void)hot_y;
-    
+
     /* TODO: Call QEMU dpy_mouse_set to move cursor on noVNC display. */
-    
+
     return LAGFX_HANDLER_OK;
 }
 
@@ -113,7 +113,7 @@ lagfx_handler_status_t lagfx_display_cursor_show(lagfx_protocol_t *p, const lagf
 
 lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    
+
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
@@ -252,11 +252,11 @@ lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
 
 lagfx_handler_status_t lagfx_display_vchan_display_submit(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    
+
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
-    
+
     uint32_t display_index = 0u;
     uint32_t arg2          = 0u;
     if (hdr->payload && hdr->payload_size >= 8u) {
@@ -291,7 +291,7 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
 
 lagfx_handler_status_t lagfx_display_define_child_fifo(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    
+
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
@@ -308,13 +308,13 @@ lagfx_handler_status_t lagfx_display_define_child_fifo(
               p->current_chan_id - 5, (unsigned long long)ring_base, (uint32_t)ring_size, entry_count, hdr->stamp);
 
     /* TODO: Store child FIFO geometry for sub-channel command delivery */
-    
+
     return LAGFX_HANDLER_OK;
 }
 
 lagfx_handler_status_t lagfx_display_vchan_present(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    
+
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
@@ -331,13 +331,13 @@ lagfx_handler_status_t lagfx_display_vchan_present(
               display_index, surface_id, plane_id, hdr->stamp);
 
     /* TODO: Call lagfx_vk_display_present_surface() for Vulkan scanout */
-    
+
     return LAGFX_HANDLER_OK;
 }
 
 lagfx_handler_status_t lagfx_display_vchan_present_gamma(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
-    
+
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
@@ -354,6 +354,6 @@ lagfx_handler_status_t lagfx_display_vchan_present_gamma(
               display_index, surface_id, lagfx_le32(hdr->payload + 20), hdr->stamp);
 
     /* TODO: Upload gamma table and call lagfx_vk_display_present_surface() */
-    
+
     return LAGFX_HANDLER_OK;
 }
