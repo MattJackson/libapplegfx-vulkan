@@ -40,3 +40,8 @@ __pycache__/
 
 # Private working notes — live in private gitea (pq/mos)
 .claude/
+
+# sed -i.E -E backup files (left by in-place sed with backup suffix)
+*.c-E
+*.h-E
+*.bak
