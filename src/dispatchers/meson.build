@@ -3,7 +3,7 @@
 # Copyright © 2026 Matthew Jackson
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-  lagfx_sources += files(
+lagfx_sources += files(
   'primary_ring_door_dispatcher.h',
   'primary_ring_door_dispatcher.c',   # BAR0+0x1008 → primary ring drain
   'channel_door_dispatcher.h',

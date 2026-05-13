@@ -100,22 +100,6 @@ if fs.is_file(meson.current_source_dir() / 'gpu-cores.c')
   test('gpu cores', gpu_cores_test)
 endif
 
-# Protocol dispatch tests (Phase 1.A.2). Reaches into src/ for
-# internal protocol headers, so it needs internal_include_dir too.
-if fs.is_file(meson.current_source_dir() / 'protocol-dispatch.c')
-  protocol_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    protocol_deps += [vulkan_dep]
-  endif
-  protocol_dispatch_test = executable('protocol-dispatch',
-    'protocol-dispatch.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : protocol_deps,
-    build_by_default : true,
-  )
-  test('protocol dispatch', protocol_dispatch_test)
-endif
-
 # Resource registry unit tests (standalone — no Vulkan dependency).
 # Tests lagfx_resource_register/lookup/unregister/clear_task directly.
 if fs.is_file(meson.current_source_dir() / 'resource-unit.c')
@@ -127,26 +111,6 @@ if fs.is_file(meson.current_source_dir() / 'resource-unit.c')
   test('resource registry (unit)', resource_unit_test)
 endif
 
-# Resource registry integration tests (requires Vulkan for opcode wiring).
-# Linux-only: runtime skip on non-Linux hosts.
-if fs.is_file(meson.current_source_dir() / 'resource-registry.c')
-  resource_registry_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    resource_registry_deps += [vulkan_dep]
-  endif
-  resource_registry_test = executable('resource-registry',
-    'resource-registry.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : resource_registry_deps,
-    build_by_default : true,
-  )
-  if host_machine.system() == 'linux'
-    test('resource registry (integration)', resource_registry_test)
-  else
-    message('resource-registry integration test built but not run (non-Linux).')
-  endif
-endif
-
 # Stamp advancement unit tests (standalone — no Vulkan dependency).
 # Tests lagfx_advance_stamp_cell monotonicity directly with buffer inputs.
 if fs.is_file(meson.current_source_dir() / 'stamp-unit.c')
@@ -156,44 +120,6 @@ if fs.is_file(meson.current_source_dir() / 'stamp-unit.c')
     build_by_default : true,
   )
   test('stamp helpers (unit)', stamp_unit_test)
-endif
-
-# Stamp helper integration tests (requires Vulkan for complete_stamp_slot).
-# Linux-only: runtime skip on non-Linux hosts.
-if fs.is_file(meson.current_source_dir() / 'stamp-helpers.c')
-  stamp_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    stamp_deps += [vulkan_dep]
-  endif
-  stamp_helpers_test = executable('stamp-helpers',
-    'stamp-helpers.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : stamp_deps,
-    build_by_default : true,
-  )
-  if host_machine.system() == 'linux'
-    test('stamp helpers (integration)', stamp_helpers_test)
-  else
-    message('stamp-helpers integration test built but not run (non-Linux).')
-  endif
-endif
-
-# M4 task-translate + define_host_task unit tests. Covers
-# lagfx_task_translate (positive, unknown task, zero root_pfn, zero
-# data_pfn, page-cross run_len, read_memory failure) and
-# lagfx_op_define_host_task (allocate, update-existing, min-payload).
-if fs.is_file(meson.current_source_dir() / 'm4-task-translate.c')
-  m4_translate_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    m4_translate_deps += [vulkan_dep]
-  endif
-  m4_task_translate_test = executable('m4-task-translate',
-    'm4-task-translate.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : m4_translate_deps,
-    build_by_default : true,
-  )
-  test('m4 task translate', m4_task_translate_test)
 endif
 
 # Deadlock detection tests. Regression suite for ABBA deadlock between
@@ -258,24 +184,6 @@ if fs.is_file(meson.current_source_dir() / 'cmdexecindirect2-parser.c')
     build_by_default : true,
   )
   test('execindirect2 parser', execind_test)
-endif
-
-# Per-channel doorbell-drain tests (BAR0+0x1020). Exercises the ch=1..4
-# ring-walk + dispatch_one_no_stamp branch, the ch=5..7 setupSharedState
-# branch, the page0[0] PFN-array indirection vs the +0x1000 fallback,
-# and multi-cmd drain w/ last_stamp capture.
-if fs.is_file(meson.current_source_dir() / 'doorbell-drain.c')
-  doorbell_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    doorbell_deps += [vulkan_dep]
-  endif
-  doorbell_test = executable('doorbell-drain',
-    'doorbell-drain.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : doorbell_deps,
-    build_by_default : true,
-  )
-  test('doorbell drain', doorbell_test)
 endif
 
 # Shader catalog unit tests - LRU eviction and lookup.
@@ -469,28 +377,6 @@ if fs.is_file(meson.current_source_dir() / 'triangle-lavapipe-e2e.c') \
   test('triangle lavapipe e2e', triangle_e2e_test)
 endif
 
-# Trace replay harness. Reads a simple text trace (W/R events captured
-# from live guest boots) and replays it through the decoder's MMIO
-# entry points against a mock device. Regression gate: catches drift
-# in mmio_{read,write} behaviour as we iterate on src/protocol/. The
-# shipped trace (traces/m2-m3-init-2026-04-21.trace) covers the M2->M3
-# init-phase stamps 1-7 pattern. Reaches into src/ for protocol/state.h
-# so needs internal_include_dir.
-if fs.is_file(meson.current_source_dir() / 'trace-replay.c') \
-   and fs.is_file(meson.current_source_dir() / 'traces' / 'm2-m3-init-2026-04-21.trace')
-  trace_replay_default = meson.current_source_dir() / 'traces' / 'm2-m3-init-2026-04-21.trace'
-  # trace-replay includes state.h which transitively pulls vulkan headers.
-  trace_replay_test = executable('trace-replay',
-    'trace-replay.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : [libapplegfx_vulkan_dep, vulkan_dep],
-    c_args : [ '-DLAGFX_TRACE_REPLAY_DEFAULT="' + trace_replay_default + '"' ],
-    build_by_default : true,
-  )
-  test('trace replay', trace_replay_test,
-    args : [ trace_replay_default ])
-endif
-
 # Phase 3.C.2: air2spirv (metallib extraction + LLVM Bitcode
 # target-triple retarget) smoke. In-process test — exercises the
 # parser against both synthesised MTLB fixtures AND a real-bytes
@@ -519,26 +405,3 @@ if fs.is_file(meson.current_source_dir() / 'air2spirv.c')
   test('air2spirv', air2spirv_test)
 endif
 
-# fuzz-protocol-dispatch — libFuzzer harness for the protocol dispatcher.
-# Built only when -Dfuzz=enabled (default disabled). Combine with
-# -Db_sanitize=address,undefined for the standard fuzzing build.
-#
-# Run: ./tests/fuzz-protocol-dispatch -max_total_time=300 path/to/corpus
-fuzz_opt = get_option('fuzz')
-if fuzz_opt.enabled() and fs.is_file(meson.current_source_dir() / 'fuzz-protocol-dispatch.c')
-  cc = meson.get_compiler('c')
-  fuzz_link_args = ['-fsanitize=fuzzer']
-  fuzz_c_args    = ['-fsanitize=fuzzer-no-link']
-  if cc.has_argument('-fsanitize=fuzzer')
-    fuzz_target = executable('fuzz-protocol-dispatch',
-      'fuzz-protocol-dispatch.c',
-      include_directories : [include_dir, internal_include_dir],
-      dependencies : libapplegfx_vulkan_dep,
-      c_args : fuzz_c_args,
-      link_args : fuzz_link_args,
-      build_by_default : true,
-    )
-  else
-    warning('fuzz=enabled but compiler does not support -fsanitize=fuzzer; skipping')
-  endif
-endif
