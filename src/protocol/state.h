@@ -24,8 +24,11 @@
 /* === Constants =================================================== */
 #define LAGFX_MAX_TASKS        64u     /* Max concurrent tasks */
 #define LAGFX_MAX_FIFOS        32u     /* Max child FIFOs */
-/* LAGFX_MAX_DISPLAYS defined in device.h; channels = root (0) + compute (1-4) + displays */
-#define LAGFX_MAX_CHANNELS     9      /* Root + 4 compute + up to 4 displays */
+/* LAGFX_MAX_DISPLAYS defined in device.h; channels = root (0) + compute (1-4) + displays.
+ * Per state-machines/FIFORingDescriptor.md the kext provisions chan_ids
+ * 1..4 for compute + 5..12 for up to 8 displays. Allow up to 16 to
+ * cover hot-plug + headroom. */
+#define LAGFX_MAX_CHANNELS     16     /* Root + 4 compute + up to 11 displays */
 
 /* Stamp slot mapping (per waitForStamp-mechanism-summary.md) */
 enum {
