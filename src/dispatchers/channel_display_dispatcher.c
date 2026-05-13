@@ -61,7 +61,13 @@ static inline uint32_t read_le32(const uint8_t *b) {
 
 /* DisplayPipe ring size convention per FIFORingDescriptor.md §"ring size":
  * not stored in the descriptor; known by context. DisplayPipes use
- * 0x1000 (4 KiB); VirtualChannels use 0x10000 (64 KiB). */
+ * 0x1000 (4 KiB); VirtualChannels use 0x10000 (64 KiB).
+ *
+ * Per per-channel-ring-pfn-array.md: ring_pfn<<12 is NOT the command
+ * data — it's a u32 PFN-array (page0). The actual command bytes live
+ * at (page0[idx]<<12) where idx = (offset % ring_size) >> 12. Display
+ * rings never wrap, so idx is always 0.
+ */
 #define LAGFX_DISPLAY_RING_SIZE  0x1000u
 
 /* Dispatch a single command to appropriate handler. */
@@ -171,7 +177,43 @@ static bool fifo_descriptor_read(lagfx_protocol_t *p,
     *out_desc_gpa   = desc_gpa;
     *out_write_ptr  = write_ptr;
     *out_read_ptr   = read_ptr;
+    /* ring_pfn<<12 is page 0 (PFN-array); the caller resolves the
+     * data page via page0[(off % ring_size) >> 12]. We return
+     * page0's GPA here; the drain loop walks the PFN-array. */
     *out_ring_gpa   = (uint64_t)ring_pfn << 12;
+    return true;
+}
+
+/* Resolve the data-page GPA for a given byte offset in the ring via
+ * page0's PFN-array. Per per-channel-ring-pfn-array.md, page0 is u32
+ * PFN entries: page0[idx] = data PFN, where idx = (off % ring_size)
+ * >> 12. Display rings (ring_size=0x1000) always use idx=0. */
+static bool ring_resolve_data_gpa(lagfx_protocol_t *p,
+                                   uint64_t page0_gpa,
+                                   uint32_t ring_size,
+                                   uint32_t offset,
+                                   uint64_t *out_data_gpa) {
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    if (!dev || !dev->desc.shell.read_memory) return false;
+
+    uint32_t off_mod = (ring_size != 0u) ? (offset % ring_size) : offset;
+    uint32_t page_idx = off_mod >> 12;
+
+    uint8_t pfn_buf[4];
+    if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
+                                      page0_gpa + page_idx * 4u,
+                                      4, pfn_buf)) {
+        LAGFX_WARN("ring_resolve_data_gpa: PFN-array read failed at "
+                   "0x%llx", (unsigned long long)(page0_gpa + page_idx * 4u));
+        return false;
+    }
+    uint32_t data_pfn = read_le32(pfn_buf);
+    if (data_pfn == 0u) {
+        LAGFX_WARN("ring_resolve_data_gpa: PFN-array entry[%u]=0 — ring "
+                   "page not mapped at off=0x%x", page_idx, offset);
+        return false;
+    }
+    *out_data_gpa = ((uint64_t)data_pfn << 12) + (off_mod & 0xfffu);
     return true;
 }
 
@@ -207,8 +249,8 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
     uint64_t desc_gpa = 0;
     uint32_t write_ptr = 0;
     uint32_t read_ptr = 0;
-    uint64_t ring_gpa = 0;
-    if (!fifo_descriptor_read(p, chan_id, &desc_gpa, &write_ptr, &read_ptr, &ring_gpa)) {
+    uint64_t page0_gpa = 0;
+    if (!fifo_descriptor_read(p, chan_id, &desc_gpa, &write_ptr, &read_ptr, &page0_gpa)) {
         return 0;
     }
 
@@ -220,11 +262,11 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
         return 0;
     }
 
-    LAGFX_LOG("display drain: ch=%u desc_gpa=0x%llx ring_gpa=0x%llx "
+    LAGFX_LOG("display drain: ch=%u desc_gpa=0x%llx page0_gpa=0x%llx "
               "ring_size=0x%x rp=0x%x wp=0x%x",
               chan_id,
               (unsigned long long)desc_gpa,
-              (unsigned long long)ring_gpa,
+              (unsigned long long)page0_gpa,
               ring_size, read_ptr, write_ptr);
 
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
@@ -238,8 +280,13 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
     for (unsigned i = 0; i < LAGFX_DISP_DRAIN_MAX_CMDS; ++i) {
         if (rp == write_ptr) break;
 
-        uint32_t rp_mod = rp % ring_size;
-        uint64_t hdr_gpa = ring_gpa + (uint64_t)rp_mod;
+        /* Resolve the command-bytes GPA via page0's PFN-array (see
+         * per-channel-ring-pfn-array.md). page0_gpa<<12 is NOT data —
+         * it's a u32 PFN array of page pointers. */
+        uint64_t hdr_gpa = 0;
+        if (!ring_resolve_data_gpa(p, page0_gpa, ring_size, rp, &hdr_gpa)) {
+            break;
+        }
 
         uint8_t hdr_buf[LAGFX_CMD_HEADER_BYTES];
         if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
@@ -260,26 +307,20 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
             length > LAGFX_DISP_MAX_CMD_BYTES ||
             length > ring_size) {
             LAGFX_WARN("display drain: ch=%u bad length 0x%x at rp=0x%x "
-                       "opcode=0x%04x — stop",
-                       chan_id, length, rp_mod, opcode);
+                       "opcode=0x%04x first8=%02x%02x%02x%02x%02x%02x%02x%02x — stop",
+                       chan_id, length, rp, opcode,
+                       hdr_buf[0], hdr_buf[1], hdr_buf[2], hdr_buf[3],
+                       hdr_buf[4], hdr_buf[5], hdr_buf[6], hdr_buf[7]);
             break;
         }
 
         uint8_t cmd_buf[LAGFX_DISP_MAX_CMD_BYTES];
-        uint32_t head_len = ring_size - rp_mod;
-        if (head_len >= length) {
-            if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
-                                              hdr_gpa, length, cmd_buf)) {
-                LAGFX_WARN("display drain: ch=%u body DMA failed", chan_id);
-                break;
-            }
-        } else {
-            if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
-                                              hdr_gpa, head_len, cmd_buf)) break;
-            if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
-                                              ring_gpa,
-                                              length - head_len,
-                                              cmd_buf + head_len)) break;
+        /* Display rings don't wrap (ring_size=0x1000 small enough),
+         * but read the body in one DMA. */
+        if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
+                                          hdr_gpa, length, cmd_buf)) {
+            LAGFX_WARN("display drain: ch=%u body DMA failed", chan_id);
+            break;
         }
 
         lagfx_cmd_header_t hdr;
@@ -301,7 +342,7 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
 
         p->total_cmds_seen++;
         cmds++;
-        rp = (rp_mod + length) % ring_size;
+        rp = rp + length;  /* absolute, monotonic — see per-channel-ring-pfn-array.md */
     }
 
     /* Publish the drained position back to the descriptor. The kext's
