@@ -15,6 +15,8 @@ lagfx_sources += files(
   # Compute handler (opcode 0x20)
   'compute/exec_cmdbuf.c',
   'compute/info_replies.c',
+  'compute/render_inner_ops.c',   # encType=2 inner-opcode table (96 entries)
+  'compute/render_pass.c',        # 0x1a RenderPassDescriptor parser
   
   # Sync handler (opcode 0x42)
   'sync/sync.c',

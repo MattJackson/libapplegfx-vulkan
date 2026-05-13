@@ -27,6 +27,7 @@
 
 #include "../handlers.h"
 #include "info_replies.h"
+#include "render_inner_ops.h"
 #include "common/le.h"
 #include "common/log.h"
 
@@ -101,7 +102,7 @@ static bool task_translate(lagfx_protocol_t *p,
     return true;
 }
 
-/* === Inner segment + PGCmdHeader observation ====================
+/* === Inner segment + PGCmdHeader walker ==========================
  *
  * Per inner-opcode-format.md:
  *   - 8-byte PGSerializerCommandSegmentHeader:
@@ -111,61 +112,28 @@ static bool task_translate(lagfx_protocol_t *p,
  *     segment+8 is canonically 0x1a (RENDER_DESCRIBE_RENDER_PASS).
  *   - PGCmdHeader is 8 bytes: u32 opcode + u32 totalLengthBytes.
  *
- * We're observation-only: log the segment header, find the first
- * PGCmdHeader, and on opcode 0x1a count attachments from the
- * PGRenderPassDescriptor block. Per inner-opcode-format.md and
- * render_pass.c (in dead-code; not compiled) the descriptor carries
- * a u32 color_attachment_count at a fixed offset early in the block.
+ * Encoder-type dispatch:
+ *   0 / 1  — Compute. Currently TRACE only; the live channel_compute
+ *            drainer already accepts the outer 0x20/0x37 and the
+ *            compute inner-opcode table is forward-port material
+ *            (Stage 30+). For now the per-opcode TRACE is sufficient.
+ *   2      — Render. Dispatched into render_inner_ops_dispatch (this
+ *            is the canonical Stage 20% path; emits the 0x1a
+ *            RenderPassDescriptor sighting line).
+ *   4      — Blit. Dispatched into blit_inner_ops_dispatch when
+ *            available; until then logged + absorbed.
+ *   5      — Protection-options preamble. The kext writes
+ *            `(uint64_t protectionOptions, PGSerializerCommandSegmentHeader)`
+ *            after this header; the segment locator already handles
+ *            the recursive header read at the cursor boundary, so
+ *            walker just logs and continues.
  *
- * For the stage-20 "I saw it" gate, the canonical log line is:
- *
- *   LAGFX_WARN: "0x1a: RenderPassDescriptor parsed — N attachments"
- *
- * exactly matching render_opcodes.c:1345. The grep target in
- * reference_m5_validation.md is "RenderPassDescriptor|0x1a:".
+ * InfoDecoder reply dispatch (encType=4 + opcode 0x1c2..0x1d0) is
+ * handled inline below; those reply contracts cross-cut blit + render
+ * (encoder_type=4 is overloaded with InfoDecoder for queries).
  */
 
 #define LAGFX_INNER_OP_RENDER_DESCRIBE_RENDER_PASS  0x1au
-
-static void inner_observe_render_pass(const uint8_t *segment_payload,
-                                       size_t payload_len,
-                                       uint32_t stamp) {
-    /* PGRenderPassDescriptor wire format (RE-derived; see
-     * render_pass.c lagfx_parse_render_pass_descriptor for the full
-     * struct). For stage-20 observability we only need to surface
-     * "we saw an 0x1a" + a best-guess attachment count.
-     *
-     * The descriptor layout in the inner stream starts with a small
-     * fixed header. Per render_pass.h the first u32 is the render
-     * target width; color_attachment_count appears later. Without
-     * the dead-code parser in scope, we conservatively count
-     * non-zero attachment slots in a window of the payload — this
-     * is intentionally coarse; the goal is "did opcode 0x1a fire,
-     * and how many attachments did the kext request".
-     *
-     * Coarse rule: scan the first 64 bytes after the PGCmdHeader for
-     * non-zero u32 dwords, cap at 8. Any positive number is enough
-     * to clear the Stage 20% bar. The exact value is refined in
-     * Stage 25 when the real parser comes back into the build.
-     */
-    unsigned n = 0;
-    if (payload_len >= 8u && segment_payload != NULL) {
-        size_t scan_end = payload_len < 64u ? payload_len : 64u;
-        for (size_t off = 0; off + 4 <= scan_end; off += 4) {
-            if (lagfx_le32(segment_payload + off) != 0u) {
-                n++;
-            }
-        }
-        if (n > 8u) n = 8u;
-    }
-    if (n == 0u) n = 1u;  /* the kext sent the opcode; minimum 1 */
-
-    /* Canonical Stage 20% sighting line — matches the grep target in
-     * reference_m5_validation.md. Emit at WARN level so it's visible
-     * even when LAGFX_LOG_LEVEL=warn (production default). */
-    LAGFX_WARN("0x1a: RenderPassDescriptor parsed — %u attachments stamp=0x%08x",
-               n, stamp);
-}
 
 /* Walk one segment's PGCmdHeader stream. Returns number of inner
  * commands observed. Stops on first malformed header.
@@ -207,27 +175,68 @@ static size_t inner_walk_segment(lagfx_protocol_t *p,
                     (unsigned)encoder_type, (unsigned)(opcode_full & 0xffffu),
                     (unsigned)opcode_byte, total_len, off);
 
-        /* Stage 20% checkpoint — render-pass descriptor sighting. */
-        if (encoder_type == 2u && opcode_byte == LAGFX_INNER_OP_RENDER_DESCRIBE_RENDER_PASS) {
-            const uint8_t *body = segment_bytes + off + 8u;
-            size_t body_len = total_len - 8u;
-            inner_observe_render_pass(body, body_len, stamp);
-        }
+        const uint8_t *body = segment_bytes + off + 8u;
+        size_t body_len = total_len - 8u;
+        (void)stamp;  /* dispatchers may need the stamp later */
 
-        /* InfoDecoder reply dispatch — encType=4 + opcode 0x1c2..0x1d0.
-         * See info_replies.c for the per-opcode reply contracts. The
-         * dispatch writes the reply via shell.write_memory; without
-         * this, SkyLight aborts in MetalShader::CopyPipelineState. */
-        if (encoder_type == 4u
-            && (opcode_full & 0xffffu) >= 0x1c2u
-            && (opcode_full & 0xffffu) <= 0x1d0u) {
-            const uint8_t *body = segment_bytes + off + 8u;
-            size_t body_len = total_len - 8u;
-            lagfx_info_dispatch(p,
-                                opcode_full & 0xffffu,
-                                body, body_len,
-                                outer_resources, resource_count,
-                                task, task_translate);
+        switch (encoder_type) {
+            case 0u:
+            case 1u:
+                /* Compute. TODO: Stage 30 — wire compute_inner_ops_dispatch
+                 * once the compute inner-op table is consolidated. The
+                 * compute outer ring drainer already accepts 0x20/0x37
+                 * (channel_compute_dispatcher.c) which is sufficient
+                 * Stage 20% — the inner stream walker is observation-
+                 * only here until pipelines start submitting work. */
+                LAGFX_TRACE("inner_walk: compute (encType=%u) op=0x%04x len=%u — observe only",
+                            (unsigned)encoder_type, opcode_full & 0xffffu, total_len);
+                break;
+
+            case 2u:
+                /* Render — dispatch into the 96-entry render inner-op
+                 * table (render_inner_ops.c). opcode 0x1a emits the
+                 * canonical Stage 20% sighting line. */
+                lagfx_render_inner_dispatch(p, opcode_full & 0xffffu, body, body_len);
+                break;
+
+            case 4u: {
+                /* Blit OR InfoDecoder (encType=4 is overloaded).
+                 *
+                 * InfoDecoder opcode space is 0x1c2..0x1d0 — these
+                 * carry pipeline-state / host-resource info queries
+                 * that need replies (info_replies.c). Without a
+                 * non-zero reply, SkyLight aborts in
+                 * MetalShader::CopyPipelineState. */
+                uint16_t op16 = (uint16_t)(opcode_full & 0xffffu);
+                if (op16 >= 0x1c2u && op16 <= 0x1d0u) {
+                    lagfx_info_dispatch(p, op16, body, body_len,
+                                        outer_resources, resource_count,
+                                        task, task_translate);
+                } else {
+                    /* TODO: Stage 30 — wire blit_inner_ops_dispatch
+                     * once the blit inner-op table is consolidated.
+                     * Until then, log + absorb so the walker doesn't
+                     * stall on unrecognised blit opcodes. */
+                    LAGFX_TRACE("inner_walk: blit (encType=4) op=0x%03x len=%u — observe only",
+                                (unsigned)op16, total_len);
+                }
+                break;
+            }
+
+            case 5u:
+                /* Protection-options preamble. The segment locator
+                 * has already advanced past the recursive header read
+                 * at the cursor boundary; this case fires only if a
+                 * preamble shows up mid-stream, which would be a wire
+                 * format violation. Log + absorb. */
+                LAGFX_TRACE("inner_walk: protection-options preamble mid-stream "
+                            "(encType=5 op=0x%04x)", opcode_full & 0xffffu);
+                break;
+
+            default:
+                LAGFX_WARN("inner_walk: unknown encType=%u op=0x%04x len=%u",
+                           (unsigned)encoder_type, opcode_full & 0xffffu, total_len);
+                break;
         }
 
         observed++;
