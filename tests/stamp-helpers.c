@@ -167,9 +167,9 @@ static lagfx_device_t *make_dev(m3_shell_t *shell) {
  * into protocol->ring_base_pfn). */
 static void arm_ring(lagfx_device_t *dev, m3_shell_t *shell,
                      uint32_t ring_pfn) {
-    shell->ring_base_pfn = ring_pfn;
+    shell->ring_base_pfn = ring_pfn;  /* Set before MMIO so callbacks can find the page */
     shell->writes_return_value = 1;
-    /* MMIO write 0x1030 -> ring_base_pfn. */
+    /* MMIO write 0x1030 -> ring_base_pfn (and ring_base_gpa). */
     lagfx_mmio_write(dev, 0x1030u, ring_pfn);
 }
 
@@ -190,7 +190,7 @@ static void test_advance_cur0_target5(void) {
     m3_shell_t shell = {0};
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-    arm_ring(dev, &shell, 0xaaaa);
+    arm_ring(dev, &shell, 1u);
     /* ring_buf is zero (cur=0). target=5 -> max(5, 0+1)=5. */
     lagfx_protocol_complete_stamp_slot(p, 0u, 5u);
     CHECK(read_cell_le32(&shell, 0) == 5u,
@@ -208,7 +208,7 @@ static void test_advance_cur5_target3(void) {
     m3_shell_t shell = {0};
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-    arm_ring(dev, &shell, 0xaaaa);
+    arm_ring(dev, &shell, 1u);
     /* Pre-populate the cell with 5 so the helper's read sees cur=5. */
     uint32_t pre = 5u;
     memcpy(shell.ring_buf, &pre, sizeof(pre));
@@ -225,7 +225,7 @@ static void test_advance_cur0_target0(void) {
     m3_shell_t shell = {0};
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-    arm_ring(dev, &shell, 0xaaaa);
+    arm_ring(dev, &shell, 1u);
     /* Cell is 0, target=0. want=max(0, 0+1)=1. Floor enforces non-zero. */
     lagfx_protocol_complete_stamp_slot(p, 0u, 0u);
     CHECK(read_cell_le32(&shell, 0) == 1u,
@@ -260,7 +260,7 @@ static void test_advance_write_null_or_fails(void) {
     m3_shell_t shell = {0};
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-    arm_ring(dev, &shell, 0xaaaa);
+    arm_ring(dev, &shell, 1u);
     /* Force write_memory to "succeed without effect" — same control-flow
      * as the (write_memory != NULL) precondition: helper still attempts
      * and either skips logging (return false) or logs (return true). The
@@ -282,7 +282,7 @@ static void test_advance_monotonic_5x(void) {
     m3_shell_t shell = {0};
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-    arm_ring(dev, &shell, 0xbbbb);
+    arm_ring(dev, &shell, 2u);
 
     for (uint32_t i = 1; i <= 5u; ++i) {
         lagfx_protocol_complete_stamp_slot(p, 0u, /*target*/ 1u);
@@ -309,7 +309,7 @@ static void test_slot_bitmask_slot0_vs_slot5(void) {
     m3_shell_t shell = {0};
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-    arm_ring(dev, &shell, 0xcccc);
+    arm_ring(dev, &shell, 3u);
 
     /* slot=0 -> bit 0 set in pending_stamps_bitmask. We can read the
      * bitmask via MMIO 0x1018 which xchg-clears it. */
@@ -344,7 +344,7 @@ static void test_slot_cell_monotonic_per_slot(void) {
     m3_shell_t shell = {0};
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-    arm_ring(dev, &shell, 0xdddd);
+    arm_ring(dev, &shell, 4u);
 
     lagfx_protocol_complete_stamp_slot(p, 3u, 100u);
     CHECK(read_cell_le32(&shell, 3) == 100u,
@@ -363,7 +363,7 @@ static void test_complete_stamp_wrapper_routes_to_slot0(void) {
     m3_shell_t shell = {0};
     lagfx_device_t *dev = make_dev(&shell);
     lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-    arm_ring(dev, &shell, 0xeeee);
+    arm_ring(dev, &shell, 5u);
 
     /* state.h declares lagfx_protocol_complete_stamp; we call it via that
      * declaration. The test asserts behaviour matches a slot=0 call to
