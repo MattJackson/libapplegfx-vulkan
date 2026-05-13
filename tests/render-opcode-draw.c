@@ -19,7 +19,6 @@
 #include "../src/device.h"
 #include "../src/protocol/protocol.h"
 #include "../src/protocol/opcodes.h"
-#include "../src/protocol/render_decoder.h"
 
 #include <stdbool.h>
 #include <stdint.h>
