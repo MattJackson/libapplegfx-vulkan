@@ -205,6 +205,59 @@ lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
     dev->desc.shell.write_memory(
         dev->desc.shell.opaque, ss_gpa + 0x20u, sizeof(fb_len), &fb_len);
 
+    /* Publish a single pixel-format record so the kext's process_online
+     * forwards a non-empty mode list to AppleParavirtFramebuffer::
+     * connectionChange.
+     *
+     * RE: paravirt-re/annotated/AppleParavirtDisplayPipe-process_online
+     *     .annotated.asm @ +0xe2:
+     *       movzx   r11d, word [rax + 0x208]   ; numPixelFormats
+     *     @ comment block:
+     *       per-format record at ss[+0x210 + i*16]
+     *         {u32 width, u32 height, u32 pixelFormat, u32 unknown}
+     *     (the per-pixel-format query block @ 0x1456182c re-reads these
+     *      on each getPixelInformation callback from IOFB)
+     *
+     * Without this, ss[+0x208]=0 from the bzero, the kext reports zero
+     * formats, AppleParavirtFramebuffer publishes only its degenerate
+     * 1x1 placeholder IOFBMode, IOFBConfig advertises IOFB0Hz=Yes, and
+     * SkyLight's CompositorMetal::composite() aborts in
+     * MetalShader::CopyPipelineState because the destination FB has
+     * no valid mode. WindowServer dies before submitting any encType=2
+     * render passes, which is why /tmp/lagfx.log only ever sees
+     * encType=0 (kext-internal compute setup).
+     *
+     * The trailing 4 bytes of the record are RE-unverified; leave at 0.
+     */
+    uint16_t num_pixel_formats = 1u;
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x208u, sizeof(num_pixel_formats),
+        &num_pixel_formats);
+
+    uint8_t pixel_format_rec[16] = { 0 };
+    /* +0x00 u32 width */
+    pixel_format_rec[0]  = (uint8_t)(1920u & 0xff);
+    pixel_format_rec[1]  = (uint8_t)((1920u >> 8) & 0xff);
+    /* +0x04 u32 height */
+    pixel_format_rec[4]  = (uint8_t)(1080u & 0xff);
+    pixel_format_rec[5]  = (uint8_t)((1080u >> 8) & 0xff);
+    /* +0x08 u32 pixelFormat — 'BGRA' fourcc (32-bit BGRA8888).
+     * PGDisplayNub-presentSurface.annotated.asm line 213 confirms
+     * ARGB / BGRA are the only accepted formats on the scanout path. */
+    pixel_format_rec[8]  = 'B';
+    pixel_format_rec[9]  = 'G';
+    pixel_format_rec[10] = 'R';
+    pixel_format_rec[11] = 'A';
+    /* +0x0c..+0x0f unverified — leave zero */
+    dev->desc.shell.write_memory(
+        dev->desc.shell.opaque, ss_gpa + 0x210u, sizeof(pixel_format_rec),
+        pixel_format_rec);
+
+    LAGFX_LOG("vchan_setup_shared_state: display[%u] wrote mode "
+              "(w=%u h=%u fb_len=%u fmt='BGRA' num_formats=%u)",
+              display_index, 1920u, 1080u, fb_len,
+              (unsigned)num_pixel_formats);
+
     /* Set pending online bit (ss[+0x100]=0x4) */
     uint32_t pending = 0x4u;
     dev->desc.shell.write_memory(
