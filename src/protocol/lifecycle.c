@@ -23,7 +23,6 @@ lagfx_protocol_t* lagfx_protocol_new(struct lagfx_device *dev) {
     
     /* Initialize dispatcher registry once */
     if (!g_initialized) {
-        // TODO: call lagfx_dispatcher_registry_init() here
         g_initialized = 1;
     }
 
