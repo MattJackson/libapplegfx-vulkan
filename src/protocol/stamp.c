@@ -28,6 +28,15 @@
 void lagfx_advance_stamp_cell(lagfx_protocol_t *p, uint32_t slot, uint32_t target) {
     if (!lagfx_protocol_is_valid(p)) return;
 
+    /* No ring base PFN yet → kext hasn't published the stamp page;
+     * suppress the write (writing to GPA=0+slot*4 would clobber low
+     * RAM in the guest). The stamp-unit test exercises this guard. */
+    if (p->ring_base_pfn == 0u) {
+        LAGFX_TRACE("stamp_cell[%u]: ring_base_pfn=0, suppressing write target=%u",
+                    slot, target);
+        return;
+    }
+
     /* (ring_base_pfn << 12) + slot*4 — NOT ring_base_gpa. */
     uint64_t cell_addr = ((uint64_t)p->ring_base_pfn << 12) + (slot * 4);
     uint32_t cur = 0u;
