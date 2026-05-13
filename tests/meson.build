@@ -128,6 +128,7 @@ if fs.is_file(meson.current_source_dir() / 'resource-unit.c')
 endif
 
 # Resource registry integration tests (requires Vulkan for opcode wiring).
+# Linux-only: runtime skip on non-Linux hosts.
 if fs.is_file(meson.current_source_dir() / 'resource-registry.c')
   resource_registry_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
@@ -139,7 +140,11 @@ if fs.is_file(meson.current_source_dir() / 'resource-registry.c')
     dependencies : resource_registry_deps,
     build_by_default : true,
   )
-  test('resource registry (integration)', resource_registry_test)
+  if host_machine.system() == 'linux'
+    test('resource registry (integration)', resource_registry_test)
+  else
+    message('resource-registry integration test built but not run (non-Linux).')
+  endif
 endif
 
 # Stamp advancement unit tests (standalone — no Vulkan dependency).
@@ -154,6 +159,7 @@ if fs.is_file(meson.current_source_dir() / 'stamp-unit.c')
 endif
 
 # Stamp helper integration tests (requires Vulkan for complete_stamp_slot).
+# Linux-only: runtime skip on non-Linux hosts.
 if fs.is_file(meson.current_source_dir() / 'stamp-helpers.c')
   stamp_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
@@ -165,7 +171,11 @@ if fs.is_file(meson.current_source_dir() / 'stamp-helpers.c')
     dependencies : stamp_deps,
     build_by_default : true,
   )
-  test('stamp helpers (integration)', stamp_helpers_test)
+  if host_machine.system() == 'linux'
+    test('stamp helpers (integration)', stamp_helpers_test)
+  else
+    message('stamp-helpers integration test built but not run (non-Linux).')
+  endif
 endif
 
 # M4 task-translate + define_host_task unit tests. Covers
