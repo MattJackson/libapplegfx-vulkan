@@ -14,6 +14,7 @@ lagfx_sources += files(
 # installed. subdir() calls for subsystem-local sources go here.
 
 subdir('common')
+subdir('timer')     # Host timer callbacks (Phase 1.A online event)
 subdir('protocol')
 subdir('dispatchers')
 subdir('handlers')
