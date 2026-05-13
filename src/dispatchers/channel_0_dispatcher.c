@@ -112,6 +112,15 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
             lagfx_op_debug(p, hdr);
             break;
 
+        /* CmdExecIndirect2 (0x20) — dylib emits this on the root
+         * channel (kext-side per-channel variant is 0x37 on ch 1..4).
+         * Same outer payload format per M4-inner-opcode-implementation-
+         * guide.md §1.1. Stage 20 inner walker lives in the compute
+         * exec handler — reuse it. */
+        case LAGFX_OP_EXEC_INDIRECT2:  /* 0x20 */
+            lagfx_compute_exec_indirect2(p, hdr);
+            break;
+
         /* === Kext extended opcodes (0x30..0x3a) =====================
          * The kext fires four 0x30 + one 0x33 + one 0x38 in its
          * initial setup burst. Without these responses

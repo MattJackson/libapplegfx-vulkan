@@ -78,9 +78,59 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
         /* Kext-side per-channel exec variant per
          * M4-inner-opcode-implementation-guide.md §1.1 — same outer
          * payload as 0x20, kext emits this on the per-channel exec
-         * rings (ch 1..4). */
-        case 0x37u:  /* RE: paravirt-re M4-inner-opcode-implementation-guide.md §1.1 */
+         * rings (ch 1..4). Conflicts with LAGFX_OP_CHANNEL_EVENT_37
+         * naming in opcodes.h — the kext-disasm pass classified 0x37
+         * as "ChannelEventMachine-adjacent" before the M4 RE pass
+         * identified it as the per-channel CmdExecIndirect2. The
+         * payload's outer layout (12 + dc*24 + rc*16) distinguishes
+         * the two at runtime; for now route 0x37 to exec_indirect2
+         * which handles both empty (event-only) and populated (real
+         * exec) payloads gracefully. */
+        case LAGFX_OP_CHANNEL_EVENT_37:  /* 0x37 — see comment above */
             lagfx_compute_exec_indirect2(p, hdr);
+            break;
+
+        /* Channel-event / immediate-vchan opcodes fired by the kext
+         * on the Immediate (ch=2) and Uploads/Downloads (ch=3/4)
+         * channels. Log + ack — these don't carry render workloads
+         * (no inner-PGCmdHeader stream); they're kext-internal lifecycle
+         * events. Documented in paravirt-re/library/PROTOCOL.md §13
+         * + journey/opcodes-0x35-0x36-0x39.md. */
+        case LAGFX_OP_UNMAP_MEMORY_IMMEDIATE: /* 0x22 — CmdUnmapMemoryImmediate */
+            LAGFX_LOG("compute: 0x22 CmdUnmapMemoryImmediate ch=%u stamp=0x%08x "
+                      "payload_size=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_SET_OBJECT_LIST:        /* 0x24 */
+            LAGFX_LOG("compute: 0x24 CmdSetObjectList ch=%u stamp=0x%08x payload_size=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_SET_OBJECT_PLACEMENT:   /* 0x25 */
+            LAGFX_LOG("compute: 0x25 CmdSetObjectPlacement ch=%u stamp=0x%08x payload_size=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_IOSURFACE_LOOKUP:       /* 0x28 */
+            LAGFX_LOG("compute: 0x28 CmdIOSurfaceLookup ch=%u stamp=0x%08x payload_size=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_CHANNEL_EVENT_34:       /* 0x34 */
+        case LAGFX_OP_CHANNEL_EVENT_35:       /* 0x35 */
+        case LAGFX_OP_CHANNEL_EVENT_36:       /* 0x36 */
+            /* ChannelEventMachine-adjacent (kext-internal scheduler
+             * pings). Log + ack. 0x37 is handled above as the
+             * per-channel CmdExecIndirect2. */
+            LAGFX_LOG("compute: channel_event 0x%02x ch=%u stamp=0x%08x payload_size=%u",
+                      (unsigned)hdr->opcode, (unsigned)p->current_chan_id,
+                      hdr->stamp, (unsigned)hdr->payload_size);
+            break;
+        case LAGFX_OP_MAP_MEMORY_IMMEDIATE:   /* 0x39 — CmdMapMemoryImmediate */
+            LAGFX_LOG("compute: 0x39 CmdMapMemoryImmediate ch=%u stamp=0x%08x payload_size=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      (unsigned)hdr->payload_size);
             break;
 
         default:
