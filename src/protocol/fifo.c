@@ -36,6 +36,7 @@
 #include "protocol.h"
 #include "state.h"
 #include "opcodes.h"
+#include "../common/le.h"
 #include "../common/log.h"
 #include "../device.h"
 
@@ -48,29 +49,16 @@
 #define LAGFX_FIFO_DRAIN_MAX_CMDS 128u
 #define LAGFX_FIFO_MAX_CMD_BYTES  4096u
 
-/* Little-endian u16 / u32 readers. Guest protocol is x86-64 LE per
- * command-buffer-format.md §2. We do a per-byte read so this compiles
- * to something sensible regardless of host alignment rules. */
-static inline uint16_t read_le16(const uint8_t *b) {
-    return (uint16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8));
-}
-static inline uint32_t read_le32(const uint8_t *b) {
-    return (uint32_t)b[0]
-         | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16)
-         | ((uint32_t)b[3] << 24);
-}
-
 bool lagfx_fifo_parse_header(const uint8_t *bytes, size_t len,
                              lagfx_cmd_header_t *hdr_out) {
     if (!bytes || !hdr_out || len < LAGFX_CMD_HEADER_BYTES) {
         return false;
     }
 
-    uint16_t opcode       = read_le16(bytes + 0);
-    uint16_t arg_count_8b = read_le16(bytes + 2);
-    uint32_t total_length = read_le32(bytes + 4);
-    uint32_t stamp        = read_le32(bytes + 8);
+    uint16_t opcode       = lagfx_le16(bytes + 0);
+    uint16_t arg_count_8b = lagfx_le16(bytes + 2);
+    uint32_t total_length = lagfx_le32(bytes + 4);
+    uint32_t stamp        = lagfx_le32(bytes + 8);
 
     /* Sanity: length must be at least the header size. */
     if (total_length < LAGFX_CMD_HEADER_BYTES) {

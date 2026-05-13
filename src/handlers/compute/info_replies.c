@@ -62,24 +62,10 @@
  */
 
 #include "info_replies.h"
+#include "common/le.h"
 #include "common/log.h"
 
 #include <string.h>
-
-/* Little-endian readers (private to this TU; identical to the ones in
- * exec_cmdbuf.c — keeping them here too means this file is buildable
- * without including exec_cmdbuf.c internals). */
-static inline uint32_t lagfx_le32_local(const uint8_t *b) {
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-}
-
-static inline uint64_t lagfx_le64_local(const uint8_t *b) {
-    return (uint64_t)b[0] | ((uint64_t)b[1] << 8)
-         | ((uint64_t)b[2] << 16) | ((uint64_t)b[3] << 24)
-         | ((uint64_t)b[4] << 32) | ((uint64_t)b[5] << 40)
-         | ((uint64_t)b[6] << 48) | ((uint64_t)b[7] << 56);
-}
 
 void lagfx_info_dispatch(lagfx_protocol_t *p,
                           uint32_t inner_opcode,
@@ -124,9 +110,9 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
          *   +0x19..0x1b pad
          */
         if (body_len >= 16u) {
-            ref          = lagfx_le32_local(body + 0);
-            buffer_id    = lagfx_le32_local(body + 4);
-            reply_offset = lagfx_le64_local(body + 8);
+            ref          = lagfx_le32(body + 0);
+            buffer_id    = lagfx_le32(body + 4);
+            reply_offset = lagfx_le64(body + 8);
             have_triplet = true;
             reply_size   = 0x1cu;
             opname       = "0x1c2 ComputePipelineStateInfo";
@@ -150,8 +136,8 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
          * kext expectations — kext may compute against texture descriptor. */
         if (body_len >= 0x2cu) {
             ref          = 0;  /* no resource ref in this opcode */
-            buffer_id    = lagfx_le32_local(body + 0x20);
-            reply_offset = lagfx_le64_local(body + 0x24);
+            buffer_id    = lagfx_le32(body + 0x20);
+            reply_offset = lagfx_le64(body + 0x24);
             have_triplet = true;
             reply_size   = 0x10u;
             opname       = "0x1c3 HeapTextureSizeAndAlign";
@@ -168,9 +154,9 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
          * per-layer trailer not yet implemented. // TODO: per-layer
          * physicalSize trailer requires layerCount loop. */
         if (body_len >= 0x18u) {
-            ref          = lagfx_le32_local(body + 0);
-            buffer_id    = lagfx_le32_local(body + 4);
-            reply_offset = lagfx_le64_local(body + 8);
+            ref          = lagfx_le32(body + 0);
+            buffer_id    = lagfx_le32(body + 4);
+            reply_offset = lagfx_le64(body + 8);
             have_triplet = true;
             reply_size   = 0x14u;
             opname       = "0x1c4 RasterizationRateMapInfo";
@@ -192,9 +178,9 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
          * body=0x1c, reply=0x8 (MTLCoordinate2D = {float x; float y}).
          * Pass-through: echo the input coordinate @ +0x14. */
         if (body_len >= 0x1cu) {
-            ref          = lagfx_le32_local(body + 0);
-            buffer_id    = lagfx_le32_local(body + 4);
-            reply_offset = lagfx_le64_local(body + 8);
+            ref          = lagfx_le32(body + 0);
+            buffer_id    = lagfx_le32(body + 4);
+            reply_offset = lagfx_le64(body + 8);
             have_triplet = true;
             reply_size   = 0x8u;
             opname = (inner_opcode == 0x1c6u)
@@ -210,9 +196,9 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
          * stubbed). Log and continue — guest reads zeros for every
          * sample-point coord, but at least we know it was requested. */
         if (body_len >= 0x20u) {
-            ref          = lagfx_le32_local(body + 0);
-            buffer_id    = lagfx_le32_local(body + 4);
-            reply_offset = lagfx_le64_local(body + 8);
+            ref          = lagfx_le32(body + 0);
+            buffer_id    = lagfx_le32(body + 4);
+            reply_offset = lagfx_le64(body + 8);
             opname       = "0x1c8 MapPhysicalToScreenMultiple";
             LAGFX_LOG("info_reply: %s ref=0x%x buffer_id=%u reply_offset=0x%llx — "
                       "variable reply not stubbed",
@@ -230,9 +216,9 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
          *   +0x0a..0x0b pad
          */
         if (body_len >= 16u) {
-            ref          = lagfx_le32_local(body + 0);
-            buffer_id    = lagfx_le32_local(body + 4);
-            reply_offset = lagfx_le64_local(body + 8);
+            ref          = lagfx_le32(body + 0);
+            buffer_id    = lagfx_le32(body + 4);
+            reply_offset = lagfx_le64(body + 8);
             have_triplet = true;
             reply_size   = 0xcu;
             opname       = "0x1c9 RenderPipelineStateInfo";
@@ -252,9 +238,9 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
          * u32 buffer_id @ +0x1c, u64 reply_offset @ +0x20.
          * reply=0x4 (u32 length). 0 = no imageblock memory. */
         if (body_len >= 0x28u) {
-            ref          = lagfx_le32_local(body + 0);
-            buffer_id    = lagfx_le32_local(body + 0x1c);
-            reply_offset = lagfx_le64_local(body + 0x20);
+            ref          = lagfx_le32(body + 0);
+            buffer_id    = lagfx_le32(body + 0x1c);
+            reply_offset = lagfx_le64(body + 0x20);
             have_triplet = true;
             reply_size   = 0x4u;
             opname = (inner_opcode == 0x1cau)
@@ -270,9 +256,9 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
          * @ +8, u64 reply_offset @ +0xc. reply=0x8 (MTLResourceID = u64).
          * Echo ref into low 32 bits for a stable per-resource id. */
         if (body_len >= 0x14u) {
-            ref          = lagfx_le32_local(body + 0);
-            buffer_id    = lagfx_le32_local(body + 8);
-            reply_offset = lagfx_le64_local(body + 0xc);
+            ref          = lagfx_le32(body + 0);
+            buffer_id    = lagfx_le32(body + 8);
+            reply_offset = lagfx_le64(body + 0xc);
             have_triplet = true;
             reply_size   = 0x8u;
             opname       = "0x1cc ObjectUniqueIdentifier";
@@ -294,9 +280,9 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
          * implement Metal-side resources, populate gpuResourceID +
          * gpuAddress for buffer/texture/heap/sampler. */
         if (body_len >= 16u) {
-            ref          = lagfx_le32_local(body + 0);
-            buffer_id    = lagfx_le32_local(body + 4);
-            reply_offset = lagfx_le64_local(body + 8);
+            ref          = lagfx_le32(body + 0);
+            buffer_id    = lagfx_le32(body + 4);
+            reply_offset = lagfx_le64(body + 8);
             have_triplet = true;
             switch (inner_opcode) {
             case 0x1cdu:
@@ -331,7 +317,7 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
      * divides by it. The case above already writes 32; this is the
      * belt-and-suspenders check that survived from pre-refactor. */
     if (inner_opcode == 0x1c2u && reply_size >= 12u) {
-        uint32_t tew = lagfx_le32_local(reply + 8);
+        uint32_t tew = lagfx_le32(reply + 8);
         if (tew == 0u) {
             LAGFX_WARN("info_reply: 0x1c2 threadExecutionWidth=0 — forcing 32");
             reply[8] = 32;
@@ -359,8 +345,8 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
         return;
     }
     const uint8_t *brec = outer_resources + (size_t)buffer_id * 16u;
-    uint64_t buffer_dev_addr = lagfx_le64_local(brec + 0);
-    uint32_t buffer_len      = lagfx_le32_local(brec + 8);
+    uint64_t buffer_dev_addr = lagfx_le64(brec + 0);
+    uint32_t buffer_len      = lagfx_le32(brec + 8);
 
     if (reply_offset + (uint64_t)reply_size > (uint64_t)buffer_len) {
         LAGFX_WARN("info_reply: %s reply_offset=0x%llx + %zu > buffer_len=%u — skip",

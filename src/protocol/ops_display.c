@@ -42,6 +42,7 @@
 #include "ops_display.h"
 #include "protocol.h"
 #include "state.h"
+#include "../common/le.h"
 #include "../common/log.h"
 #include "../device.h"
 #include "../display.h"
@@ -51,36 +52,11 @@
 
 /* ================================================================
  * Little-endian primitives
- * ================================================================ */
-
-static inline uint32_t lagfx_le32(const uint8_t *b) {
-    return (uint32_t)b[0]
-         | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16)
-         | ((uint32_t)b[3] << 24);
-}
-
-static inline uint64_t lagfx_le64(const uint8_t *b) {
-    return (uint64_t)b[0]
-         | ((uint64_t)b[1] << 8)
-         | ((uint64_t)b[2] << 16)
-         | ((uint64_t)b[3] << 24)
-         | ((uint64_t)b[4] << 32)
-         | ((uint64_t)b[5] << 40)
-         | ((uint64_t)b[6] << 48)
-         | ((uint64_t)b[7] << 56);
-}
-
-static inline uint16_t lagfx_le16(const uint8_t *b) {
-    return (uint16_t)b[0] | ((uint16_t)b[1] << 8);
-}
-
-/* Helper to read float from little-endian u32. */
-static inline float lagfx_lef32(const uint8_t *b) {
-    union { uint32_t u; float f; } conv;
-    conv.u = lagfx_le32(b);
-    return conv.f;
-}
+ * ================================================================
+ *
+ * Readers (lagfx_le16/32/64, lagfx_lef32) live in common/le.h.
+ * The put-helper below is local to this TU — keep it here.
+ */
 
 static inline void lagfx_put_le32(uint8_t *b, uint32_t v) {
     b[0] = (uint8_t)(v & 0xffu);

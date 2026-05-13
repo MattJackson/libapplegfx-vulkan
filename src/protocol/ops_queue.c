@@ -18,6 +18,7 @@
 #include "opcodes.h"
 #include "protocol.h"
 #include "state.h"
+#include "../common/le.h"
 #include "../common/log.h"
 
 #include <string.h>
@@ -43,13 +44,6 @@ void lagfx_ops_queue_reset(void) {
 /* Setter function for display vchan handler to signal device creation complete */
 void lagfx_ops_queue_set_cmddefine_called(void) {
     g_cmd_define_fifo_called = true;
-}
-
-static inline uint32_t lagfx_le32(const uint8_t *b) {
-    return (uint32_t)b[0]
-         | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16)
-         | ((uint32_t)b[3] << 24);
 }
 
 /* ===========================================================================

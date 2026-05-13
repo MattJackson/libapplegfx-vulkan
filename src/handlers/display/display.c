@@ -7,24 +7,8 @@
  */
 
 #include "../handlers.h"
+#include "common/le.h"
 #include "common/log.h"
-
-/* Little-endian u16/u32/u64 readers (ring is LE on all hosts). */
-static inline uint16_t lagfx_le16(const uint8_t *b) {
-    return (uint16_t)b[0] | ((uint16_t)b[1] << 8);
-}
-
-static inline uint32_t lagfx_le32(const uint8_t *b) {
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-}
-
-static inline uint64_t lagfx_le64(const uint8_t *b) {
-    return (uint64_t)b[0] | ((uint64_t)b[1] << 8)
-         | ((uint64_t)b[2] << 16) | ((uint64_t)b[3] << 24)
-         | ((uint64_t)b[4] << 32) | ((uint64_t)b[5] << 40)
-         | ((uint64_t)b[6] << 48) | ((uint64_t)b[7] << 56);
-}
 
 lagfx_handler_status_t lagfx_display_ack(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) {

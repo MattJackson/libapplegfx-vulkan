@@ -30,6 +30,7 @@
 #include "resource_registry.h"
 #include "state.h"
 #include "../device.h"
+#include "../common/le.h"
 #include "../common/log.h"
 
 #include <string.h>
@@ -65,24 +66,7 @@
  *   0x4  supports flags pack
  * =========================================================================== */
 
-/* Little-endian u32 reader (host may be any endian; ring is LE). */
-static inline uint32_t lagfx_le32(const uint8_t *b) {
-    return (uint32_t)b[0]
-         | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16)
-         | ((uint32_t)b[3] << 24);
-}
-
-static inline uint64_t lagfx_le64(const uint8_t *b) {
-    return (uint64_t)b[0]
-         | ((uint64_t)b[1] << 8)
-         | ((uint64_t)b[2] << 16)
-         | ((uint64_t)b[3] << 24)
-         | ((uint64_t)b[4] << 32)
-         | ((uint64_t)b[5] << 40)
-         | ((uint64_t)b[6] << 48)
-         | ((uint64_t)b[7] << 56);
-}
+/* Little-endian readers come from common/le.h. */
 
 static uint32_t lagfx_device_info_for_key(uint32_t key) {
     switch (key) {

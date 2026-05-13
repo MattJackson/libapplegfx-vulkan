@@ -24,6 +24,7 @@
 #include "channel_0_dispatcher.h"
 #include "../device.h"
 #include "../doorbell.h"
+#include "../common/le.h"
 #include "../common/log.h"
 #include "protocol/opcodes.h"
 #include "protocol/state.h"
@@ -31,16 +32,6 @@
 
 #include <stdio.h>
 #include <string.h>
-
-/* Little-endian readers (guest protocol is LE on x86-64). */
-static inline uint16_t read_le16(const uint8_t *b) {
-    return (uint16_t)b[0] | ((uint16_t)b[1] << 8);
-}
-
-static inline uint32_t read_le32(const uint8_t *b) {
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-}
 
 /* Sanity cap matches the legacy drainer. 4 KiB per command is well
  * above any single legitimate macOS command we've seen. */
@@ -61,11 +52,6 @@ static inline uint32_t read_le32(const uint8_t *b) {
  * about to do (the inflight ioreg test). If 0x30/0x33/0x38 prove out
  * end-to-end after this batch, they can promote to named helpers.
  */
-
-static inline uint32_t ch0_read_le32(const uint8_t *b) {
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-}
 
 /* Dispatch a single command to the appropriate handler. Handlers
  * return a status; on OK (or fail-open SIZE/STATE errors) we still
@@ -140,7 +126,7 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                            (unsigned)hdr->payload_size);
                 break;
             }
-            uint32_t child_id = ch0_read_le32(hdr->payload + 0);
+            uint32_t child_id = lagfx_le32(hdr->payload + 0);
             lagfx_fifo_entry_t *entry = lagfx_protocol_find_fifo(p, child_id);
             if (entry) {
                 LAGFX_LOG("CmdDefineChildChannel: child_id=%u (re-using slot) stamp=0x%08x",
@@ -175,9 +161,9 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                            (unsigned)hdr->payload_size);
                 break;
             }
-            uint32_t task_id   = ch0_read_le32(hdr->payload + 0);
-            uint32_t heap_pfn  = ch0_read_le32(hdr->payload + 4);
-            uint32_t heap_size = ch0_read_le32(hdr->payload + 8);
+            uint32_t task_id   = lagfx_le32(hdr->payload + 0);
+            uint32_t heap_pfn  = lagfx_le32(hdr->payload + 4);
+            uint32_t heap_size = lagfx_le32(hdr->payload + 8);
             lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
             if (entry) {
                 entry->heap_pfn  = heap_pfn;
@@ -209,8 +195,8 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                            (unsigned)hdr->payload_size);
                 break;
             }
-            uint32_t slot_index    = ch0_read_le32(hdr->payload + 0);
-            uint32_t root_page_pfn = ch0_read_le32(hdr->payload + 12);
+            uint32_t slot_index    = lagfx_le32(hdr->payload + 0);
+            uint32_t root_page_pfn = lagfx_le32(hdr->payload + 12);
             uint32_t task_id       = slot_index >> 1;
 
             lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
@@ -299,10 +285,10 @@ size_t channel_0_dispatcher_drain(lagfx_protocol_t *p) {
             break;
         }
 
-        uint16_t opcode       = read_le16(hdr_buf + 0);
-        uint16_t arg_count_8b = read_le16(hdr_buf + 2);
-        uint32_t length       = read_le32(hdr_buf + 4);
-        uint32_t stamp        = read_le32(hdr_buf + 8);
+        uint16_t opcode       = lagfx_le16(hdr_buf + 0);
+        uint16_t arg_count_8b = lagfx_le16(hdr_buf + 2);
+        uint32_t length       = lagfx_le32(hdr_buf + 4);
+        uint32_t stamp        = lagfx_le32(hdr_buf + 8);
 
         if (length < LAGFX_CMD_HEADER_BYTES ||
             length > LAGFX_CH0_MAX_CMD_BYTES ||

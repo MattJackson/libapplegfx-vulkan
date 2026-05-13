@@ -27,22 +27,13 @@
 #include "channel_display_dispatcher.h"
 #include "../doorbell.h"
 #include "../device.h"
+#include "../common/le.h"
 #include "../common/log.h"
 #include "protocol/opcodes.h"
 #include "protocol/state.h"
 #include "handlers/handlers.h"
 
 #include <stddef.h>
-
-/* Little-endian readers (guest protocol is LE). */
-static inline uint16_t read_le16(const uint8_t *b) {
-    return (uint16_t)b[0] | ((uint16_t)b[1] << 8);
-}
-
-static inline uint32_t read_le32(const uint8_t *b) {
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-}
 
 #define LAGFX_DISP_DRAIN_MAX_CMDS 128u
 #define LAGFX_DISP_MAX_CMD_BYTES  4096u
@@ -158,10 +149,10 @@ static bool fifo_descriptor_read(lagfx_protocol_t *p,
         return false;
     }
 
-    uint32_t write_ptr = read_le32(desc + 0x00);
-    uint32_t read_ptr  = read_le32(desc + 0x04);
-    uint32_t desc_chan = read_le32(desc + 0x0c);
-    uint32_t ring_pfn  = read_le32(desc + 0x10);
+    uint32_t write_ptr = lagfx_le32(desc + 0x00);
+    uint32_t read_ptr  = lagfx_le32(desc + 0x04);
+    uint32_t desc_chan = lagfx_le32(desc + 0x0c);
+    uint32_t ring_pfn  = lagfx_le32(desc + 0x10);
 
     if (ring_pfn == 0u) {
         LAGFX_TRACE("fifo_descriptor_read: ch=%u ring_pfn=0 — descriptor "
@@ -207,7 +198,7 @@ static bool ring_resolve_data_gpa(lagfx_protocol_t *p,
                    "0x%llx", (unsigned long long)(page0_gpa + page_idx * 4u));
         return false;
     }
-    uint32_t data_pfn = read_le32(pfn_buf);
+    uint32_t data_pfn = lagfx_le32(pfn_buf);
     if (data_pfn == 0u) {
         LAGFX_WARN("ring_resolve_data_gpa: PFN-array entry[%u]=0 — ring "
                    "page not mapped at off=0x%x", page_idx, offset);
@@ -298,10 +289,10 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
             break;
         }
 
-        uint16_t opcode       = read_le16(hdr_buf + 0);
-        uint16_t arg_count_8b = read_le16(hdr_buf + 2);
-        uint32_t length       = read_le32(hdr_buf + 4);
-        uint32_t stamp        = read_le32(hdr_buf + 8);
+        uint16_t opcode       = lagfx_le16(hdr_buf + 0);
+        uint16_t arg_count_8b = lagfx_le16(hdr_buf + 2);
+        uint32_t length       = lagfx_le32(hdr_buf + 4);
+        uint32_t stamp        = lagfx_le32(hdr_buf + 8);
 
         if (length < LAGFX_CMD_HEADER_BYTES ||
             length > LAGFX_DISP_MAX_CMD_BYTES ||

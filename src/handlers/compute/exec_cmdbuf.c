@@ -27,22 +27,10 @@
 
 #include "../handlers.h"
 #include "info_replies.h"
+#include "common/le.h"
 #include "common/log.h"
 
 #include <stdint.h>
-
-/* Little-endian u32/u64 readers (ring is LE on all hosts). */
-static inline uint32_t lagfx_le32(const uint8_t *b) {
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-}
-
-static inline uint64_t lagfx_le64(const uint8_t *b) {
-    return (uint64_t)b[0] | ((uint64_t)b[1] << 8)
-         | ((uint64_t)b[2] << 16) | ((uint64_t)b[3] << 24)
-         | ((uint64_t)b[4] << 32) | ((uint64_t)b[5] << 40)
-         | ((uint64_t)b[6] << 48) | ((uint64_t)b[7] << 56);
-}
 
 /* === Per-task radix-tree translator ============================== */
 
