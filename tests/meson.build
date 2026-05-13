@@ -116,9 +116,18 @@ if fs.is_file(meson.current_source_dir() / 'protocol-dispatch.c')
   test('protocol dispatch', protocol_dispatch_test)
 endif
 
-# Resource registry unit tests. Covers register/lookup/unregister/
-# clear_task, plus opcode wiring (MapMemoryImmediate, DeleteTask,
-# DeleteResource, SetObjectPlacement).
+# Resource registry unit tests (standalone — no Vulkan dependency).
+# Tests lagfx_resource_register/lookup/unregister/clear_task directly.
+if fs.is_file(meson.current_source_dir() / 'resource-unit.c')
+  resource_unit_test = executable('resource-unit',
+    'resource-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    build_by_default : true,
+  )
+  test('resource registry (unit)', resource_unit_test)
+endif
+
+# Resource registry integration tests (requires Vulkan for opcode wiring).
 if fs.is_file(meson.current_source_dir() / 'resource-registry.c')
   resource_registry_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
@@ -130,13 +139,21 @@ if fs.is_file(meson.current_source_dir() / 'resource-registry.c')
     dependencies : resource_registry_deps,
     build_by_default : true,
   )
-  test('resource registry', resource_registry_test)
+  test('resource registry (integration)', resource_registry_test)
 endif
 
-# Stamp helper unit tests. Covers lagfx_advance_stamp_cell (driven
-# indirectly via complete_stamp_slot, which is its only public caller),
-# lagfx_protocol_complete_stamp_slot, and the slot=0 wrapper
-# lagfx_protocol_complete_stamp. See tests/stamp-helpers.c header.
+# Stamp advancement unit tests (standalone — no Vulkan dependency).
+# Tests lagfx_advance_stamp_cell monotonicity directly with buffer inputs.
+if fs.is_file(meson.current_source_dir() / 'stamp-unit.c')
+  stamp_unit_test = executable('stamp-unit',
+    'stamp-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    build_by_default : true,
+  )
+  test('stamp helpers (unit)', stamp_unit_test)
+endif
+
+# Stamp helper integration tests (requires Vulkan for complete_stamp_slot).
 if fs.is_file(meson.current_source_dir() / 'stamp-helpers.c')
   stamp_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
@@ -148,7 +165,7 @@ if fs.is_file(meson.current_source_dir() / 'stamp-helpers.c')
     dependencies : stamp_deps,
     build_by_default : true,
   )
-  test('stamp helpers', stamp_helpers_test)
+  test('stamp helpers (integration)', stamp_helpers_test)
 endif
 
 # M4 task-translate + define_host_task unit tests. Covers
