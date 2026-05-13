@@ -17,6 +17,7 @@ lagfx_sources += files(
   'compute/info_replies.c',
   'compute/render_inner_ops.c',   # encType=2 inner-opcode table (96 entries)
   'compute/render_pass.c',        # 0x1a RenderPassDescriptor parser
+  'compute/blit_inner_ops.c',     # encType=4 blit inner-opcode table (24+7)
   
   # Sync handler (opcode 0x42)
   'sync/sync.c',

@@ -28,6 +28,7 @@
 #include "../handlers.h"
 #include "info_replies.h"
 #include "render_inner_ops.h"
+#include "blit_inner_ops.h"
 #include "common/le.h"
 #include "common/log.h"
 
@@ -213,12 +214,9 @@ static size_t inner_walk_segment(lagfx_protocol_t *p,
                                         outer_resources, resource_count,
                                         task, task_translate);
                 } else {
-                    /* TODO: Stage 30 — wire blit_inner_ops_dispatch
-                     * once the blit inner-op table is consolidated.
-                     * Until then, log + absorb so the walker doesn't
-                     * stall on unrecognised blit opcodes. */
-                    LAGFX_TRACE("inner_walk: blit (encType=4) op=0x%03x len=%u — observe only",
-                                (unsigned)op16, total_len);
+                    /* Real blit dispatch — 24-entry table at 0x12c..0x143
+                     * plus extended low-range (0x001..0x07d). */
+                    lagfx_blit_inner_dispatch(p, op16, body, body_len);
                 }
                 break;
             }
