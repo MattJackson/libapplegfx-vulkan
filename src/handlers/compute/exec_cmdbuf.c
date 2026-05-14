@@ -294,9 +294,29 @@ static size_t locate_segment_header(const uint8_t *cmdbuf, size_t length) {
 }
 
 /* Read a resource's cmdbuf from guest memory and walk its segments.
- * Translation goes via the per-task radix tree if task->root_page_pfn
- * is set; if not, fall back to identity (treating host_gpu_addr as a
- * GPA — observed working pre-2026-05-09 when 0x38 wasn't firing). */
+ *
+ * Stage 30: page-walked translation per
+ * paravirt-re/library/state-machines/per-task-page-table.md. A
+ * cmdbuf spanning more than one 4 KiB page is the common case once
+ * macOS starts submitting real render passes — `desc_count > 0`
+ * payloads, command stream + resource_table laid out across multiple
+ * task-VA pages. The previous walker translated the first page only
+ * and treated the rest as a contiguous DMA from `first_gpa`; if the
+ * radix maps the next task-VA page to a NON-contiguous physical
+ * page, the second-page region of the read buffer contains data
+ * from the wrong page and inner_walk_segment fabricates garbage
+ * "inner opcodes" out of it.
+ *
+ * Fix: walk task_translate per page span, chain reads into the
+ * scratch buffer. Modelled on
+ * channel_compute_dispatcher.c:ring_resolve_data_gpa's per-page
+ * chunked read, except the GPA source is the radix tree rather
+ * than the per-channel ring's PFN-array.
+ *
+ * Translation falls back to identity when the task is unknown
+ * (pre-2026-05-09 mode when 0x38 wasn't firing); identity treats
+ * `host_gpu_addr` as a flat GPA and lets shell.read_memory cope.
+ */
 static void exec_walk_resource(lagfx_protocol_t *p,
                                 const lagfx_task_entry_t *task,
                                 uint64_t host_gpu_addr,
@@ -311,35 +331,54 @@ static void exec_walk_resource(lagfx_protocol_t *p,
         return;
     }
 
-    /* Try to translate the first page; on failure fall back to identity. */
-    uint64_t first_gpa = 0;
-    bool translated = false;
-    if (task) {
-        translated = task_translate(p, task, host_gpu_addr, &first_gpa);
-    }
-    if (!translated) {
-        first_gpa = host_gpu_addr;  /* fallback: VA == GPA */
-        LAGFX_TRACE("exec_walk_resource: task translate unavailable; "
-                    "using identity gpa=0x%llx",
-                    (unsigned long long)first_gpa);
-    }
-
-    /* Read the cmdbuf in one shot for small sizes; chunked otherwise.
-     * For Stage 20 a single contiguous page is the common case.
-     *
-     * scratch_exec lives on the protocol struct (state.h's
-     * "Per-dispatcher scratch buffers" doc-block) — single-threaded
-     * invariant: BQL serialises every drain callback that reaches
-     * this walker. */
+    /* Read up to scratch_exec bytes, chunked per page so the radix
+     * tree can map each task-VA page to whichever GPA the kext put
+     * it at. */
     uint8_t *buf = p->scratch_exec;
     uint32_t buf_size = LAGFX_MAX_RING_READ;
     uint32_t to_read = length < buf_size ? length : buf_size;
-    if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
-                                      first_gpa, to_read, buf)) {
-        LAGFX_TRACE("exec_walk_resource: read_memory failed at gpa=0x%llx",
-                    (unsigned long long)first_gpa);
-        return;
+
+    uint32_t bytes_read = 0;
+    while (bytes_read < to_read) {
+        uint64_t cur_va = host_gpu_addr + bytes_read;
+        uint64_t cur_gpa = 0;
+        bool translated = false;
+        if (task) {
+            translated = task_translate(p, task, cur_va, &cur_gpa);
+        }
+        if (!translated) {
+            cur_gpa = cur_va;  /* fallback: VA == GPA */
+            if (bytes_read == 0u) {
+                LAGFX_TRACE("exec_walk_resource: task translate unavailable; "
+                            "using identity gpa=0x%llx",
+                            (unsigned long long)cur_gpa);
+            }
+        }
+
+        /* Chunk = remainder of the current 4 KiB page (or remaining
+         * bytes to read, whichever is smaller). */
+        uint32_t off_in_page = (uint32_t)(cur_gpa & 0xfffu);
+        uint32_t chunk = 0x1000u - off_in_page;
+        if (chunk > to_read - bytes_read) {
+            chunk = to_read - bytes_read;
+        }
+
+        if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
+                                          cur_gpa, chunk,
+                                          buf + bytes_read)) {
+            LAGFX_TRACE("exec_walk_resource: read_memory failed at gpa=0x%llx "
+                        "(chunk %u, off=%u)",
+                        (unsigned long long)cur_gpa, chunk, bytes_read);
+            if (bytes_read == 0u) {
+                return;  /* nothing salvageable */
+            }
+            /* Partial read — fall through and walk what we have. */
+            break;
+        }
+        bytes_read += chunk;
     }
+    to_read = bytes_read;
+    if (to_read == 0u) return;
 
     size_t seg_off = locate_segment_header(buf, to_read);
     if (seg_off == (size_t)-1) {
