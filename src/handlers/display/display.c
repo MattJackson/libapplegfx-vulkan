@@ -333,6 +333,16 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
                 LAGFX_LOG("vchan_display_submit: using stored swap mapping gpa=0x%llx len=%llu for display[%u]",
                           (unsigned long long)fb_base, (unsigned long long)scanout_len,
                           display_index);
+            } else if (arg2 == 0 && !disp->scanout_valid) {
+                /* No stored swap mapping - kext expects us to use rt content.
+                  * Pass 0 gpa to trigger fallback readback path from render target. */
+                fb_base     = 0;
+                scanout_len = disp->rt_ready ? ((uint64_t)disp->rt_width * (uint64_t)disp->rt_height * 4u) :
+                              ((uint64_t)LAGFX_DISPLAY_DEFAULT_W *
+                               (uint64_t)LAGFX_DISPLAY_DEFAULT_H *
+                               (uint64_t)LAGFX_DISPLAY_DEFAULT_BYTES_PER_PIXEL);
+                LAGFX_LOG("vchan_display_submit: arg2=0, no stored mapping - using rt=%ux%u fallback len=%llu",
+                          disp->rt_width, disp->rt_height, (unsigned long long)scanout_len);
             } else {
                 fb_base     = (uint64_t)arg2 << 12;
                 scanout_len = disp->scanout_length > 0 ? disp->scanout_length :
