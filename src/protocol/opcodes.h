@@ -130,7 +130,25 @@ typedef enum {
     LAGFX_OP_UNMAP_MEMORY_IMMEDIATE   = 0x22, /* Compute-vchan CmdUnmapMemoryImmediate (see disjoint-namespace rule above) */
     LAGFX_OP_GET_DEVICE_INFO_2        = 0x3a,
     LAGFX_OP_NEW_USER_CLIENT          = 0x3b,
-    LAGFX_OP_UNKNOWN_3C               = 0x3c,
+    /* 0x3c emitted by AppleParavirtResource::replacePhysical()
+     * (kext VA 0x145643f2, mangled __ZN21AppleParavirtResource15replacePhysicalEv);
+     * single emit-site at VA 0x14564494 (`mov esi, 0x3c; call
+     * apvgpu_cmd_builder_init`). Channel: Immediate vchan (`accel[+0xe48]`,
+     * i.e. compute chan_id=2). Wire trailer: 8 bytes `{u32 eventID/taskID,
+     * u32 counter}` — same shape as 0x25 and 0x36. Called per-resource
+     * from `commitIntoGPUPageTable` (kext VA 0x1455dc4e) when the
+     * `[chan+0x114]` re-binding flag is set, signalling that the
+     * resource's host backing has been relocated.
+     *
+     * Naming note: this is the **kext-vchan** per-resource replacePhysical
+     * notification. Distinct from 0x09 LAGFX_OP_REPLACE_PHYSICAL on the
+     * root channel which is the TLV-style CmdReplacePhysical from
+     * AppleParavirtMemoryMap. Disjoint-namespace rule applies — see the
+     * `=== Disjoint-namespace rule ===` block above and
+     * `paravirt-re/library/journey/opcodes-0x35-0x36-0x39.md` for the
+     * kext-vchan emit-helper family this belongs to. */
+    LAGFX_OP_VCHAN_REPLACE_PHYSICAL   = 0x3c,
+    LAGFX_OP_UNKNOWN_3C               = LAGFX_OP_VCHAN_REPLACE_PHYSICAL,
     LAGFX_OP_EXEC_INDIRECT_EXT_41     = 0x41, /* highest; near exec-indirect bucket */
 
     /* --- Heap / Resource (0x80-0x82) ---------------------------- */

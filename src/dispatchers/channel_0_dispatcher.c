@@ -273,8 +273,21 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
             LAGFX_LOG("ch0: 0x3b CmdNewUserClient stamp=0x%08x payload=%u",
                       hdr->stamp, (unsigned)hdr->payload_size);
             break;
-        case LAGFX_OP_UNKNOWN_3C:            /* 0x3c — outer variant (RE pending) */
-            LAGFX_LOG("ch0: 0x3c CmdUnknown3C stamp=0x%08x payload=%u (RE pending)",
+        case LAGFX_OP_VCHAN_REPLACE_PHYSICAL: /* 0x3c — root-channel observation (kext disasm shows the only emit-site is on Immediate vchan; root path is defensive log+ack) */
+            /* RE: 0x3c is emitted by AppleParavirtResource::replacePhysical()
+             * at kext VA 0x14564494 — the single emit-site in the binary —
+             * and that site always submits on the Immediate vchan
+             * (compute chan_id=2) via `accel[+0xe48]`. See the matching
+             * case in channel_compute_dispatcher.c for the full RE
+             * (per-resource host-backing-relocation notification, 8-byte
+             * trailer {u32 eventID/taskID, u32 counter}).
+             *
+             * This case exists as a defensive log+ack in the unlikely
+             * event the kext routes the same opcode to root channel
+             * (e.g. for a future direct-from-root path); current macOS
+             * 15.7.4 build never does this — 0 occurrences in
+             * /tmp/lagfx.log across all observation windows. */
+            LAGFX_LOG("ch0: 0x3c VchanReplacePhysical (unexpected on root) stamp=0x%08x payload=%u",
                       hdr->stamp, (unsigned)hdr->payload_size);
             break;
         case LAGFX_OP_EXEC_INDIRECT_EXT_41:  /* 0x41 */

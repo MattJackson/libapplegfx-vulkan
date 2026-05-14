@@ -117,6 +117,59 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                       (unsigned)hdr->payload_size);
             break;
 
+        case LAGFX_OP_VCHAN_REPLACE_PHYSICAL: { /* 0x3c — per-resource replacePhysical on Immediate vchan */
+            /* RE: paravirt-re — single kext emit-site at vaddr 0x14564494
+             * in AppleParavirtResource::replacePhysical() (vaddr 0x145643f2,
+             * mangled __ZN21AppleParavirtResource15replacePhysicalEv).
+             * See paravirt-re/classes/AppleParavirtResource.md and the
+             * caller annotated/AppleParavirtMemoryMap-commitIntoGPUPageTable.annotated.asm
+             * (loop body at 0x1455dc4e calls this for each resource in
+             * task[+0xa0] when [chan+0x114] re-binding flag is set).
+             *
+             * Wire trailer: 8 bytes `{u32 eventID/taskID, u32 counter}` —
+             * same emit-helper family as 0x25/0x36 (single
+             * apvgpu_cmd_builder_reserve(8) after channel lock, then
+             * `[r12]=eventID; [r12+4]=[chan+0x180]=counter`). Total
+             * command size = 12 (header) + 8 (trailer) = 20 bytes;
+             * matches the live ring delta `(wp - rp) == 0x14` observed
+             * in /tmp/lagfx.log compute-drain traces.
+             *
+             * Semantics: kext notifies host that a per-task Resource has
+             * had its host backing pages relocated and any host-side
+             * mapping caches should be invalidated. The downstream side-
+             * table publishes (two `vt[+0x1b8]` calls at kext 0x14564598 /
+             * 0x145645b6) update `[accel_shared+0x380]`'s per-task tracker
+             * with the new task[+0x20] / task[+0x270] pointers — these
+             * are kext-internal cleanup, not wire data we need to
+             * consume.
+             *
+             * Log+ack correct because: until lagfx allocates real
+             * VkImage/VkBuffer per-resource (Stage 30 work; the
+             * pre-refactor real-translation paths in dead-code-to-revive/
+             * have been ported as parse-and-trace stubs per
+             * project_m5_inflight.md), there is no host-side mapping
+             * cache to invalidate. The kext does NOT wait on a
+             * 0x3c-specific stamp completion — `stamp` is the standard
+             * per-channel monotonic that the universal complete_stamp
+             * path already raises after dispatch.
+             *
+             * TODO (Stage 30): when per-resource Vulkan backing lands,
+             * look up the resource by `eventID` (== task->id via
+             * 0x14563376) and flush any host-side mapping cache. The
+             * `counter` field is the per-channel emit counter and is
+             * not load-bearing for host behaviour. */
+            uint32_t eventID = 0, counter = 0;
+            if (hdr->payload && hdr->payload_size >= 8) {
+                eventID = lagfx_le32(hdr->payload + 0);
+                counter = lagfx_le32(hdr->payload + 4);
+            }
+            LAGFX_LOG("compute: 0x3c VchanReplacePhysical ch=%u stamp=0x%08x "
+                      "eventID=%u counter=%u payload_size=%u",
+                      (unsigned)p->current_chan_id, hdr->stamp,
+                      eventID, counter, (unsigned)hdr->payload_size);
+            break;
+        }
+
         default:
             LAGFX_WARN("compute dispatch: ch=%u unknown opcode 0x%04x stamp=0x%08x",
                        (unsigned)p->current_chan_id, hdr->opcode, hdr->stamp);
