@@ -405,3 +405,46 @@ if fs.is_file(meson.current_source_dir() / 'air2spirv.c')
   test('air2spirv', air2spirv_test)
 endif
 
+
+# Page-walked translation regression test for commit 3d9cf76.
+if fs.is_file(meson.current_source_dir() / 'exec-cmdbuf-translation.c')
+  exec_cmdbuf_translation_test = executable('exec-cmdbuf-translation',
+    'exec-cmdbuf-translation.c',
+    include_directories : [include_dir, internal_include_dir],
+    build_by_default : true,
+  )
+  test('page-walked translation regression (unit)', exec_cmdbuf_translation_test)
+endif
+
+# InfoDecoder reply unit tests. Validates 0x1c2 threadExecutionWidth invariant,
+# 0x1c3 NSUInteger long-form fields, and 0x1c6/0x1c7 coordinate pass-through.
+if fs.is_file(meson.current_source_dir() / 'info-replies-unit.c')
+  info_replies_unit_test = executable('info-replies-unit',
+    'info-replies-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    build_by_default : true,
+  )
+  test('InfoDecoder replies (unit)', info_replies_unit_test)
+endif
+
+# Render inner-opcode unit tests. Validates 0x1a DescribeRenderPass parse-and-count,
+# 0x65 SetBlendColor float field parsing, and 0x74 SetRenderPipelineState reference resolution.
+if fs.is_file(meson.current_source_dir() / 'render-inner-ops-unit.c')
+  render_inner_ops_unit_test = executable('render-inner-ops-unit',
+    'render-inner-ops-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    build_by_default : true,
+  )
+  test('Render inner ops (unit)', render_inner_ops_unit_test)
+endif
+
+# Blit inner-opcode unit tests. Validates 0x12f CopyFromTextureToTexture parse and
+# 0x141 FillTextureWithColor RGBA64 color field parsing.
+if fs.is_file(meson.current_source_dir() / 'blit-inner-ops-unit.c')
+  blit_inner_ops_unit_test = executable('blit-inner-ops-unit',
+    'blit-inner-ops-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    build_by_default : true,
+  )
+  test('Blit inner ops (unit)', blit_inner_ops_unit_test)
+endif
