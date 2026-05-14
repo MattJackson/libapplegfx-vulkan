@@ -109,15 +109,22 @@ lagfx_handler_status_t lagfx_op_get_device_info(lagfx_protocol_t *p,
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
     }
-    if (!hdr->payload || hdr->payload_size < 12u) {
+    /* Pre-refactor wire layout reads out_offset as u64 — the previous
+     * code read it as u32 and silently truncated any GPA above 4 GiB.
+     * Modern macOS reaches this opcode only on legacy paths (0x3a TLV
+     * is the live entry point), but a truncated DMA destination is
+     * still a real bug. Layout: {u32 key, u64 out_offset, u32 flags}
+     * — 16 bytes total. */
+    if (!hdr->payload || hdr->payload_size < 16u) {
         LAGFX_WARN("CmdGetDeviceInfo: payload too small (%u)",
                    (unsigned)hdr->payload_size);
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
     uint32_t key        = lagfx_misc_le32(hdr->payload + 0);
-    uint32_t out_offset = lagfx_misc_le32(hdr->payload + 4);
-    uint32_t flags      = lagfx_misc_le32(hdr->payload + 8);
+    uint64_t out_offset = (uint64_t)lagfx_misc_le32(hdr->payload + 4)
+                        | ((uint64_t)lagfx_misc_le32(hdr->payload + 8) << 32);
+    uint32_t flags      = lagfx_misc_le32(hdr->payload + 12);
 
     uint32_t value;
     switch (key) {
@@ -129,16 +136,16 @@ lagfx_handler_status_t lagfx_op_get_device_info(lagfx_protocol_t *p,
         default:  value = 0u; break;
     }
 
-    LAGFX_LOG("CmdGetDeviceInfo: stamp=0x%08x key=0x%x out_off=0x%x flags=0x%x -> value=0x%x",
-              hdr->stamp, key, out_offset, flags, value);
+    LAGFX_LOG("CmdGetDeviceInfo: stamp=0x%08x key=0x%x out_off=0x%llx flags=0x%x -> value=0x%x",
+              hdr->stamp, key, (unsigned long long)out_offset, flags, value);
 
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
     if (dev && dev->desc.shell.write_memory && out_offset != 0u) {
         if (!dev->desc.shell.write_memory(dev->desc.shell.opaque,
-                                           (uint64_t)out_offset,
+                                           out_offset,
                                            sizeof(value), &value)) {
-            LAGFX_WARN("CmdGetDeviceInfo: DMA writeback failed (gpa=0x%x)",
-                       out_offset);
+            LAGFX_WARN("CmdGetDeviceInfo: DMA writeback failed (gpa=0x%llx)",
+                       (unsigned long long)out_offset);
         }
     }
     return LAGFX_HANDLER_OK;
