@@ -52,4 +52,32 @@ static inline float lagfx_lef32(const uint8_t *b) {
     return conv.f;
 }
 
+/* Writers — mirror the readers. Use these instead of hand-rolled
+ * `b[0] = lo; b[1] = mid; …` byte-by-byte assignments. Reply / shared-
+ * state page construction in info_replies.c, iosurface.c, and
+ * display.c historically rolled the bytes by hand and got it wrong
+ * (e.g. wrong endian, missing high byte) more than once. */
+static inline void lagfx_put_le16(uint8_t *b, uint16_t v) {
+    b[0] = (uint8_t)(v       & 0xff);
+    b[1] = (uint8_t)((v >> 8) & 0xff);
+}
+
+static inline void lagfx_put_le32(uint8_t *b, uint32_t v) {
+    b[0] = (uint8_t)(v        & 0xff);
+    b[1] = (uint8_t)((v >>  8) & 0xff);
+    b[2] = (uint8_t)((v >> 16) & 0xff);
+    b[3] = (uint8_t)((v >> 24) & 0xff);
+}
+
+static inline void lagfx_put_le64(uint8_t *b, uint64_t v) {
+    b[0] = (uint8_t)(v        & 0xff);
+    b[1] = (uint8_t)((v >>  8) & 0xff);
+    b[2] = (uint8_t)((v >> 16) & 0xff);
+    b[3] = (uint8_t)((v >> 24) & 0xff);
+    b[4] = (uint8_t)((v >> 32) & 0xff);
+    b[5] = (uint8_t)((v >> 40) & 0xff);
+    b[6] = (uint8_t)((v >> 48) & 0xff);
+    b[7] = (uint8_t)((v >> 56) & 0xff);
+}
+
 #endif /* LIBAPPLEGFX_COMMON_LE_H */

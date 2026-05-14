@@ -220,11 +220,9 @@ lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
 
     uint8_t pixel_format_rec[16] = { 0 };
     /* +0x00 u32 width */
-    pixel_format_rec[0]  = (uint8_t)(1920u & 0xff);
-    pixel_format_rec[1]  = (uint8_t)((1920u >> 8) & 0xff);
+    lagfx_put_le32(pixel_format_rec + 0, 1920u);
     /* +0x04 u32 height */
-    pixel_format_rec[4]  = (uint8_t)(1080u & 0xff);
-    pixel_format_rec[5]  = (uint8_t)((1080u >> 8) & 0xff);
+    lagfx_put_le32(pixel_format_rec + 4, 1080u);
     /* +0x08 u32 pixelFormat — 'BGRA' fourcc (32-bit BGRA8888).
      * PGDisplayNub-presentSurface.annotated.asm line 213 confirms
      * ARGB / BGRA are the only accepted formats on the scanout path. */

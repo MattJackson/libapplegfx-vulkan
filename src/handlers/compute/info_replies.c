@@ -117,13 +117,9 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
             reply_size   = 0x1cu;
             opname       = "0x1c2 ComputePipelineStateInfo";
             /* maxTotalThreadsPerThreadgroup = 1024 (0x400) */
-            reply[0]  = 0x00; reply[1]  = 0x04;
-            reply[2]  = 0x00; reply[3]  = 0x00;
+            lagfx_put_le32(reply + 0x00, 1024u);
             /* threadExecutionWidth = 32 (canonical SIMD width) */
-            reply[8]  = 32;
-            reply[9]  = 0;
-            reply[10] = 0;
-            reply[11] = 0;
+            lagfx_put_le32(reply + 0x08, 32u);
             /* staticThreadgroupMemoryLength = 0, supportIndirectCommandBuffers = 0 */
         }
         break;
@@ -141,10 +137,14 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
             have_triplet = true;
             reply_size   = 0x10u;
             opname       = "0x1c3 HeapTextureSizeAndAlign";
-            /* NSUInteger size=4096 @ +0x00 */
-            reply[0] = 0x00; reply[1] = 0x10;
-            /* NSUInteger align=4096 @ +0x08 */
-            reply[8] = 0x00; reply[9] = 0x10;
+            /* MTLSizeAndAlign { NSUInteger size; NSUInteger align; }.
+             * NSUInteger is u64 on x86_64 macOS — the original
+             * pre-refactor implementation wrote only the low 16 bits
+             * of each field, which happens to round-trip 4096 = 0x1000
+             * but would lose any value > 0xffff. Writing the full
+             * 8-byte field is correct AND more defensive. */
+            lagfx_put_le64(reply + 0x00, 4096u);
+            lagfx_put_le64(reply + 0x08, 4096u);
         }
         break;
 
@@ -224,7 +224,7 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
             opname       = "0x1c9 RenderPipelineStateInfo";
             /* maxTotalThreadsPerThreadgroup = 1024 — Apple GPUs advertise
              * 1024 as the canonical render threadgroup ceiling. */
-            reply[0]  = 0x00; reply[1]  = 0x04;
+            lagfx_put_le32(reply + 0x00, 1024u);
             /* imageblockSampleLength = 0, threadgroupSizeMatchesTileSize=0,
              * supportIndirectCommandBuffers=0 */
         }
@@ -262,10 +262,9 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
             have_triplet = true;
             reply_size   = 0x8u;
             opname       = "0x1cc ObjectUniqueIdentifier";
-            reply[0] = (uint8_t)(ref);
-            reply[1] = (uint8_t)(ref >> 8);
-            reply[2] = (uint8_t)(ref >> 16);
-            reply[3] = (uint8_t)(ref >> 24);
+            /* MTLResourceID = u64; echo ref into low 32 bits for a
+             * stable per-resource id. High 32 bits stay zero. */
+            lagfx_put_le32(reply + 0, ref);
         }
         break;
 
@@ -320,10 +319,7 @@ void lagfx_info_dispatch(lagfx_protocol_t *p,
         uint32_t tew = lagfx_le32(reply + 8);
         if (tew == 0u) {
             LAGFX_WARN("info_reply: 0x1c2 threadExecutionWidth=0 — forcing 32");
-            reply[8] = 32;
-            reply[9] = 0;
-            reply[10] = 0;
-            reply[11] = 0;
+            lagfx_put_le32(reply + 8, 32u);
         }
     }
 
