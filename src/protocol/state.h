@@ -30,11 +30,16 @@
  * LAGFX_*_MAX_CMD_BYTES values that lived in each dispatcher and the
  * exec_cmdbuf static \`buf[4096]\`. */
 #define LAGFX_MAX_RING_READ    4096u
-/* LAGFX_MAX_DISPLAYS defined in device.h; channels = root (0) + compute (1-4) + displays.
- * Per state-machines/FIFORingDescriptor.md the kext provisions chan_ids
- * 1..4 for compute + 5..12 for up to 8 displays. Allow up to 16 to
- * cover hot-plug + headroom. */
-#define LAGFX_MAX_CHANNELS     16     /* Root + 4 compute + up to 11 displays */
+/* LAGFX_MAX_DISPLAYS (defined in device.h) is 4 in the live build —
+ * the framebuffer + display-pipe / paravirt-event matched-class
+ * counts published by the kext top out around 4 attached displays
+ * before the test image hits its `ioreg` cap. Channels here cover
+ * root (0) + compute (1-4) + display vchans (5..15); per
+ * state-machines/FIFORingDescriptor.md the kext can provision up
+ * to 8 displays (5..12) with hot-plug headroom. 16 channels keeps
+ * the per-channel array dense without burning more than ~256 KiB
+ * of scratch. */
+#define LAGFX_MAX_CHANNELS     16     /* Root + 4 compute + up to 11 display vchans */
 
 /* Stamp slot mapping (per waitForStamp-mechanism-summary.md) */
 enum {

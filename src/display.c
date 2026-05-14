@@ -36,11 +36,8 @@
 #  include <vulkan/vulkan.h>
 #endif
 
-/* Default scanout geometry if the descriptor carries no modes. 1920x1080
- * is the Phase 2 first-pixel baseline per
- * mos/paravirt-re/phase-2-first-pixel-plan.md §2.D. */
-#define LAGFX_DISPLAY_DEFAULT_W 1920u
-#define LAGFX_DISPLAY_DEFAULT_H 1080u
+/* Default scanout geometry now lives in display.h so the handler-side
+ * shared-state write picks up the same constants. */
 
 static void set_err(char **errp_out, const char *msg) {
     if (!errp_out) {

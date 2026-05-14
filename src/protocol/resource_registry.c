@@ -43,7 +43,7 @@ void lagfx_resource_register(lagfx_resource_registry_t *reg,
         return;
     }
 
-   lagfx_resource_entry_t *e = &reg->entries[reg->count++];
+    lagfx_resource_entry_t *e = &reg->entries[reg->count++];
     e->ref         = ref;
     e->type        = type;
     e->task_id     = task_id;

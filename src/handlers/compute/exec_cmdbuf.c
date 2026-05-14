@@ -471,12 +471,25 @@ lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagf
     LAGFX_LOG("CmdExecIndirect2: completed taskID=%u (observation-only)",
               task_id);
 
-    /* Complete stamp to raise IRQ and advance ring state. The drain
-     * loop also calls complete_stamp_slot with the channel's slot,
-     * so this is belt-and-suspenders for the test path that drives
-     * the handler directly. */
+    /* Complete stamp to raise IRQ and advance ring state.
+     *
+     * The drain loop in channel_*_dispatcher.c ALSO calls
+     * complete_stamp_slot with the channel's slot (matching its
+     * chan_id), so this is belt-and-suspenders for test paths that
+     * drive lagfx_compute_exec_cmdbuf directly without going through
+     * a drain.
+     *
+     * The slot picked here must match the channel that issued the
+     * exec. For root-channel-issued execs (chan_id=0, dylib path)
+     * the slot is SLOT_ROOT_CHANNEL=0. For compute-vchan-issued
+     * (chan 1..4) the slot tracks chan_id (SLOT_COMPUTE_N). Use
+     * current_chan_id captured by the door dispatcher — the previous
+     * hardcoded `0` was wrong on the compute vchan path (would
+     * double-raise slot 0 instead of the actual compute slot). */
     if (p && p->dev && hdr->stamp != 0) {
-        lagfx_protocol_complete_stamp_slot(p, 0, hdr->stamp);
+        uint32_t slot = (uint32_t)p->current_chan_id;
+        if (slot >= LAGFX_MAX_CHANNELS) slot = SLOT_ROOT_CHANNEL;
+        lagfx_protocol_complete_stamp_slot(p, slot, hdr->stamp);
     }
 
     return LAGFX_HANDLER_OK;

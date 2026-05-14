@@ -13,6 +13,17 @@
 #include "device.h"
 #include "vulkan/render_target.h"
 
+/* Default scanout geometry if the descriptor carries no modes. Phase 2
+ * first-pixel baseline per
+ * mos/paravirt-re/phase-2-first-pixel-plan.md §2.D. Single source of
+ * truth — the handler-side shared-state page setup (handlers/display/
+ * display.c vchan_setup_shared_state) and the device's fallback
+ * rt_create geometry both reach for these instead of redeclaring
+ * literal 1920/1080. */
+#define LAGFX_DISPLAY_DEFAULT_W 1920u
+#define LAGFX_DISPLAY_DEFAULT_H 1080u
+#define LAGFX_DISPLAY_DEFAULT_BYTES_PER_PIXEL 4u
+
 #include <pthread.h>
 #include <stdint.h>
 

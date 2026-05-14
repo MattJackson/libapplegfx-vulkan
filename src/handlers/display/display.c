@@ -7,6 +7,7 @@
  */
 
 #include "../handlers.h"
+#include "../../display.h"  /* LAGFX_DISPLAY_DEFAULT_W / _H / _BPP */
 #include "common/le.h"
 #include "common/log.h"
 
@@ -216,15 +217,19 @@ lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
     uint8_t blob[SS_BLOB_BYTES] = { 0 };
     static const char mode_name[10] = "1920x1080";  /* +NUL */
 
+    const uint32_t w  = LAGFX_DISPLAY_DEFAULT_W;
+    const uint32_t h  = LAGFX_DISPLAY_DEFAULT_H;
+    const uint32_t bpp = LAGFX_DISPLAY_DEFAULT_BYTES_PER_PIXEL;
+
     lagfx_put_le32(blob + 0x000, 1u);                 /* conn_id */
     memcpy(blob + 0x004, mode_name, sizeof(mode_name));
     lagfx_put_le16(blob + 0x012, (uint16_t)display_index); /* port */
-    lagfx_put_le16(blob + 0x014, 1920u);              /* width */
-    lagfx_put_le16(blob + 0x016, 1080u);              /* height */
+    lagfx_put_le16(blob + 0x014, (uint16_t)w);        /* width */
+    lagfx_put_le16(blob + 0x016, (uint16_t)h);        /* height */
     lagfx_put_le16(blob + 0x018, 64u);                /* cursor_max_w */
     lagfx_put_le16(blob + 0x01a, 64u);                /* cursor_max_h */
     lagfx_put_le32(blob + 0x01c, 0u);                 /* resp_code */
-    lagfx_put_le32(blob + 0x020, 1920u * 1080u * 4u); /* fb_len */
+    lagfx_put_le32(blob + 0x020, w * h * bpp);        /* fb_len */
     lagfx_put_le32(blob + 0x100, 0x4u);               /* pending_online_bit */
     lagfx_put_le32(blob + 0x104, 0xCu);               /* online_event_enabled */
     lagfx_put_le16(blob + 0x208, 1u);                 /* numPixelFormats */
@@ -232,8 +237,8 @@ lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
     /* Pixel-format record at +0x210 — {u32 width, u32 height, fourcc
      * 'BGRA', u32 unverified=0}. PGDisplayNub-presentSurface.annotated.asm
      * line 213 confirms ARGB / BGRA are the only accepted formats. */
-    lagfx_put_le32(blob + 0x210, 1920u);
-    lagfx_put_le32(blob + 0x214, 1080u);
+    lagfx_put_le32(blob + 0x210, w);
+    lagfx_put_le32(blob + 0x214, h);
     blob[0x218] = 'B';
     blob[0x219] = 'G';
     blob[0x21a] = 'R';
@@ -249,7 +254,7 @@ lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
 
     LAGFX_LOG("vchan_setup_shared_state: display[%u] wrote shared-state "
               "(w=%u h=%u fb_len=%u fmt='BGRA' num_formats=1 ss[+0x104]=0xC)",
-              display_index, 1920u, 1080u, 1920u * 1080u * 4u);
+              display_index, w, h, w * h * bpp);
 
     return LAGFX_HANDLER_OK;
 }
@@ -308,8 +313,23 @@ lagfx_handler_status_t lagfx_display_define_child_fifo(
     uint64_t ring_size = lagfx_le64(hdr->payload + 16);
     uint32_t entry_count = lagfx_le32(hdr->payload + 24);
 
-    LAGFX_LOG("vchan CmdDefineChildFIFO: display[%u] ring_base=0x%llx size=0x%x entries=%u stamp=0x%08x",
-              p->current_chan_id - 5, (unsigned long long)ring_base, (uint32_t)ring_size, entry_count, hdr->stamp);
+    /* display_index = current_chan_id - 5 (SLOT_DISPLAY_PIPE_0 starts
+     * at chan 5). Guard against the underflow that would happen if
+     * this handler is ever invoked on a non-display channel — the
+     * vchan-compact 0x04 currently routes only from channel 5+, but
+     * a future router change could regress that. Log a sentinel
+     * instead of u32-wrapping to ~4 billion. */
+    int display_index = (int)p->current_chan_id - 5;
+    if (display_index < 0) {
+        LAGFX_WARN("vchan CmdDefineChildFIFO: invoked on chan=%u (<5) — "
+                   "logging as display_index=-1",
+                   (unsigned)p->current_chan_id);
+        display_index = -1;
+    }
+
+    LAGFX_LOG("vchan CmdDefineChildFIFO: display[%d] ring_base=0x%llx size=0x%x entries=%u stamp=0x%08x",
+              display_index, (unsigned long long)ring_base,
+              (uint32_t)ring_size, entry_count, hdr->stamp);
 
     /* TODO: Store child FIFO geometry for sub-channel command delivery */
 
