@@ -10,6 +10,8 @@
 #include "common/le.h"
 #include "common/log.h"
 
+#include <string.h>
+
 lagfx_handler_status_t lagfx_display_ack(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
@@ -147,103 +149,81 @@ lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
     if (!p->dev || !((lagfx_device_t *)p->dev)->desc.shell.write_memory) {
         return LAGFX_HANDLER_OK;
     }
-
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
-    uint16_t port = (uint16_t)display_index;
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x12u, sizeof(port), &port);
 
-    uint32_t resp_code = 0u;
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x1cu, sizeof(resp_code), &resp_code);
-
-    uint32_t conn_id = 1u;
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x00u, sizeof(conn_id), &conn_id);
-
-    /* CRITICAL: Write online event flag IMMEDIATELY */
-    uint32_t enabled = 0xCu;
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x104u, sizeof(enabled), &enabled);
-    LAGFX_LOG("vchan_setup_shared_state: wrote ss[+0x104]=0xC (online event) for display[%u]", display_index);
-
-    /* Write mode info */
-    static const char mode_name[] = "1920x1080";
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x04u, sizeof(mode_name), mode_name);
-
-    uint16_t width  = 1920u;
-    uint16_t height = 1080u;
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x14u, sizeof(width), &width);
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x16u, sizeof(height), &height);
-
-    uint16_t cursor_max = 64u;
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x18u, sizeof(cursor_max), &cursor_max);
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x1au, sizeof(cursor_max), &cursor_max);
-
-    uint32_t fb_len = 1920u * 1080u * 4u;
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x20u, sizeof(fb_len), &fb_len);
-
-    /* Publish a single pixel-format record so the kext's process_online
-     * forwards a non-empty mode list to AppleParavirtFramebuffer::
-     * connectionChange.
+    /* === Shared-state page byte map ================================
      *
-     * RE: paravirt-re/annotated/AppleParavirtDisplayPipe-process_online
-     *     .annotated.asm @ +0xe2:
-     *       movzx   r11d, word [rax + 0x208]   ; numPixelFormats
-     *     @ comment block:
-     *       per-format record at ss[+0x210 + i*16]
-     *         {u32 width, u32 height, u32 pixelFormat, u32 unknown}
-     *     (the per-pixel-format query block @ 0x1456182c re-reads these
-     *      on each getPixelInformation callback from IOFB)
+     * Build the full prefix of the shared-state page in one local
+     * buffer, then ship it via a single shell.write_memory call. The
+     * pre-fix code issued 13 sequential write_memory calls — each is
+     * a guest-RAM DMA through the QEMU MemoryRegion path, and on
+     * Stage 25/30 this handler will fire on every display
+     * mode-change / hot-plug. Single DMA cuts the per-event cost
+     * to ~1 / 13th.
      *
-     * Without this, ss[+0x208]=0 from the bzero, the kext reports zero
-     * formats, AppleParavirtFramebuffer publishes only its degenerate
-     * 1x1 placeholder IOFBMode, IOFBConfig advertises IOFB0Hz=Yes, and
-     * SkyLight's CompositorMetal::composite() aborts in
-     * MetalShader::CopyPipelineState because the destination FB has
-     * no valid mode. WindowServer dies before submitting any encType=2
-     * render passes, which is why /tmp/lagfx.log only ever sees
-     * encType=0 (kext-internal compute setup).
+     * Field offsets (RE: paravirt-re/annotated/AppleParavirtDisplayPipe-
+     * process_online.annotated.asm + neighbour kext disasm). LE byte
+     * order throughout — the guest is x86_64.
      *
-     * The trailing 4 bytes of the record are RE-unverified; leave at 0.
+     *   +0x000  u32 conn_id                = 1
+     *   +0x004  char[10] mode_name        = "1920x1080\0"
+     *   +0x012  u16 port                   = display_index
+     *   +0x014  u16 width                  = 1920
+     *   +0x016  u16 height                 = 1080
+     *   +0x018  u16 cursor_max_w           = 64
+     *   +0x01a  u16 cursor_max_h           = 64
+     *   +0x01c  u32 resp_code              = 0
+     *   +0x020  u32 fb_len                 = 1920 * 1080 * 4
+     *   +0x100  u32 pending_online_bit     = 0x4
+     *   +0x104  u32 online_event_enabled   = 0xC  (LOAD-BEARING — gate for
+     *                                              process_online's online
+     *                                              event; must land before
+     *                                              the kext re-reads it)
+     *   +0x208  u16 numPixelFormats        = 1
+     *   +0x210  u8[16] pixel_format_rec    = {1920, 1080, 'BGRA', 0}
+     *
+     * Tail bytes between published fields stay zero (page was bzero'd
+     * by the kext via PGFB_DispatcherInitialise). Total span: 0x220
+     * bytes.
      */
-    uint16_t num_pixel_formats = 1u;
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x208u, sizeof(num_pixel_formats),
-        &num_pixel_formats);
+    enum { SS_BLOB_BYTES = 0x220u };
+    uint8_t blob[SS_BLOB_BYTES] = { 0 };
+    static const char mode_name[10] = "1920x1080";  /* +NUL */
 
-    uint8_t pixel_format_rec[16] = { 0 };
-    /* +0x00 u32 width */
-    lagfx_put_le32(pixel_format_rec + 0, 1920u);
-    /* +0x04 u32 height */
-    lagfx_put_le32(pixel_format_rec + 4, 1080u);
-    /* +0x08 u32 pixelFormat — 'BGRA' fourcc (32-bit BGRA8888).
-     * PGDisplayNub-presentSurface.annotated.asm line 213 confirms
-     * ARGB / BGRA are the only accepted formats on the scanout path. */
-    pixel_format_rec[8]  = 'B';
-    pixel_format_rec[9]  = 'G';
-    pixel_format_rec[10] = 'R';
-    pixel_format_rec[11] = 'A';
-    /* +0x0c..+0x0f unverified — leave zero */
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x210u, sizeof(pixel_format_rec),
-        pixel_format_rec);
+    lagfx_put_le32(blob + 0x000, 1u);                 /* conn_id */
+    memcpy(blob + 0x004, mode_name, sizeof(mode_name));
+    lagfx_put_le16(blob + 0x012, (uint16_t)display_index); /* port */
+    lagfx_put_le16(blob + 0x014, 1920u);              /* width */
+    lagfx_put_le16(blob + 0x016, 1080u);              /* height */
+    lagfx_put_le16(blob + 0x018, 64u);                /* cursor_max_w */
+    lagfx_put_le16(blob + 0x01a, 64u);                /* cursor_max_h */
+    lagfx_put_le32(blob + 0x01c, 0u);                 /* resp_code */
+    lagfx_put_le32(blob + 0x020, 1920u * 1080u * 4u); /* fb_len */
+    lagfx_put_le32(blob + 0x100, 0x4u);               /* pending_online_bit */
+    lagfx_put_le32(blob + 0x104, 0xCu);               /* online_event_enabled */
+    lagfx_put_le16(blob + 0x208, 1u);                 /* numPixelFormats */
 
-    LAGFX_LOG("vchan_setup_shared_state: display[%u] wrote mode "
-              "(w=%u h=%u fb_len=%u fmt='BGRA' num_formats=%u)",
-              display_index, 1920u, 1080u, fb_len,
-              (unsigned)num_pixel_formats);
+    /* Pixel-format record at +0x210 — {u32 width, u32 height, fourcc
+     * 'BGRA', u32 unverified=0}. PGDisplayNub-presentSurface.annotated.asm
+     * line 213 confirms ARGB / BGRA are the only accepted formats. */
+    lagfx_put_le32(blob + 0x210, 1920u);
+    lagfx_put_le32(blob + 0x214, 1080u);
+    blob[0x218] = 'B';
+    blob[0x219] = 'G';
+    blob[0x21a] = 'R';
+    blob[0x21b] = 'A';
 
-    /* Set pending online bit (ss[+0x100]=0x4) */
-    uint32_t pending = 0x4u;
-    dev->desc.shell.write_memory(
-        dev->desc.shell.opaque, ss_gpa + 0x100u, sizeof(pending), &pending);
+    if (!dev->desc.shell.write_memory(dev->desc.shell.opaque, ss_gpa,
+                                       SS_BLOB_BYTES, blob)) {
+        LAGFX_WARN("vchan_setup_shared_state: shared-state batch DMA failed "
+                   "for display[%u] at gpa=0x%llx",
+                   display_index, (unsigned long long)ss_gpa);
+        return LAGFX_HANDLER_ERR_INTERNAL;
+    }
+
+    LAGFX_LOG("vchan_setup_shared_state: display[%u] wrote shared-state "
+              "(w=%u h=%u fb_len=%u fmt='BGRA' num_formats=1 ss[+0x104]=0xC)",
+              display_index, 1920u, 1080u, 1920u * 1080u * 4u);
 
     return LAGFX_HANDLER_OK;
 }
