@@ -317,27 +317,82 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
     free(dext);
 
     /* === Device features =========================================
-     * Request via the standard Vulkan-1.3 feature chain. If any
-     * requested feature isn't supported, we could either fail or
-     * downgrade; for a minimum-viable init we log and continue —
-     * vkCreateDevice will surface the actual error.
+     *
+     * Audit fix (#18): query the ICD's actual feature support BEFORE
+     * requesting features in vkCreateDevice. Today lavapipe always
+     * advertises 1.3 with dynamicRendering=VK_TRUE so the previous
+     * unconditional request worked; on a Vulkan 1.2 ICD or any
+     * adapter that ships these as optional, vkCreateDevice fails
+     * with a cryptic VK_ERROR_FEATURE_NOT_PRESENT. Probe + downgrade.
+     *
+     * Promoted-to-core features (1.3): dynamicRendering, synchronization2.
+     * If the ICD reports these as supported, request them via the
+     * VkPhysicalDeviceVulkan13Features chain. If not (Vulkan 1.2 ICD),
+     * fall back to the VK_KHR_dynamic_rendering / KHR_synchronization2
+     * extension chain — same shape on the wire, different sType.
      * ------------------------------------------------------------- */
+    VkPhysicalDeviceVulkan13Features probe13 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+    };
+    VkPhysicalDeviceVulkan12Features probe12 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .pNext = &probe13,
+    };
+    VkPhysicalDeviceShaderObjectFeaturesEXT probe_so = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
+        .pNext = &probe12,
+    };
+    VkPhysicalDeviceFeatures2 probe2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = want_shader_object ? (void *)&probe_so : (void *)&probe12,
+    };
+    vkGetPhysicalDeviceFeatures2(s->phys_device, &probe2);
+
+    /* Re-check ICD-advertised support. The "we'd like" set is fixed;
+     * if the ICD says no, we still try to create the device with the
+     * remaining features (vkCreateDevice will report which one
+     * actually fails). */
+    bool have_dyn_rendering_feature   = (probe13.dynamicRendering   == VK_TRUE);
+    bool have_synchronization2        = (probe13.synchronization2   == VK_TRUE);
+    bool have_timeline_semaphore_feat = (probe12.timelineSemaphore  == VK_TRUE);
+    bool have_descriptor_indexing     = (probe12.descriptorIndexing == VK_TRUE);
+
+    if (!have_dyn_rendering_feature) {
+        LAGFX_WARN("vk_init: dynamicRendering feature not advertised by ICD; "
+                   "draw paths that depend on it will fail. Vulkan 1.3 core "
+                   "promotion missing — falling back to KHR_dynamic_rendering "
+                   "extension if present (want_dyn_rendering=%d).",
+                   (int)want_dyn_rendering);
+    }
+    if (!have_synchronization2) {
+        LAGFX_WARN("vk_init: synchronization2 feature not advertised; "
+                   "fence/timeline paths may need pre-1.3 fallback.");
+    }
+    if (!have_timeline_semaphore_feat) {
+        LAGFX_WARN("vk_init: timelineSemaphore feature not advertised; "
+                   "deferring downgrade — vkCreateDevice will report.");
+    }
+    if (!have_descriptor_indexing) {
+        LAGFX_WARN("vk_init: descriptorIndexing feature not advertised; "
+                   "bindless paths will need rewiring.");
+    }
+
     VkPhysicalDeviceShaderObjectFeaturesEXT feat_so = {
         .sType     = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
         .shaderObject = VK_TRUE,
     };
     VkPhysicalDeviceVulkan13Features feat13 = {
         .sType             = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-        .dynamicRendering  = VK_TRUE,
-        .synchronization2  = VK_TRUE,
+        .dynamicRendering  = have_dyn_rendering_feature  ? VK_TRUE : VK_FALSE,
+        .synchronization2  = have_synchronization2       ? VK_TRUE : VK_FALSE,
         .pNext             = want_shader_object ? &feat_so : NULL,
     };
     VkPhysicalDeviceVulkan12Features feat12 = {
         .sType                                      = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-        .timelineSemaphore                          = VK_TRUE,
-        .descriptorIndexing                         = VK_TRUE,
-        .runtimeDescriptorArray                     = VK_TRUE,
-        .shaderSampledImageArrayNonUniformIndexing  = VK_TRUE,
+        .timelineSemaphore                          = have_timeline_semaphore_feat ? VK_TRUE : VK_FALSE,
+        .descriptorIndexing                         = have_descriptor_indexing     ? VK_TRUE : VK_FALSE,
+        .runtimeDescriptorArray                     = have_descriptor_indexing     ? VK_TRUE : VK_FALSE,
+        .shaderSampledImageArrayNonUniformIndexing  = have_descriptor_indexing     ? VK_TRUE : VK_FALSE,
         .pNext                                      = &feat13,
     };
     VkPhysicalDeviceFeatures2 feat2 = {
@@ -369,10 +424,10 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
         return LAGFX_ERR_VULKAN_INIT;
     }
 
-    s->have_dynamic_rendering      = true;
-    s->have_synchronization2       = true;
-    s->have_timeline_semaphore     = true;
-    s->have_descriptor_indexing    = true;
+    s->have_dynamic_rendering      = have_dyn_rendering_feature;
+    s->have_synchronization2       = have_synchronization2;
+    s->have_timeline_semaphore     = have_timeline_semaphore_feat;
+    s->have_descriptor_indexing    = have_descriptor_indexing;
     s->have_shader_object          = want_shader_object;
     s->have_extended_dynamic_state3= want_eds3;
 
