@@ -37,9 +37,19 @@
 /* === Per-task radix-tree translator ============================== */
 
 /* Translate a task-virtual address to GPA via the 3-level radix tree
- * rooted at task->root_page_pfn. Returns true on success. See
- * paravirt-re state-machines/per-task-page-table.md for the wire
- * format; this is a straight transcription of the walk algorithm.
+ * rooted at task->root_page_pfn. Returns true on success.
+ *
+ * See paravirt-re/library/state-machines/per-task-page-table.md
+ * for the wire format. PTE layout:
+ *
+ *   bits 30..0  next-PFN (interior nodes) OR data-PFN (leaf nodes)
+ *   bit  31     is_leaf — 0 for interior, 1 for leaf
+ *
+ * An interior-level PTE with bit 31 set means the walk terminates
+ * early — the PTE directly identifies a data page covering the
+ * remainder of the address. This is the "huge page" / compact-map
+ * case. The remaining low bits of dev_addr become the in-page offset
+ * scaled to the level reached.
  */
 static bool task_translate(lagfx_protocol_t *p,
                             const lagfx_task_entry_t *task,
@@ -80,6 +90,18 @@ static bool task_translate(lagfx_protocol_t *p,
         uint32_t pte = lagfx_le32(pte_buf);
         if (pte == 0u) {
             return false;
+        }
+        if (pte & 0x80000000u) {
+            /* Early-leaf: this interior-level PTE directly identifies
+             * a data page covering the remaining address range. The
+             * in-page offset spans the bits not yet consumed by the
+             * walk: (10*shift) lower index bits + the 12-bit byte
+             * offset. Mask out is_leaf before composing the GPA. */
+            uint32_t data_pfn = pte & 0x7fffffffu;
+            uint64_t offset_mask = ((uint64_t)1 << (shift + 12)) - 1u;
+            uint64_t page_offset = dev_addr & offset_mask;
+            *out_gpa = ((uint64_t)data_pfn << 12) | page_offset;
+            return true;
         }
         node_pfn = pte & 0x7fffffffu;
         shift -= 10;
