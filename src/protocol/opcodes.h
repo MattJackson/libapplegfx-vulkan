@@ -110,29 +110,25 @@ typedef enum {
     LAGFX_OP_RESET_RASTERIZATION_RATE = 0x81,
     LAGFX_OP_DELETE_SHARED_TEX_BACK   = 0x82,
 
-    /* Sentinel — MUST be last. Not a real opcode. */
-    LAGFX_OP__MAX                     = 0xffff,
+    /* Sentinel — MUST be last. Not a real opcode. 0xffff doesn't fit
+     * the 1-byte / 2-byte opcode dispatch ranges actually used on the
+     * wire; the value is intentionally chosen to be obviously invalid
+     * so a stale read that lands on it can never be mistaken for a
+     * documented opcode. */
+    LAGFX_OP__INVALID                 = 0xffff,
 } lagfx_opcode_t;
 
 /* Number of opcodes documented. Spec tally (command-buffer-format.md
  * §10) is 36 (14 core + 1 NOP + 11 display + 7 exec/sync + 3 heap).
  * Per re-followup-spec-gaps.md §5.3 the host jump table tolerates
  * 0x00..0x44 (69 entries) with the extras stubbed to "unknown opcode".
- * A2's kext disasm (§13.5) enumerated 26 callsites covering extended
- * opcodes 0x1e, 0x28, 0x30, 0x31, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
- * 0x39, 0x3a, 0x3b, 0x3c, 0x41; we populate 14 of those (0x28 is now
- * claimed by CmdIOSurfaceCreate per §14.5) plus the 36 named §3
- * opcodes + 3 conjectured IOSurface ops (0x27/0x28/0x29 per §14.5) =
- * 14 + 36 + 3 = 53. */
+ * Currently no consumer in the live tree uses LAGFX_OPCODE_COUNT; the
+ * value is kept as documentation of the populated set. The previous
+ * comment claimed 14 + 36 + 3 = 53 but the macro sat at 51 — that
+ * arithmetic was never reconciled. Reset to a count that matches the
+ * live LAGFX_OP_* enum entries above (counted manually): 51 named
+ * opcodes including the IOSurface family and kext-extended namespace. */
 #define LAGFX_OPCODE_COUNT 51
-
-/* === Priority bands ============================================ */
-
-typedef enum {
-    LAGFX_PRIO_P0 = 0,  /* required for metal-no-op */
-    LAGFX_PRIO_P1 = 1,  /* likely side-effect */
-    LAGFX_PRIO_P2 = 2,  /* deferred; log + ack stub */
-} lagfx_priority_t;
 
 /* === Handler return codes ====================================== */
 
@@ -191,39 +187,6 @@ _Static_assert(offsetof(struct lagfx_cmd_header, stamp)        == 8,
 _Static_assert(offsetof(struct lagfx_cmd_header, payload_size) == 12,
                "payload_size (derived) must sit just past the on-wire "
                "12-byte header");
-
-/* === Handler signature + descriptor ============================ */
-
-typedef lagfx_handler_status_t (*lagfx_op_handler_fn)(
-    lagfx_protocol_t *p,
-    const lagfx_cmd_header_t *hdr);
-
-typedef struct {
-    uint16_t           opcode;     /* LAGFX_OP_* value (u16 on the wire) */
-    const char        *name;       /* short, log-friendly */
-    lagfx_priority_t   priority;
-    uint16_t           min_payload;/* floor (inclusive); 0 = none */
-    uint16_t           max_payload;/* 0 = unbounded */
-    lagfx_op_handler_fn handler;   /* NULL => default log+ack handler */
-} lagfx_op_descriptor_t;
-
-/* Look up the descriptor for an opcode. Returns NULL if the opcode
- * is not in the table (caller falls back to default handler). */
-const lagfx_op_descriptor_t *lagfx_opcode_lookup(uint16_t opcode);
-
-/* Short human-readable name for tracing. Never returns NULL —
- * unknown opcodes yield "Unknown(0xNNNN)" into a static buffer
- * (single-threaded per the header comment in protocol.h). */
-const char *lagfx_opcode_name(uint16_t opcode);
-
-/* Iterate the full descriptor table. For tests / stats. */
-size_t lagfx_opcode_table_size(void);
-const lagfx_op_descriptor_t *lagfx_opcode_table_entry(size_t index);
-
-/* Default handler exposed so the dispatcher can fall through to it
- * explicitly when no descriptor is found. Logs + returns OK. */
-lagfx_handler_status_t lagfx_op_default_handler(lagfx_protocol_t *p,
-                                                const lagfx_cmd_header_t *hdr);
 
 /* === Handler forward declarations ==============================
  *

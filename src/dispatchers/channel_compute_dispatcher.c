@@ -64,7 +64,7 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
         /* CmdExecIndirect2 on a compute channel — the inner stream is
          * where Metal commands live. See render-decoder-handlers.md. */
         case LAGFX_OP_EXEC_INDIRECT2:  /* 0x20 */
-            lagfx_compute_exec_indirect2(p, hdr);
+            lagfx_compute_exec_cmdbuf(p, hdr);
             break;
 
         /* Kext-side per-channel exec variant per
@@ -75,11 +75,11 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
          * as "ChannelEventMachine-adjacent" before the M4 RE pass
          * identified it as the per-channel CmdExecIndirect2. The
          * payload's outer layout (12 + dc*24 + rc*16) distinguishes
-         * the two at runtime; for now route 0x37 to exec_indirect2
+         * the two at runtime; for now route 0x37 to exec_cmdbuf
          * which handles both empty (event-only) and populated (real
          * exec) payloads gracefully. */
         case LAGFX_OP_CHANNEL_EVENT_37:  /* 0x37 — see comment above */
-            lagfx_compute_exec_indirect2(p, hdr);
+            lagfx_compute_exec_cmdbuf(p, hdr);
             break;
 
         /* Channel-event / immediate-vchan opcodes fired by the kext
