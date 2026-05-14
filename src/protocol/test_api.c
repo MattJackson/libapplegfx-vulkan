@@ -12,6 +12,7 @@
 
 #include "protocol.h"
 #include "common/log.h"
+#include "common/le.h"  /* lagfx_le16/32/64 — alignment-safe LE readers */
 #include "opcodes.h"    /* lagfx_cmd_header_t, LAGFX_HANDLER_ERR_SIZE */
 #include "state.h"      /* lagfx_protocol_complete_stamp_slot, lagfx_protocol_is_valid */
 
@@ -24,11 +25,14 @@ static int lagfx_test_dispatch_opcode(lagfx_protocol_t *p,
         return LAGFX_HANDLER_ERR_SIZE;
     }
 
-    /* Parse on-wire header */
-    hdr->opcode = *(uint16_t*)(cmd_bytes + 0);
-    hdr->arg_count_8b = *(uint16_t*)(cmd_bytes + 2);
-    hdr->length = *(uint32_t*)(cmd_bytes + 4);
-    hdr->stamp = *(uint32_t*)(cmd_bytes + 8);
+    /* Parse on-wire header via alignment-safe LE readers. Previous
+     * code used raw `*(uint16_t*)` / `*(uint32_t*)` casts which are
+     * undefined behaviour on strict-alignment targets and trip
+     * UBSan-alignment immediately. */
+    hdr->opcode       = lagfx_le16(cmd_bytes + 0);
+    hdr->arg_count_8b = lagfx_le16(cmd_bytes + 2);
+    hdr->length       = lagfx_le32(cmd_bytes + 4);
+    hdr->stamp        = lagfx_le32(cmd_bytes + 8);
 
     /* Calculate payload and arg fields */
     hdr->payload_size = hdr->length - 12;
@@ -49,16 +53,16 @@ static int lagfx_test_dispatch_opcode(lagfx_protocol_t *p,
         case LAGFX_OP_DEFINE_TASK2:
             /* Minimal task registration - just mark slot as live with basic info */
             if (p && hdr->payload_size >= 24) {
-                uint32_t task_id = *(uint32_t*)(hdr->payload + 0);
+                uint32_t task_id = lagfx_le32(hdr->payload + 0);
                 lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
                 if (!entry) {
                     entry = lagfx_protocol_alloc_task_slot(p);
                 }
                 if (entry) {
-                    entry->id = task_id;
-                    entry->base_va = *(uint64_t*)(hdr->payload + 4);
-                    entry->length = *(uint64_t*)(hdr->payload + 12);
-                    entry->live = true;
+                    entry->id      = task_id;
+                    entry->base_va = lagfx_le64(hdr->payload + 4);
+                    entry->length  = (uint32_t)lagfx_le64(hdr->payload + 12);
+                    entry->live    = true;
                 }
             }
             return 0;
@@ -74,9 +78,9 @@ static int lagfx_test_dispatch_opcode(lagfx_protocol_t *p,
                 if (hdr->payload_size >= 20) {
                     /* Trailer is at end of payload */
                     size_t off = hdr->payload_size - 20u;
-                    task_id = *(uint32_t*)(hdr->payload + off + 0);
-                    gpu_addr = *(uint64_t*)(hdr->payload + off + 4);
-                    size = *(uint64_t*)(hdr->payload + off + 12);
+                    task_id  = lagfx_le32(hdr->payload + off + 0);
+                    gpu_addr = lagfx_le64(hdr->payload + off + 4);
+                    size     = lagfx_le64(hdr->payload + off + 12);
                 }
 
                 lagfx_resource_entry_t *e = lagfx_resource_lookup(&p->resources, 0, task_id);
