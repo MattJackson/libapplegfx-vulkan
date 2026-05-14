@@ -384,7 +384,10 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
             break;
         }
 
-        uint8_t cmd_buf[LAGFX_DISP_MAX_CMD_BYTES];
+        /* Body lands in the protocol's display scratch (state.h's
+         * "Per-dispatcher scratch buffers"). BQL-serialised — must
+         * not be used from anywhere outside this drain loop. */
+        uint8_t *cmd_buf = p->scratch_display;
         /* Display rings don't wrap (ring_size=0x1000 small enough),
          * but read the body in one DMA. */
         if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,

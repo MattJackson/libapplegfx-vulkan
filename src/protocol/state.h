@@ -25,6 +25,11 @@
 /* === Constants =================================================== */
 #define LAGFX_MAX_TASKS        64u     /* Max concurrent tasks */
 #define LAGFX_MAX_FIFOS        32u     /* Max child FIFOs */
+/* Per-dispatcher scratch buffer size — large enough to hold any single
+ * ring command (header + payload). Matches the legacy
+ * LAGFX_*_MAX_CMD_BYTES values that lived in each dispatcher and the
+ * exec_cmdbuf static \`buf[4096]\`. */
+#define LAGFX_MAX_RING_READ    4096u
 /* LAGFX_MAX_DISPLAYS defined in device.h; channels = root (0) + compute (1-4) + displays.
  * Per state-machines/FIFORingDescriptor.md the kext provisions chan_ids
  * 1..4 for compute + 5..12 for up to 8 displays. Allow up to 16 to
@@ -186,6 +191,29 @@ typedef struct lagfx_protocol {
     uint64_t total_cmds_seen;
     uint64_t total_cmds_completed;
     uint64_t unknown_opcode_count;
+
+    /* === Per-dispatcher scratch buffers ============================
+     *
+     * Each dispatcher (root channel, compute vchan drain, display
+     * vchan drain) and the inner exec walker need a 4 KiB scratch
+     * to read one command (header + payload) before handing it to
+     * the handler. The legacy layout used either a function-static
+     * (\`exec_cmdbuf.c: static uint8_t buf[4096]\`) or a stack-local
+     * (\`uint8_t cmd_buf[4096]\` in each drain loop). Static was
+     * non-reentrant; stack burned 12 KiB on every BAR write.
+     *
+     * Single-threaded invariant: drain callbacks serialise through
+     * QEMU's BQL today. The four scratches below are owned by the
+     * named dispatcher and must never be used from another (incl.
+     * cross-call recursion). If a future BQL-relaxed path lands,
+     * scratches will need to move to thread-local — or be replaced
+     * by per-channel mallocs in the CmdDefineChildChannel 0x30
+     * handler. Document any such change here when made.
+     */
+    uint8_t scratch_ch0[LAGFX_MAX_RING_READ];
+    uint8_t scratch_compute[LAGFX_MAX_RING_READ];
+    uint8_t scratch_display[LAGFX_MAX_RING_READ];
+    uint8_t scratch_exec[LAGFX_MAX_RING_READ];
 
 } lagfx_protocol_t;
 

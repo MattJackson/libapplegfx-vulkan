@@ -13,10 +13,19 @@
  *   - Completion path: write stamp to the host-to-guest stamp cell
  *     (readable at MMIO 0x1014) and call shell.raise_interrupt.
  *
- * Concurrency: Phase 1.A.2 is single-threaded. Every entry point is
- * expected to run under the QEMU BQL (or the device's AIO context —
- * QEMU's device model guarantees serialization per-device). No
- * internal locking. See phase-1a2-decoder-plan.md §5.1.
+ * Concurrency: every drain / dispatch entry point is expected to run
+ * under the QEMU BQL — QEMU's device model serialises BAR writes,
+ * descriptor doorbells, and AIO callbacks per-device. The four
+ * scratch buffers on lagfx_protocol_t (scratch_ch0, scratch_compute,
+ * scratch_display, scratch_exec) RELY on this: each is owned by
+ * exactly one dispatcher / walker; cross-use will corrupt in-flight
+ * reads. If a future lane relaxes BQL for any of these paths,
+ * scratches must move to thread-local or to a per-channel
+ * malloc-at-arm pool (allocated in the 0x30 CmdDefineChildChannel
+ * handler, freed on 0x31 CmdFreeVirtualChannel). See state.h's
+ * "Per-dispatcher scratch buffers" doc-block for the invariant.
+ * The pending_*_bitmask fields ARE atomic-touched so a stamp /
+ * display IRQ landing during a BAR-read xchg doesn't tear.
  *
  * This header is private to other TUs inside libapplegfx-vulkan
  * (device.c, mmio.c, tests). It is NOT installed.

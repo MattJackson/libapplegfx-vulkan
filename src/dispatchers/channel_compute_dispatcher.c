@@ -324,8 +324,11 @@ size_t channel_compute_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
         /* Read body. For compute (64 KiB ring) a command can straddle
          * a page boundary within the same ring slot — resolve each
          * 4 KiB chunk independently because page0[i] may map to
-         * non-contiguous physical pages. */
-        uint8_t cmd_buf[LAGFX_COMPUTE_MAX_CMD_BYTES];
+         * non-contiguous physical pages.
+         *
+         * Body lands in the protocol's compute scratch (state.h's
+         * "Per-dispatcher scratch buffers"). BQL-serialised. */
+        uint8_t *cmd_buf = p->scratch_compute;
         bool body_ok = true;
         uint32_t bytes_read = 0;
         while (bytes_read < length) {

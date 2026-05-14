@@ -325,9 +325,15 @@ static void exec_walk_resource(lagfx_protocol_t *p,
     }
 
     /* Read the cmdbuf in one shot for small sizes; chunked otherwise.
-     * For Stage 20 a single contiguous page is the common case. */
-    static uint8_t buf[4096];  /* observation-only — bounded scratch */
-    uint32_t to_read = length < sizeof(buf) ? length : (uint32_t)sizeof(buf);
+     * For Stage 20 a single contiguous page is the common case.
+     *
+     * scratch_exec lives on the protocol struct (state.h's
+     * "Per-dispatcher scratch buffers" doc-block) — single-threaded
+     * invariant: BQL serialises every drain callback that reaches
+     * this walker. */
+    uint8_t *buf = p->scratch_exec;
+    uint32_t buf_size = LAGFX_MAX_RING_READ;
+    uint32_t to_read = length < buf_size ? length : buf_size;
     if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
                                       first_gpa, to_read, buf)) {
         LAGFX_TRACE("exec_walk_resource: read_memory failed at gpa=0x%llx",

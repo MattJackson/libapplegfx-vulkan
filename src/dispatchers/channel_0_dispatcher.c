@@ -402,10 +402,11 @@ size_t channel_0_dispatcher_drain(lagfx_protocol_t *p) {
             break;
         }
 
-        /* Step 2: read the full command (header + payload) into a
-         * local buffer so handlers can chase payload->payload_size.
-         * Handles wrap by a second DMA for the tail. */
-        uint8_t cmd_buf[LAGFX_CH0_MAX_CMD_BYTES];
+        /* Step 2: read the full command (header + payload) into the
+         * protocol's ch0 scratch (see state.h's "Per-dispatcher
+         * scratch buffers" — BQL-serialised, must not be used from
+         * elsewhere). Handles wrap by a second DMA for the tail. */
+        uint8_t *cmd_buf = p->scratch_ch0;
         uint32_t head_len = ring_size - rp;
         if (head_len >= length) {
             if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
