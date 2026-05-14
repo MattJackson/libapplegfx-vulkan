@@ -161,7 +161,7 @@ static void notify_frame_ready(lagfx_display_t *display) {
 }
 
 static void set_frame_ready(lagfx_display_t *display) {
-    LAGFX_TRACE("set_frame_ready: disp=%p new_frame_ready=true", (void *)display);
+    LAGFX_LOG("set_frame_ready: disp=%p new_frame_ready=true", (void *)display);
     display->new_frame_ready = true;
     notify_frame_ready(display);
 }
