@@ -76,6 +76,14 @@ typedef enum {
     /* --- Execution / Sync (0x20-0x26) --------------------------- */
     LAGFX_OP_EXEC_INDIRECT2           = 0x20,
     LAGFX_OP_EXEC_INDIRECT3           = 0x21,
+    /* NOTE: LAGFX_OP_SYNCHRONIZE_RESOURCES is 0x42 even though it's
+     * declared in the 0x20-bucket here. Wire value 0x42 fires on the
+     * ROOT channel (channel_0_dispatcher); the dispatcher key matches
+     * 0x42 directly. The enum entry sits here because the family is
+     * "sync-class" and pre-refactor the spec table grouped them
+     * together. See the LAGFX_OP_UNMAP_MEMORY_IMMEDIATE comment
+     * below for the disjoint-namespace rule that lets these
+     * two-byte values coexist. */
     LAGFX_OP_SYNCHRONIZE_RESOURCES    = 0x42,
     LAGFX_OP_SYNCHRONIZE_DISCARD      = 0x23,
     LAGFX_OP_SET_OBJECT_LIST          = 0x24,
@@ -99,7 +107,27 @@ typedef enum {
     LAGFX_OP_CHANNEL_EVENT_37         = 0x37, /* ChannelEventMachine-adjacent */
     LAGFX_OP_DEFINE_HOST_TASK         = 0x38,
     LAGFX_OP_MAP_MEMORY_IMMEDIATE     = 0x39, /* CmdMapMemoryImmediate, Immediate vchan; opcodes-0x35-0x36-0x39.md */
-    LAGFX_OP_UNMAP_MEMORY_IMMEDIATE   = 0x22, /* CmdUnmapMemoryImmediate, kext opcode on Immediate vchan */
+    /* === Disjoint-namespace rule =================================
+     *
+     * Wire value 0x22 (LAGFX_OP_UNMAP_MEMORY_IMMEDIATE) and 0x42
+     * (LAGFX_OP_SYNCHRONIZE_RESOURCES, declared above with the
+     * Execution/Sync group) DO NOT collide because their dispatch
+     * channels are disjoint:
+     *
+     *   0x22  Compute vchan namespace — fires on chan_id 1..4
+     *         through channel_compute_dispatcher. Kext-only
+     *         (Immediate vchan); CmdUnmapMemoryImmediate.
+     *   0x42  Root channel namespace — fires on chan_id 0 through
+     *         channel_0_dispatcher. Dylib-only (issued from the
+     *         user-space command translator); CmdSynchronizeResources.
+     *
+     * Each enum value is the wire opcode AS THE KEXT EMITS IT. The
+     * router (channel_door_dispatcher → channel_*_dispatcher) is
+     * authoritative for which namespace the bytes belong to; the
+     * enum value alone is NOT a unique key across all dispatchers.
+     * Don't promote any enum entry to "global opcode" or merge the
+     * channel dispatchers without redesigning this. */
+    LAGFX_OP_UNMAP_MEMORY_IMMEDIATE   = 0x22, /* Compute-vchan CmdUnmapMemoryImmediate (see disjoint-namespace rule above) */
     LAGFX_OP_GET_DEVICE_INFO_2        = 0x3a,
     LAGFX_OP_NEW_USER_CLIENT          = 0x3b,
     LAGFX_OP_UNKNOWN_3C               = 0x3c,

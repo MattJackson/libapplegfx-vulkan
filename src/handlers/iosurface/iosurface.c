@@ -76,36 +76,35 @@ lagfx_handler_status_t lagfx_iosurface_delete_backing2(
  *   +16  u32 bytes_per_row
  *   +20  u64 size
  *
- * macOS sends short payloads (≥ 4 bytes) when probing capability —
- * fall back to a default 1920x1080 BGRA tracker registration in
- * those cases so subsequent CmdLookupIOSurface can find the entry.
+ * Short payloads (< 28 bytes) are MACOS-OBSERVED capability probes:
+ * macOS sometimes sends only a surface_id to ask "do you know
+ * about this id?" before issuing a real create. Reject those at
+ * the size gate so the tracker doesn't end up holding entries with
+ * RE-conjectured dimensions; the kext will follow up with a full
+ * payload once the userspace IOSurface_create call lands.
+ *
+ * RE: pre-refactor lagfx_op_iosurface_create_backing2 at
+ * b652199~1:src/protocol/ops_iosurface.c defaulted these probes to
+ * 1920x1080 BGRA. That worked by accident — macOS 15.7.5 happens
+ * to only register surfaces that exact size — but masked any drift
+ * in the wire format. Fail loud instead.
  */
 lagfx_handler_status_t lagfx_iosurface_create_backing2(
     lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) return LAGFX_HANDLER_ERR_INTERNAL;
-    if (!hdr->payload || hdr->payload_size < 4) {
-        LAGFX_WARN("CmdCreateIOSurfaceBacking2: payload too small (%u)",
+    if (!hdr->payload || hdr->payload_size < 28u) {
+        LAGFX_WARN("CmdCreateIOSurfaceBacking2: payload too small (%u, need 28) "
+                   "— treating as capability probe; no registry update",
                    (unsigned)hdr->payload_size);
-        return LAGFX_HANDLER_OK;
+        return LAGFX_HANDLER_ERR_SIZE;
     }
-    uint32_t surface_id   = lagfx_le32(hdr->payload + 0);
-    uint32_t width        = 1920u;
-    uint32_t height       = 1080u;
-    uint32_t pixel_format = 0x42475241u; /* 'BGRA' */
-    uint32_t bytes_per_row = width * 4u;
-    uint64_t size          = (uint64_t)bytes_per_row * height;
 
-    if (hdr->payload_size >= 28) {
-        width         = lagfx_le32(hdr->payload + 4);
-        height        = lagfx_le32(hdr->payload + 8);
-        pixel_format  = lagfx_le32(hdr->payload + 12);
-        bytes_per_row = lagfx_le32(hdr->payload + 16);
-        size          = lagfx_le64(hdr->payload + 20);
-    } else {
-        LAGFX_TRACE("CmdCreateIOSurfaceBacking2: short payload (%u<28) — "
-                    "using default dimensions for surface_id=0x%x",
-                    (unsigned)hdr->payload_size, surface_id);
-    }
+    uint32_t surface_id   = lagfx_le32(hdr->payload + 0);
+    uint32_t width        = lagfx_le32(hdr->payload + 4);
+    uint32_t height       = lagfx_le32(hdr->payload + 8);
+    uint32_t pixel_format = lagfx_le32(hdr->payload + 12);
+    uint32_t bytes_per_row = lagfx_le32(hdr->payload + 16);
+    uint64_t size          = lagfx_le64(hdr->payload + 20);
 
     LAGFX_LOG("CmdCreateIOSurfaceBacking2: surface_id=0x%x %ux%u fmt=0x%x bpr=%u size=%llu",
               surface_id, width, height, pixel_format, bytes_per_row,
