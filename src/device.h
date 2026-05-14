@@ -14,6 +14,7 @@
 #define LIBAPPLEGFX_DEVICE_INTERNAL_H
 
 #include "libapplegfx-vulkan.h"
+#include "protocol/ops_display.h"  /* lagfx_cursor_show_state_t / _glyph_state_t */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -59,6 +60,22 @@ struct lagfx_device {
     /* Doorbell callback — QEMU calls this when BAR0+0x1020 is written */
     void (*doorbell_callback)(void *opaque, uint8_t chan_id);
     void *doorbell_opaque;
+
+    /* === Cursor state ==============================================
+     * macOS publishes ONE cursor across all attached displays — the
+     * user drags it between monitors, the cursor object is shared.
+     * Reflect that on the device, not on each display: the cursor
+     * handlers (0x13 CmdDisplayCursorShow, 0x14 CmdDisplayCursorGlyph)
+     * stamp the device's `cursor_show` / `cursor_glyph` and every
+     * display's clear-color submit reads from there.
+     *
+     * Pre-fix these lived as file-statics in display.c — refactor
+     * scar from when ops_display.c was the only writer. Promoting
+     * onto lagfx_device_t makes Stage 25 cursor work (real glyph
+     * upload + dpy_mouse_set) tractable without re-introducing
+     * cross-translation-unit globals. */
+    lagfx_cursor_show_state_t  cursor_show;
+    lagfx_cursor_glyph_state_t cursor_glyph;
 };
 
 /* Validate a device handle — returns true if plausibly live. */
@@ -86,5 +103,12 @@ int lagfx_device_attach_display(lagfx_device_t *device,
                                 lagfx_display_t *display);
 void lagfx_device_detach_display(lagfx_device_t *device,
                                  lagfx_display_t *display);
+
+/* Cursor state accessors — return a pointer into the device's
+ * cursor_show / cursor_glyph fields. Safe to call with dev==NULL
+ * (returns a zero-initialised static). Pointers are valid for the
+ * life of the device. */
+const lagfx_cursor_show_state_t  *lagfx_device_last_cursor_show(const lagfx_device_t *dev);
+const lagfx_cursor_glyph_state_t *lagfx_device_last_cursor_glyph(const lagfx_device_t *dev);
 
 #endif /* LIBAPPLEGFX_DEVICE_INTERNAL_H */

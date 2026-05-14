@@ -54,16 +54,21 @@ static void set_err(char **errp_out, const char *msg) {
     *errp_out = buf;
 }
 
-/* Stub cursor state accessors (ops_display.c removed during handler refactor) */
-static lagfx_cursor_show_state_t g_cursor_show = { .visible = 0, .x = 0, .y = 0, .hot_x = 0, .hot_y = 0 };
-static lagfx_cursor_glyph_state_t g_cursor_glyph = { .valid = false, .width = 0, .height = 0, .bytes_per_row = 0, .hot_x = 0, .hot_y = 0, .captured_len = 0 };
-
-const lagfx_cursor_show_state_t *lagfx_ops_display_last_cursor_show(void) {
-    return &g_cursor_show;
+/* Cursor state accessors. State lives on lagfx_device_t (see device.h
+ * "Cursor state" doc-block — single cursor shared across all attached
+ * displays, matching macOS semantics). These accessors take the
+ * device pointer rather than reading a file-static so multi-device
+ * builds (test harness, future fan-out) don't get cross-talk. */
+const lagfx_cursor_show_state_t *
+lagfx_device_last_cursor_show(const lagfx_device_t *dev) {
+    static const lagfx_cursor_show_state_t empty = {0};
+    return dev ? &dev->cursor_show : &empty;
 }
 
-const lagfx_cursor_glyph_state_t *lagfx_ops_display_last_cursor_glyph(void) {
-    return &g_cursor_glyph;
+const lagfx_cursor_glyph_state_t *
+lagfx_device_last_cursor_glyph(const lagfx_device_t *dev) {
+    static const lagfx_cursor_glyph_state_t empty = {0};
+    return dev ? &dev->cursor_glyph : &empty;
 }
 
 /* Phase 2.B render-target lifecycle helpers. Factored so the no-vulkan
@@ -434,8 +439,10 @@ lagfx_status_t lagfx_display_submit_clear_color(lagfx_display_t *display,
         rgba_local[3] = 1.f;
     }
 
-    const lagfx_cursor_show_state_t  *cs = lagfx_ops_display_last_cursor_show();
-    const lagfx_cursor_glyph_state_t *cg = lagfx_ops_display_last_cursor_glyph();
+    const lagfx_cursor_show_state_t  *cs =
+        lagfx_device_last_cursor_show(display->device);
+    const lagfx_cursor_glyph_state_t *cg =
+        lagfx_device_last_cursor_glyph(display->device);
     bool want_cursor = (cs && cs->visible && cg && cg->captured_len > 0);
 
     if (want_cursor && !vk->cursor_glyph_valid) {

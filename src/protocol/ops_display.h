@@ -111,9 +111,11 @@ typedef struct {
 } lagfx_icc_profile_state_t;
 
 /* Accessors — declared here so tests can introspect. Pointers are
- * valid for the life of the process; do NOT free. */
-const lagfx_cursor_show_state_t       *lagfx_ops_display_last_cursor_show(void);
-const lagfx_cursor_glyph_state_t      *lagfx_ops_display_last_cursor_glyph(void);
+ * valid for the life of the process; do NOT free.
+ *
+ * The cursor accessors moved to device.h / device.c
+ * (lagfx_device_last_cursor_{show,glyph}) since the cursor state
+ * is per-device, not file-global. */
 const lagfx_shared_state_t            *lagfx_ops_display_shared_state(void);
 const lagfx_compositor_params_state_t *lagfx_ops_display_last_compositor_params(void);
 const lagfx_icc_profile_state_t       *lagfx_ops_display_last_icc_profile(void);

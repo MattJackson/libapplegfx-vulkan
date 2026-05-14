@@ -66,8 +66,23 @@ lagfx_handler_status_t lagfx_display_cursor_glyph(lagfx_protocol_t *p, const lag
     LAGFX_LOG("CmdDisplayCursorGlyph: display_id=%u %ux%d bpr=%u hot=(%u,%u) va=0x%llx",
               display_id, width, height, bytes_per_row, hot_x, hot_y, (unsigned long long)glyph_va);
 
-    /* TODO: Read glyph pixels from guest VA via shell.read_memory; upload to Vulkan cursor texture;
-     *       update g_cursor_glyph state for lagfx_display_submit_clear_color. */
+    /* Stamp the device-shared cursor_glyph state so
+     * lagfx_display_submit_clear_color picks up the new metadata.
+     * Captured pixel payload is Stage 25 work — read via
+     * shell.read_memory once we have the per-task radix tree for the
+     * glyph_va. For now, dimensions + hot-spot only. */
+    if (p->dev) {
+        lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+        dev->cursor_glyph.valid         = true;
+        dev->cursor_glyph.display_id    = display_id;
+        dev->cursor_glyph.glyph_va      = glyph_va;
+        dev->cursor_glyph.width         = width;
+        dev->cursor_glyph.height        = height;
+        dev->cursor_glyph.bytes_per_row = bytes_per_row;
+        dev->cursor_glyph.hot_x         = hot_x;
+        dev->cursor_glyph.hot_y         = hot_y;
+        dev->cursor_glyph.captured_len  = 0;  /* TODO Stage 25: shell.read_memory(glyph_va) */
+    }
 
     return LAGFX_HANDLER_OK;
 }
@@ -99,11 +114,22 @@ lagfx_handler_status_t lagfx_display_cursor_show(lagfx_protocol_t *p, const lagf
     LAGFX_LOG("CmdDisplayCursorShow: display_id=%u pos=(%d,%d) visible=%u hot=(%u,%u)",
               display_id, x, y, visible, hot_x, hot_y);
 
-    /* Update cursor state for lagfx_display_submit_clear_color. */
-    extern const lagfx_cursor_show_state_t *lagfx_ops_display_last_cursor_show(void);
-    (void)display_id; (void)x; (void)y; (void)visible; (void)hot_x; (void)hot_y;
+    /* Stamp the device-shared cursor_show state. macOS publishes one
+     * cursor across all attached displays — see device.h "Cursor
+     * state" doc-block. The per-display clear-color submit reads
+     * from here via lagfx_device_last_cursor_show(). */
+    if (p->dev) {
+        lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+        dev->cursor_show.valid      = true;
+        dev->cursor_show.display_id = display_id;
+        dev->cursor_show.x          = x;
+        dev->cursor_show.y          = y;
+        dev->cursor_show.visible    = visible;
+        dev->cursor_show.hot_x      = hot_x;
+        dev->cursor_show.hot_y      = hot_y;
+    }
 
-    /* TODO: Call QEMU dpy_mouse_set to move cursor on noVNC display. */
+    /* TODO Stage 25: Call QEMU dpy_mouse_set to move cursor on noVNC display. */
 
     return LAGFX_HANDLER_OK;
 }
