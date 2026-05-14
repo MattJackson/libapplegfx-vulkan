@@ -77,8 +77,14 @@ void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p, uint32_t slot, uint
     /* Advance the stamp cell monotonically */
     lagfx_advance_stamp_cell(p, slot, stamp);
 
-    /* Set pending bitmask bit for this slot */
-    p->pending_stamps_bitmask |= (1u << slot);
+    /* Set pending bitmask bit for this slot with release ordering, so
+     * the BAR-read thread that does the xchg-acquire sees both the
+     * stamp-cell DMA write above and this bit. See state.h's
+     * pending_stamps_bitmask doc-block for the cross-thread contract. */
+    uint32_t prev = atomic_fetch_or_explicit(&p->pending_stamps_bitmask,
+                                              (1u << slot),
+                                              memory_order_release);
+    uint32_t new_mask = prev | (1u << slot);
 
     /* Raise interrupt if shell callback is available */
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
@@ -87,7 +93,7 @@ void lagfx_protocol_complete_stamp_slot(lagfx_protocol_t *p, uint32_t slot, uint
     }
 
     LAGFX_LOG("complete_stamp[slot=%u]: stamp=0x%08x mask=0x%x",
-              slot, stamp, p->pending_stamps_bitmask);
+              slot, stamp, new_mask);
 }
 
 /* Complete stamp for root channel (slot 0) */

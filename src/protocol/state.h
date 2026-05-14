@@ -11,6 +11,7 @@
 #ifndef LAGFX_PROTOCOL_STATE_H
 #define LAGFX_PROTOCOL_STATE_H
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -136,10 +137,38 @@ typedef struct lagfx_protocol {
     /* Ring armed flag (set by STATUS_CONTROL @ 0x1000) */
     bool ring_armed;            // Whether ring is enabled for processing
 
-    /* Stamp management */
-    uint32_t pending_stamps_bitmask;  // Bits set for slots needing IRQ
-    uint32_t last_completed_stamp;     // Most recent stamp value acked
-    uint32_t pending_displays_bitmask; // Display interrupt bitmask
+    /* === Stamp management ==========================================
+     *
+     * \`pending_stamps_bitmask\` and \`pending_displays_bitmask\` are
+     * touched from two threads in the live deployment:
+     *
+     *   - The QEMU MMIO read thread, when macOS reads BAR0+0x1014
+     *     (display) or BAR0+0x1018 (stamp). doorbell_handle_read
+     *     does an xchg-and-clear: capture the current mask, return
+     *     it to the guest, then zero it out so the next read sees
+     *     only freshly-pending interrupts.
+     *
+     *   - The drain thread invoked from the doorbell dispatch path
+     *     (channel_*_dispatcher), which does a bit-set via
+     *     \`|=\` whenever it completes a command on a given slot
+     *     before raising the IRQ.
+     *
+     * QEMU serialises both paths through the BQL today, so the data
+     * race is latent — but the field shape was uint32_t, the
+     * compiler is free to tear reads, and a future BQL-relaxed lane
+     * would expose it. Switch to _Atomic uint32_t and update every
+     * touch to atomic_* with the documented memory orderings:
+     *
+     *   bit-set on completion → memory_order_release (synchronises
+     *     stamp-cell DMA write + IRQ raise with the reader)
+     *   xchg-and-clear on read → memory_order_acquire (sees the
+     *     drainer's stamp-cell DMA before returning the mask)
+     *
+     * last_completed_stamp stays non-atomic — it's pure diagnostics
+     * (no consumer reads it cross-thread). */
+    _Atomic uint32_t pending_stamps_bitmask;  // Bits set for slots needing IRQ
+    uint32_t last_completed_stamp;             // Most recent stamp value acked (diag only)
+    _Atomic uint32_t pending_displays_bitmask; // Display interrupt bitmask
 
     /* Task table (per CmdDefineTask2) */
     lagfx_task_entry_t tasks[LAGFX_MAX_TASKS];

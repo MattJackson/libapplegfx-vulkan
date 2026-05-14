@@ -268,18 +268,24 @@ uint32_t doorbell_handle_read(void *protocol_state, uint64_t offset) {
         return 9u;
     }
 
-    /* Display bitmask — xchg-and-clear */
+    /* Display bitmask — atomic xchg-and-clear with acquire ordering.
+     * See state.h's pending_displays_bitmask doc-block for the
+     * cross-thread contract. */
     if (offset == 0x1014u) {
-        uint32_t mask = p ? p->pending_displays_bitmask : 0u;
-        if (p) p->pending_displays_bitmask = 0u;
+        uint32_t mask = p
+            ? atomic_exchange_explicit(&p->pending_displays_bitmask,
+                                       0u, memory_order_acquire)
+            : 0u;
         LAGFX_TRACE("doorbell: read off=0x1014 display_bitmask → 0x%x (cleared)", mask);
         return mask;
     }
 
-    /* Stamp bitmask — xchg-and-clear */
+    /* Stamp bitmask — atomic xchg-and-clear with acquire ordering. */
     if (offset == 0x1018u) {
-        uint32_t mask = p ? p->pending_stamps_bitmask : 0u;
-        if (p) p->pending_stamps_bitmask = 0u;
+        uint32_t mask = p
+            ? atomic_exchange_explicit(&p->pending_stamps_bitmask,
+                                       0u, memory_order_acquire)
+            : 0u;
         LAGFX_TRACE("doorbell: read off=0x1018 stamp_bitmask → 0x%x (cleared)", mask);
         return mask;
     }

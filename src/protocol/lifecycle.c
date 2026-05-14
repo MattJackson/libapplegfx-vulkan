@@ -53,6 +53,12 @@ void lagfx_protocol_reset(lagfx_protocol_t *p) {
     p->unknown_opcode_count = 0;
     p->write_ptr = 0;
     p->read_ptr = 0;
-    p->pending_stamps_bitmask = 0;
-    p->pending_displays_bitmask = 0;
+    /* Atomic stores are required because cross-thread readers may
+     * already be observing the field. memory_order_relaxed is fine
+     * here — caller is responsible for quiescing the device before
+     * reset; the atomics just keep the write race-free. */
+    atomic_store_explicit(&p->pending_stamps_bitmask, 0u,
+                          memory_order_relaxed);
+    atomic_store_explicit(&p->pending_displays_bitmask, 0u,
+                          memory_order_relaxed);
 }
