@@ -808,17 +808,22 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
     }
 
 #ifdef LAGFX_HAVE_VULKAN
-    /* Fallback path when macOS hasn't registered a scanout buffer:
-     * CmdDisplaySwapMapping (opcode 0x12) not received yet. Read back
-     * the render target directly and let QEMU's frame_ready callback
-     * expose it via noVNC. */
+   /* Fallback path when macOS hasn't registered a scanout buffer:
+      * CmdDisplaySwapMapping (opcode 0x12) not received yet. Read back
+      * the render target directly and let QEMU's frame_ready callback
+      * expose it via noVNC. */
     if (scanout_gpa == 0 || scanout_length == 0) {
+        LAGFX_LOG("display_submit_rendered_frame: FALLBACK PATH — scanout_gpa=0x%llx len=%llu",
+                  (unsigned long long)scanout_gpa, (unsigned long long)scanout_length);
+        
         if (!display->device || !display->device->vk
             || !display->device->vk->initialized) {
+            LAGFX_LOG("display_submit_rendered_frame: FALLBACK PATH — NO_VK");
             return LAGFX_OK;
         }
         struct lagfx_vk_state *vk = display->device->vk;
         if (vk->frame_image == VK_NULL_HANDLE) {
+            LAGFX_LOG("display_submit_rendered_frame: FALLBACK PATH — NO_FRAME_IMAGE");
             return LAGFX_OK;
         }
 
@@ -826,6 +831,7 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
         const size_t frame_bytes = (size_t)vk->frame_image_h
                                  * (size_t)stride_expected;
         if (frame_bytes == 0) {
+            LAGFX_LOG("display_submit_rendered_frame: FALLBACK PATH — frame_bytes=0");
             return LAGFX_OK;
         }
 
@@ -858,6 +864,7 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
             display->fallback_pixels = pixels;
             display->fallback_stride = stride_actual;
             display->fallback_bytes = frame_bytes;
+            LAGFX_LOG("display_submit_rendered_frame: FALLBACK PATH DMA_OK bytes=%zu", frame_bytes);
         } else {
             /* No read_memory callback — just keep pixels for now.
              * Future: store in ring buffer. */
@@ -872,13 +879,16 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
 
     if (!display->device || !display->device->vk
         || !display->device->vk->initialized) {
+        LAGFX_LOG("display_submit_rendered_frame: NO_VK — device/vk not initialized");
         return LAGFX_OK;
     }
     struct lagfx_vk_state *vk = display->device->vk;
     if (vk->frame_image == VK_NULL_HANDLE) {
+        LAGFX_LOG("display_submit_rendered_frame: NO_FRAME_IMAGE — vk frame image null");
         return LAGFX_OK;
     }
     if (display->device->desc.shell.write_memory == NULL) {
+        LAGFX_LOG("display_submit_rendered_frame: NO_WRITE_MEM — shell callback missing");
         return LAGFX_OK;
     }
 
@@ -886,6 +896,7 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
     const size_t frame_bytes = (size_t)vk->frame_image_h
                              * (size_t)stride_expected;
     if (frame_bytes == 0) {
+        LAGFX_LOG("display_submit_rendered_frame: NO_WRITE_MEM — frame_bytes=0");
         return LAGFX_OK;
     }
     if (scanout_length < frame_bytes) {

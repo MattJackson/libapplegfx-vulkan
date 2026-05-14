@@ -75,9 +75,26 @@ lagfx_handler_status_t lagfx_display_swap_mapping(lagfx_protocol_t *p, const lag
               display_id, (unsigned long long)scanout_gpa, scanout_len,
               fb_width, fb_height, format, stride, (unsigned long long)scanout_off);
 
-    /* TODO: Register scanout buffer with QEMU display shell via
-     *       shell.register_scanout(display_id, gpa, width, height, stride).
-     *       This enables noVNC to read framebuffer pixels. */
+    /* Store scanout buffer info for use by vchan_display_submit. The kext
+      * may send arg2=0 in vchan_display_submit if it expects us to use the
+      * last-seen swap mapping (common pattern when scanout buffer is stable). */
+    if (display_id < LAGFX_MAX_DISPLAYS) {
+        lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+        if (dev && dev->displays[display_id]) {
+            lagfx_display_t *disp = dev->displays[display_id];
+            disp->scanout_gpa  = scanout_gpa;
+            disp->scanout_length = scanout_len;
+            disp->scanout_width  = fb_width;
+            disp->scanout_height = fb_height;
+            disp->scanout_valid  = true;
+            LAGFX_LOG("CmdDisplaySwapMapping: stored for display[%u] gpa=0x%llx len=%u %ux%u",
+                      display_id, (unsigned long long)scanout_gpa, scanout_len,
+                      fb_width, fb_height);
+        } else {
+            LAGFX_WARN("CmdDisplaySwapMapping: display[%u] not found — info stored but no handler",
+                      display_id);
+        }
+    }
 
     return LAGFX_HANDLER_OK;
 }

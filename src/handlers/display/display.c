@@ -317,17 +317,29 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
      *   - scanout_gpa == 0: fallback readback into display->fallback_pixels
      *     so the shell can pull via read_frame (used when CmdDisplaySwapMapping
      *     hasn't fired yet)
-     * Both end with set_frame_ready() so QEMU's display-tick callback
-     * notices something to push to noVNC.
-     */
+  * Both end with set_frame_ready() so QEMU's display-tick callback
+      * notices something to push to noVNC.
+      */
     if (dev && display_index < LAGFX_MAX_DISPLAYS) {
         lagfx_display_t *disp = dev->displays[display_index];
         if (disp != NULL) {
-            const uint64_t fb_base = (uint64_t)arg2 << 12;
-            const uint64_t scanout_len =
-                (uint64_t)LAGFX_DISPLAY_DEFAULT_W *
-                (uint64_t)LAGFX_DISPLAY_DEFAULT_H *
-                (uint64_t)LAGFX_DISPLAY_DEFAULT_BYTES_PER_PIXEL;
+            uint64_t fb_base, scanout_len;
+            
+            /* If kext sends arg2=0, use the last-seen CmdDisplaySwapMapping
+              * values. This is the common pattern when scanout buffer is stable. */
+            if (arg2 == 0 && disp->scanout_valid) {
+                fb_base     = disp->scanout_gpa;
+                scanout_len = disp->scanout_length;
+                LAGFX_LOG("vchan_display_submit: using stored swap mapping gpa=0x%llx len=%llu for display[%u]",
+                          (unsigned long long)fb_base, (unsigned long long)scanout_len,
+                          display_index);
+            } else {
+                fb_base     = (uint64_t)arg2 << 12;
+                scanout_len = disp->scanout_length > 0 ? disp->scanout_length :
+                              ((uint64_t)LAGFX_DISPLAY_DEFAULT_W *
+                               (uint64_t)LAGFX_DISPLAY_DEFAULT_H *
+                               (uint64_t)LAGFX_DISPLAY_DEFAULT_BYTES_PER_PIXEL);
+            }
 
             lagfx_status_t st = lagfx_display_submit_rendered_frame(
                 disp, fb_base, scanout_len);

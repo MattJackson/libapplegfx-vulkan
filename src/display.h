@@ -106,12 +106,22 @@ struct lagfx_display {
      * observability; superseded by new_frame_ready semantically). */
     int has_frame;
 
-    /* Fallback path for when CmdDisplaySwapMapping never fires:
-     * store rendered pixels here until shell.read_memory pulls them.
-     * This enables noVNC display even without scanout buffer registration. */
+   /* Fallback path for when CmdDisplaySwapMapping never fires:
+      * store rendered pixels here until shell.read_memory pulls them.
+      * This enables noVNC display even without scanout buffer registration. */
     uint8_t *fallback_pixels;
     size_t fallback_stride;
     size_t fallback_bytes;
+
+    /* Scanout buffer info from CmdDisplaySwapMapping (opcode 0x12).
+      * The kext may send arg2=0 in vchan_display_submit if it expects
+      * us to use the last-seen swap mapping. Fields are populated when
+      * CmdDisplaySwapMapping fires, used as fallback when arg2==0. */
+    uint64_t scanout_gpa;
+    uint64_t scanout_length;
+    uint32_t scanout_width;
+    uint32_t scanout_height;
+    bool     scanout_valid;
 
 #ifdef LAGFX_HAVE_VULKAN
     /* Persistent staging-buffer ring — see doc-block above the
