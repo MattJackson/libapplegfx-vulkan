@@ -57,13 +57,25 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset, uint32_t value) {
 /* Global log file handle — opened lazily on first write */
 static FILE *lagfx_log_file = NULL;
 
+/* Default log-file path. Override by setting LAGFX_LOG_FILE in the
+ * environment; mirrors the LAGFX_LOG_LEVEL pattern from common/log.h.
+ * Used by the test harness to redirect lagfx output to a per-test
+ * file, and by ops who want to capture into a long-lived /var/log
+ * location instead of /tmp. */
+#define LAGFX_LOG_FILE_DEFAULT "/tmp/lagfx.log"
+
 /* Internal logging function — single source of truth for all lagfx logging.
- * Opens /tmp/lagfx.log once, flushes after every write to ensure real-time
- * visibility in Docker logs. Falls back to stderr if file open fails. */
+ * Opens the configured log file once, flushes after every write to ensure
+ * real-time visibility in Docker logs. Falls back to stderr if file open
+ * fails. */
 static void lagfx_log_internal(const char *prefix, const char *fmt, va_list args) {
     /* Lazy-open log file on first write */
     if (!lagfx_log_file) {
-        lagfx_log_file = fopen("/tmp/lagfx.log", "a");
+        const char *path = getenv("LAGFX_LOG_FILE");
+        if (!path || path[0] == '\0') {
+            path = LAGFX_LOG_FILE_DEFAULT;
+        }
+        lagfx_log_file = fopen(path, "a");
         if (!lagfx_log_file) {
             /* Fallback to stderr if we can't open file */
             lagfx_log_file = stderr;
@@ -77,14 +89,19 @@ static void lagfx_log_internal(const char *prefix, const char *fmt, va_list args
      * top of the file makes the regression obvious. */
     static int banner_emitted = 0;
     if (!banner_emitted) {
+        const char *path = getenv("LAGFX_LOG_FILE");
+        if (!path || path[0] == '\0') {
+            path = LAGFX_LOG_FILE_DEFAULT;
+        }
         banner_emitted = 1;
         fprintf(lagfx_log_file,
-                "LAGFX [INIT ] pid=%d level=%s build=%s — /tmp/lagfx.log opened\n"
+                "LAGFX [INIT ] pid=%d level=%s build=%s — %s opened\n"
                 "LAGFX [ERROR] startup-banner channel test\n"
                 "LAGFX [WARN ] startup-banner channel test\n"
                 "LAGFX [INFO ] startup-banner channel test\n"
                 "LAGFX [trace] startup-banner channel test (silent unless LAGFX_LOG_LEVEL=trace)\n",
-                (int)getpid(), lagfx_level_name(), __DATE__ " " __TIME__);
+                (int)getpid(), lagfx_level_name(),
+                __DATE__ " " __TIME__, path);
         fflush(lagfx_log_file);
     }
 
@@ -208,16 +225,16 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
                               ? desc->mmio_region_size
                               : LAGFX_MMIO_DEFAULT_SIZE;
 
-   /* Phase 1.A.2: attach the protocol decoder. It owns the MMIO
-      * shadow and ring geometry. */
-     lagfx_protocol_t *proto = lagfx_protocol_new(dev);
-     if (!proto) {
-         set_err(errp_out, "lagfx_device_new: protocol allocation failed");
-         memset(dev, 0, sizeof(*dev));
-         free(dev);
-         return NULL;
-     }
-     dev->protocol_state = proto;
+    /* Phase 1.A.2: attach the protocol decoder. It owns the MMIO
+     * shadow and ring geometry. */
+    lagfx_protocol_t *proto = lagfx_protocol_new(dev);
+    if (!proto) {
+        set_err(errp_out, "lagfx_device_new: protocol allocation failed");
+        memset(dev, 0, sizeof(*dev));
+        free(dev);
+        return NULL;
+    }
+    dev->protocol_state = proto;
 
     /* Hand off register-shadow ownership to doorbell.c. This sets
      * STATUS_CONTROL (0x1000) to 1 so the decoder reads back as
@@ -226,7 +243,7 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
      * lives entirely inside doorbell.c — device.c does not touch it. */
     doorbell_init(proto);
 
- /* Phase 1.B: Vulkan instance + device + queue. In no-vulkan builds
+    /* Phase 1.B: Vulkan instance + device + queue. In no-vulkan builds
      * this is a no-op that still returns LAGFX_OK with a tiny placeholder
      * state (see src/vulkan/instance.c). We still surface real Vulkan
      * init failures as LAGFX_ERR_BACKEND so the shell can route them to
