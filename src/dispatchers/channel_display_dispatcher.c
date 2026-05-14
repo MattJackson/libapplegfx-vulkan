@@ -25,6 +25,7 @@
  */
 
 #include "channel_display_dispatcher.h"
+#include "ring_common.h"
 #include "../doorbell.h"
 #include "../device.h"
 #include "../common/le.h"
@@ -38,26 +39,12 @@
 #define LAGFX_DISP_DRAIN_MAX_CMDS 128u
 #define LAGFX_DISP_MAX_CMD_BYTES  4096u
 
-/* FIFORingDescriptor wire layout — 20 bytes (RE:
- * paravirt-re/library/state-machines/FIFORingDescriptor.md):
- *
- *   +0x00 u32 write_ptr   (guest-incremented)
- *   +0x04 u32 read_ptr    (host-incremented)
- *   +0x08 u32 reserved
- *   +0x0c u32 chan_id     (1-based; matches BAR0+0x1020 doorbell)
- *   +0x10 u32 ring_pfn    (guest-physical PFN of the ring)
- */
-#define LAGFX_FIFO_DESC_BYTES        20u
-#define LAGFX_FIFO_DESC_BASE_OFFSET  0x400u
-
 /* DisplayPipe ring size convention per FIFORingDescriptor.md §"ring size":
  * not stored in the descriptor; known by context. DisplayPipes use
- * 0x1000 (4 KiB); VirtualChannels use 0x10000 (64 KiB).
- *
- * Per per-channel-ring-pfn-array.md: ring_pfn<<12 is NOT the command
- * data — it's a u32 PFN-array (page0). The actual command bytes live
- * at (page0[idx]<<12) where idx = (offset % ring_size) >> 12. Display
- * rings never wrap, so idx is always 0.
+ * 0x1000 (4 KiB); VirtualChannels use 0x10000 (64 KiB). Display rings
+ * don't wrap (small enough), so PFN-array idx is always 0 — but we
+ * still go through ring_common.lagfx_ring_resolve_data_gpa for the
+ * indirection.
  */
 #define LAGFX_DISPLAY_RING_SIZE  0x1000u
 
@@ -188,125 +175,6 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
     }
 }
 
-/* Read the 20-byte FIFORingDescriptor for chan_id from the shared
- * control page. Returns true on success. On true, *out_write_ptr,
- * *out_read_ptr, *out_ring_gpa are populated and *out_desc_gpa is the
- * descriptor's GPA (so the caller can publish the bumped read_ptr).
- */
-static bool fifo_descriptor_read(lagfx_protocol_t *p,
-                                  uint32_t chan_id,
-                                  uint64_t *out_desc_gpa,
-                                  uint32_t *out_write_ptr,
-                                  uint32_t *out_read_ptr,
-                                  uint64_t *out_ring_gpa) {
-    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
-    if (!dev || !dev->desc.shell.read_memory) {
-        LAGFX_WARN("fifo_descriptor_read: no shell.read_memory callback");
-        return false;
-    }
-    if (p->ring_shared_page_pfn == 0u) {
-        LAGFX_TRACE("fifo_descriptor_read: ring_shared_page_pfn=0 — kext "
-                    "hasn't published shared page yet");
-        return false;
-    }
-    if (chan_id == 0u) {
-        return false;  /* root channel uses a different path */
-    }
-
-    uint64_t shared_gpa = (uint64_t)p->ring_shared_page_pfn << 12;
-    uint64_t desc_gpa   = shared_gpa
-                        + LAGFX_FIFO_DESC_BASE_OFFSET
-                        + (uint64_t)(chan_id - 1u) * LAGFX_FIFO_DESC_BYTES;
-
-    uint8_t desc[LAGFX_FIFO_DESC_BYTES];
-    if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
-                                      desc_gpa,
-                                      LAGFX_FIFO_DESC_BYTES,
-                                      desc)) {
-        LAGFX_WARN("fifo_descriptor_read: read failed at 0x%llx (chan=%u)",
-                   (unsigned long long)desc_gpa, chan_id);
-        return false;
-    }
-
-    uint32_t write_ptr = lagfx_le32(desc + 0x00);
-    uint32_t read_ptr  = lagfx_le32(desc + 0x04);
-    uint32_t desc_chan = lagfx_le32(desc + 0x0c);
-    uint32_t ring_pfn  = lagfx_le32(desc + 0x10);
-
-    if (ring_pfn == 0u) {
-        LAGFX_TRACE("fifo_descriptor_read: ch=%u ring_pfn=0 — descriptor "
-                    "not yet initialised", chan_id);
-        return false;
-    }
-    if (desc_chan != chan_id) {
-        LAGFX_WARN("fifo_descriptor_read: ch=%u descriptor chan_id field "
-                   "mismatch (got %u) — proceeding with caller's id",
-                   chan_id, desc_chan);
-    }
-
-    *out_desc_gpa   = desc_gpa;
-    *out_write_ptr  = write_ptr;
-    *out_read_ptr   = read_ptr;
-    /* ring_pfn<<12 is page 0 (PFN-array); the caller resolves the
-     * data page via page0[(off % ring_size) >> 12]. We return
-     * page0's GPA here; the drain loop walks the PFN-array. */
-    *out_ring_gpa   = (uint64_t)ring_pfn << 12;
-    return true;
-}
-
-/* Resolve the data-page GPA for a given byte offset in the ring via
- * page0's PFN-array. Per per-channel-ring-pfn-array.md, page0 is u32
- * PFN entries: page0[idx] = data PFN, where idx = (off % ring_size)
- * >> 12. Display rings (ring_size=0x1000) always use idx=0. */
-static bool ring_resolve_data_gpa(lagfx_protocol_t *p,
-                                   uint64_t page0_gpa,
-                                   uint32_t ring_size,
-                                   uint32_t offset,
-                                   uint64_t *out_data_gpa) {
-    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
-    if (!dev || !dev->desc.shell.read_memory) return false;
-
-    uint32_t off_mod = (ring_size != 0u) ? (offset % ring_size) : offset;
-    uint32_t page_idx = off_mod >> 12;
-
-    uint8_t pfn_buf[4];
-    if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
-                                      page0_gpa + page_idx * 4u,
-                                      4, pfn_buf)) {
-        LAGFX_WARN("ring_resolve_data_gpa: PFN-array read failed at "
-                   "0x%llx", (unsigned long long)(page0_gpa + page_idx * 4u));
-        return false;
-    }
-    uint32_t data_pfn = lagfx_le32(pfn_buf);
-    if (data_pfn == 0u) {
-        LAGFX_WARN("ring_resolve_data_gpa: PFN-array entry[%u]=0 — ring "
-                   "page not mapped at off=0x%x", page_idx, offset);
-        return false;
-    }
-    *out_data_gpa = ((uint64_t)data_pfn << 12) + (off_mod & 0xfffu);
-    return true;
-}
-
-/* Publish the host's drained position back to the descriptor's read_ptr
- * field (+0x04) so the kext's watchdog can observe progress. */
-static void fifo_descriptor_publish_rp(lagfx_protocol_t *p,
-                                        uint64_t desc_gpa,
-                                        uint32_t read_ptr) {
-    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
-    if (!dev || !dev->desc.shell.write_memory) {
-        return;
-    }
-    /* Write to +0x04. NOT +0x00 — the bug pattern called out in
-     * FIFORingDescriptor.md §"Bug pattern: clobbering write_ptr". */
-    if (!dev->desc.shell.write_memory(dev->desc.shell.opaque,
-                                       desc_gpa + 0x04u,
-                                       sizeof(read_ptr),
-                                       &read_ptr)) {
-        LAGFX_WARN("fifo_descriptor_publish_rp: write failed at 0x%llx",
-                   (unsigned long long)(desc_gpa + 0x04u));
-    }
-}
-
 /* Drain ring buffer for display channels. Returns number of commands processed. */
 size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
     if (!lagfx_protocol_is_valid(p)) {
@@ -320,7 +188,7 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
     uint32_t write_ptr = 0;
     uint32_t read_ptr = 0;
     uint64_t page0_gpa = 0;
-    if (!fifo_descriptor_read(p, chan_id, &desc_gpa, &write_ptr, &read_ptr, &page0_gpa)) {
+    if (!lagfx_ring_fifo_descriptor_read(p, chan_id, &desc_gpa, &write_ptr, &read_ptr, &page0_gpa)) {
         return 0;
     }
 
@@ -354,7 +222,7 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
          * per-channel-ring-pfn-array.md). page0_gpa<<12 is NOT data —
          * it's a u32 PFN array of page pointers. */
         uint64_t hdr_gpa = 0;
-        if (!ring_resolve_data_gpa(p, page0_gpa, ring_size, rp, &hdr_gpa)) {
+        if (!lagfx_ring_resolve_data_gpa(p, page0_gpa, ring_size, rp, &hdr_gpa)) {
             break;
         }
 
@@ -421,7 +289,7 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
     /* Publish the drained position back to the descriptor. The kext's
      * watchdog (per channel-progress-flag-RE.md) reads this to confirm
      * the host is making forward progress on the ring. */
-    fifo_descriptor_publish_rp(p, desc_gpa, rp);
+    lagfx_ring_publish_read_ptr(p, desc_gpa, rp);
 
     LAGFX_LOG("display drain: ch=%u drained=%zu new rp=0x%x",
               chan_id, cmds, rp);

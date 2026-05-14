@@ -14,6 +14,8 @@ lagfx_sources += files(
   'channel_compute_dispatcher.c',     # Compute channels (ch 1-4) sub-dispatcher
   'channel_display_dispatcher.h',
   'channel_display_dispatcher.c',     # Display channels (ch 5+) sub-dispatcher — routes vchan opcodes 0x01-0x07
+  'ring_common.h',
+  'ring_common.c',                     # Shared FIFORingDescriptor + PFN-array helpers (used by compute/display drains)
 )
 
 # channel_5_plus_dispatcher.c removed: references old protocol state fields not present in new architecture
