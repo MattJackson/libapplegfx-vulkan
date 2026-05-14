@@ -14,6 +14,40 @@
 #include "vulkan/render_target.h"
 
 #include <pthread.h>
+#include <stdint.h>
+
+#ifdef LAGFX_HAVE_VULKAN
+#  include <vulkan/vulkan.h>
+#endif
+
+/* === Per-display staging-buffer ring ============================
+ *
+ * lagfx_display_submit_rendered_frame previously created + bound +
+ * fence-waited + destroyed a VkBuffer / VkDeviceMemory / VkFence
+ * trio on every present. At a 30 Hz Stage-30 target that's 30 large
+ * allocations per second through Mesa's allocator — a real
+ * throughput ceiling for lavapipe. Two persistent staging buffers
+ * (double-buffered with explicit fences) lets the present path
+ * reuse mappings across frames.
+ *
+ * Two slots is enough: at most one frame in-flight on the GPU
+ * (lavapipe drains synchronously today, so even one is a soft
+ * minimum), one being assembled. More slots would help only if the
+ * present path were pipelined past the fence-wait.
+ *
+ * Allocated lazily on first present at the current rt size; freed
+ * (and re-allocated) if rt resizes. */
+#define LAGFX_DISPLAY_STAGING_SLOTS 2u
+#ifdef LAGFX_HAVE_VULKAN
+typedef struct {
+    VkBuffer        buffer;
+    VkDeviceMemory  memory;
+    VkFence         fence;
+    void           *mapped;        /* persistent map */
+    size_t          size;
+    bool            in_flight;     /* fence pending */
+} lagfx_display_staging_slot_t;
+#endif
 
 /* Thread safety: rt_* fields are accessed from multiple threads.
  * - VBlank tick runs on QEMU_CLOCK_VIRTUAL thread (QEMU side)
@@ -67,6 +101,19 @@ struct lagfx_display {
     uint8_t *fallback_pixels;
     size_t fallback_stride;
     size_t fallback_bytes;
+
+#ifdef LAGFX_HAVE_VULKAN
+    /* Persistent staging-buffer ring — see doc-block above the
+     * lagfx_display_staging_slot_t typedef. Allocated lazily on
+     * first present; rebuilt on rt resize.
+     *
+     * staging_size==0 means uninitialised. staging_slot_idx is the
+     * next slot to write into. Both protected by rt_lock (same
+     * lifetime as the render target). */
+    lagfx_display_staging_slot_t staging[LAGFX_DISPLAY_STAGING_SLOTS];
+    size_t                       staging_size;
+    uint32_t                     staging_slot_idx;
+#endif
 };
 
 /* Internal accessor: called by ops_display.c when a clear-colour

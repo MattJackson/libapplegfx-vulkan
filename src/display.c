@@ -215,6 +215,13 @@ lagfx_display_t *lagfx_display_new(lagfx_device_t *device,
     return disp;
 }
 
+#ifdef LAGFX_HAVE_VULKAN
+/* Forward decl — implementation lives near the persistent staging
+ * ring helpers below lagfx_display_submit_rendered_frame. */
+static void display_staging_slot_destroy(struct lagfx_vk_state *vk,
+                                          lagfx_display_staging_slot_t *s);
+#endif
+
 void lagfx_display_free(lagfx_display_t *display) {
     if (!display) {
         return;
@@ -224,6 +231,25 @@ void lagfx_display_free(lagfx_display_t *display) {
                   (void *)display, display->magic);
         return;
     }
+
+#ifdef LAGFX_HAVE_VULKAN
+    /* Tear down the persistent staging ring before the Vulkan device
+     * goes away. Walks all slots regardless of staging_size so partial
+     * inits unwind cleanly. */
+    if (display->device && display->device->vk
+        && display->device->vk->initialized) {
+        struct lagfx_vk_state *vk = display->device->vk;
+        for (uint32_t i = 0; i < LAGFX_DISPLAY_STAGING_SLOTS; ++i) {
+            lagfx_display_staging_slot_t *s = &display->staging[i];
+            if (s->in_flight && s->fence != VK_NULL_HANDLE) {
+                vkWaitForFences(vk->device, 1, &s->fence, VK_TRUE,
+                                1000ull * 1000ull * 1000ull);
+            }
+            display_staging_slot_destroy(vk, s);
+        }
+        display->staging_size = 0;
+    }
+#endif
 
     display_rt_destroy(display);
 
@@ -625,6 +651,148 @@ static uint32_t display_find_memory_type(VkPhysicalDevice phys,
     }
     return UINT32_MAX;
 }
+
+/* === Persistent staging-buffer ring ============================
+ *
+ * Each present (lagfx_display_submit_rendered_frame DMA path)
+ * previously did vkCreateBuffer + vkAllocateMemory + vkBindBufferMemory
+ * + vkCreateFence + submit + vkDestroyBuffer / vkFreeMemory /
+ * vkDestroyFence. Repeated 30×/s, that's a real bottleneck through
+ * Mesa's allocator.
+ *
+ * Two persistent slots, each carrying its own VkBuffer +
+ * VkDeviceMemory (persistently mapped) + VkFence. Allocated on
+ * first present; rebuilt if rt resizes. */
+static void display_staging_slot_destroy(struct lagfx_vk_state *vk,
+                                          lagfx_display_staging_slot_t *s) {
+    if (!vk || !s) return;
+    if (s->mapped && s->memory != VK_NULL_HANDLE) {
+        vkUnmapMemory(vk->device, s->memory);
+        s->mapped = NULL;
+    }
+    if (s->fence != VK_NULL_HANDLE) {
+        vkDestroyFence(vk->device, s->fence, NULL);
+        s->fence = VK_NULL_HANDLE;
+    }
+    if (s->buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(vk->device, s->buffer, NULL);
+        s->buffer = VK_NULL_HANDLE;
+    }
+    if (s->memory != VK_NULL_HANDLE) {
+        vkFreeMemory(vk->device, s->memory, NULL);
+        s->memory = VK_NULL_HANDLE;
+    }
+    s->size = 0;
+    s->in_flight = false;
+}
+
+static lagfx_status_t display_staging_slot_init(struct lagfx_vk_state *vk,
+                                                 lagfx_display_staging_slot_t *s,
+                                                 size_t bytes) {
+    if (!vk || !s || bytes == 0) return LAGFX_ERR_INVALID_ARG;
+
+    VkBufferCreateInfo bci = {
+        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size        = bytes,
+        .usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkResult vr = vkCreateBuffer(vk->device, &bci, NULL, &s->buffer);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("staging_slot_init: vkCreateBuffer (%zu bytes) failed (%d)",
+                  bytes, (int)vr);
+        return LAGFX_ERR_BACKEND;
+    }
+
+    VkMemoryRequirements breq;
+    vkGetBufferMemoryRequirements(vk->device, s->buffer, &breq);
+    uint32_t mtype = display_find_memory_type(
+        vk->phys_device, breq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mtype == UINT32_MAX) {
+        LAGFX_ERR("staging_slot_init: no HOST_VISIBLE+COHERENT");
+        display_staging_slot_destroy(vk, s);
+        return LAGFX_ERR_BACKEND;
+    }
+
+    VkMemoryAllocateInfo mai = {
+        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize  = breq.size,
+        .memoryTypeIndex = mtype,
+    };
+    vr = vkAllocateMemory(vk->device, &mai, NULL, &s->memory);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("staging_slot_init: vkAllocateMemory failed (%d)", (int)vr);
+        display_staging_slot_destroy(vk, s);
+        return LAGFX_ERR_BACKEND;
+    }
+    vr = vkBindBufferMemory(vk->device, s->buffer, s->memory, 0);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("staging_slot_init: vkBindBufferMemory failed (%d)", (int)vr);
+        display_staging_slot_destroy(vk, s);
+        return LAGFX_ERR_BACKEND;
+    }
+
+    VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    vr = vkCreateFence(vk->device, &fci, NULL, &s->fence);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("staging_slot_init: vkCreateFence failed (%d)", (int)vr);
+        display_staging_slot_destroy(vk, s);
+        return LAGFX_ERR_BACKEND;
+    }
+
+    /* Persistent map — HOST_COHERENT means we don't need explicit
+     * flushes; reads always see fresh data once the fence completes. */
+    vr = vkMapMemory(vk->device, s->memory, 0, breq.size, 0, &s->mapped);
+    if (vr != VK_SUCCESS) {
+        LAGFX_ERR("staging_slot_init: vkMapMemory failed (%d)", (int)vr);
+        display_staging_slot_destroy(vk, s);
+        return LAGFX_ERR_BACKEND;
+    }
+
+    s->size = bytes;
+    s->in_flight = false;
+    return LAGFX_OK;
+}
+
+/* Ensure the per-display staging ring has slots sized for `bytes`.
+ * Rebuilds on size change. Caller must hold rt_lock or otherwise
+ * serialise vs display_rt_create. */
+static lagfx_status_t display_staging_ring_ensure(lagfx_display_t *display,
+                                                   struct lagfx_vk_state *vk,
+                                                   size_t bytes) {
+    if (display->staging_size == bytes) return LAGFX_OK;
+
+    /* Wait out any in-flight fences before tearing down. */
+    for (uint32_t i = 0; i < LAGFX_DISPLAY_STAGING_SLOTS; ++i) {
+        lagfx_display_staging_slot_t *s = &display->staging[i];
+        if (s->in_flight && s->fence != VK_NULL_HANDLE) {
+            vkWaitForFences(vk->device, 1, &s->fence, VK_TRUE,
+                            1000ull * 1000ull * 1000ull);
+            s->in_flight = false;
+        }
+        display_staging_slot_destroy(vk, s);
+    }
+    display->staging_size = 0;
+    display->staging_slot_idx = 0;
+
+    for (uint32_t i = 0; i < LAGFX_DISPLAY_STAGING_SLOTS; ++i) {
+        lagfx_status_t st = display_staging_slot_init(
+            vk, &display->staging[i], bytes);
+        if (st != LAGFX_OK) {
+            /* Unwind partial init. */
+            for (uint32_t j = 0; j < i; ++j) {
+                display_staging_slot_destroy(vk, &display->staging[j]);
+            }
+            return st;
+        }
+    }
+    display->staging_size = bytes;
+    LAGFX_LOG("display_staging_ring_ensure: armed %u slots × %zu bytes",
+              LAGFX_DISPLAY_STAGING_SLOTS, bytes);
+    return LAGFX_OK;
+}
 #endif
 
 lagfx_status_t lagfx_display_submit_rendered_frame(
@@ -723,61 +891,48 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
         return LAGFX_OK;
     }
 
-    VkBuffer         staging_buf = VK_NULL_HANDLE;
-    VkDeviceMemory   staging_mem = VK_NULL_HANDLE;
-    VkCommandBuffer  cb          = VK_NULL_HANDLE;
-    VkFence          fence       = VK_NULL_HANDLE;
-    lagfx_status_t   result      = LAGFX_OK;
+    /* Persistent staging-buffer ring — allocate (or resize) on first
+     * present at this size, then reuse across frames. Old behaviour
+     * was vkCreateBuffer + vkAllocateMemory + vkBindBufferMemory +
+     * vkCreateFence per frame; at 30 Hz Stage-30 target that's 30
+     * large allocations / sec through Mesa's allocator. */
+    LAGFX_DISPLAY_RT_LOCK(display);
+    lagfx_status_t ring_st = display_staging_ring_ensure(display, vk, frame_bytes);
+    LAGFX_DISPLAY_RT_UNLOCK(display);
+    if (ring_st != LAGFX_OK) {
+        return ring_st;
+    }
 
-    VkBufferCreateInfo bci = {
-        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size        = frame_bytes,
-        .usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
-    VkResult vr = vkCreateBuffer(vk->device, &bci, NULL, &staging_buf);
+    /* Round-robin pick — wait on the prior fence for this slot if
+     * still in-flight so we don't corrupt the persistent mapping. */
+    uint32_t slot_idx = display->staging_slot_idx;
+    lagfx_display_staging_slot_t *slot = &display->staging[slot_idx];
+    display->staging_slot_idx =
+        (slot_idx + 1u) % LAGFX_DISPLAY_STAGING_SLOTS;
+
+    if (slot->in_flight) {
+        VkResult wr = vkWaitForFences(vk->device, 1, &slot->fence, VK_TRUE,
+                                       1000ull * 1000ull * 1000ull);
+        if (wr != VK_SUCCESS) {
+            LAGFX_ERR("display_submit_rendered_frame: prior fence wait failed (%d)",
+                      (int)wr);
+            return LAGFX_ERR_BACKEND;
+        }
+        slot->in_flight = false;
+    }
+    VkResult vr = vkResetFences(vk->device, 1, &slot->fence);
     if (vr != VK_SUCCESS) {
-        LAGFX_ERR("display_submit_rendered_frame: vkCreateBuffer failed (%d)",
+        LAGFX_ERR("display_submit_rendered_frame: vkResetFences failed (%d)",
                   (int)vr);
         return LAGFX_ERR_BACKEND;
     }
 
-    VkMemoryRequirements breq;
-    vkGetBufferMemoryRequirements(vk->device, staging_buf, &breq);
-    uint32_t mtype = display_find_memory_type(
-        vk->phys_device, breq.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (mtype == UINT32_MAX) {
-        LAGFX_ERR("display_submit_rendered_frame: no HOST_VISIBLE+COHERENT");
-        result = LAGFX_ERR_BACKEND;
-        goto cleanup_rendered;
-    }
-
-    VkMemoryAllocateInfo mai = {
-        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize  = breq.size,
-        .memoryTypeIndex = mtype,
-    };
-    vr = vkAllocateMemory(vk->device, &mai, NULL, &staging_mem);
-    if (vr != VK_SUCCESS) {
-        LAGFX_ERR("display_submit_rendered_frame: vkAllocateMemory failed (%d)",
-                  (int)vr);
-        result = LAGFX_ERR_BACKEND;
-        goto cleanup_rendered;
-    }
-    vr = vkBindBufferMemory(vk->device, staging_buf, staging_mem, 0);
-    if (vr != VK_SUCCESS) {
-        LAGFX_ERR("display_submit_rendered_frame: vkBindBufferMemory failed (%d)",
-                  (int)vr);
-        result = LAGFX_ERR_BACKEND;
-        goto cleanup_rendered;
-    }
+    VkCommandBuffer  cb     = VK_NULL_HANDLE;
+    lagfx_status_t   result = LAGFX_OK;
 
     lagfx_status_t cb_st = lagfx_vk_cmdbuf_alloc(vk, &cb);
     if (cb_st != LAGFX_OK) {
-        result = cb_st;
-        goto cleanup_rendered;
+        return cb_st;
     }
 
     VkCommandBufferBeginInfo bi = {
@@ -832,7 +987,7 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
         };
         vkCmdCopyImageToBuffer(cb, vk->frame_image,
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               staging_buf, 1, &region);
+                               slot->buffer, 1, &region);
     }
 
     {
@@ -868,81 +1023,52 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
     }
 
     {
-        VkFenceCreateInfo fci = {
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        };
-        vr = vkCreateFence(vk->device, &fci, NULL, &fence);
-        if (vr != VK_SUCCESS) {
-            LAGFX_ERR("display_submit_rendered_frame: vkCreateFence failed (%d)",
-                      (int)vr);
-            result = LAGFX_ERR_BACKEND;
-            goto cleanup_rendered;
-        }
-    }
-
-    {
         VkSubmitInfo si = {
             .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .commandBufferCount = 1,
             .pCommandBuffers    = &cb,
         };
-        vr = vkQueueSubmit(vk->graphics_queue, 1, &si, fence);
+        vr = vkQueueSubmit(vk->graphics_queue, 1, &si, slot->fence);
         if (vr != VK_SUCCESS) {
             LAGFX_ERR("display_submit_rendered_frame: vkQueueSubmit failed (%d)",
                       (int)vr);
             result = LAGFX_ERR_BACKEND;
             goto cleanup_rendered;
         }
+        slot->in_flight = true;
     }
 
     {
         const uint64_t timeout_ns = 1ull * 1000ull * 1000ull * 1000ull;
-        vr = vkWaitForFences(vk->device, 1, &fence, VK_TRUE, timeout_ns);
+        vr = vkWaitForFences(vk->device, 1, &slot->fence, VK_TRUE, timeout_ns);
         if (vr != VK_SUCCESS) {
             LAGFX_ERR("display_submit_rendered_frame: vkWaitForFences failed (%d)",
                       (int)vr);
             result = LAGFX_ERR_BACKEND;
             goto cleanup_rendered;
         }
+        slot->in_flight = false;
     }
 
     set_frame_ready(display);
 
-    {
-        void *mapped = NULL;
-        vr = vkMapMemory(vk->device, staging_mem, 0, frame_bytes, 0, &mapped);
-        if (vr != VK_SUCCESS) {
-            LAGFX_ERR("display_submit_rendered_frame: vkMapMemory failed (%d)",
-                      (int)vr);
-            result = LAGFX_ERR_BACKEND;
-            goto cleanup_rendered;
-        }
-        if (!display->device->desc.shell.write_memory(
-                display->device->desc.shell.opaque,
-                scanout_gpa, (uint64_t)frame_bytes, mapped)) {
-            LAGFX_WARN("display_submit_rendered_frame: DMA writeback to "
-                       "gpa=0x%llx (%zu bytes) failed",
-                       (unsigned long long)scanout_gpa, frame_bytes);
-        } else {
-            LAGFX_LOG("display_submit_rendered_frame: DMA writeback "
-                      "gpa=0x%llx bytes=%zu OK",
-                      (unsigned long long)scanout_gpa, frame_bytes);
-        }
-        vkUnmapMemory(vk->device, staging_mem);
+    /* Persistent map — HOST_COHERENT guarantees the bytes the GPU
+     * wrote are visible without an explicit vkInvalidateMappedMemoryRanges. */
+    if (!display->device->desc.shell.write_memory(
+            display->device->desc.shell.opaque,
+            scanout_gpa, (uint64_t)frame_bytes, slot->mapped)) {
+        LAGFX_WARN("display_submit_rendered_frame: DMA writeback to "
+                   "gpa=0x%llx (%zu bytes) failed",
+                   (unsigned long long)scanout_gpa, frame_bytes);
+    } else {
+        LAGFX_LOG("display_submit_rendered_frame: DMA writeback "
+                  "gpa=0x%llx bytes=%zu OK (slot %u, persistent staging)",
+                  (unsigned long long)scanout_gpa, frame_bytes, slot_idx);
     }
 
 cleanup_rendered:
-    if (fence != VK_NULL_HANDLE) {
-        vkDestroyFence(vk->device, fence, NULL);
-    }
     if (cb != VK_NULL_HANDLE) {
         lagfx_vk_cmdbuf_free(vk, cb);
-    }
-    if (staging_mem != VK_NULL_HANDLE) {
-        vkFreeMemory(vk->device, staging_mem, NULL);
-    }
-    if (staging_buf != VK_NULL_HANDLE) {
-        vkDestroyBuffer(vk->device, staging_buf, NULL);
     }
     return result;
 #else
