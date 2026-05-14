@@ -20,8 +20,9 @@
 #include "shaders/catalog.h"
 #include "common/log.h"
 
-/* Forward decl for protocol lifecycle function (defined in lifecycle.c) */
+/* Forward decl for protocol lifecycle functions (defined in lifecycle.c) */
 lagfx_protocol_t *lagfx_protocol_new(struct lagfx_device *dev);
+void lagfx_protocol_free(lagfx_protocol_t *p);
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -287,7 +288,13 @@ void lagfx_device_free(lagfx_device_t *device) {
         }
     }
 
-    /* Protocol lifecycle removed - legacy protocol.c deleted */
+    /* Release protocol state. Allocated in lagfx_device_new via
+     * lagfx_protocol_new; mirror the lifetime here so ASAN doesn't
+     * report a leak on device teardown. */
+    if (device->protocol_state) {
+        lagfx_protocol_free((lagfx_protocol_t *)device->protocol_state);
+        device->protocol_state = NULL;
+    }
 
     /* Tear down Vulkan state (safe on NULL; in no-vulkan builds this
      * just free()s the placeholder struct). */
