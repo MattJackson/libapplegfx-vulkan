@@ -865,7 +865,8 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
             display->fallback_pixels = pixels;
             display->fallback_stride = stride_actual;
             display->fallback_bytes = frame_bytes;
-            LAGFX_LOG("display_submit_rendered_frame: FALLBACK PATH DMA_OK bytes=%zu", frame_bytes);
+            LAGFX_LOG("display_submit_rendered_frame: FALLBACK PATH DMA_OK bytes=%zu fallback_pixels=0x%lx",
+                      frame_bytes, (unsigned long)pixels);
         } else {
             /* No read_memory callback — just keep pixels for now.
              * Future: store in ring buffer. */
