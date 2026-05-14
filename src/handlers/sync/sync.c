@@ -7,6 +7,7 @@
  */
 
 #include "../handlers.h"
+#include "../display.h"   /* for lagfx_display_t full definition (scanout fields) */
 #include "common/le.h"
 #include "common/log.h"
 
