@@ -9,7 +9,8 @@
 #include "state.h"
 #include "../common/log.h"
 
-static int g_initialized = 0;
+#include <stdlib.h>
+#include <string.h>
 
 lagfx_protocol_t* lagfx_protocol_new(struct lagfx_device *dev) {
     lagfx_protocol_t *p = calloc(1, sizeof(*p));
@@ -20,11 +21,6 @@ lagfx_protocol_t* lagfx_protocol_new(struct lagfx_device *dev) {
 
     p->magic = LAGFX_PROTOCOL_MAGIC;
     p->dev = dev;  /* Set back-reference to device */
-
-    /* Initialize dispatcher registry once */
-    if (!g_initialized) {
-        g_initialized = 1;
-    }
 
     /* Set initial register shadow (STATUS_CONTROL: present + ready) */
     p->reg[REG_STATUS_CONTROL] = 0x3u;
