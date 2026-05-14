@@ -42,16 +42,20 @@ const doorbell_door_descriptor_t g_doorbell_doors[] = {
 const size_t g_doorbell_door_count = sizeof(g_doorbell_doors) / sizeof(doorbell_door_descriptor_t);
 
 /* === Register shadow ==============================================
- * Owned by doorbell.c (this module is the only writer/reader of the
- * shadow). The shadow covers BAR0+0x1000..0x1FFF mapped to idx 0..15
- * by lagfx_reg_index. Reads of state registers (anything that isn't
- * a special-case offset like 0x1014/0x1018/0x122c) come from here;
- * writes go here too as a side effect of doorbell_handle_write so the
- * subsequent read sees the value the guest just wrote.
+ * The shadow covers BAR0+0x1000..0x1FFF mapped to idx 0..15 via
+ * doorbell_reg_index. Reads of state registers (anything that isn't
+ * a special-case offset like 0x1014 / 0x1018 / 0x122c) return the
+ * shadow; writes update the shadow as a side effect of
+ * doorbell_handle_write so the subsequent read sees what the guest
+ * just wrote.
+ *
+ * State lives on \`lagfx_protocol_t.reg[16]\` (declared in state.h).
+ * A previous version of this module owned a file-static array
+ * \`g_reg_shadow\`; that has been removed in favour of per-device
+ * state so multiple devices (test fixtures, future multi-device
+ * builds) don't share a single shadow.
  */
 #define LAGFX_MSIX_RANGE_END 0x1000u
-
-static uint32_t g_reg_shadow[16];
 
 static inline int doorbell_reg_index(uint64_t offset) {
     if (offset < LAGFX_MSIX_RANGE_END || offset >= 0x2000) return -1;
@@ -101,11 +105,18 @@ void doorbell_dispatch(void *protocol_state, uint64_t bar_offset, uint32_t data)
  * right after lagfx_protocol_new. STATUS_CONTROL=1 is the "FIFO
  * armed/enabled" default that older test fixtures (lifecycle-smoke
  * Phase 1.A) rely on.
+ *
+ * The protocol struct's reg[] array is already zeroed by calloc in
+ * lagfx_protocol_new; we just stamp STATUS_CONTROL here. (Note:
+ * lagfx_protocol_new also seeds REG_STATUS_CONTROL with 0x3 — that
+ * encodes both "present" and "ready" bits. doorbell_init resetting
+ * it to 1 is the legacy lifecycle-smoke shape; honour it.)
  */
 void doorbell_init(void *protocol_state) {
-    (void)protocol_state;  /* no per-state init yet; here for future use */
-    memset(g_reg_shadow, 0, sizeof(g_reg_shadow));
-    g_reg_shadow[0] = 1u;  /* STATUS_CONTROL @ 0x1000: decoder live */
+    lagfx_protocol_t *p = (lagfx_protocol_t *)protocol_state;
+    if (!p) return;
+    memset(p->reg, 0, sizeof(p->reg));
+    p->reg[0] = 1u;  /* STATUS_CONTROL @ 0x1000: decoder live */
     LAGFX_LOG("doorbell_init: shadow reset, STATUS_CONTROL=1");
 }
 
@@ -128,8 +139,8 @@ void doorbell_handle_write(void *protocol_state, uint64_t offset, uint32_t value
      * if the offset has no state-register meaning, mirroring it lets
      * us spot odd writes by reading them back. */
     int idx = doorbell_reg_index(offset);
-    if (idx >= 0) {
-        g_reg_shadow[idx] = value;
+    if (idx >= 0 && p) {
+        p->reg[idx] = value;
     }
 
     switch (offset) {
@@ -274,13 +285,13 @@ uint32_t doorbell_handle_read(void *protocol_state, uint64_t offset) {
     }
 
     int idx = doorbell_reg_index(offset);
-    if (idx < 0) {
+    if (idx < 0 || !p) {
         LAGFX_TRACE("doorbell: read off=0x%llx unmapped → 0",
                     (unsigned long long)offset);
         return 0u;
     }
 
-    uint32_t value = g_reg_shadow[idx];
+    uint32_t value = p->reg[idx];
     LAGFX_TRACE("doorbell: read off=0x%llx idx=%d → 0x%08x",
                 (unsigned long long)offset, idx, value);
     return value;

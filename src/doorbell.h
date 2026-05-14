@@ -74,8 +74,10 @@ uint32_t doorbell_handle_read (void *protocol_state, uint64_t offset);
 
 /* One-shot init for the register shadow / decoder defaults. Called
  * from lagfx_device_new after lagfx_protocol_new. Owns any startup
- * register values (e.g. STATUS_CONTROL=1) that used to be poked into
- * g_reg_shadow directly from device.c. */
+ * register values (e.g. STATUS_CONTROL=1) by stamping into the
+ * passed protocol_state's reg[] array; doorbell.c is the only writer
+ * to that array, but state lives on the protocol struct so multiple
+ * devices don't share one shadow. */
 void doorbell_init(void *protocol_state);
 
 /* Dispatch: given a BAR offset (must be a registered doorbell offset)
