@@ -276,8 +276,12 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
     LAGFX_LOG("vchan_display_submit: display[%u] arg2=0x%08x stamp=0x%08x",
               display_index, arg2, hdr->stamp);
 
-    /* Probe framebuffer to verify guest rendered content */
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+
+    /* Probe framebuffer to verify guest rendered content. Kept as the
+     * first-N + every-100th sample so the log stays readable while still
+     * giving us a periodic sighting of what the kext is asking us to
+     * scan out. */
     if (arg2 != 0u && dev && dev->desc.shell.read_memory && display_index < 8u) {
         static unsigned probe_count;
         probe_count++;
@@ -292,6 +296,54 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
             }
             LAGFX_LOG("vchan_display_submit: fb probe @0x%llx+0x400 ok=%d sum=%u bytes=%02x%02x...",
                       (unsigned long long)fb_base, ok, sum, probe[0], probe[1]);
+        }
+    }
+
+    /* Stage 25/30 scanout wiring. The kext just told us "frame ready at
+     * fb_base" for display[display_index]; pass that through to the
+     * Vulkan/scanout path so the host actually presents pixels.
+     *
+     * Pre-refactor parity note: src/protocol/ops_display.c (deleted in
+     * b652199) only ever called lagfx_display_submit_clear_color from a
+     * legacy fixture path (CmdDisplayTransaction3 gated on
+     * last_load_action==2u). The real production scanout was never
+     * wired — even pre-refactor. This is that wiring, written from
+     * scratch around the actual production trigger (vchan_display_submit
+     * = kext's per-frame "scan this out" signal).
+     *
+     * Two code paths inside lagfx_display_submit_rendered_frame:
+     *   - scanout_gpa != 0: DMA writeback to the kext-supplied buffer
+     *     (the steady-state path; what we now exercise)
+     *   - scanout_gpa == 0: fallback readback into display->fallback_pixels
+     *     so the shell can pull via read_frame (used when CmdDisplaySwapMapping
+     *     hasn't fired yet)
+     * Both end with set_frame_ready() so QEMU's display-tick callback
+     * notices something to push to noVNC.
+     */
+    if (dev && display_index < LAGFX_MAX_DISPLAYS) {
+        lagfx_display_t *disp = dev->displays[display_index];
+        if (disp != NULL) {
+            const uint64_t fb_base = (uint64_t)arg2 << 12;
+            const uint64_t scanout_len =
+                (uint64_t)LAGFX_DISPLAY_DEFAULT_W *
+                (uint64_t)LAGFX_DISPLAY_DEFAULT_H *
+                (uint64_t)LAGFX_DISPLAY_DEFAULT_BYTES_PER_PIXEL;
+
+            lagfx_status_t st = lagfx_display_submit_rendered_frame(
+                disp, fb_base, scanout_len);
+            if (st != LAGFX_OK) {
+                LAGFX_WARN("vchan_display_submit: scanout failed for "
+                           "display[%u] fb=0x%llx (%d) — frame skipped",
+                           display_index, (unsigned long long)fb_base,
+                           (int)st);
+            }
+        } else {
+            /* display_rt_create runs lazily after vchan_setup_shared_state;
+             * if we get a submit before the display struct exists, just
+             * stamp and skip — the next submit will land. */
+            LAGFX_LOG("vchan_display_submit: display[%u] not yet "
+                      "instantiated — submit skipped",
+                      display_index);
         }
     }
 
