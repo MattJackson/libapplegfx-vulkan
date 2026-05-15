@@ -194,12 +194,9 @@ static size_t inner_walk_segment(lagfx_protocol_t *p,
         uint32_t opcode_full  = opcode;
         uint8_t  opcode_byte  = (uint8_t)(opcode & 0xffu);
 
-        /* TEMP iteration-2: promoted from TRACE to LOG to capture every
-         * inner opcode for Stage 25 fence-timeout investigation. Revert
-         * to TRACE after the gate is identified. */
-        LAGFX_LOG("inner_walk: encType=%u opcode=0x%04x (byte=0x%02x) len=%u off=%zu",
-                  (unsigned)encoder_type, (unsigned)(opcode_full & 0xffffu),
-                  (unsigned)opcode_byte, total_len, off);
+        LAGFX_TRACE("inner_walk: encType=%u opcode=0x%04x (byte=0x%02x) len=%u off=%zu",
+                    (unsigned)encoder_type, (unsigned)(opcode_full & 0xffffu),
+                    (unsigned)opcode_byte, total_len, off);
 
         const uint8_t *body = segment_bytes + off + 8u;
         size_t body_len = total_len - 8u;
@@ -214,9 +211,8 @@ static size_t inner_walk_segment(lagfx_protocol_t *p,
                  * (channel_compute_dispatcher.c) which is sufficient
                  * Stage 20% — the inner stream walker is observation-
                  * only here until pipelines start submitting work. */
-                /* TEMP iteration-2: promoted from TRACE to LOG. */
-                LAGFX_LOG("inner_walk: compute (encType=%u) op=0x%04x len=%u — observe only",
-                          (unsigned)encoder_type, opcode_full & 0xffffu, total_len);
+                LAGFX_TRACE("inner_walk: compute (encType=%u) op=0x%04x len=%u — observe only",
+                            (unsigned)encoder_type, opcode_full & 0xffffu, total_len);
                 break;
 
             case 2u:
