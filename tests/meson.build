@@ -462,3 +462,14 @@ if fs.is_file(meson.current_source_dir() / 'metallib_reader_test.c')
   test('metallib reader (unit)', metallib_reader_test,
        workdir : meson.project_source_root())
 endif
+
+# metallib_dump CLI unit tests. Python-based subprocess tests that invoke the
+# metallib_dump tool and verify its behavior against triangle.metallib fixture.
+# Tests --list, --extract, --extract-all, bad usage, and bad input handling.
+if fs.is_file(meson.current_source_dir() / 'metallib_dump_test.py')
+  test('metallib dump (unit)', find_program('python3'),
+       args : [files('metallib_dump_test.py'),
+               meson.project_build_root() / 'tools' / 'metallib_dump'],
+       workdir : meson.project_source_root())
+endif
+

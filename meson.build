@@ -113,6 +113,9 @@ pkg.generate(libapplegfx_vulkan,
 # --- Public header install -----------------------------------------------
 install_headers('include/libapplegfx-vulkan.h')
 
+# --- Tools ---------------------------------------------------------------
+subdir('tools')
+
 # --- Tests ---------------------------------------------------------------
 if get_option('tests')
   subdir('tests')
