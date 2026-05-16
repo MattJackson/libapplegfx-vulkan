@@ -90,6 +90,75 @@ class AirIntrinsicInventoryTests(unittest.TestCase):
             if os.path.exists(out_path):
                 os.unlink(out_path)
 
+    @unittest.skipUnless(
+        shutil.which("llvm-dis") and shutil.which("metallib_dump"),
+        "llvm-dis or metallib_dump not installed"
+    )
+    def test_per_function_pipeline_with_metallib_dump(self):
+        """Test per-function pipeline with metallib_dump --list and --extract.
+
+        Assert CSV has rows where first_seen_function is triangle_vertex OR
+        triangle_fragment (not <mvp:whole-module>).
+        """
+        if not FIXTURE.exists():
+            self.skipTest(f"no fixture at {FIXTURE}")
+
+        # Find metallib_dump in builddir or PATH
+        dump_path = shutil.which("metallib_dump")
+        if dump_path is None:
+            relative_path = REPO_ROOT / "builddir" / "tools" / "metallib_dump"
+            if relative_path.exists():
+                dump_path = str(relative_path)
+
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
+            out_path = f.name
+        try:
+            r = run([str(FIXTURE), "--out", out_path, "--metallib-dump", dump_path])
+            # Exit 0 means per-function pipeline succeeded
+            self.assertEqual(r.returncode, 0, f"stderr={r.stderr}, stdout={r.stdout}")
+
+            with open(out_path, newline="") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                first_seen_funcs = set(row["first_seen_function"] for row in rows if row.get("first_seen_function"))
+
+                # Should have actual function names, not <mvp:whole-module>
+                self.assertNotIn("<mvp:whole-module>", first_seen_funcs,
+                                 "Expected per-function pipeline to use actual function names")
+                self.assertTrue(any(fn in ("triangle_vertex", "triangle_fragment")
+                                   for fn in first_seen_funcs),
+                            f"Expected triangle_vertex or triangle_fragment in {first_seen_funcs}")
+        finally:
+            if os.path.exists(out_path):
+                os.unlink(out_path)
+
+    @unittest.skipUnless(shutil.which("llvm-dis"), "llvm-dis not installed")
+    def test_per_function_pipeline_fallback(self):
+        """Test fallback to whole-module pipeline when metallib_dump is missing.
+
+        Point at a metallib with --metallib-dump /nonexistent/path. Tool should fall back
+        to whole-module pipeline with a stderr WARN. Assert tool exits 0 or 2 (llvm-dis
+        missing acceptable) AND stderr contains "fallback" or "whole-module".
+        """
+        if not FIXTURE.exists():
+            self.skipTest(f"no fixture at {FIXTURE}")
+
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
+            out_path = f.name
+        try:
+            r = run([str(FIXTURE), "--out", out_path, "--metallib-dump", "/nonexistent/path"])
+            # Should exit 0 (success via whole-module fallback) or 2 (llvm-dis missing)
+            self.assertIn(r.returncode, (0, 2), f"Expected 0 or 2, got {r.returncode}")
+
+            # Should have stderr warning about fallback
+            self.assertTrue(
+                "fallback" in r.stderr.lower() or "whole-module" in r.stderr.lower(),
+                f"Expected 'fallback' or 'whole-module' in stderr: {r.stderr}"
+            )
+        finally:
+            if os.path.exists(out_path):
+                os.unlink(out_path)
+
 
 if __name__ == "__main__":
     unittest.main()

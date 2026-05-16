@@ -19,9 +19,13 @@ import argparse
 import csv
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections import OrderedDict
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # LLVM bitcode magic: 0x42 ('B'), 0x43 ('C'), 0xC0, 0xDE
 LLVM_MAGIC = b"\x42\x43\xc0\xde"
@@ -82,17 +86,65 @@ def scan_ir(ir_text: str, function_label: str,
         entry["callsite_count"] += 1
 
 
+def per_function_pipeline(metallib_path: str, metallib_dump_path: str) -> dict[str, dict]:
+    """Per-function pipeline via metallib_dump.
+
+    Returns OrderedDict mapping intrinsic_name -> {signature, callsite_count, first_seen_function}.
+    """
+    list_proc = subprocess.run(
+        [metallib_dump_path, metallib_path, "--list"],
+        capture_output=True,
+        check=False,
+    )
+    if list_proc.returncode != 0:
+        print(f"error: metallib_dump --list failed (rc={list_proc.returncode}): "
+              f"{list_proc.stderr.decode(errors='replace')[:500]}",
+              file=sys.stderr)
+        return None
+
+    lines = [l for l in list_proc.stdout.strip().split(b"\n") if l]
+    funcs = [line.split(b"\t")[0].decode() for line in lines]
+
+    counts: OrderedDict[str, dict] = OrderedDict()
+    for fn in funcs:
+        extract_proc = subprocess.run(
+            [metallib_dump_path, metallib_path, "--extract", fn],
+            capture_output=True,
+            check=False,
+        )
+        if extract_proc.returncode != 0:
+            print(f"warn: metallib_dump --extract {fn} failed (rc={extract_proc.returncode})",
+                  file=sys.stderr)
+            continue
+
+        ir = llvm_dis_text(extract_proc.stdout)
+        scan_ir(ir, function_label=fn, counts=counts)
+
+    return counts
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Extract @air.* intrinsic inventory from .metallib")
     ap.add_argument("metallib", help="path to .metallib file")
     ap.add_argument("--out", default="air_intrinsics.csv",
                     help="output CSV (default: air_intrinsics.csv)")
+    ap.add_argument("--metallib-dump", default=None,
+                    help="path to metallib_dump binary (default: search PATH then ./builddir/tools/metallib_dump)")
     args = ap.parse_args()
 
     if not os.path.isfile(args.metallib):
         print(f"error: not a file: {args.metallib}", file=sys.stderr)
         return 2
+
+    # Determine metallib_dump path
+    metallib_dump_path = args.metallib_dump
+    if not metallib_dump_path:
+        metallib_dump_path = shutil.which("metallib_dump")
+    if not metallib_dump_path:
+        relative_path = os.path.join(REPO_ROOT, "builddir", "tools", "metallib_dump")
+        if os.path.isfile(relative_path):
+            metallib_dump_path = relative_path
 
     with open(args.metallib, "rb") as f:
         blob = f.read()
@@ -106,9 +158,27 @@ def main() -> int:
     print(f"info: bitcode at offset 0x{start:x}, {len(blob)-start} bytes",
           file=sys.stderr)
 
-    ir = llvm_dis_text(blob[start:])
-    counts: OrderedDict[str, dict] = OrderedDict()
-    scan_ir(ir, function_label="<mvp:whole-module>", counts=counts)
+    # Try per-function pipeline if metallib_dump and llvm-dis are available
+    counts = None
+    if metallib_dump_path and shutil.which("llvm-dis"):
+        print(f"info: using per-function pipeline with metallib_dump at {metallib_dump_path}",
+              file=sys.stderr)
+        counts = per_function_pipeline(args.metallib, metallib_dump_path)
+        if counts is None:
+            print("warn: per-function pipeline failed, falling back to whole-module",
+                  file=sys.stderr)
+
+    # Fall back to whole-module pipeline
+    if counts is None:
+        if not shutil.which("llvm-dis"):
+            print("error: llvm-dis not on PATH. Install with `brew install llvm` "
+                  "(macOS) or `apt install llvm` (Linux). See tools/README.md.",
+                  file=sys.stderr)
+            sys.exit(2)
+
+        ir = llvm_dis_text(blob[start:])
+        counts: OrderedDict[str, dict] = OrderedDict()
+        scan_ir(ir, function_label="<mvp:whole-module>", counts=counts)
 
     rows = sorted(counts.items(), key=lambda kv: -kv[1]["callsite_count"])
     with open(args.out, "w", newline="") as out:
