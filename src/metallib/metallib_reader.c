@@ -25,6 +25,9 @@ struct lagfx_metallib {
     size_t names_len;
     size_t names_cap;
 
+    /* Track if we have an in-progress function record (NAME seen but not committed) */
+    int partial_fn_has_name;
+
     size_t bitcode_offset;
     size_t bitcode_length;
 };
@@ -115,8 +118,12 @@ lagfx_metallib_t *lagfx_metallib_open(const uint8_t *data, size_t len) {
     ml->bitcode_offset = (size_t)bitcode_off;
     ml->bitcode_length = (size_t)bitcode_len;
 
-    /* Walk TLV section from fn_meta_offset */
-    size_t offset = (size_t)fn_meta_offset;
+    /* Walk TLV section from fn_meta_offset.
+     * The function metadata section has an 8-byte header:
+     * - u32[0]: function count
+     * - u32[1]: entry size or other metadata
+     * Actual TLV entries start at fn_meta_offset + 8. */
+    size_t offset = (size_t)fn_meta_offset + 8;
     size_t stop_at = ml->bitcode_offset;
 
     ml->funcs_cap = 0;
@@ -127,8 +134,9 @@ lagfx_metallib_t *lagfx_metallib_open(const uint8_t *data, size_t len) {
         free(ml);
         return NULL;
     }
-    ml->names_len   = 0;
-    ml->names_cap   = 4096;
+    ml->names_len       = 0;
+    ml->names_cap       = 4096;
+    ml->partial_fn_has_name = 0;
 
     while (offset + 8 <= stop_at && offset < len) {
         /* Check for tag start: need at least 4 bytes for ASCII tag */
@@ -161,49 +169,44 @@ lagfx_metallib_t *lagfx_metallib_open(const uint8_t *data, size_t len) {
 
         /* Process known tags: NAME, TYPE, HASH */
         int name_done = 0, type_done = 0, hash_done = 0;
-        lagfx_metallib_function_t *fn = NULL;
 
         if (tag == 0x454d414e) { /* 'NAME' in LE = 0x4E414D45 */
-            /* Copy string into names buffer */
-            if (copy_into_names(ml, (const char *)value, tlv_len) == 0) {
-                /* Point funcs[n_funcs].name at it later when we advance n_funcs */
-                name_done = 1;
-            }
-        } else if (tag == 0x45505954) { /* 'TYPE' in LE = 0x54595045 */
-            if (tlv_len >= 1 && ml->n_funcs < ml->funcs_cap) {
-                fn = &ml->funcs[ml->n_funcs];
-                fn->type_code = value[0];
-                type_done = 1;
-            }
-        } else if (tag == 0x48534148) { /* 'HASH' in LE = 0x48415348 */
-            if (tlv_len >= 32 && ml->n_funcs < ml->funcs_cap) {
-                fn = &ml->funcs[ml->n_funcs];
-                memcpy(fn->hash, value, 32);
-                hash_done = 1;
-            }
-        }
+            /* Commit any in-progress function when seeing a new NAME tag.
+             * This is defensive: ensures functions aren't lost even if ENDT is absent.
+             * Per OPEN: MDSZ/OFFT/VERS/ENDT present but their exact meaning not fully RE'd. */
+            if (ml->partial_fn_has_name) {
+                /* Set name for current function if not already set */
+                if (!ml->funcs[ml->n_funcs].name && ml->names_len > 0) {
+                    size_t last_name_start = 0;
+                    const char *ptr = ml->names;
+                    while (*ptr) {
+                        ptr += strlen(ptr) + 1;
+                        last_name_start = (size_t)(ptr - ml->names);
+                    }
+                    ml->funcs[ml->n_funcs].name = ml->names + last_name_start;
+                }
 
-        /* Track name pointer when we see it */
-        if (name_done && !type_done && !hash_done && ml->n_funcs < ml->funcs_cap) {
-            /* Find last string in names buffer */
-            size_t last_name_start = 0;
-            const char *ptr = ml->names;
-            while (*ptr) {
-                ptr += strlen(ptr) + 1;
-                last_name_start = (size_t)(ptr - ml->names);
+                if (ml->funcs[ml->n_funcs].name != NULL && ml->n_funcs < ml->funcs_cap) {
+                    ml->n_funcs++;
+                    ml->partial_fn_has_name = 0;
+                } else if (ml->funcs[ml->n_funcs].name != NULL) {
+                    /* Need to grow array first */
+                    if (grow_functions(ml) < 0) {
+                        LAGFX_ERR("metallib_reader: failed to grow function array on NAME");
+                        free(ml->names);
+                        free(ml->funcs);
+                        free(ml);
+                        return NULL;
+                    }
+                    ml->n_funcs++;
+                    ml->partial_fn_has_name = 0;
+                }
             }
-            /* The current NAME should be the last one added */
-            if (ml->n_funcs < ml->funcs_cap) {
-                lagfx_metallib_function_t *fn_tmp = &ml->funcs[ml->n_funcs];
-                fn_tmp->name = ml->names + last_name_start;
-            }
-        }
 
-        /* If we have all three fields, advance n_funcs */
-        if (name_done && type_done && hash_done) {
+            /* Start new function record */
             if (ml->n_funcs >= ml->funcs_cap) {
                 if (grow_functions(ml) < 0) {
-                    LAGFX_ERR("metallib_reader: failed to grow function array");
+                    LAGFX_ERR("metallib_reader: failed to grow function array for new NAME");
                     free(ml->names);
                     free(ml->funcs);
                     free(ml);
@@ -211,7 +214,79 @@ lagfx_metallib_t *lagfx_metallib_open(const uint8_t *data, size_t len) {
                 }
             }
 
-            /* Set name for this entry (if not already set by NAME processing) */
+            /* Copy string into names buffer */
+            if (copy_into_names(ml, (const char *)value, tlv_len) == 0) {
+                ml->funcs[ml->n_funcs].name = ml->names + ml->names_len - strlen((const char *)value) - 1;
+                name_done = 1;
+                ml->partial_fn_has_name = 1;
+            }
+        } else if (tag == 0x45505954) { /* 'TYPE' in LE = 0x54595045 */
+            /* Ensure we have capacity for current function */
+            if (ml->n_funcs >= ml->funcs_cap) {
+                if (grow_functions(ml) < 0) {
+                    LAGFX_ERR("metallib_reader: failed to grow function array on TYPE");
+                    free(ml->names);
+                    free(ml->funcs);
+                    free(ml);
+                    return NULL;
+                }
+            }
+            if (tlv_len >= 1 && ml->partial_fn_has_name) {
+                ml->funcs[ml->n_funcs].type_code = value[0];
+                type_done = 1;
+            }
+        } else if (tag == 0x48534148) { /* 'HASH' in LE = 0x48415348 */
+            /* Ensure we have capacity for current function */
+            if (ml->n_funcs >= ml->funcs_cap) {
+                if (grow_functions(ml) < 0) {
+                    LAGFX_ERR("metallib_reader: failed to grow function array on HASH");
+                    free(ml->names);
+                    free(ml->funcs);
+                    free(ml);
+                    return NULL;
+                }
+            }
+            if (tlv_len >= 32 && ml->partial_fn_has_name) {
+                memcpy(ml->funcs[ml->n_funcs].hash, value, 32);
+                hash_done = 1;
+            }
+       } else if (tag == 0x54444e45) { /* 'ENDT' in LE = 0x454e4454 - end of function record */
+            /* Commit current function when ENDT is seen.
+             * Per OPEN: ENTD semantics not fully RE'd; treat as marker to commit function.
+             * Defensive: if length seems unexpectedly large (likely corruption), treat as 0. */
+            uint16_t endt_len = tlv_len;
+            if (endt_len > 32) {
+                LAGFX_WARN("metallib_reader: ENTD with unusually large len=%u, treating as 0", endt_len);
+                endt_len = 0;
+            }
+
+            if (ml->partial_fn_has_name && ml->n_funcs < ml->funcs_cap) {
+                /* Set name for this entry (defensive, in case NAME processing didn't set it) */
+                if (!ml->funcs[ml->n_funcs].name && ml->names_len > 0) {
+                    size_t last_name_start = 0;
+                    const char *ptr = ml->names;
+                    while (*ptr) {
+                        ptr += strlen(ptr) + 1;
+                        last_name_start = (size_t)(ptr - ml->names);
+                    }
+                    ml->funcs[ml->n_funcs].name = ml->names + last_name_start;
+                }
+
+                if (ml->funcs[ml->n_funcs].name != NULL) {
+                    ml->n_funcs++;
+                    ml->partial_fn_has_name = 0;
+                } else {
+                    LAGFX_WARN("metallib_reader: ENDT but no name for function %zu", ml->n_funcs);
+                }
+            }
+        } else {
+            /* Unknown TLV tag (MDSZ, OFFT, VERS, etc.) — skip it by advancing offset.
+             * This is the key fix from the bug report: don't stop on unknown tags,
+             * just advance past them and continue parsing. */
+        }
+
+        /* If we have all three fields for current function, commit it (defensive, in case ENDT absent) */
+        if (ml->partial_fn_has_name && name_done && type_done && hash_done && ml->n_funcs < ml->funcs_cap) {
             if (!ml->funcs[ml->n_funcs].name) {
                 size_t last_name_start = 0;
                 const char *ptr = ml->names;
@@ -222,29 +297,20 @@ lagfx_metallib_t *lagfx_metallib_open(const uint8_t *data, size_t len) {
                 ml->funcs[ml->n_funcs].name = ml->names + last_name_start;
             }
 
-            /* Sanity: ensure name is valid */
-            if (!ml->funcs[ml->n_funcs].name) {
-                LAGFX_ERR("metallib_reader: name not set for function %zu", ml->n_funcs);
-                break;
+            if (ml->funcs[ml->n_funcs].name != NULL) {
+                ml->n_funcs++;
+                ml->partial_fn_has_name = 0;
             }
-
-            ml->n_funcs++;
         }
 
-        /* Advance to next TLV entry */
+         /* Advance to next TLV entry */
         offset += 6 + tlv_len;
-
-        /* Sentinel check: if tag is not one of NAME/TYPE/HASH and not ASCII, stop */
-        if (tag != 0x454d414e && tag != 0x45505954 && tag != 0x48534148) {
-            /* Check if this is a known sentinel or end marker */
-            /* For now, continue walking until we hit bitcode section */
-        }
 
         /* Stop if we've gone too far past expected function metadata area */
         if (offset > stop_at + 256) break;
     }
 
-    LAGFX_LOG("metallib_reader: parsed mtlb, n_funcs=%zu, bitcode=%zu bytes at +0x%zx",
+  LAGFX_LOG("metallib_reader: parsed mtlb, n_funcs=%zu, bitcode=%zu bytes at +0x%zx",
               ml->n_funcs, ml->bitcode_length, ml->bitcode_offset);
 
     return ml;
