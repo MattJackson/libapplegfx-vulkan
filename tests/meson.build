@@ -448,3 +448,17 @@ if fs.is_file(meson.current_source_dir() / 'blit-inner-ops-unit.c')
   )
   test('Blit inner ops (unit)', blit_inner_ops_unit_test)
 endif
+
+# metallib_reader unit tests. Standalone — no Vulkan dependency. Exercises
+# lagfx_metallib_open/list_functions/close against triangle.metallib fixture.
+# Compiles metallib_reader.c directly into the test binary so it doesn't
+# depend on the main lagfx library (which pulls in Vulkan headers).
+if fs.is_file(meson.current_source_dir() / 'metallib_reader_test.c')
+  metallib_reader_test = executable('metallib_reader_test',
+    ['metallib_reader_test.c', '../src/metallib/metallib_reader.c'],
+    include_directories : [include_dir, internal_include_dir],
+    build_by_default : true,
+  )
+  test('metallib reader (unit)', metallib_reader_test,
+       workdir : meson.project_source_root())
+endif
