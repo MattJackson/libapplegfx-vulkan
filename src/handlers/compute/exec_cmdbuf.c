@@ -394,6 +394,33 @@ static void exec_walk_resource(lagfx_protocol_t *p,
     LAGFX_LOG("exec_walk: segment seg_off=%zu seg_size=%u encType=%u",
               seg_off, segment_size, (unsigned)encoder_type);
 
+    /* TEMP iteration-3 hex probe: log the first 32 bytes of the cmd
+     * buffer so we can verify whether the actual segment header is at
+     * offset 0 (where locate_segment_header found it) or offset 8.
+     * Freshman's Task 1 catalog showed encType=0 opcodes matching the
+     * render-namespace wire formats exactly (0x74 = 4 bytes,
+     * 0x7d = 8+N*12, 0x7e = 12) — coincidence across 3 opcodes is
+     * unlikely. Either freshman made a namespace error OR our parser
+     * mislabels render segments as compute. Revert after the gate is
+     * identified. */
+    if (to_read >= 32u) {
+        const uint8_t *b = buf;
+        LAGFX_LOG("exec_walk: hexprobe buf[0..31]=%02x%02x%02x%02x %02x%02x%02x%02x "
+                  "%02x%02x%02x%02x %02x%02x%02x%02x | "
+                  "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+                  b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],
+                  b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15],
+                  b[16],b[17],b[18],b[19],b[20],b[21],b[22],b[23],
+                  b[24],b[25],b[26],b[27],b[28],b[29],b[30],b[31]);
+        /* Also try parsing a "shadow header" at offset 8 to compare */
+        if (to_read >= 16u) {
+            uint32_t shadow_size = lagfx_le32(buf + 8);
+            uint8_t  shadow_type = buf[8 + 4];
+            LAGFX_LOG("exec_walk: shadow@+8 seg_size=%u encType=%u (vs chosen seg_off=%zu)",
+                      shadow_size, (unsigned)shadow_type, seg_off);
+        }
+    }
+
     /* Walk the inner stream after the 8-byte segment header. */
     size_t inner_off = seg_off + 8u;
     if (inner_off >= to_read) return;
