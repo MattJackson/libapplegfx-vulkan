@@ -29,6 +29,7 @@
 #include "info_replies.h"
 #include "render_inner_ops.h"
 #include "blit_inner_ops.h"
+#include "compute_inner_ops.h"
 #include "common/le.h"
 #include "common/log.h"
 
@@ -205,14 +206,15 @@ static size_t inner_walk_segment(lagfx_protocol_t *p,
         switch (encoder_type) {
             case 0u:
             case 1u:
-                /* Compute. TODO: Stage 30 — wire compute_inner_ops_dispatch
-                 * once the compute inner-op table is consolidated. The
-                 * compute outer ring drainer already accepts 0x20/0x37
-                 * (channel_compute_dispatcher.c) which is sufficient
-                 * Stage 20% — the inner stream walker is observation-
-                 * only here until pipelines start submitting work. */
-                LAGFX_TRACE("inner_walk: compute (encType=%u) op=0x%04x len=%u — observe only",
-                            (unsigned)encoder_type, opcode_full & 0xffffu, total_len);
+                /* Compute — Stage 30 dispatch. The descriptor table in
+                 * compute_inner_ops.c covers the 15 encType=0 opcodes
+                 * observed live (2026-05-14 empirical sweep). All
+                 * handlers are currently parse-and-trace stubs; Task 6
+                 * of memory/stage30_freshman_queue.md promotes one to
+                 * a real Vulkan dispatch. */
+                lagfx_compute_inner_dispatch(p, encoder_type,
+                                              opcode_full & 0xffffu,
+                                              body, body_len);
                 break;
 
             case 2u:
