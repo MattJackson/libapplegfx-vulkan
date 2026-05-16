@@ -35,72 +35,51 @@ def run_cmd(args, cwd=None):
 
 
 def test_list():
-    """--list exits 0 and lists >= 1 function."""
+    """--list exits 0 and lists triangle_vertex + triangle_fragment."""
     rc, stdout, stderr = run_cmd([FIXTURE, "--list"])
-    
+
     if rc != 0:
         print(f"FAIL: --list returned {rc}, expected 0")
         print(f"stderr: {stderr.decode('utf-8', errors='replace')}")
         return False
-    
-    lines = stdout.strip().split(b"\n")
-    lines = [l for l in lines if l]  # filter empty
-    
-    if len(lines) < 1:
-        print(f"FAIL: --list returned {len(lines)} lines, expected >= 1")
+
+    lines = [l for l in stdout.strip().split(b"\n") if l]
+    if len(lines) != 2:
+        print(f"FAIL: --list returned {len(lines)} lines, expected exactly 2")
         return False
-    
-    # Each line should have format "name\ttype_code"
+
     names = []
     for line in lines:
         parts = line.split(b"\t")
         if len(parts) != 2:
             print(f"FAIL: malformed list output: {line}")
             return False
-        name, type_str = parts
-        if not name or int(type_str) < 0:
-            print(f"FAIL: invalid function entry: {line}")
-            return False
-        names.append(name.decode("utf-8", errors="replace"))
-    valid_names = any(
-        "triangle_vertex" in n or "riangle_vertex" in n for n in names
-    )
-    if not valid_names:
-        print(f"FAIL: no triangle function found in {names}")
+        name, _type = parts
+        names.append(name.decode("utf-8"))
+
+    if names != ["triangle_vertex", "triangle_fragment"]:
+        print(f"FAIL: expected ['triangle_vertex', 'triangle_fragment'], got {names}")
         return False
-    
-    print(f"PASS: --list found {len(lines)} functions")
+
+    print(f"PASS: --list found both expected functions")
     return True
 
 
 def test_extract():
-    """--extract <name> exits 0 and outputs >= 100 bytes with BC C0 DE magic."""
-    # Try both "triangle_vertex" and the buggy "riangle_vertex" form
-    for name in ["triangle_vertex", "riangle_vertex"]:
-        rc, stdout, stderr = run_cmd([FIXTURE, "--extract", name])
-        
-        if rc == 0 and len(stdout) >= 100:
-            # Check magic bytes
-            if (len(stdout) >= 4 and 
-                stdout[0] == 0x42 and 
-                stdout[1] == 0x43 and 
-                stdout[2] == 0xC0 and 
-                stdout[3] == 0xDE):
-                print(f"PASS: --extract {name} returned valid bitcode ({len(stdout)} bytes)")
-                return True
-    
-    # If we get here, neither name worked correctly (known MVP gap)
+    """--extract triangle_vertex exits 0 with bitcode bytes starting BC C0 DE."""
     rc, stdout, stderr = run_cmd([FIXTURE, "--extract", "triangle_vertex"])
-    
-    # Permissive check: either success OR expected failure due to MVP bug
-    if rc in (0, 4):
-        print(f"PASS: --extract triangle_vertex returned {rc} (MVP gap acceptable)")
-        return True
-    
-    print(f"FAIL: --extract triangle_vertex returned {rc}, expected 0 or 4")
-    print(f"stderr: {stderr.decode('utf-8', errors='replace')}")
-    print(f"stdout len: {len(stdout)}")
-    return False
+    if rc != 0:
+        print(f"FAIL: --extract returned {rc}, expected 0")
+        print(f"stderr: {stderr.decode('utf-8', errors='replace')}")
+        return False
+    if len(stdout) < 100:
+        print(f"FAIL: bitcode too short ({len(stdout)} bytes)")
+        return False
+    if stdout[:4] != bytes([0x42, 0x43, 0xC0, 0xDE]):
+        print(f"FAIL: bitcode magic mismatch, got {stdout[:4].hex()}")
+        return False
+    print(f"PASS: --extract triangle_vertex returned {len(stdout)} bytes with valid magic")
+    return True
 
 
 def test_extract_not_found():

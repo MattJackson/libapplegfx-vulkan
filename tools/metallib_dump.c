@@ -173,11 +173,10 @@ int main(int argc, char **argv) {
     }
 
     lagfx_metallib_t *ml = lagfx_metallib_open(data, len);
-    free(data);
-
     if (!ml) {
         fprintf(stderr, "metallib_dump: cannot open '%s' as metallib\n",
                 metallib_path);
+        free(data);
         return 3;
     }
 
@@ -195,5 +194,6 @@ int main(int argc, char **argv) {
     }
 
     lagfx_metallib_close(ml);
+    free(data);  /* must outlive `ml` — metallib_reader stores `data` for get_bitcode */
     return rc;
 }

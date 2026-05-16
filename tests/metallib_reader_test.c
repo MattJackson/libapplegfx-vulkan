@@ -77,7 +77,8 @@ static int test_smoke_open(void) {
 }
 
 static int test_list_functions(void) {
-    /* Test step 2: list functions returns >= 1 */
+    /* Test step 2: triangle.metallib has exactly 2 functions:
+     * triangle_vertex (type 0) and triangle_fragment (type 1). */
     size_t len = 0;
     uint8_t *data = read_file("tests/fixtures/triangle.metallib", &len);
     ASSERT(data != NULL, "read_file triangle.metallib succeeded");
@@ -87,13 +88,14 @@ static int test_list_functions(void) {
 
     lagfx_metallib_function_t funcs[16];
     size_t count = lagfx_metallib_list_functions(ml, funcs, 16);
-    ASSERT(count >= 1, "list_functions returned >= 1");
+    ASSERT(count == 2, "list_functions returned exactly 2 functions");
 
-    for (size_t i = 0; i < count; ++i) {
-        ASSERT(funcs[i].name != NULL, "function name is non-NULL");
-        int first_char_ok = funcs[i].name[0] >= 32 && funcs[i].name[0] <= 126;
-        ASSERT(first_char_ok, "function name starts with printable ASCII");
-    }
+    ASSERT(funcs[0].name != NULL, "func[0].name non-NULL");
+    ASSERT(strcmp(funcs[0].name, "triangle_vertex") == 0,
+           "func[0].name == triangle_vertex");
+    ASSERT(funcs[1].name != NULL, "func[1].name non-NULL");
+    ASSERT(strcmp(funcs[1].name, "triangle_fragment") == 0,
+           "func[1].name == triangle_fragment");
 
     lagfx_metallib_close(ml);
     free(data);

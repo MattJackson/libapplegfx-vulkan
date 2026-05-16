@@ -115,6 +115,25 @@ lagfx_metallib_t *lagfx_metallib_open(const uint8_t *data, size_t len) {
         bitcode_len = max_bitcode_len;
     }
 
+    /* The header pointer points to a small container preamble; the real
+     * LLVM bitcode magic 'BC C0 DE' (bytes 42 43 C0 DE) follows up to ~64
+     * bytes later. Scan forward for the magic so the bytes we expose are
+     * directly consumable by llvm-dis / llvm-bcanalyzer. */
+    {
+        size_t scan_end = (size_t)bitcode_off + 64;
+        if (scan_end > len - 4) scan_end = len - 4;
+        for (size_t p = (size_t)bitcode_off; p <= scan_end; p++) {
+            if (data[p] == 0x42 && data[p+1] == 0x43 &&
+                data[p+2] == 0xC0 && data[p+3] == 0xDE) {
+                size_t delta = p - (size_t)bitcode_off;
+                bitcode_off = p;
+                if (bitcode_len > delta) bitcode_len -= delta;
+                else bitcode_len = 0;
+                break;
+            }
+        }
+    }
+
     ml->bitcode_offset = (size_t)bitcode_off;
     ml->bitcode_length = (size_t)bitcode_len;
 
@@ -142,23 +161,44 @@ lagfx_metallib_t *lagfx_metallib_open(const uint8_t *data, size_t len) {
         /* Check for tag start: need at least 4 bytes for ASCII tag */
         if (offset + 4 > stop_at) break;
 
-        uint32_t tag = lagfx_le32(data + offset);
-
-        /* Validate tag is ASCII (all bytes in printable range) */
-        uint8_t *tag_bytes = (uint8_t *)&tag;
-        int ascii_tag = 1;
-        for (int i = 0; i < 4 && tag_bytes[i] != '\0'; ++i) {
-            if (tag_bytes[i] < 32 || tag_bytes[i] > 126) {
-                ascii_tag = 0;
-                break;
+        /* Some metallib variants (e.g. triangle.metallib) follow ENDT with
+         * a few zero-padding bytes before the next function's NAME tag.
+         * If the bytes at `offset` aren't a valid 4-byte ASCII tag, scan
+         * forward up to a small cap looking for one before giving up. */
+        size_t scan_cap = 16;
+        int ascii_tag = 0;
+        while (scan_cap-- > 0 && offset + 4 <= stop_at) {
+            uint32_t probe = lagfx_le32(data + offset);
+            uint8_t *pb = (uint8_t *)&probe;
+            int all_ascii = 1;
+            for (int i = 0; i < 4; ++i) {
+                if (pb[i] < 32 || pb[i] > 126) { all_ascii = 0; break; }
             }
+            if (all_ascii) { ascii_tag = 1; break; }
+            offset++;
         }
+        if (!ascii_tag) break; /* end of TLV section — no more ASCII tags */
 
-        if (!ascii_tag) break; /* end of TLV section */
+        uint32_t tag = lagfx_le32(data + offset);
 
         /* Read length field at offset+4 (u16 LE) */
         if (offset + 6 > stop_at) break;
         uint16_t tlv_len = lagfx_le16(data + offset + 4);
+
+        /* Tag-specific length clamps. ENDT's encoded "length" is not a
+         * real TLV payload — in triangle.metallib it carries values like
+         * 135 (size of next function record block) or 20037 (garbage from
+         * bytes that aren't actually a u16 length). Either way, the right
+         * advance for our walker is "just past the tag header" so we land
+         * on the next real tag. Clamp to 0 if it's larger than the
+         * biggest known real-payload tag (HASH=32). Universal pathological
+         * clamp at >1024 is a defense-in-depth backstop for unknown tags. */
+        if (tag == 0x54444e45 /* ENDT */ && tlv_len > 32) {
+            tlv_len = 0;
+        } else if (tlv_len > 1024) {
+            LAGFX_WARN("metallib_reader: tag at 0x%zx has unreasonable len=%u, clamping to 0", offset, tlv_len);
+            tlv_len = 0;
+        }
 
         /* Sanity check: tag (4) + len (2) + value must be within bounds */
         if (offset + 6 + tlv_len > stop_at || offset + 6 + tlv_len > len) {
@@ -214,9 +254,12 @@ lagfx_metallib_t *lagfx_metallib_open(const uint8_t *data, size_t len) {
                 }
             }
 
-            /* Copy string into names buffer */
+            /* Copy string into names buffer. Record the start offset BEFORE
+             * the copy so the name pointer is correct regardless of how
+             * copy_into_names handles trailing NULs. */
+            size_t name_start = ml->names_len;
             if (copy_into_names(ml, (const char *)value, tlv_len) == 0) {
-                ml->funcs[ml->n_funcs].name = ml->names + ml->names_len - strlen((const char *)value) - 1;
+                ml->funcs[ml->n_funcs].name = ml->names + name_start;
                 name_done = 1;
                 ml->partial_fn_has_name = 1;
             }
@@ -251,15 +294,8 @@ lagfx_metallib_t *lagfx_metallib_open(const uint8_t *data, size_t len) {
                 hash_done = 1;
             }
        } else if (tag == 0x54444e45) { /* 'ENDT' in LE = 0x454e4454 - end of function record */
-            /* Commit current function when ENDT is seen.
-             * Per OPEN: ENTD semantics not fully RE'd; treat as marker to commit function.
-             * Defensive: if length seems unexpectedly large (likely corruption), treat as 0. */
-            uint16_t endt_len = tlv_len;
-            if (endt_len > 32) {
-                LAGFX_WARN("metallib_reader: ENTD with unusually large len=%u, treating as 0", endt_len);
-                endt_len = 0;
-            }
-
+            /* Commit current function when ENDT is seen. The upstream
+             * tag-specific clamp handles pathological tlv_len values. */
             if (ml->partial_fn_has_name && ml->n_funcs < ml->funcs_cap) {
                 /* Set name for this entry (defensive, in case NAME processing didn't set it) */
                 if (!ml->funcs[ml->n_funcs].name && ml->names_len > 0) {
