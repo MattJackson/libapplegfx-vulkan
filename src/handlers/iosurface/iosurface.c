@@ -30,6 +30,8 @@
 
 #include "common/le.h"
 #include "common/log.h"
+#include "../../device.h"
+#include "../../vulkan/iosurface.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -58,10 +60,21 @@ lagfx_handler_status_t lagfx_iosurface_delete_backing2(
         LAGFX_TRACE("CmdDeleteIOSurfaceBacking2: surface 0x%x not in registry", surface_id);
         return LAGFX_HANDLER_OK;
     }
-    /* TODO: Stage 30 — destroy backing VkImage if host_handle holds an
-     * iosurface allocator handle. The pre-refactor code freed the
-     * lagfx_vk_iosurface_t on refcount=0; we no longer hold those
-     * handles in this struct shape. */
+#ifdef LAGFX_HAVE_VULKAN
+    /* Stage 30 — release backing VkImage. Refcount-aware via
+     * lagfx_vk_iosurface_release so Import-aliased backings don't
+     * double-free. */
+    if (e->host_handle && p->dev) {
+        lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+        if (dev->vk) {
+            lagfx_vk_iosurface_release(dev->vk,
+                (lagfx_vk_iosurface_t *)e->host_handle);
+        }
+        e->host_handle = NULL;
+        e->image = VK_NULL_HANDLE;
+        e->view  = VK_NULL_HANDLE;
+    }
+#endif
     lagfx_resource_unregister(&p->resources, surface_id, task_id);
     return LAGFX_HANDLER_OK;
 }
@@ -111,12 +124,63 @@ lagfx_handler_status_t lagfx_iosurface_create_backing2(
               (unsigned long long)size);
 
     /* Register in the resource registry — task_id 0 for single-task,
-     * matching the pre-refactor convention. host_handle stays NULL
-     * (TODO: Stage 30 backing VkImage allocator). */
+     * matching the pre-refactor convention. */
     uint32_t task_id = 0u;
     lagfx_resource_register(&p->resources, surface_id,
                             LAGFX_RESOURCE_TYPE_TEXTURE,
                             task_id, 0u, size);
+
+#ifdef LAGFX_HAVE_VULKAN
+    /* Stage 30 — allocate backing VkImage. Stash on the registry
+     * entry's host_handle so render-target / blit / sample paths
+     * can resolve surface_id → VkImage in O(1). Refcount starts at
+     * 1; Import (0x29) bumps; Delete/Unmap call _release.
+     *
+     * Failure modes:
+     *  - vk state not yet initialized (very-early-boot ordering):
+     *    log + leave host_handle NULL. The next 0x28 Lookup will
+     *    auto-retry via a follow-up patch. For now the registry
+     *    entry is still in place so dispatchers don't fail-open
+     *    on missing surface.
+     *  - width or height 0: fail-loud — that's a wire-format bug
+     *    we want to surface, not silently allocate a degenerate
+     *    backing.
+     *  - vkCreateImage / vkAllocateMemory failure: the create
+     *    function already LAGFX_ERRs; we leave host_handle NULL. */
+    if (p->dev) {
+        lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+        if (dev->vk) {
+            lagfx_vk_iosurface_t *ios = NULL;
+            lagfx_status_t st = lagfx_vk_iosurface_create(dev->vk,
+                width, height, pixel_format, &ios);
+            if (st == LAGFX_OK && ios) {
+                lagfx_resource_entry_t *e =
+                    lagfx_resource_lookup(&p->resources, surface_id, task_id);
+                if (e) {
+                    /* If an earlier registration left a backing in
+                     * place, release it first so we don't leak. */
+                    if (e->host_handle) {
+                        lagfx_vk_iosurface_release(dev->vk,
+                            (lagfx_vk_iosurface_t *)e->host_handle);
+                    }
+                    e->host_handle = ios;
+                    e->image = ios->image;
+                    e->view  = ios->view;
+                    LAGFX_LOG("CmdCreateIOSurfaceBacking2: VkImage allocated "
+                              "for surface_id=0x%x → handle=%p",
+                              surface_id, (void *)ios);
+                } else {
+                    /* Registry full or other lookup failure — undo the alloc */
+                    lagfx_vk_iosurface_destroy(dev->vk, ios);
+                }
+            }
+        } else {
+            LAGFX_LOG("CmdCreateIOSurfaceBacking2: vk state not ready for "
+                      "surface_id=0x%x; backing deferred to first Lookup",
+                      surface_id);
+        }
+    }
+#endif
     return LAGFX_HANDLER_OK;
 }
 
@@ -207,9 +271,17 @@ lagfx_handler_status_t lagfx_iosurface_import_mach_port(
         lagfx_resource_lookup(&p->resources, local_surface_id, local_task_id);
     if (local) {
         /* Aliased host_handle — both entries point to the same backing.
-         * Pre-refactor's destroy-on-zero-refcount logic depends on the
-         * count_references helper; that's now Stage 30 work. */
+         * Retain the backing so Delete/Unmap on either entry only frees
+         * when the last reference is gone. */
         local->host_handle = remote->host_handle;
+#ifdef LAGFX_HAVE_VULKAN
+        local->image = remote->image;
+        local->view  = remote->view;
+        if (remote->host_handle) {
+            lagfx_vk_iosurface_retain(
+                (lagfx_vk_iosurface_t *)remote->host_handle);
+        }
+#endif
     }
     return LAGFX_HANDLER_OK;
 }
@@ -238,8 +310,20 @@ lagfx_handler_status_t lagfx_iosurface_unmap(
         LAGFX_TRACE("CmdUnmapIOSurface: surface 0x%x not in registry", surface_id);
         return LAGFX_HANDLER_OK;
     }
+#ifdef LAGFX_HAVE_VULKAN
+    /* Stage 30 — release backing VkImage, refcount-aware (mirrors
+     * CmdDeleteIOSurfaceBacking2). */
+    if (e->host_handle && p->dev) {
+        lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+        if (dev->vk) {
+            lagfx_vk_iosurface_release(dev->vk,
+                (lagfx_vk_iosurface_t *)e->host_handle);
+        }
+        e->host_handle = NULL;
+        e->image = VK_NULL_HANDLE;
+        e->view  = VK_NULL_HANDLE;
+    }
+#endif
     lagfx_resource_unregister(&p->resources, surface_id, task_id);
-    /* TODO: Stage 30 — refcount the host_handle and free the backing
-     * VkImage when count reaches zero. */
     return LAGFX_HANDLER_OK;
 }

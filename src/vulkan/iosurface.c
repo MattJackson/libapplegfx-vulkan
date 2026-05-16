@@ -140,13 +140,39 @@ lagfx_status_t lagfx_vk_iosurface_create(struct lagfx_vk_state *vk,
     ios->height = height;
     ios->format = fmt;
     ios->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ios->refcount = 1u;
 
-    LAGFX_LOG("iosurface_create: %ux%u fmt=%d image=%p view=%p mem=%p",
+    LAGFX_LOG("iosurface_create: %ux%u fmt=%d image=%p view=%p mem=%p refcount=1",
               width, height, (int)fmt,
               (void *)ios->image, (void *)ios->view, (void *)ios->memory);
 
     *out = ios;
     return LAGFX_OK;
+}
+
+void lagfx_vk_iosurface_retain(lagfx_vk_iosurface_t *ios) {
+    if (!ios) return;
+    /* BQL-serialised in steady-state; non-atomic is correct here.
+     * If we ever drain on a thread outside BQL, lift to _Atomic. */
+    ios->refcount += 1u;
+    LAGFX_TRACE("iosurface_retain: %ux%u → refcount=%u",
+                ios->width, ios->height, ios->refcount);
+}
+
+void lagfx_vk_iosurface_release(struct lagfx_vk_state *vk,
+                                 lagfx_vk_iosurface_t *ios) {
+    if (!ios) return;
+    if (ios->refcount == 0u) {
+        LAGFX_WARN("iosurface_release: refcount already 0 — double release? "
+                   "%ux%u fmt=%d", ios->width, ios->height, (int)ios->format);
+        return;
+    }
+    ios->refcount -= 1u;
+    LAGFX_TRACE("iosurface_release: %ux%u → refcount=%u",
+                ios->width, ios->height, ios->refcount);
+    if (ios->refcount == 0u) {
+        lagfx_vk_iosurface_destroy(vk, ios);
+    }
 }
 
 void lagfx_vk_iosurface_destroy(struct lagfx_vk_state *vk,
@@ -165,8 +191,8 @@ void lagfx_vk_iosurface_destroy(struct lagfx_vk_state *vk,
     if (ios->memory != VK_NULL_HANDLE) {
         vkFreeMemory(vk->device, ios->memory, NULL);
     }
-    LAGFX_LOG("iosurface_destroy: %ux%u fmt=%d",
-              ios->width, ios->height, (int)ios->format);
+    LAGFX_LOG("iosurface_destroy: %ux%u fmt=%d (was refcount=%u)",
+              ios->width, ios->height, (int)ios->format, ios->refcount);
     free(ios);
 }
 
