@@ -91,8 +91,8 @@ class AirIntrinsicInventoryTests(unittest.TestCase):
                 os.unlink(out_path)
 
     @unittest.skipUnless(
-        shutil.which("llvm-dis") and shutil.which("metallib_dump"),
-        "llvm-dis or metallib_dump not installed"
+        shutil.which("llvm-dis"),
+        "llvm-dis not installed"
     )
     def test_per_function_pipeline_with_metallib_dump(self):
         """Test per-function pipeline with metallib_dump --list and --extract.
