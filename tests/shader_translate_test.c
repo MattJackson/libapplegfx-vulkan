@@ -183,26 +183,137 @@ static int test_free_null_safe(void) {
     return 0;
 }
 
+static int test_corrupted_magic(void) {
+    uint8_t fake[200];
+    memset(fake, 0, sizeof(fake));
+    fake[0] = 'F'; fake[1] = 'A'; fake[2] = 'K'; fake[3] = 'E';
+
+    lagfx_shader_translation_t out;
+    memset(&out, 0, sizeof(out));
+
+    lagfx_status_t st = lagfx_shader_translate_run(
+        fake, sizeof(fake), "fn", LAGFX_SHADER_STAGE_VERTEX, &out);
+    ASSERT(st != LAGFX_OK, "corrupted magic returns non-OK");
+    ASSERT(out.spv_bytes == NULL, "out zeroed on failure");
+
+    return 0;
+}
+
+static int test_truncated_metallib(void) {
+    size_t len = 0;
+    uint8_t *buf = read_file("tests/fixtures/triangle.metallib", &len);
+    ASSERT(buf != NULL, "read triangle.metallib");
+    
+    /* Pass only first 50 bytes (less than header size) */
+    uint8_t truncated[50];
+    memcpy(truncated, buf, 50);
+
+    lagfx_shader_translation_t out;
+    memset(&out, 0, sizeof(out));
+
+    lagfx_status_t st = lagfx_shader_translate_run(
+        truncated, 50, "triangle_vertex", LAGFX_SHADER_STAGE_VERTEX, &out);
+    
+    free(buf);
+
+    ASSERT(st != LAGFX_OK, "truncated metallib returns non-OK");
+    ASSERT(out.spv_bytes == NULL, "out zeroed on truncated input failure");
+
+    return 0;
+}
+
+static int test_corrupted_bitcode(void) {
+    size_t len = 0;
+    uint8_t *buf = read_file("tests/fixtures/triangle.metallib", &len);
+    ASSERT(buf != NULL, "read triangle.metallib");
+
+    /* XOR the bitcode magic location (BC C0 DE at offset ~0x1A4) */
+    uint8_t *corrupted = malloc(len);
+    memcpy(corrupted, buf, len);
+    
+    /* The metallib has BC C0 DE at offset 0x1a4 - zero out that region */
+    size_t bc_offset = 0x1a4;
+    if (len > bc_offset + 3) {
+        /* Zero out a larger region to ensure llc definitely fails */
+        memset(corrupted + bc_offset, 0, 64);
+    } else {
+        fprintf(stderr, "test_corrupted_bitcode: metallib too small\n");
+        free(buf);
+        free(corrupted);
+        return 77; /* skip */
+    }
+
+    lagfx_shader_translation_t out;
+    memset(&out, 0, sizeof(out));
+
+    lagfx_status_t st = lagfx_shader_translate_run(
+        corrupted, len, "triangle_vertex", LAGFX_SHADER_STAGE_VERTEX, &out);
+    
+    free(buf);
+    free(corrupted);
+
+    if (st == LAGFX_OK) {
+        fprintf(stderr, "test_corrupted_bitcode: unexpected OK - llc may have accepted garbage\n");
+        return 1;
+    }
+
+    ASSERT(st != LAGFX_OK, "corrupted bitcode returns non-OK (likely LAGFX_ERR_BACKEND)");
+    ASSERT(out.spv_bytes == NULL, "out zeroed on corrupted bitcode failure");
+
+    return 0;
+}
+
+static int test_empty_function_name(void) {
+    size_t len = 0;
+    uint8_t *buf = read_file("tests/fixtures/triangle.metallib", &len);
+    ASSERT(buf != NULL, "read triangle.metallib");
+    
+    lagfx_shader_translation_t out;
+    memset(&out, 0, sizeof(out));
+
+    lagfx_status_t st = lagfx_shader_translate_run(
+        buf, len, "", LAGFX_SHADER_STAGE_VERTEX, &out);
+    
+    free(buf);
+
+    ASSERT(st != LAGFX_OK, "empty function_name returns non-OK");
+    ASSERT(out.spv_bytes == NULL, "out zeroed on empty function_name failure");
+
+    return 0;
+}
+
 int main(void) {
     /* Verified 2026-05-17: brew llvm@20 is the pinned reference version.
      * llvm-22.x SPIR-V backend rejects retargeted triangle bitcode. */
 
     /* Negative tests (no llc dependency) always run. */
+    if (test_corrupted_magic() != 0) { _exit(1); }
+    if (test_truncated_metallib() != 0) { _exit(1); }
+    if (test_empty_function_name() != 0) { _exit(1); }
+
+    /* test_unknown_function runs without llc - tests function lookup failure. */
     if (test_unknown_function() != 0) { _exit(1); }
     if (test_null_inputs() != 0) { _exit(1); }
     if (test_free_null_safe() != 0) { _exit(1); }
 
-    /* Smoke tests need llvm@20. Skip with meson SKIP code if absent. */
+    /* Smoke tests and corrupted_bitcode need llvm@20. Skip with meson SKIP code if absent. */
     if (!llc_available()) {
         fprintf(stderr, "shader_translate: llc not at /opt/homebrew/opt/llvm@20/bin/llc; "
-                        "smoke tests skipped (negative tests passed)\n");
+                        "smoke + corrupted_bitcode tests skipped (negative tests passed)\n");
         _exit(77);
     }
 
+    int ret = test_corrupted_bitcode();
+    if (ret == 77) {
+        fprintf(stderr, "shader_translate: corrupted_bitcode skipped (no BC C0 DE pattern found)\n");
+        _exit(77);
+    } else if (ret != 0) {
+        _exit(1);
+    }
     if (test_smoke_translate_vertex()   != 0) { _exit(1); }
     if (test_smoke_translate_fragment() != 0) { _exit(1); }
 
-    fprintf(stdout, "shader_translate: all 5 tests passed\n");
+    fprintf(stdout, "shader_translate: all 9 tests passed\n");
     fflush(stdout);
     _exit(0);
 }
