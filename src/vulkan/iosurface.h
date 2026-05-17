@@ -54,7 +54,17 @@ void lagfx_vk_iosurface_release(struct lagfx_vk_state *vk,
                                  lagfx_vk_iosurface_t *ios);
 
 void lagfx_vk_iosurface_destroy(struct lagfx_vk_state *vk,
-                                 lagfx_vk_iosurface_t *ios);
+                                  lagfx_vk_iosurface_t *ios);
+
+/* Map Apple Metal pixel format codes to VkFormat.
+ * Cites: iosurface.c line 30-41 (implementation).
+ * Supported mappings:
+ *   80 -> VK_FORMAT_B8G8R8A8_UNORM (MTLPixelFormatBGRA8Unorm)
+ *   70 -> VK_FORMAT_R8G8B8A8_UNORM (MTLPixelFormatRGBA8Unorm)
+ *   252 -> VK_FORMAT_D32_SFLOAT (MTLPixelFormatDepth32Float)
+ *   25 -> VK_FORMAT_D16_UNORM (MTLPixelFormatDepth16Unorm)
+ * Unknown formats fall back to BGRA8 with a WARN log. */
+VkFormat lagfx_metal_pixel_format_to_vk(uint32_t pixel_format);
 
 #else
 

@@ -27,15 +27,21 @@ static uint32_t find_memory_type(VkPhysicalDevice phys,
     return UINT32_MAX;
 }
 
-static VkFormat metal_pixel_format_to_vk(uint32_t pixel_format) {
+VkFormat lagfx_metal_pixel_format_to_vk(uint32_t pixel_format) {
     switch (pixel_format) {
-    case 80: return VK_FORMAT_B8G8R8A8_UNORM;
-    case 70: return VK_FORMAT_R8G8B8A8_UNORM;
+    case 80: return VK_FORMAT_B8G8R8A8_UNORM;      /* MTLPixelFormatBGRA8Unorm */
+    case 70: return VK_FORMAT_R8G8B8A8_UNORM;      /* MTLPixelFormatRGBA8Unorm */
+    case 252: return VK_FORMAT_D32_SFLOAT;         /* MTLPixelFormatDepth32Float */
+    case 25: return VK_FORMAT_D16_UNORM;           /* MTLPixelFormatDepth16Unorm */
     default:
-        LAGFX_WARN("iosurface: unknown Metal pixel format 0x%x, "
-                   "falling back to BGRA8", pixel_format);
+        LAGFX_WARN("iosurface: unknown Metal pixel format %u, "
+                    "falling back to BGRA8", (unsigned)pixel_format);
         return VK_FORMAT_B8G8R8A8_UNORM;
     }
+}
+
+static VkFormat metal_pixel_format_to_vk(uint32_t pixel_format) {
+    return lagfx_metal_pixel_format_to_vk(pixel_format);
 }
 
 lagfx_status_t lagfx_vk_iosurface_create(struct lagfx_vk_state *vk,

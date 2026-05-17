@@ -42,6 +42,11 @@
 #include "common/le.h"
 #include "common/log.h"
 #include "protocol/state.h"
+#include "vulkan/iosurface.h"
+
+#ifdef LAGFX_HAVE_VULKAN
+#  include <vulkan/vulkan.h>
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
@@ -160,26 +165,130 @@ static int op_render_barrier_scope(lagfx_protocol_t *p,
     return 0;
 }
 
+/* Apple Metal pixel format → VkFormat mapping helper.
+ * Cites: iosurface.c line 30-41 (implementation).
+ * Supported mappings per stage70a-vk-pipeline-build-scoping-2026-05-17.md:
+ *   80 -> VK_FORMAT_B8G8R8A8_UNORM (MTLPixelFormatBGRA8Unorm) — high confidence
+ *   70 -> VK_FORMAT_R8G8B8A8_UNORM (MTLPixelFormatRGBA8Unorm) — high confidence  
+ *   252 -> VK_FORMAT_D32_SFLOAT (MTLPixelFormatDepth32Float) — high confidence
+ *   25 -> VK_FORMAT_D16_UNORM (MTLPixelFormatDepth16Unorm) — medium confidence */
+static VkFormat apple_format_to_vk(uint32_t fmt) {
+    return lagfx_metal_pixel_format_to_vk(fmt);
+}
+
 static int op_render_describe_render_pass(lagfx_protocol_t *p,
-                                           uint32_t          encoder_type,
-                                           const uint8_t    *body,
-                                           size_t            body_len) {
-    (void)p; (void)encoder_type;
-    /* RE: render-decoder-handlers.md line 210 — PGCmdDescribeRenderPass (584 B), POD large */
-    if (!body || body_len < 16u) {
-        LAGFX_WARN("compute_inner: 0x1a RenderDescribeRenderPass payload too small (%zu)",
+                                            uint32_t          encoder_type,
+                                            const uint8_t    *body,
+                                            size_t            body_len) {
+    (void)encoder_type;
+    /* RE: render-decoder-handlers.md line 210 — PGCmdDescribeRenderPass (584 B), POD large.
+     *
+     * Payload structure inferred from stage70a-vk-pipeline-build-scoping-2026-05-17.md and
+     * the PARTIAL confidence rating in render-decoder-handlers.md line 210:
+     *
+     * Offset  Size  Field                              Notes
+     * -----   ----  -----                              -----
+     * 0       4     view_count (u32)                   Number of color attachments
+     * 4       4     color_format[0] (u32)              Apple pixel format code for first attachment
+     * 8       4     depth_format (u32)                 Apple pixel format or 0 if none
+     * 12      16    clear_color[4] (f32 x 4)           RGBA clear values
+     * 28      4     clear_depth (f32)                  Depth clear value
+     * 32      4     render_area_x (u32)                Origin X
+     * 36      4     render_area_y (u32)                Origin Y  
+     * 40      4     render_area_w (u32)                Extent width
+     * 44      4     render_area_h (u32)                Extent height
+     * 48+     ...   attachment descriptors (open)      Exact ordering RE'd later — MARKED OPEN
+     *
+     * The full struct is 584 B = 0x248, but the core fields above are what Stage 70c needs.
+     */
+    if (!body || body_len < 48u) {
+        LAGFX_WARN("compute_inner: 0x1a RenderDescribeRenderPass payload too small (%zu < 48)",
                    body_len);
         return 1;
     }
-    /* Log first 16 bytes as hex for debug — full struct ordering is PARTIAL in RE notes. */
-    char hex[33];
-    for (int i = 0; i < 16 && i < (int)body_len; ++i) {
-        snprintf(hex + (i * 2), sizeof(hex) - (i * 2), "%02x", body[i]);
+
+    /* Find current task and get render pass description field. */
+    lagfx_task_entry_t *task = NULL;
+    uint32_t task_id = 0u;
+    
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task_id = p->tasks[i].id;
+            task = &p->tasks[i];
+            break;
+        }
     }
-    LAGFX_LOG("compute_inner: 0x1a RenderDescribeRenderPass size=%zu first_bytes=[%s]",
-              body_len, hex);
-    /* TODO: Stage 70 — wire VkImageView creation per attachment_ref and begin a real
-     * VkRenderPass via lagfx_render_encoder_try_begin once the render encoder is reintroduced. */
+
+    if (task == NULL || task_id == 0u) {
+        LAGFX_WARN("compute_inner: 0x1a RenderDescribeRenderPass no live task found");
+        return 1;
+    }
+
+    /* Parse payload fields using lagfx_le32 for alignment-safe reads. */
+    uint32_t view_count = lagfx_le32(body + 0);           /* offset 0 — u32 */
+    uint32_t color_fmt_raw = lagfx_le32(body + 4);        /* offset 4 — u32 Apple format code */
+    uint32_t depth_fmt_raw = lagfx_le32(body + 8);        /* offset 8 — u32 Apple format code or 0 */
+    
+    float clear_color[4];
+    for (int i = 0; i < 4; ++i) {
+        uint32_t bits = lagfx_le32(body + 12 + ((size_t)i * 4));  /* offset 12-27 — f32 as u32 bits */
+        memcpy(&clear_color[i], &bits, sizeof(float));
+    }
+    
+    float clear_depth;
+    {
+        uint32_t bits = lagfx_le32(body + 28);                  /* offset 28-31 — f32 as u32 bits */
+        memcpy(&clear_depth, &bits, sizeof(float));
+    }
+    
+    uint32_t render_area_x = lagfx_le32(body + 32);           /* offset 32-35 — u32 */
+    uint32_t render_area_y = lagfx_le32(body + 36);           /* offset 36-39 — u32 */
+    uint32_t render_area_w = lagfx_le32(body + 40);           /* offset 40-43 — u32 */
+    uint32_t render_area_h = lagfx_le32(body + 44);           /* offset 44-47 — u32 */
+
+    /* Map Apple format codes to VkFormat. Cites: iosurface.c line 30-41. */
+    VkFormat color_format = apple_format_to_vk(color_fmt_raw);
+    VkFormat depth_format = (depth_fmt_raw != 0u) ? apple_format_to_vk(depth_fmt_raw) : VK_FORMAT_UNDEFINED;
+
+    /* Log parsed fields for observability. */
+    LAGFX_LOG("compute_inner: 0x1a RenderDescribeRenderPass view_count=%u color_fmt=%u(%s) depth_fmt=%u(%s) "
+              "clear_color=[%g,%g,%g,%g] clear_depth=%g render_area=%ux%u@(%u,%u)",
+              (unsigned)view_count,
+              (unsigned)color_fmt_raw,
+              (color_fmt_raw == 80u) ? "BGRA8" :
+              (color_fmt_raw == 70u) ? "RGBA8" :
+              (color_fmt_raw == 252u) ? "D32Float" :
+              (color_fmt_raw == 25u) ? "D16Unorm" : "UNKNOWN",
+              (unsigned)depth_fmt_raw,
+              (depth_fmt_raw == 252u) ? "D32Float" :
+              (depth_fmt_raw == 25u) ? "D16Unorm" :
+              (depth_fmt_raw == 0u) ? "none" : "UNKNOWN",
+              clear_color[0], clear_color[1], clear_color[2], clear_color[3],
+              clear_depth,
+              (unsigned)render_area_w, (unsigned)render_area_h,
+              (unsigned)render_area_x, (unsigned)render_area_y);
+
+    /* Store in per-task render pass descriptor. */
+    task->render_pass_desc.valid = true;
+    task->render_pass_desc.view_count = view_count;
+    task->render_pass_desc.color_format = color_format;
+    task->render_pass_desc.depth_format = depth_format;
+    memcpy(task->render_pass_desc.clear_color, clear_color, sizeof(clear_color));
+    task->render_pass_desc.clear_depth = clear_depth;
+    task->render_pass_desc.render_area_x = render_area_x;
+    task->render_pass_desc.render_area_y = render_area_y;
+    task->render_pass_desc.render_area_w = render_area_w;
+    task->render_pass_desc.render_area_h = render_area_h;
+
+    /* OPEN: The remaining 536 B (584 - 48) contain attachment descriptor arrays.
+     * Exact field ordering not yet RE'd from guest trace. Log byte at offset 48 for later analysis. */
+    if (body_len >= 48u + 4u) {
+        uint32_t offset_48 = lagfx_le32(body + 48);
+        LAGFX_LOG("compute_inner: 0x1a RenderDescribeRenderPass offset+48=0x%x (OPEN: attachment descriptor layout)",
+                  (unsigned)offset_48);
+    }
+
+    /* TODO: Stage 70c — consume task->render_pass_desc to construct VkRenderingInfo at vkCmdBeginRendering. */
     return 0;
 }
 

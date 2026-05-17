@@ -24,6 +24,10 @@
 
 /* === Constants =================================================== */
 #define LAGFX_MAX_TASKS        64u     /* Max concurrent tasks */
+
+#ifdef LAGFX_HAVE_VULKAN
+#  include <vulkan/vulkan.h>
+#endif
 #define LAGFX_MAX_FIFOS        32u     /* Max child FIFOs */
 /* Per-dispatcher scratch buffer size — large enough to hold any single
  * ring command (header + payload). Matches the legacy
@@ -83,6 +87,25 @@ typedef struct {
     uint16_t opcode;        // Inner opcode (Render/Blit/Compute domain-specific)
 } __attribute__((packed)) lagfx_inner_cmd_header_t;
 
+/* === Render pass description (per-task) ==========================
+ *
+ * Stores the parsed PGCmdDescribeRenderPass (0x1a, 584 B) payload.
+ * Populated when op_render_describe_render_pass fires; consumed by
+ * Stage 70c to construct VkRenderingInfo at vkCmdBeginRendering.
+ */
+typedef struct {
+    bool       valid;           /* True if RenderDescribeRenderPass parsed */
+    VkFormat   color_format;    /* First attachment format (usually 1 view) */
+    VkFormat   depth_format;    /* Depth/stencil format, VK_FORMAT_UNDEFINED if none */
+    float      clear_color[4];  /* RGBA clear values (0..1) */
+    float      clear_depth;     /* Depth clear value (0..1) */
+    uint32_t   render_area_x;   /* Render area origin x */
+    uint32_t   render_area_y;   /* Render area origin y */
+    uint32_t   render_area_w;   /* Render area extent width */
+    uint32_t   render_area_h;   /* Render area extent height */
+    uint32_t   view_count;      /* Number of color attachments (usually 1) */
+} lagfx_render_pass_desc_t;
+
 /* === Task Entry ================================================== */
 typedef struct {
     uint32_t id;                /* Task ID (from CmdDefineTask2 / CmdDefineHostTask) */
@@ -97,6 +120,10 @@ typedef struct {
     uint32_t heap_pfn;
     uint32_t heap_size;
     bool live;                  /* Slot is in use */
+    
+    /* Render pass description from PGCmdDescribeRenderPass (0x1a).
+     * Per-task state: each task has its own render pass descriptor. */
+    lagfx_render_pass_desc_t render_pass_desc;
 } lagfx_task_entry_t;
 
 /* === FIFO Entry ================================================== */
