@@ -449,3 +449,21 @@ if fs.is_file(meson.current_source_dir() / 'blit-inner-ops-unit.c')
   test('Blit inner ops (unit)', blit_inner_ops_unit_test)
 endif
 
+# Phase 3.C.2: shader_translate unit tests. Exercises lagfx_shader_translate_run()
+# end-to-end against triangle.metallib fixture. Gated on llc availability at runtime;
+# if llc missing, vertex/fragment tests skip (exit 77), other tests still pass.
+if fs.is_file(meson.current_source_dir() / 'shader_translate_test.c')
+  shader_translate_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    shader_translate_deps += [vulkan_dep]
+  endif
+  shader_translate_test = executable('shader-translate-test',
+    'shader_translate_test.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : shader_translate_deps,
+    build_by_default : true,
+  )
+  test('shader translate (unit)', shader_translate_test,
+       workdir : meson.project_source_root())
+endif
+
