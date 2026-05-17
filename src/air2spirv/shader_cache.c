@@ -65,7 +65,6 @@ static void sha256_update(sha256_ctx_t *ctx, const void *data, size_t len) {
             #define EP0(x) (ROTR(x,2)^ROTR(x,13)^ROTR(x,22))
             #define EP1(x) (ROTR(x,6)^ROTR(x,11)^ROTR(x,25))
 
-            size_t i;
             for (i = 0; i < 64; ++i) {
                 uint32_t t1 = hh + EP1(e) + CH(e,f,g) + k[i] + w[i&15];
                 uint32_t t2 = EP0(a) + MAJ(a,b,c);
@@ -99,12 +98,6 @@ static void sha256_final(sha256_ctx_t *ctx, uint8_t out[32]) {
     }
 }
 
-static void sha256_streaming(const uint8_t *data, size_t len, uint8_t out[32]) {
-    sha256_ctx_t ctx;
-    sha256_init(&ctx);
-    sha256_update(&ctx, data, len);
-    sha256_final(&ctx, out);
-}
 #endif
 
 
