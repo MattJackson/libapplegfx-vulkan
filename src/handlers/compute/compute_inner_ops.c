@@ -382,9 +382,10 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
     uint32_t render_area_w = lagfx_le32(body + 40);           /* offset 40-43 — u32 */
     uint32_t render_area_h = lagfx_le32(body + 44);           /* offset 44-47 — u32 */
 
-    /* Map Apple format codes to VkFormat. Cites: iosurface.c line 30-41. */
-    VkFormat color_format = apple_format_to_vk(color_fmt_raw);
-    VkFormat depth_format = (depth_fmt_raw != 0u) ? apple_format_to_vk(depth_fmt_raw) : VK_FORMAT_UNDEFINED;
+    /* Map Apple format codes to VkFormat (stored as u32 — cast to VkFormat
+     * at use site under LAGFX_HAVE_VULKAN). Cites: iosurface.c line 30-41. */
+    uint32_t color_format = apple_format_to_vk(color_fmt_raw);
+    uint32_t depth_format = (depth_fmt_raw != 0u) ? apple_format_to_vk(depth_fmt_raw) : 0u /* VK_FORMAT_UNDEFINED */;
 
     /* Log parsed fields for observability. */
     LAGFX_LOG("compute_inner: 0x1a RenderDescribeRenderPass view_count=%u color_fmt=%u(%s) depth_fmt=%u(%s) "
