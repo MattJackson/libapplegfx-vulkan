@@ -310,8 +310,12 @@ static int op_render_barrier_scope(lagfx_protocol_t *p,
  *   70 -> VK_FORMAT_R8G8B8A8_UNORM (MTLPixelFormatRGBA8Unorm) — high confidence  
  *   252 -> VK_FORMAT_D32_SFLOAT (MTLPixelFormatDepth32Float) — high confidence
  *   25 -> VK_FORMAT_D16_UNORM (MTLPixelFormatDepth16Unorm) — medium confidence */
-static VkFormat apple_format_to_vk(uint32_t fmt) {
-    return lagfx_metal_pixel_format_to_vk(fmt);
+static uint32_t apple_format_to_vk(uint32_t fmt) {
+#ifdef LAGFX_HAVE_VULKAN
+    return (uint32_t)lagfx_metal_pixel_format_to_vk(fmt);
+#else
+    return 0u;  /* VK_FORMAT_UNDEFINED equivalent; vulkan-disabled stub build */
+#endif
 }
 
 static int op_render_describe_render_pass(lagfx_protocol_t *p,

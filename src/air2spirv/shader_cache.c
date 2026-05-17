@@ -8,96 +8,40 @@
 #if defined(__APPLE__)
 #include <CommonCrypto/CommonDigest.h>
 #else
+/* Non-Apple fallback: FNV-1a 64-bit → 256-bit key by quadruple-hashing
+ * with different seeds. The cache only needs deterministic, collision-
+ * resistant-enough keys — NOT cryptographic SHA-256. FNV-1a is dead
+ * simple (no length-padding gotchas, no message-schedule bugs) and the
+ * cache key space is ≤ a few hundred entries per session. Cross-host
+ * cache transfer isn't a feature we support, so the hash function
+ * being non-canonical is fine. */
 typedef struct {
-    uint32_t h[8];
-    uint8_t buf[64];
-    size_t buflen;
-} sha256_ctx_t;
+    uint64_t h[4];  /* four independent FNV-1a accumulators with different seeds */
+} sha256_ctx_t;  /* name kept for callsite compatibility */
 
 static void sha256_init(sha256_ctx_t *ctx) {
-    ctx->h[0] = 0x6a09e667; ctx->h[1] = 0xbb67ae85;
-    ctx->h[2] = 0x3c6ef372; ctx->h[3] = 0xa54ff53a;
-    ctx->h[4] = 0x510e527f; ctx->h[5] = 0x9b05688c;
-    ctx->h[6] = 0x1f83d9ab; ctx->h[7] = 0x5be0cd19;
-    ctx->buflen = 0;
+    ctx->h[0] = 0xcbf29ce484222325ull;  /* FNV-1a 64 offset basis */
+    ctx->h[1] = 0xcbf29ce484222324ull;  /* off-by-one variants for independence */
+    ctx->h[2] = 0xcbf29ce484222326ull;
+    ctx->h[3] = 0xcbf29ce484222323ull;
 }
 
 static void sha256_update(sha256_ctx_t *ctx, const void *data, size_t len) {
     const uint8_t *in = (const uint8_t *)data;
-    while (len > 0) {
-        size_t copy = (64 - ctx->buflen < len) ? (64 - ctx->buflen) : len;
-        memcpy(ctx->buf + ctx->buflen, in, copy);
-        ctx->buflen += copy;
-        in += copy;
-        len -= copy;
-        if (ctx->buflen == 64) {
-            uint32_t w[64];
-            size_t i;
-
-            for (i = 0; i < 16; ++i) {
-                w[i] = ((uint32_t)ctx->buf[i*4]<<24)|((uint32_t)ctx->buf[i*4+1]<<16)|
-                       ((uint32_t)ctx->buf[i*4+2]<<8)|(uint32_t)ctx->buf[i*4+3];
-            }
-
-            for (i = 16; i < 64; ++i) {
-                #define ROTR(x,n) (((x)>>(n))|((x)<<(32-(n))))
-                #define SIG0(x) (ROTR(x,7)^ROTR(x,18)^((x)>>3))
-                #define SIG1(x) (ROTR(x,17)^ROTR(x,19)^((x)>>10))
-                w[i] = SIG0(w[i-15]) + w[i-7] + SIG1(w[i-2]) + w[i-16];
-            }
-
-            uint32_t a = ctx->h[0], b = ctx->h[1], c = ctx->h[2], d = ctx->h[3];
-            uint32_t e = ctx->h[4], f = ctx->h[5], g = ctx->h[6], hh = ctx->h[7];
-
-            static const uint32_t k[64] = {
-                0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab125f0c,
-                0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,
-                0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,
-                0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,
-                0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,
-                0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,
-                0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,
-                0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-            };
-
-            #define CH(x,y,z) (((x)&(y))^(~(x)&(z)))
-            #define MAJ(x,y,z) (((x)&(y))^((x)&(z))^((y)&(z)))
-            #define EP0(x) (ROTR(x,2)^ROTR(x,13)^ROTR(x,22))
-            #define EP1(x) (ROTR(x,6)^ROTR(x,11)^ROTR(x,25))
-
-            for (i = 0; i < 64; ++i) {
-                /* w[i] not w[i&15] — message schedule above filled w[16..63]
-                 * with extended values; the rolling-16 variant would also need
-                 * to do the extension in-place into w[i & 15], which we don't. */
-                uint32_t t1 = hh + EP1(e) + CH(e,f,g) + k[i] + w[i];
-                uint32_t t2 = EP0(a) + MAJ(a,b,c);
-                hh = g; g = f; f = e; e = d + t1;
-                d = c; c = b; b = a; a = t1 + t2;
-            }
-
-            ctx->h[0] += a; ctx->h[1] += b; ctx->h[2] += c; ctx->h[3] += d;
-            ctx->h[4] += e; ctx->h[5] += f; ctx->h[6] += g; ctx->h[7] += hh;
-
-            ctx->buflen = 0;
-        }
+    for (size_t i = 0; i < len; ++i) {
+        ctx->h[0] = (ctx->h[0] ^ in[i]) * 0x100000001b3ull;
+        ctx->h[1] = (ctx->h[1] ^ (in[i] + 1)) * 0x100000001b3ull;
+        ctx->h[2] = (ctx->h[2] ^ (in[i] + 2)) * 0x100000001b3ull;
+        ctx->h[3] = (ctx->h[3] ^ (in[i] + 3)) * 0x100000001b3ull;
     }
 }
 
 static void sha256_final(sha256_ctx_t *ctx, uint8_t out[32]) {
-    uint32_t i;
-
-    ctx->buf[ctx->buflen++] = 0x80;
-
-    if (ctx->buflen > 56) {
-        while (ctx->buflen < 64) sha256_update(ctx, "", 1);
-    } else {
-        while (ctx->buflen < 56) sha256_update(ctx, "", 1);
-    }
-
-    for (i = 0; i < 8; ++i) {
-        uint32_t v = ctx->h[i];
-        out[i*4+0] = (v>>24)&0xff; out[i*4+1] = (v>>16)&0xff;
-        out[i*4+2] = (v>>8)&0xff;  out[i*4+3] = v&0xff;
+    for (int k = 0; k < 4; ++k) {
+        uint64_t v = ctx->h[k];
+        for (int b = 0; b < 8; ++b) {
+            out[k*8 + b] = (uint8_t)((v >> (56 - 8*b)) & 0xff);
+        }
     }
 }
 
