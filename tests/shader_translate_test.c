@@ -142,8 +142,33 @@ static int test_unknown_function(void) {
 }
 
 static int test_null_inputs(void) {
-    /* Skip actual llc calls - they crash on this metallib fixture when llc is available. */
-    /* Placeholder: verify code structure compiles without triggering llc pipeline. */
+    /* All NULL-input paths must return non-OK without crashing.
+     * These early-exit before invoking llc, so they run regardless
+     * of llvm@20 availability. */
+    lagfx_shader_translation_t out;
+    memset(&out, 0, sizeof(out));
+
+    /* NULL metallib_data */
+    lagfx_status_t st = lagfx_shader_translate_run(
+        NULL, 100, "fn", LAGFX_SHADER_STAGE_VERTEX, &out);
+    ASSERT(st != LAGFX_OK, "NULL data returns non-OK");
+
+    /* zero length */
+    uint8_t b[1] = { 0 };
+    st = lagfx_shader_translate_run(
+        b, 0, "fn", LAGFX_SHADER_STAGE_VERTEX, &out);
+    ASSERT(st != LAGFX_OK, "zero len returns non-OK");
+
+    /* NULL function_name */
+    st = lagfx_shader_translate_run(
+        b, 1, NULL, LAGFX_SHADER_STAGE_VERTEX, &out);
+    ASSERT(st != LAGFX_OK, "NULL function_name returns non-OK");
+
+    /* NULL out */
+    st = lagfx_shader_translate_run(
+        b, 1, "fn", LAGFX_SHADER_STAGE_VERTEX, NULL);
+    ASSERT(st != LAGFX_OK, "NULL out returns non-OK");
+
     return 0;
 }
 
@@ -159,27 +184,25 @@ static int test_free_null_safe(void) {
 }
 
 int main(void) {
-    /* Verified 2026-05-17: brew llvm@20 now resolves for Phase 3.C.2.
-     * llvm-22.x SPIR-V backend rejects retargeted triangle bitcode;
-     * llvm@20 is the pinned reference version. */
-    if (llc_available()) {
-        /* All tests run with llvm@20. */
-    } else {
-        fprintf(stderr, "shader_translate: llc not available at /opt/homebrew/opt/llvm@20/bin/llc\n");
-    }
+    /* Verified 2026-05-17: brew llvm@20 is the pinned reference version.
+     * llvm-22.x SPIR-V backend rejects retargeted triangle bitcode. */
 
+    /* Negative tests (no llc dependency) always run. */
     if (test_unknown_function() != 0) { _exit(1); }
     if (test_null_inputs() != 0) { _exit(1); }
     if (test_free_null_safe() != 0) { _exit(1); }
 
-    if (llc_available()) {
-        /* All smoke tests ran; negative tests always pass. */
-        fprintf(stdout, "shader_translate: all tests passed\n");
-        fflush(stdout);
-        _exit(0);
-    } else {
-        fprintf(stdout, "shader_translate: 3 of 5 tests passed (vertex/fragment skipped)\n");
-        fflush(stdout);
+    /* Smoke tests need llvm@20. Skip with meson SKIP code if absent. */
+    if (!llc_available()) {
+        fprintf(stderr, "shader_translate: llc not at /opt/homebrew/opt/llvm@20/bin/llc; "
+                        "smoke tests skipped (negative tests passed)\n");
         _exit(77);
     }
+
+    if (test_smoke_translate_vertex()   != 0) { _exit(1); }
+    if (test_smoke_translate_fragment() != 0) { _exit(1); }
+
+    fprintf(stdout, "shader_translate: all 5 tests passed\n");
+    fflush(stdout);
+    _exit(0);
 }

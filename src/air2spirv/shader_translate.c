@@ -159,9 +159,11 @@ lagfx_status_t lagfx_shader_translate_run(
 
     if (!metallib_data || !function_name || !function_name[0] || !out) {
         LAGFX_ERR("shader_translate: NULL inputs or empty function name");
-        out->spv_bytes = NULL;
-        out->spv_len   = 0;
-        out->stage     = LAGFX_SHADER_STAGE_VERTEX;
+        if (out) {
+            out->spv_bytes = NULL;
+            out->spv_len   = 0;
+            out->stage     = LAGFX_SHADER_STAGE_VERTEX;
+        }
         return LAGFX_ERR_INVALID_ARG;
     }
 
