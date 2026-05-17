@@ -1,5 +1,17 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "libapplegfx-vulkan.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+#ifndef LAGFX_HAVE_VULKAN
+/* Vulkan-disabled stub build (e.g. macos-latest CI without Vulkan SDK):
+ * skip the whole test suite with meson SKIP exit code. */
+int main(void) {
+    fprintf(stderr, "pipeline_build_test: built without LAGFX_HAVE_VULKAN; skipping\n");
+    return 77;
+}
+#else  /* LAGFX_HAVE_VULKAN */
+
 #include "air2spirv/shader_translate.h"
 #include "vulkan/pipeline_build.h"
 #include <vulkan/vulkan.h>
@@ -414,3 +426,5 @@ static int test_build_no_dynamic_rendering(void) {
     fprintf(stderr, "pipeline_build_test: skipping no-dynamic-rendering smoke (requires Linux + lavapipe)\n");
     return 77;
 }
+
+#endif  /* LAGFX_HAVE_VULKAN */

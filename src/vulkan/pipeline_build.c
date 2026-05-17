@@ -2,6 +2,8 @@
 #include "pipeline_build.h"
 #include "common/log.h"
 
+#ifdef LAGFX_HAVE_VULKAN
+
 lagfx_status_t lagfx_pipeline_build(VkDevice device,
                                     const lagfx_pipeline_desc_t *desc,
                                     VkPipeline *out_pipeline) {
@@ -122,3 +124,16 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
     *out_pipeline = pipe;
     return LAGFX_OK;
 }
+
+#else  /* !LAGFX_HAVE_VULKAN */
+
+/* Vulkan-disabled stub build: NULL out_pipeline + return error. */
+lagfx_status_t lagfx_pipeline_build(VkDevice device,
+                                    const lagfx_pipeline_desc_t *desc,
+                                    VkPipeline *out_pipeline) {
+    (void)device; (void)desc;
+    if (out_pipeline) *out_pipeline = NULL;
+    return LAGFX_ERR_NOT_SUPPORTED;
+}
+
+#endif  /* LAGFX_HAVE_VULKAN */
