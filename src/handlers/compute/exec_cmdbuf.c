@@ -472,6 +472,25 @@ lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagf
         LAGFX_TRACE("CmdExecIndirect2: taskID=%u not found (fail-open)", task_id);
     }
 
+    /* One-time hexdump of first CmdExecIndirect2 descriptor table */
+    static int s_desc_table_dumped = 0;
+    if (!s_desc_table_dumped && descriptor_count > 0) {
+        s_desc_table_dumped = 1;
+        const uint8_t *desc_start = hdr->payload + 12u;
+        size_t total_bytes = (size_t)descriptor_count * 24u;
+        size_t n = total_bytes < 256 ? total_bytes : 256;
+        LAGFX_LOG("=== first CmdExecIndirect2 descriptor table hexdump (count=%u, total=%zu, showing %zu) ===",
+                  descriptor_count, total_bytes, n);
+        char hex[3*16+1] = {0};
+        for (size_t i = 0; i < n; i += 16) {
+            size_t row = (i + 16 <= n) ? 16 : (n - i);
+            for (size_t j = 0; j < row; ++j) {
+                snprintf(hex + j*3, 4, "%02x ", desc_start[i+j]);
+            }
+            LAGFX_LOG("  +0x%04zx: %s", i, hex);
+        }
+    }
+
     /* Walk each resource's cmdbuf for the Stage-20 inner observation
      * AND InfoDecoder reply dispatch. Pass the outer resource_table
      * base + count so info_replies.c can resolve buffer_id → target
