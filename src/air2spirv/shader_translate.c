@@ -56,6 +56,37 @@ static char *find_llc_binary(void) {
         }
     }
 
+    /* llc resolution order:
+     *   1. LAGFX_LLC env var (test override)
+     *   2. /opt/homebrew/opt/llvm@20/bin/llc  (pinned to a working version)
+     *   3. /opt/homebrew/opt/llvm/bin/llc      (fallback; may be newer & broken)
+     *   4. `which llc` from $PATH
+     * brew llvm 22.x SPIR-V backend rejects retargeted triangle bitcode
+     * ("LLVM ERROR: Unable to meet SPIR-V requirements for this target");
+     * llvm@20 is the Phase 3.C.2 reference version. See
+     * paravirt-re/library/stage65-llvm-pinning-options-2026-05-17.md.
+     */
+
+    /* Try brew llvm@20 first (verified working for retargeted triangle BC). */
+    static const char *pinned = "/opt/homebrew/opt/llvm@20/bin/llc";
+    struct stat st;
+    if (stat(pinned, &st) == 0 && S_ISREG(st.st_mode)) {
+        return strdup(pinned);
+    }
+
+    /* Fallback to common brew path. */
+    static const char *fallbacks[] = {
+        "/opt/homebrew/opt/llvm/bin/llc",
+        "/usr/bin/llc",
+        NULL,
+    };
+    for (int i = 0; fallbacks[i]; ++i) {
+        struct stat st;
+        if (stat(fallbacks[i], &st) == 0 && S_ISREG(st.st_mode)) {
+            return strdup(fallbacks[i]);
+        }
+    }
+
     /* Try system PATH via which(1). */
     FILE *f = popen("which llc 2>/dev/null", "r");
     if (f) {
@@ -72,19 +103,6 @@ static char *find_llc_binary(void) {
             }
         }
         pclose(f);
-    }
-
-    /* Fallback to common brew path. */
-    static const char *fallbacks[] = {
-        "/opt/homebrew/opt/llvm/bin/llc",
-        "/usr/bin/llc",
-        NULL,
-    };
-    for (int i = 0; fallbacks[i]; ++i) {
-        struct stat st;
-        if (stat(fallbacks[i], &st) == 0 && S_ISREG(st.st_mode)) {
-            return strdup(fallbacks[i]);
-        }
     }
 
     return NULL;
@@ -202,9 +220,9 @@ lagfx_status_t lagfx_shader_translate_run(
     }
 
     /* Step 3: llc lowering — shell out to `llc` binary.
-     * Prefer env LAGFX_LLC, else which(llc), else /opt/homebrew/opt/llvm/bin/llc.
-     * Write retargeted_bc to a tempfile, invoke llc, read tmpfile.spv.
-     */
+      * See find_llc_binary() for resolution order (llvm@20 preferred).
+      * Write retargeted_bc to a tempfile, invoke llc, read tmpfile.spv.
+      */
     char *llc_path = find_llc_binary();
     if (!llc_path) {
         LAGFX_ERR("shader_translate: llc binary not found; "

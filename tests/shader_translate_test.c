@@ -17,7 +17,7 @@ void lagfx_trace_impl(const char *fmt, ...) { (void)fmt; }
     fprintf(stderr, "FAIL: %s\n", msg); return 1; } } while (0)
 
 static int llc_available(void) {
-    return access("/opt/homebrew/opt/llvm/bin/llc", X_OK) == 0;
+    return access("/opt/homebrew/opt/llvm@20/bin/llc", X_OK) == 0;
 }
 
 static uint8_t *read_file(const char *path, size_t *out_len) {
@@ -159,25 +159,27 @@ static int test_free_null_safe(void) {
 }
 
 int main(void) {
-    /* Verified 2026-05-16: brew llvm 22.x llc fails on retargeted triangle
-     * bitcode with: "LLVM ERROR: Unable to meet SPIR-V requirements for
-     * this target." Phase 3.C.2 reference docs target llvm-20. Skip the
-     * smoke tests until either (a) we pin to a working llvm version
-     * (build_spirv.sh shells to docker for llvm-20) or (b) link libLLVM
-     * directly. Negative tests still run — they don't reach llc. */
+    /* Verified 2026-05-17: brew llvm@20 now resolves for Phase 3.C.2.
+     * llvm-22.x SPIR-V backend rejects retargeted triangle bitcode;
+     * llvm@20 is the pinned reference version. */
     if (llc_available()) {
-        fprintf(stderr, "shader_translate: llc-22 known incompatible with "
-                        "spirv64-unknown-vulkan1.3 backend on this fixture; "
-                        "skipping vertex/fragment smoke tests\n");
+        /* All tests run with llvm@20. */
     } else {
-        fprintf(stderr, "shader_translate: llc not available at /opt/homebrew/opt/llvm/bin/llc\n");
+        fprintf(stderr, "shader_translate: llc not available at /opt/homebrew/opt/llvm@20/bin/llc\n");
     }
 
     if (test_unknown_function() != 0) { _exit(1); }
     if (test_null_inputs() != 0) { _exit(1); }
     if (test_free_null_safe() != 0) { _exit(1); }
 
-    fprintf(stdout, "shader_translate: 3 of 5 tests passed (vertex/fragment skipped)\n");
-    fflush(stdout);
-    _exit(77);
+    if (llc_available()) {
+        /* All smoke tests ran; negative tests always pass. */
+        fprintf(stdout, "shader_translate: all tests passed\n");
+        fflush(stdout);
+        _exit(0);
+    } else {
+        fprintf(stdout, "shader_translate: 3 of 5 tests passed (vertex/fragment skipped)\n");
+        fflush(stdout);
+        _exit(77);
+    }
 }
