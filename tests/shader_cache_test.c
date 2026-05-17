@@ -183,13 +183,10 @@ static int test_lru_eviction(void) {
 }
 
 static int test_stats_counters(void) {
-    fprintf(stderr, "stats: starting\n"); fflush(stderr);
-    
     size_t max_entries = 3;
     lagfx_shader_cache_t *cache = lagfx_shader_cache_new(max_entries);
     
     if (!cache) { 
-        fprintf(stderr, "stats: cache new failed\n"); fflush(stderr);
         return 1; 
     }
 
@@ -201,9 +198,7 @@ static int test_stats_counters(void) {
         lagfx_shader_cache_close(cache);
         return 1; 
     }
-memset(spv_hit, 0, 64);
-    
-    fprintf(stderr, "stats: about to put hit_fn\n"); fflush(stderr);
+ memset(spv_hit, 0, 64);
     
     lagfx_status_t st;
     lagfx_shader_translation_t out;
@@ -222,14 +217,12 @@ memset(spv_hit, 0, 64);
     memset(&out, 0, sizeof(out));
     st = lagfx_shader_cache_get(cache, data, sizeof(data), "hit_fn", LAGFX_SHADER_STAGE_VERTEX, &out);
     if (st != LAGFX_OK) { 
-        free(spv_hit); 
         return 1; 
     }
 
     memset(data, 'm', sizeof(data));
     st = lagfx_shader_cache_get(cache, data, sizeof(data), "miss_fn", LAGFX_SHADER_STAGE_VERTEX, &out);
     if (st != LAGFX_ERR_NOT_FOUND) { 
-        free(spv_hit); 
         return 1; 
     }
 
@@ -238,7 +231,6 @@ memset(spv_hit, 0, 64);
         
         uint8_t *spv_evict = (uint8_t *)malloc(64);
         if (!spv_evict) { 
-            free(spv_hit); 
             return 1; 
         }
         memset(spv_evict, 0, 64);
@@ -248,7 +240,6 @@ memset(spv_hit, 0, 64);
                                     LAGFX_SHADER_STAGE_VERTEX, &trans);
         if (st != LAGFX_OK) { 
             free(spv_evict);
-            free(spv_hit); 
             return 1; 
         }
     }
@@ -258,40 +249,34 @@ memset(spv_hit, 0, 64);
     lagfx_shader_cache_stats(cache, &stats);
 
     if (stats.hits != 1) { 
-        free(spv_hit);
         return 1; 
     }
 
     if (stats.misses != 1) { 
-        free(spv_hit);
         return 1; 
     }
 
     if (stats.evictions < 1) { 
-        free(spv_hit);
         return 1; 
     }
 
    lagfx_shader_cache_close(cache);
-    free(spv_hit);
-    return 0;
+     return 0;
 }
 
 
 
 
 int main(void) {
-    /* Session 35 turned on tests 1-5 (Bugs 1+2 fixed in shader_cache.c).
-     * test_stats_counters has its OWN ownership bugs not fixed yet —
-     * leaving it disabled with the function kept for a future session. */
+    /* Session 35: was disabled with (void). Now fixed and re-enabled. */
     if (test_new_close_null_safe() != 0) { return 1; }
     if (test_put_then_get_hit()    != 0) { return 1; }
     if (test_get_miss()            != 0) { return 1; }
     if (test_stage_distinguishes() != 0) { return 1; }
     if (test_lru_eviction()        != 0) { fprintf(stderr, "FAIL: test_lru_eviction\n"); return 1; }
-    (void)test_stats_counters;
+    if (test_stats_counters()      != 0) { return 1; }
 
-    fprintf(stdout, "shader_cache: 5 of 6 tests passed (stats_counters has unfixed ownership bugs)\n");
+    fprintf(stdout, "shader_cache: 6 of 6 tests passed\n");
     fflush(stdout);
     _exit(0);
 }
