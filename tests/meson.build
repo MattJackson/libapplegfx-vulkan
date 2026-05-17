@@ -463,9 +463,27 @@ if fs.is_file(meson.current_source_dir() / 'shader_translate_test.c')
      dependencies : shader_translate_deps,
      build_by_default : true,
    )
-   test('shader translate (unit)', shader_translate_test,
-        workdir : meson.project_source_root())
+  test('shader translate (unit)', shader_translate_test,
+         workdir : meson.project_source_root())
 endif
+
+# Phase 70e: lagfx_pipeline_build unit tests. Exercises pipeline build from
+# triangle.metallib shaders via shader_translate -> VkShaderModule -> pipeline.
+if fs.is_file(meson.current_source_dir() / 'pipeline_build_test.c')
+  pipeline_build_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    pipeline_build_deps += [vulkan_dep]
+  endif
+  pipeline_build_test = executable('pipeline-build-test',
+    'pipeline_build_test.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : pipeline_build_deps,
+    build_by_default : true,
+  )
+  test('pipeline build (unit)', pipeline_build_test,
+       workdir : meson.project_source_root())
+endif
+
 
 # Phase 65e: shader_cache unit tests. Exercises LRU eviction, hit/miss stats, and
 # stage-distinguishing key generation for the content-addressed SPIR-V cache.
