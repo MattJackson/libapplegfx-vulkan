@@ -19,4 +19,5 @@ lagfx_sources += files(
   'bitcode_retarget.c',
   'spv_entrypoint_rewrite.c',
   'spv_signature_transform.c',
+  'shader_translate.c',
 )
