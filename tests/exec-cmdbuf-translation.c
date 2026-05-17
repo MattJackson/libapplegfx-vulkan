@@ -151,8 +151,6 @@ static void test_va_page_mappings(void) {
 static void test_out_of_bounds(void) {
     fprintf(stdout, "\n--- test_out_of_bounds ---\n");
 
-    uint8_t byte;
-    
     /* VA page 4 doesn't exist in our L2 table */
     bool ok = va_to_gpa(0x5000, NULL);
     CHECK(ok == false, "VA page 4 (out of bounds) returns false");

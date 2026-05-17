@@ -289,6 +289,7 @@ static void test_pipeline_invalid_payload(void) {
     build_header(cmd, LAGFX_OP_EXEC_INDIRECT2, /*arg_count=*/0, 12, 0xa5a50026);
 
     int rc = lagfx_protocol_dispatch_one(p, cmd, sizeof(cmd));
+    (void)rc;
     CHECK(shell.raise_irq_count == 1, "IRQ raised even for short payload (fail-open)");
 
     lagfx_device_free(dev);
