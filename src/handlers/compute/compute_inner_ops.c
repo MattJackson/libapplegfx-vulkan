@@ -44,6 +44,7 @@
 #include "device.h"
 #include "protocol/state.h"
 #include "vulkan/iosurface.h"
+#include "vulkan/pipeline_build.h"
 
 #ifdef LAGFX_HAVE_VULKAN
 #  include <vulkan/vulkan.h>
@@ -102,6 +103,32 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
 
     LAGFX_LOG("compute_inner: 0x01 DrawPrimitives16 vertexStart=%u vertexCount=%u -> pending_draw.valid=true indexed=false",
               vertex_start, vertex_count);
+    
+    /* Stage 65d Option 3 Step 3: build VkPipeline when draw fires. */
+#ifdef LAGFX_HAVE_VULKAN
+    if (task->pending_pipeline.valid && task->render_pass_desc.valid) {
+        lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
+        if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
+            VkDevice device = dev_with_vk->vk->device;
+            lagfx_pipeline_desc_t pdesc = {
+                .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
+                .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .color_format    = (VkFormat)task->render_pass_desc.color_format,
+                .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
+            };
+            VkPipeline pipeline = VK_NULL_HANDLE;
+            lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
+            if (st == LAGFX_OK) {
+                LAGFX_LOG("op_0x01 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
+                          (void *)pipeline, vertex_count);
+                /* TODO Step 4: record begin/bind/draw/end into command buffer */
+            } else {
+                LAGFX_WARN("op_0x01 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
+            }
+        }
+    }
+#endif
+    
     /* TODO: Stage 70 — translate to vkCmdDraw once AIR translation is in place. */
     return 0;
 }
@@ -143,6 +170,32 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
 
     LAGFX_LOG("compute_inner: 0x03 DrawInstancedPrimitives16 vertexStart=%u vertexCount=%u instanceCount=1 -> pending_draw.valid=true indexed=false",
               vertex_start, vertex_count);
+    
+    /* Stage 65d Option 3 Step 3: build VkPipeline when draw fires. */
+#ifdef LAGFX_HAVE_VULKAN
+    if (task->pending_pipeline.valid && task->render_pass_desc.valid) {
+        lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
+        if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
+            VkDevice device = dev_with_vk->vk->device;
+            lagfx_pipeline_desc_t pdesc = {
+                .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
+                .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .color_format    = (VkFormat)task->render_pass_desc.color_format,
+                .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
+            };
+            VkPipeline pipeline = VK_NULL_HANDLE;
+            lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
+            if (st == LAGFX_OK) {
+                LAGFX_LOG("op_0x03 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
+                          (void *)pipeline, vertex_count);
+                /* TODO Step 4: record begin/bind/draw/end into command buffer */
+            } else {
+                LAGFX_WARN("op_0x03 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
+            }
+        }
+    }
+#endif
+    
     /* TODO: Stage 70 — translate to vkCmdDraw with instanceCount once wire format ambiguity resolved. */
     return 0;
 }
@@ -185,6 +238,32 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
 
     LAGFX_LOG("compute_inner: 0x06 DrawIndexedPrimitives64 count=%u type=%u bufRef=0x%x offset=0x%llx -> pending_draw.valid=true indexed=true",
               index_count, index_type, index_buffer_ref, (unsigned long long)index_buffer_offset);
+    
+    /* Stage 65d Option 3 Step 3: build VkPipeline when draw fires. */
+#ifdef LAGFX_HAVE_VULKAN
+    if (task->pending_pipeline.valid && task->render_pass_desc.valid) {
+        lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
+        if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
+            VkDevice device = dev_with_vk->vk->device;
+            lagfx_pipeline_desc_t pdesc = {
+                .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
+                .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .color_format    = (VkFormat)task->render_pass_desc.color_format,
+                .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
+            };
+            VkPipeline pipeline = VK_NULL_HANDLE;
+            lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
+            if (st == LAGFX_OK) {
+                LAGFX_LOG("op_0x06 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
+                          (void *)pipeline, index_count);
+                /* TODO Step 4: record begin/bind/draw/end into command buffer */
+            } else {
+                LAGFX_WARN("op_0x06 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
+            }
+        }
+    }
+#endif
+    
     /* TODO: Stage 70 — translate to vkCmdDrawIndexed after binding index buffer. */
     return 0;
 }
@@ -226,6 +305,31 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
 
     LAGFX_LOG("compute_inner: 0x07 DrawIndexedPrimitives16 count=%u bufRef=0x%x offset=0x%x -> pending_draw.valid=true indexed=true",
               index_count, index_buffer_ref, index_buffer_offset);
+
+    /* Stage 65d Option 3 Step 3: build VkPipeline when draw fires. */
+#ifdef LAGFX_HAVE_VULKAN
+    if (task->pending_pipeline.valid && task->render_pass_desc.valid) {
+        lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
+        if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
+            VkDevice device = dev_with_vk->vk->device;
+            lagfx_pipeline_desc_t pdesc = {
+                .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
+                .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .color_format    = (VkFormat)task->render_pass_desc.color_format,
+                .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
+            };
+            VkPipeline pipeline = VK_NULL_HANDLE;
+            lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
+            if (st == LAGFX_OK) {
+                LAGFX_LOG("op_0x82 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
+                          (void *)pipeline, index_count);
+                /* TODO Step 4: record begin/bind/draw/end into command buffer */
+            } else {
+                LAGFX_WARN("op_0x82 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
+            }
+        }
+    }
+#endif
 
     /* Stage 70b/c/d observability: one-time full per-task state dump on first draw.
      * Cites: src/protocol/state.h line 96-107 (lagfx_render_pass_desc_t),
