@@ -20,4 +20,5 @@ lagfx_sources += files(
   'spv_entrypoint_rewrite.c',
   'spv_signature_transform.c',
   'shader_translate.c',
+  'shader_cache.c',
 )

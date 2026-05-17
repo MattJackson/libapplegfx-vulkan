@@ -64,6 +64,7 @@ typedef enum {
     LAGFX_ERR_INTERNAL      = -5,
     LAGFX_ERR_NO_FRAME      = -6,  /* no rendered frame available yet */
     LAGFX_ERR_BACKEND       = -7,  /* rendering backend (Vulkan) init failed */
+    LAGFX_ERR_NOT_FOUND     = -8,  /* key not found in cache/registry */
 } lagfx_status_t;
 
 /* === Memory model callbacks ===================================
