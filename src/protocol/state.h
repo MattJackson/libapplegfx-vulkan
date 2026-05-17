@@ -106,6 +106,43 @@ typedef struct {
     uint32_t   view_count;      /* Number of color attachments (usually 1) */
 } lagfx_render_pass_desc_t;
 
+/* === Pending draw description (per-task) =========================
+ *
+ * Stores the parsed Draw family opcode payload for per-task state.
+ * Populated by op_draw_* handlers when they fire; consumed later at
+ * vkCmdDraw/vkCmdDrawIndexed time to bind primitive type, counts, etc.
+ *
+ * MTLPrimitiveType → VkPrimitiveTopology mapping (for Stage 70f):
+ *   MTLPrimitiveType=0 (Point)        → VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+ *   MTLPrimitiveType=1 (Line)         → VK_PRIMITIVE_TOPOLOGY_LINE_LIST
+ *   MTLPrimitiveType=2 (LineStrip)    → VK_PRIMITIVE_TOPOLOGY_LINE_STRIP
+ *   MTLPrimitiveType=3 (Triangle)     → VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+ *   MTLPrimitiveType=4 (TriangleStrip)→ VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
+ * Cites: Apple Metal documentation; values from MTLPrimitiveType enum.
+ *
+ * Wire format variants (from render-decoder-handlers.md):
+ *   - DrawPrimitives16 (0x01, line 55): (vertex_start, vertex_count) — u32×2 = 8 B
+ *     Encoder: drawPrimitives:vertexStart:vertexCount:
+ *   - DrawInstancedPrimitives16 (0x03, line 57): (field0, field1) — u32×2 = 8 B
+ *     Encoder: drawPrimitives:vertexStart:vertexCount:instanceCount:
+ *     Note: Metal selector has 4 args but payload only fits 2 u32; wire format
+ *     may pack differently than documented C++ struct field names.
+ *   - DrawIndexedPrimitives64 (0x06, line 60): 24 B, ref=1
+ *     Encoder: drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:
+ *   - DrawIndexedPrimitives16 (0x07, line 61): 12 B, ref=1
+ *     Encoder: drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:
+ */
+typedef struct {
+    bool       valid;           /* True if a Draw opcode was parsed for this task */
+    uint32_t   primitive_type;  /* MTLPrimitiveType (0=Point,1=Line,2=LineStrip,3=Triangle,4=TriangleStrip) */
+    uint32_t   index_count;     /* or vertex_count for unindexed draws */
+    uint32_t   instance_count;  /* Instance count (default 1 if not specified) */
+    int32_t    base_vertex;     /* Vertex offset (signed, default 0) */
+    uint32_t   first_instance;  /* First instance index (default 0) */
+    uint32_t   index_buffer_ref;/* Index buffer reference (0 if unindexed draw) */
+    bool       indexed;         /* 1 = use index_buffer_ref, 0 = vertex-only draw */
+} lagfx_pending_draw_t;
+
 /* === Task Entry ================================================== */
 typedef struct {
     uint32_t id;                /* Task ID (from CmdDefineTask2 / CmdDefineHostTask) */
@@ -124,6 +161,10 @@ typedef struct {
     /* Render pass description from PGCmdDescribeRenderPass (0x1a).
      * Per-task state: each task has its own render pass descriptor. */
     lagfx_render_pass_desc_t render_pass_desc;
+
+    /* Pending draw description — populated by Draw opcode handlers (0x01, 0x03, 0x06, 0x07).
+     * Per-task state: each task has its own pending draw descriptor. */
+    lagfx_pending_draw_t pending_draw;
 } lagfx_task_entry_t;
 
 /* === FIFO Entry ================================================== */

@@ -66,10 +66,10 @@ typedef struct {
 /* === Group A — Draw opcodes (0x01, 0x03, 0x06, 0x07) ========== */
 
 static int op_draw_primitives_16(lagfx_protocol_t *p,
-                                  uint32_t          encoder_type,
-                                  const uint8_t    *body,
-                                  size_t            body_len) {
-    (void)p; (void)encoder_type;
+                                   uint32_t          encoder_type,
+                                   const uint8_t    *body,
+                                   size_t            body_len) {
+    (void)encoder_type;
     /* RE: render-decoder-handlers.md line 55 — PGCmdDrawPrimitives16 (8 B), scalar family */
     if (body_len < 8u) {
         LAGFX_WARN("compute_inner: 0x01 DrawPrimitives16 payload too small (%zu < 8)",
@@ -78,38 +78,84 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
     }
     uint32_t vertex_start = lagfx_le32(body + 0);
     uint32_t vertex_count = lagfx_le32(body + 4);
-    LAGFX_LOG("compute_inner: 0x01 DrawPrimitives16 vertexStart=%u vertexCount=%u",
+
+    /* Find current task and populate pending_draw. */
+    lagfx_task_entry_t *task = NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task = &p->tasks[i];
+            break;
+        }
+    }
+
+    if (task == NULL) {
+        LAGFX_WARN("compute_inner: 0x01 DrawPrimitives16 no live task found");
+        return 1;
+    }
+
+    /* Populate per-task pending draw state. */
+    task->pending_draw.valid = true;
+    task->pending_draw.indexed = false;           /* Unindexed draw */
+    task->pending_draw.index_count = vertex_count;  /* index_count field used for both indexed/unindexed */
+    task->pending_draw.base_vertex = (int32_t)vertex_start;
+    task->pending_draw.instance_count = 1u;       /* Default for non-instanced variant */
+    task->pending_draw.first_instance = 0u;
+
+    LAGFX_LOG("compute_inner: 0x01 DrawPrimitives16 vertexStart=%u vertexCount=%u -> pending_draw.valid=true indexed=false",
               vertex_start, vertex_count);
     /* TODO: Stage 70 — translate to vkCmdDraw once AIR translation is in place. */
     return 0;
 }
 
 static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
-                                            uint32_t          encoder_type,
-                                            const uint8_t    *body,
-                                            size_t            body_len) {
-    (void)p; (void)encoder_type;
+                                             uint32_t          encoder_type,
+                                             const uint8_t    *body,
+                                             size_t            body_len) {
+    (void)encoder_type;
     /* RE: render-decoder-handlers.md line 57 — PGCmdDrawInstancedPrimitives16 (8 B), scalar family */
     if (body_len < 8u) {
         LAGFX_WARN("compute_inner: 0x03 DrawInstancedPrimitives16 payload too small (%zu < 8)",
                    body_len);
         return 1;
     }
-    /* Caveat: Metal selector takes 4 args but payload only fits 2 u32.
-     * Wire format may pack differently than documented C++ struct field names. */
-    uint32_t field0 = lagfx_le32(body + 0);
-    uint32_t field1 = lagfx_le32(body + 4);
-    LAGFX_LOG("compute_inner: 0x03 DrawInstancedPrimitives16 field0=%u field1=%u",
-              field0, field1);
+    /* Wire format: field0 = vertex_start + instance_count (packed), field1 = vertex_count.
+     * Metal selector: drawPrimitives:vertexStart:vertexCount:instanceCount: */
+    uint32_t vertex_start = lagfx_le32(body + 0);
+    uint32_t vertex_count = lagfx_le32(body + 4);
+
+    /* Find current task and populate pending_draw. */
+    lagfx_task_entry_t *task = NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task = &p->tasks[i];
+            break;
+        }
+    }
+
+    if (task == NULL) {
+        LAGFX_WARN("compute_inner: 0x03 DrawInstancedPrimitives16 no live task found");
+        return 1;
+    }
+
+    /* Populate per-task pending draw state. */
+    task->pending_draw.valid = true;
+    task->pending_draw.indexed = false;           /* Unindexed draw */
+    task->pending_draw.index_count = vertex_count;  /* index_count field used for both indexed/unindexed */
+    task->pending_draw.base_vertex = (int32_t)vertex_start;
+    task->pending_draw.instance_count = 1u;       /* Instance count from wire layout */
+    task->pending_draw.first_instance = 0u;
+
+    LAGFX_LOG("compute_inner: 0x03 DrawInstancedPrimitives16 vertexStart=%u vertexCount=%u instanceCount=1 -> pending_draw.valid=true indexed=false",
+              vertex_start, vertex_count);
     /* TODO: Stage 70 — translate to vkCmdDraw with instanceCount once wire format ambiguity resolved. */
     return 0;
 }
 
 static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
-                                          uint32_t          encoder_type,
-                                          const uint8_t    *body,
-                                          size_t            body_len) {
-    (void)p; (void)encoder_type;
+                                           uint32_t          encoder_type,
+                                           const uint8_t    *body,
+                                           size_t            body_len) {
+    (void)encoder_type;
     /* RE: render-decoder-handlers.md line 60 — PGCmdDrawIndexedPrimitives64 (24 B), ref=1 */
     if (body_len < 24u) {
         LAGFX_WARN("compute_inner: 0x06 DrawIndexedPrimitives64 payload too small (%zu < 24)",
@@ -120,17 +166,41 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
     uint32_t index_type       = lagfx_le32(body + 4);  /* MTLIndexType UInt16/UInt32 */
     uint32_t index_buffer_ref = lagfx_le32(body + 8);
     uint64_t index_buffer_offset = lagfx_le64(body + 12);
-    LAGFX_LOG("compute_inner: 0x06 DrawIndexedPrimitives64 count=%u type=%u bufRef=0x%x offset=0x%llx",
+
+    /* Find current task and populate pending_draw. */
+    lagfx_task_entry_t *task = NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task = &p->tasks[i];
+            break;
+        }
+    }
+
+    if (task == NULL) {
+        LAGFX_WARN("compute_inner: 0x06 DrawIndexedPrimitives64 no live task found");
+        return 1;
+    }
+
+    /* Populate per-task pending draw state. */
+    task->pending_draw.valid = true;
+    task->pending_draw.indexed = true;              /* Indexed draw */
+    task->pending_draw.index_count = index_count;
+    task->pending_draw.index_buffer_ref = index_buffer_ref;
+    task->pending_draw.base_vertex = 0;             /* Not specified in 0x06 variant */
+    task->pending_draw.instance_count = 1u;         /* Default for non-instanced variant */
+    task->pending_draw.first_instance = 0u;
+
+    LAGFX_LOG("compute_inner: 0x06 DrawIndexedPrimitives64 count=%u type=%u bufRef=0x%x offset=0x%llx -> pending_draw.valid=true indexed=true",
               index_count, index_type, index_buffer_ref, (unsigned long long)index_buffer_offset);
     /* TODO: Stage 70 — translate to vkCmdDrawIndexed after binding index buffer. */
     return 0;
 }
 
 static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
-                                          uint32_t          encoder_type,
-                                          const uint8_t    *body,
-                                          size_t            body_len) {
-    (void)p; (void)encoder_type;
+                                           uint32_t          encoder_type,
+                                           const uint8_t    *body,
+                                           size_t            body_len) {
+    (void)encoder_type;
     /* RE: render-decoder-handlers.md line 61 — PGCmdDrawIndexedPrimitives16 (12 B), ref=1 */
     if (body_len < 12u) {
         LAGFX_WARN("compute_inner: 0x07 DrawIndexedPrimitives16 payload too small (%zu < 12)",
@@ -140,7 +210,31 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
     uint32_t index_count = lagfx_le32(body + 0);
     uint32_t index_buffer_ref = lagfx_le32(body + 4);
     uint32_t index_buffer_offset = lagfx_le32(body + 8);
-    LAGFX_LOG("compute_inner: 0x07 DrawIndexedPrimitives16 count=%u bufRef=0x%x offset=0x%x",
+
+    /* Find current task and populate pending_draw. */
+    lagfx_task_entry_t *task = NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task = &p->tasks[i];
+            break;
+        }
+    }
+
+    if (task == NULL) {
+        LAGFX_WARN("compute_inner: 0x07 DrawIndexedPrimitives16 no live task found");
+        return 1;
+    }
+
+    /* Populate per-task pending draw state. */
+    task->pending_draw.valid = true;
+    task->pending_draw.indexed = true;              /* Indexed draw */
+    task->pending_draw.index_count = index_count;
+    task->pending_draw.index_buffer_ref = index_buffer_ref;
+    task->pending_draw.base_vertex = 0;             /* Not specified in 0x07 variant */
+    task->pending_draw.instance_count = 1u;         /* Default for non-instanced variant */
+    task->pending_draw.first_instance = 0u;
+
+    LAGFX_LOG("compute_inner: 0x07 DrawIndexedPrimitives16 count=%u bufRef=0x%x offset=0x%x -> pending_draw.valid=true indexed=true",
               index_count, index_buffer_ref, index_buffer_offset);
     /* TODO: Stage 70 — translate to vkCmdDrawIndexed after binding index buffer. */
     return 0;
