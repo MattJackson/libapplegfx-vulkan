@@ -34,6 +34,7 @@
 #include "common/log.h"
 
 #include <stdint.h>
+#include <stdio.h>
 
 /* === Per-task radix-tree translator ============================== */
 
@@ -320,12 +321,12 @@ static size_t locate_segment_header(const uint8_t *cmdbuf, size_t length) {
  * `host_gpu_addr` as a flat GPA and lets shell.read_memory cope.
  */
 static void exec_walk_resource(lagfx_protocol_t *p,
-                                const lagfx_task_entry_t *task,
-                                uint64_t host_gpu_addr,
-                                uint32_t length,
-                                uint32_t stamp,
-                                const uint8_t *outer_resources,
-                                uint32_t resource_count) {
+                                 const lagfx_task_entry_t *task,
+                                 uint64_t host_gpu_addr,
+                                 uint32_t length,
+                                 uint32_t stamp,
+                                 const uint8_t *outer_resources,
+                                 uint32_t resource_count) {
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
     if (!dev || !dev->desc.shell.read_memory) return;
     if (length == 0u || length > (1u << 22)) {
@@ -381,6 +382,23 @@ static void exec_walk_resource(lagfx_protocol_t *p,
     }
     to_read = bytes_read;
     if (to_read == 0u) return;
+
+    /* One-time hexdump of first CmdExecIndirect2 resource buffer bytes (buf). */
+    static int s_resource_buf_dumped = 0;
+    if (!s_resource_buf_dumped && to_read > 0) {
+        s_resource_buf_dumped = 1;
+        size_t n = to_read < 256 ? to_read : 256;
+        LAGFX_LOG("=== first CmdExecIndirect2 resource buffer hexdump (len=%u, showing %zu) ===",
+                  to_read, n);
+        char hex[3*16+1] = {0};
+        for (size_t i = 0; i < n; i += 16) {
+            size_t row = (i + 16 <= n) ? 16 : (n - i);
+            for (size_t j = 0; j < row; ++j) {
+                snprintf(hex + j*3, 4, "%02x ", buf[i+j]);
+            }
+            LAGFX_LOG("  +0x%04zx: %s", i, hex);
+        }
+    }
 
     size_t seg_off = locate_segment_header(buf, to_read);
     if (seg_off == (size_t)-1) {
