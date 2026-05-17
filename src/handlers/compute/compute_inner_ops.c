@@ -38,6 +38,7 @@
  */
 
 #include "compute_inner_ops.h"
+#include "display.h"  /* Full lagfx_display_t definition with rt field */
 
 #include "common/le.h"
 #include "common/log.h"
@@ -45,6 +46,7 @@
 #include "protocol/state.h"
 #include "vulkan/iosurface.h"
 #include "vulkan/pipeline_build.h"
+#include "vulkan/draw_record.h"
 
 #ifdef LAGFX_HAVE_VULKAN
 #  include <vulkan/vulkan.h>
@@ -121,7 +123,24 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
             if (st == LAGFX_OK) {
                 LAGFX_LOG("op_0x01 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, vertex_count);
-                /* TODO Step 4: record begin/bind/draw/end into command buffer */
+                
+                /* Step 4: record and submit the draw command */
+                lagfx_display_t *display = dev_with_vk->displays[0];
+                if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
+                    st = lagfx_vk_draw_record_and_submit(
+                        dev_with_vk->vk, pipeline, &display->rt,
+                        false,  /* indexed */
+                        vertex_count, task->pending_draw.instance_count,
+                        task->pending_draw.base_vertex, task->pending_draw.first_instance,
+                        0);  /* index_buffer_ref ignored for unindexed */
+                    if (st == LAGFX_OK) {
+                        LAGFX_LOG("op_0x01 Option 3 Step 4: drew successfully vertexCount=%u", vertex_count);
+                    } else {
+                        LAGFX_WARN("op_0x01 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
+                    }
+                } else {
+                    LAGFX_WARN("op_0x01 Option 3 Step 4: no render target available");
+                }
             } else {
                 LAGFX_WARN("op_0x01 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
             }
@@ -188,7 +207,24 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
             if (st == LAGFX_OK) {
                 LAGFX_LOG("op_0x03 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, vertex_count);
-                /* TODO Step 4: record begin/bind/draw/end into command buffer */
+                
+                /* Step 4: record and submit the draw command */
+                lagfx_display_t *display = dev_with_vk->displays[0];
+                if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
+                    st = lagfx_vk_draw_record_and_submit(
+                        dev_with_vk->vk, pipeline, &display->rt,
+                        false,  /* indexed */
+                        vertex_count, task->pending_draw.instance_count,
+                        task->pending_draw.base_vertex, task->pending_draw.first_instance,
+                        0);  /* index_buffer_ref ignored for unindexed */
+                    if (st == LAGFX_OK) {
+                        LAGFX_LOG("op_0x03 Option 3 Step 4: drew successfully vertexCount=%u", vertex_count);
+                    } else {
+                        LAGFX_WARN("op_0x03 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
+                    }
+                } else {
+                    LAGFX_WARN("op_0x03 Option 3 Step 4: no render target available");
+                }
             } else {
                 LAGFX_WARN("op_0x03 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
             }
@@ -256,7 +292,24 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
             if (st == LAGFX_OK) {
                 LAGFX_LOG("op_0x06 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, index_count);
-                /* TODO Step 4: record begin/bind/draw/end into command buffer */
+                
+                /* Step 4: record and submit the indexed draw command */
+                lagfx_display_t *display = dev_with_vk->displays[0];
+                if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
+                    st = lagfx_vk_draw_record_and_submit(
+                        dev_with_vk->vk, pipeline, &display->rt,
+                        true,  /* indexed */
+                        index_count, task->pending_draw.instance_count,
+                        task->pending_draw.base_vertex, task->pending_draw.first_instance,
+                        task->pending_draw.index_buffer_ref);
+                    if (st == LAGFX_OK) {
+                        LAGFX_LOG("op_0x06 Option 3 Step 4: drew indexed successfully indexCount=%u", index_count);
+                    } else {
+                        LAGFX_WARN("op_0x06 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
+                    }
+                } else {
+                    LAGFX_WARN("op_0x06 Option 3 Step 4: no render target available");
+                }
             } else {
                 LAGFX_WARN("op_0x06 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
             }
@@ -323,7 +376,24 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
             if (st == LAGFX_OK) {
                 LAGFX_LOG("op_0x82 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, index_count);
-                /* TODO Step 4: record begin/bind/draw/end into command buffer */
+                
+                /* Step 4: record and submit the indexed draw command */
+                lagfx_display_t *display = dev_with_vk->displays[0];
+                if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
+                    st = lagfx_vk_draw_record_and_submit(
+                        dev_with_vk->vk, pipeline, &display->rt,
+                        true,  /* indexed */
+                        index_count, task->pending_draw.instance_count,
+                        task->pending_draw.base_vertex, task->pending_draw.first_instance,
+                        task->pending_draw.index_buffer_ref);
+                    if (st == LAGFX_OK) {
+                        LAGFX_LOG("op_0x82 Option 3 Step 4: drew indexed successfully indexCount=%u", index_count);
+                    } else {
+                        LAGFX_WARN("op_0x82 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
+                    }
+                } else {
+                    LAGFX_WARN("op_0x82 Option 3 Step 4: no render target available");
+                }
             } else {
                 LAGFX_WARN("op_0x82 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
             }
