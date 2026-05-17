@@ -8,7 +8,16 @@
 extern "C" {
 #endif
 
+#ifdef LAGFX_HAVE_VULKAN
 #include <vulkan/vulkan.h>
+#else
+/* Vulkan-disabled stub build: declare opaque handles so this header
+ * still parses. Callers under LAGFX_HAVE_VULKAN see real Vulkan types. */
+typedef void *VkDevice;
+typedef void *VkShaderModule;
+typedef void *VkPipeline;
+typedef int   VkFormat;
+#endif
 
 /**
  * MVP pipeline descriptor — fields hardcoded to match triangle.metallib
