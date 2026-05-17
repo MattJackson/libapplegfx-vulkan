@@ -95,8 +95,11 @@ typedef struct {
  */
 typedef struct {
     bool       valid;           /* True if RenderDescribeRenderPass parsed */
-    VkFormat   color_format;    /* First attachment format (usually 1 view) */
-    VkFormat   depth_format;    /* Depth/stencil format, VK_FORMAT_UNDEFINED if none */
+    /* VkFormat values stored as raw u32 so the struct is visible
+     * across translation units that don't pull in <vulkan/vulkan.h>.
+     * Cast to VkFormat at use site (under LAGFX_HAVE_VULKAN). */
+    uint32_t   color_format;    /* VkFormat: first attachment format */
+    uint32_t   depth_format;    /* VkFormat: depth/stencil, VK_FORMAT_UNDEFINED if none */
     float      clear_color[4];  /* RGBA clear values (0..1) */
     float      clear_depth;     /* Depth clear value (0..1) */
     uint32_t   render_area_x;   /* Render area origin x */
@@ -171,6 +174,16 @@ typedef struct {
     lagfx_binding_slot_t fragment_textures[LAGFX_MAX_BINDING_SLOTS];
 } lagfx_bindings_t;
 
+/* Stage 65d Option 3: shader modules selected for this task.
+ * Currently always copied from device's bundled triangle SPVs
+ * — pending proper metallib capture. */
+typedef struct {
+    bool            valid;
+    VkShaderModule  vertex_shader;    /* VK_NULL_HANDLE if not set */
+    VkShaderModule  fragment_shader;  /* VK_NULL_HANDLE if not set */
+    uint32_t        reference;        /* the SetRenderPipelineState ref value (recorded for debug) */
+} lagfx_pending_pipeline_t;
+
 /* === Task Entry ================================================== */
 typedef struct {
     uint32_t id;                /* Task ID (from CmdDefineTask2 / CmdDefineHostTask) */
@@ -200,6 +213,11 @@ typedef struct {
      *   - 0x6f SetFragmentBufferOffset, 0x6e SetFragmentBuffers → fragment_buffers[]
      *   - 0x81 SetVertexTextures, 0x72 SetFragmentTextures → texture arrays (TODO: add handlers) */
     lagfx_bindings_t bindings;
+
+#ifdef LAGFX_HAVE_VULKAN
+    /* Stage 65d Option 3: shader modules selected for this task. */
+    lagfx_pending_pipeline_t pending_pipeline;
+#endif
 } lagfx_task_entry_t;
 
 /* === FIFO Entry ================================================== */

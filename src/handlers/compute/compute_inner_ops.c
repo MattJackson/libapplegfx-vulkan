@@ -41,6 +41,7 @@
 
 #include "common/le.h"
 #include "common/log.h"
+#include "device.h"
 #include "protocol/state.h"
 #include "vulkan/iosurface.h"
 
@@ -765,6 +766,26 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
 
     LAGFX_LOG("compute_inner: 0x74 SetRenderPipelineState ref=0x%x registry=%s type=%s",
               reference, registry_status, type_str);
+
+#ifdef LAGFX_HAVE_VULKAN
+    /* Stage 65d Option 3: substitute the device's bundled triangle
+     * shaders for every render-pipeline reference. Real metallib
+     * capture rides Mach IPC (Session 63 finding); first-pixel work
+     * doesn't wait on that. */
+    lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
+    if (dev_with_vk &&
+        dev_with_vk->triangle_vertex_module != VK_NULL_HANDLE &&
+        dev_with_vk->triangle_fragment_module != VK_NULL_HANDLE) {
+        task->pending_pipeline.valid = true;
+        task->pending_pipeline.vertex_shader   = dev_with_vk->triangle_vertex_module;
+        task->pending_pipeline.fragment_shader = dev_with_vk->triangle_fragment_module;
+        task->pending_pipeline.reference       = reference;
+        LAGFX_LOG("op_0x74 Option 3: substituted triangle shaders for ref=0x%x", reference);
+    } else {
+        LAGFX_LOG("op_0x74 Option 3: triangle modules not loaded (set LAGFX_TRIANGLE_*_SPV); ref=0x%x", reference);
+    }
+#endif
+
     /* TODO: Stage 70 — resolve pipeline ref to VkPipeline via resource registry and bind via vkCmdBindShadersEXT once shader objects are in place. */
     return 0;
 }
