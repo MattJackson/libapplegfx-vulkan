@@ -9,6 +9,7 @@ lagfx_sources += files(
   'instance.c',
   'command.c',
   'pipeline.c',
+  'pipeline_build.c',
   'render_target.c',
   'cursor.c',
   'iosurface.c',
