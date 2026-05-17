@@ -133,7 +133,7 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
                                     VkPipeline *out_pipeline) {
     (void)device; (void)desc;
     if (out_pipeline) *out_pipeline = NULL;
-    return LAGFX_ERR_NOT_SUPPORTED;
+    return LAGFX_ERR_NOT_FOUND;
 }
 
 #endif  /* LAGFX_HAVE_VULKAN */
