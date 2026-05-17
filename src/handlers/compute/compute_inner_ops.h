@@ -44,10 +44,11 @@ typedef struct lagfx_protocol lagfx_protocol_t;
  * are encoder-type-agnostic; future versions may diverge.
  */
 int lagfx_compute_inner_dispatch(lagfx_protocol_t *p,
-                                 uint32_t          encoder_type,
-                                 uint32_t          opcode,
-                                 const uint8_t    *body,
-                                 size_t            body_len);
+                                  uint32_t          encoder_type,
+                                  uint32_t          task_id,
+                                  uint32_t          opcode,
+                                  const uint8_t    *body,
+                                  size_t            body_len);
 
 /* Human-readable name for an inner opcode. Returns "unknown" if not
  * in the table. Useful for log enrichment. */

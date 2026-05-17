@@ -53,9 +53,10 @@
 #include <string.h>
 
 typedef int (*lagfx_compute_inner_op_fn)(lagfx_protocol_t *p,
-                                           uint32_t          encoder_type,
-                                           const uint8_t    *body,
-                                           size_t            body_len);
+                                            uint32_t          encoder_type,
+                                            uint32_t          task_id,
+                                            const uint8_t    *body,
+                                            size_t            body_len);
 
 typedef struct {
     uint32_t                    opcode;
@@ -66,9 +67,10 @@ typedef struct {
 /* === Group A — Draw opcodes (0x01, 0x03, 0x06, 0x07) ========== */
 
 static int op_draw_primitives_16(lagfx_protocol_t *p,
-                                   uint32_t          encoder_type,
-                                   const uint8_t    *body,
-                                   size_t            body_len) {
+                                    uint32_t          encoder_type,
+                                    uint32_t          task_id,
+                                    const uint8_t    *body,
+                                    size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 55 — PGCmdDrawPrimitives16 (8 B), scalar family */
     if (body_len < 8u) {
@@ -79,17 +81,13 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
     uint32_t vertex_start = lagfx_le32(body + 0);
     uint32_t vertex_count = lagfx_le32(body + 4);
 
-    /* Find current task and populate pending_draw. */
-    lagfx_task_entry_t *task = NULL;
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task = &p->tasks[i];
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x01 DrawPrimitives16 task_id=%u out of range", task_id);
+        return 1;
     }
-
-    if (task == NULL) {
-        LAGFX_WARN("compute_inner: 0x01 DrawPrimitives16 no live task found");
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x01 DrawPrimitives16 task_id=%u not live", task_id);
         return 1;
     }
 
@@ -108,9 +106,10 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
 }
 
 static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
-                                             uint32_t          encoder_type,
-                                             const uint8_t    *body,
-                                             size_t            body_len) {
+                                              uint32_t          encoder_type,
+                                              uint32_t          task_id,
+                                              const uint8_t    *body,
+                                              size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 57 — PGCmdDrawInstancedPrimitives16 (8 B), scalar family */
     if (body_len < 8u) {
@@ -123,17 +122,13 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
     uint32_t vertex_start = lagfx_le32(body + 0);
     uint32_t vertex_count = lagfx_le32(body + 4);
 
-    /* Find current task and populate pending_draw. */
-    lagfx_task_entry_t *task = NULL;
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task = &p->tasks[i];
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x03 DrawInstancedPrimitives16 task_id=%u out of range", task_id);
+        return 1;
     }
-
-    if (task == NULL) {
-        LAGFX_WARN("compute_inner: 0x03 DrawInstancedPrimitives16 no live task found");
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x03 DrawInstancedPrimitives16 task_id=%u not live", task_id);
         return 1;
     }
 
@@ -152,9 +147,10 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
 }
 
 static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
-                                           uint32_t          encoder_type,
-                                           const uint8_t    *body,
-                                           size_t            body_len) {
+                                            uint32_t          encoder_type,
+                                            uint32_t          task_id,
+                                            const uint8_t    *body,
+                                            size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 60 — PGCmdDrawIndexedPrimitives64 (24 B), ref=1 */
     if (body_len < 24u) {
@@ -167,17 +163,13 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
     uint32_t index_buffer_ref = lagfx_le32(body + 8);
     uint64_t index_buffer_offset = lagfx_le64(body + 12);
 
-    /* Find current task and populate pending_draw. */
-    lagfx_task_entry_t *task = NULL;
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task = &p->tasks[i];
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x06 DrawIndexedPrimitives64 task_id=%u out of range", task_id);
+        return 1;
     }
-
-    if (task == NULL) {
-        LAGFX_WARN("compute_inner: 0x06 DrawIndexedPrimitives64 no live task found");
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x06 DrawIndexedPrimitives64 task_id=%u not live", task_id);
         return 1;
     }
 
@@ -197,9 +189,10 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
 }
 
 static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
-                                           uint32_t          encoder_type,
-                                           const uint8_t    *body,
-                                           size_t            body_len) {
+                                            uint32_t          encoder_type,
+                                            uint32_t          task_id,
+                                            const uint8_t    *body,
+                                            size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 61 — PGCmdDrawIndexedPrimitives16 (12 B), ref=1 */
     if (body_len < 12u) {
@@ -211,17 +204,13 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
     uint32_t index_buffer_ref = lagfx_le32(body + 4);
     uint32_t index_buffer_offset = lagfx_le32(body + 8);
 
-    /* Find current task and populate pending_draw. */
-    lagfx_task_entry_t *task = NULL;
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task = &p->tasks[i];
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x07 DrawIndexedPrimitives16 task_id=%u out of range", task_id);
+        return 1;
     }
-
-    if (task == NULL) {
-        LAGFX_WARN("compute_inner: 0x07 DrawIndexedPrimitives16 no live task found");
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x07 DrawIndexedPrimitives16 task_id=%u not live", task_id);
         return 1;
     }
 
@@ -296,10 +285,11 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
 /* === Group B — Render-pass + barrier (0x17, 0x1a) ============== */
 
 static int op_render_barrier_scope(lagfx_protocol_t *p,
-                                    uint32_t          encoder_type,
-                                    const uint8_t    *body,
-                                    size_t            body_len) {
-    (void)p; (void)encoder_type;
+                                     uint32_t          encoder_type,
+                                     uint32_t          task_id,
+                                     const uint8_t    *body,
+                                     size_t            body_len) {
+    (void)p; (void)encoder_type; (void)task_id;
     /* RE: render-decoder-handlers.md line 82 — PGCmdRenderMemoryBarrierScope (4 B), scalar family */
     if (body_len < 4u) {
         LAGFX_WARN("compute_inner: 0x17 RenderBarrierScope payload too small (%zu < 4)",
@@ -324,9 +314,10 @@ static VkFormat apple_format_to_vk(uint32_t fmt) {
 }
 
 static int op_render_describe_render_pass(lagfx_protocol_t *p,
-                                            uint32_t          encoder_type,
-                                            const uint8_t    *body,
-                                            size_t            body_len) {
+                                             uint32_t          encoder_type,
+                                             uint32_t          task_id,
+                                             const uint8_t    *body,
+                                             size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 210 — PGCmdDescribeRenderPass (584 B), POD large.
      *
@@ -354,20 +345,13 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
         return 1;
     }
 
-    /* Find current task and get render pass description field. */
-    lagfx_task_entry_t *task = NULL;
-    uint32_t task_id = 0u;
-    
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task_id = p->tasks[i].id;
-            task = &p->tasks[i];
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x1a RenderDescribeRenderPass task_id=%u out of range", task_id);
+        return 1;
     }
-
-    if (task == NULL || task_id == 0u) {
-        LAGFX_WARN("compute_inner: 0x1a RenderDescribeRenderPass no live task found");
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x1a RenderDescribeRenderPass task_id=%u not live", task_id);
         return 1;
     }
 
@@ -442,10 +426,12 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
 /* === Group C — Buffer/sampler/texture binding (0x6e, 0x6f, 0x70, 0x72, 0x7d, 0x7e) */
 
 static int op_set_fragment_buffers(lagfx_protocol_t *p,
-                                     uint32_t          encoder_type,
-                                     const uint8_t    *body,
-                                     size_t            body_len) {
+                                      uint32_t          encoder_type,
+                                      uint32_t          task_id,
+                                      const uint8_t    *body,
+                                      size_t            body_len) {
     (void)encoder_type;
+
     /* RE: render-decoder-handlers.md line 107 — PGCmdSetBuffers (8 B head) + N×PGCmdSetBufferEntry (12 B), array.
      * Wire layout per spec: [count:u32@0-3][firstIndex:u32@4-7]; Entry: [ref:u32@0-3][offset:u64@4-11] = 12 B */
     if (body_len < 8u) {
@@ -462,17 +448,13 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
         return 1;
     }
 
-    /* Find current task. */
-    lagfx_task_entry_t *task = NULL;
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task = &p->tasks[i];
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x6e SetFragmentBuffers task_id=%u out of range", task_id);
+        return 1;
     }
-
-    if (task == NULL) {
-        LAGFX_WARN("compute_inner: 0x6e SetFragmentBuffers no live task found");
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x6e SetFragmentBuffers task_id=%u not live", task_id);
         return 1;
     }
 
@@ -504,9 +486,11 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
 }
 
 static int op_set_fragment_buffer_offset(lagfx_protocol_t *p,
-                                           uint32_t          encoder_type,
-                                           const uint8_t    *body,
-                                           size_t            body_len) {
+                                            uint32_t          encoder_type,
+                                            uint32_t          task_id,
+                                            const uint8_t    *body,
+                                            size_t            body_len) {
+
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 108 — PGCmdSetBufferOffset (12 B), scalar family.
      * Wire layout per spec: [offset:u64@0-7][padding:u32@8-11][index:u32] */
@@ -517,17 +501,13 @@ static int op_set_fragment_buffer_offset(lagfx_protocol_t *p,
     uint64_t offset = lagfx_le64(body + 0);
     uint32_t index = lagfx_le32(body + 8);
 
-    /* Find current task and update binding slot. */
-    lagfx_task_entry_t *task = NULL;
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task = &p->tasks[i];
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x6f SetFragmentBufferOffset task_id=%u out of range", task_id);
+        return 1;
     }
-
-    if (task == NULL) {
-        LAGFX_WARN("compute_inner: 0x6f SetFragmentBufferOffset no live task found");
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x6f SetFragmentBufferOffset task_id=%u not live", task_id);
         return 1;
     }
 
@@ -548,10 +528,11 @@ static int op_set_fragment_buffer_offset(lagfx_protocol_t *p,
 }
 
 static int op_set_fragment_sampler_states(lagfx_protocol_t *p,
-                                           uint32_t          encoder_type,
-                                           const uint8_t    *body,
-                                           size_t            body_len) {
-    (void)p; (void)encoder_type;
+                                            uint32_t          encoder_type,
+                                            uint32_t          task_id,
+                                            const uint8_t    *body,
+                                            size_t            body_len) {
+    (void)p; (void)encoder_type; (void)task_id;
     /* RE: render-decoder-handlers.md line 109 — PGCmdSetSamplerStates (8 B head) + N×u32 ref, array */
     if (body_len < 8u) {
         LAGFX_WARN("compute_inner: 0x70 SetFragmentSamplerStates payload too small (%zu < 8)", body_len);
@@ -578,9 +559,10 @@ static int op_set_fragment_sampler_states(lagfx_protocol_t *p,
 }
 
 static int op_set_fragment_textures(lagfx_protocol_t *p,
-                                      uint32_t          encoder_type,
-                                      const uint8_t    *body,
-                                      size_t            body_len) {
+                                       uint32_t          encoder_type,
+                                       uint32_t          task_id,
+                                       const uint8_t    *body,
+                                       size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 111 — PGCmdSetTextures (8 B head) + N×u32 ref, array.
      * Wire layout per spec: [count:u32@0-3][firstIndex:u32@4-7]; Entry: [ref:u32] = 4 B each */
@@ -598,17 +580,13 @@ static int op_set_fragment_textures(lagfx_protocol_t *p,
         return 1;
     }
 
-    /* Find current task. */
-    lagfx_task_entry_t *task = NULL;
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task = &p->tasks[i];
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x72 SetFragmentTextures task_id=%u out of range", task_id);
+        return 1;
     }
-
-    if (task == NULL) {
-        LAGFX_WARN("compute_inner: 0x72 SetFragmentTextures no live task found");
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x72 SetFragmentTextures task_id=%u not live", task_id);
         return 1;
     }
 
@@ -640,9 +618,10 @@ static int op_set_fragment_textures(lagfx_protocol_t *p,
 }
 
 static int op_set_vertex_buffers(lagfx_protocol_t *p,
-                                   uint32_t          encoder_type,
-                                   const uint8_t    *body,
-                                   size_t            body_len) {
+                                    uint32_t          encoder_type,
+                                    uint32_t          task_id,
+                                    const uint8_t    *body,
+                                    size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 132 — PGCmdSetBuffers (8 B head) + N×PGCmdSetBufferEntry (12 B), array.
      * Wire layout per spec: [count:u32@0-3][firstIndex:u32@4-7]; Entry: [ref:u32@0-3][offset:u64@4-11] = 12 B */
@@ -660,17 +639,13 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p,
         return 1;
     }
 
-    /* Find current task. */
-    lagfx_task_entry_t *task = NULL;
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task = &p->tasks[i];
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x7d SetVertexBuffers task_id=%u out of range", task_id);
+        return 1;
     }
-
-    if (task == NULL) {
-        LAGFX_WARN("compute_inner: 0x7d SetVertexBuffers no live task found");
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x7d SetVertexBuffers task_id=%u not live", task_id);
         return 1;
     }
 
@@ -702,9 +677,10 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p,
 }
 
 static int op_set_vertex_buffer_offset(lagfx_protocol_t *p,
-                                         uint32_t          encoder_type,
-                                         const uint8_t    *body,
-                                         size_t            body_len) {
+                                          uint32_t          encoder_type,
+                                          uint32_t          task_id,
+                                          const uint8_t    *body,
+                                          size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 133 — PGCmdSetBufferOffset (12 B), scalar family.
      * Wire layout per spec: [offset:u64@0-7][padding:u32@8-11][index:u32] but index at +8 in practice */
@@ -715,17 +691,13 @@ static int op_set_vertex_buffer_offset(lagfx_protocol_t *p,
     uint64_t offset = lagfx_le64(body + 0);
     uint32_t index = lagfx_le32(body + 8);
 
-    /* Find current task and update binding slot. */
-    lagfx_task_entry_t *task = NULL;
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task = &p->tasks[i];
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x7e SetVertexBufferOffset task_id=%u out of range", task_id);
+        return 1;
     }
-
-    if (task == NULL) {
-        LAGFX_WARN("compute_inner: 0x7e SetVertexBufferOffset no live task found");
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x7e SetVertexBufferOffset task_id=%u not live", task_id);
         return 1;
     }
 
@@ -748,9 +720,10 @@ static int op_set_vertex_buffer_offset(lagfx_protocol_t *p,
 /* === Group D — Pipeline + scissor/viewport (0x74, 0x75, 0x82) == */
 
 static int op_set_render_pipeline_state(lagfx_protocol_t *p,
-                                          uint32_t          encoder_type,
-                                          const uint8_t    *body,
-                                          size_t            body_len) {
+                                           uint32_t          encoder_type,
+                                           uint32_t          task_id,
+                                           const uint8_t    *body,
+                                           size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 118 — PGCmdSetRenderPipelineState (4 B), ref=1 */
     if (body_len < 4u) {
@@ -760,19 +733,21 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
     uint32_t reference = lagfx_le32(body + 0);
 
     /* Lookup current task_id by scanning p->tasks table. */
-    uint32_t task_id = 0u;
-    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
-        if (p->tasks[i].live) {
-            task_id = p->tasks[i].id;
-            break;
-        }
+    if (task_id >= LAGFX_MAX_TASKS) {
+        LAGFX_WARN("compute_inner: 0x74 SetRenderPipelineState task_id=%u out of range", task_id);
+        return 1;
+    }
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) {
+        LAGFX_WARN("compute_inner: 0x74 SetRenderPipelineState task_id=%u not live", task_id);
+        return 1;
     }
 
     /* Look up resource registry entry for this reference. */
     lagfx_resource_entry_t *entry = NULL;
     const char *registry_status = "MISS";
     const char *type_str = "N/A";
-    if (p != NULL && task_id != 0u) {
+    if (p != NULL && task_id != 0xffffffffu) {
         entry = lagfx_resource_lookup(&p->resources, reference, task_id);
         if (entry != NULL) {
             registry_status = "hit";
@@ -795,10 +770,11 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
 }
 
 static int op_set_scissor_rect(lagfx_protocol_t *p,
-                                uint32_t          encoder_type,
-                                const uint8_t    *body,
-                                size_t            body_len) {
-    (void)p; (void)encoder_type;
+                                 uint32_t          encoder_type,
+                                 uint32_t          task_id,
+                                 const uint8_t    *body,
+                                 size_t            body_len) {
+    (void)p; (void)encoder_type; (void)task_id;
     /* RE: render-decoder-handlers.md line 119 — PGCmdSetScissorRect (32 B == MTLScissorRect), POD family */
     if (body_len < 32u) {
         LAGFX_WARN("compute_inner: 0x75 SetScissorRect payload too small (%zu < 32)", body_len);
@@ -815,10 +791,11 @@ static int op_set_scissor_rect(lagfx_protocol_t *p,
 }
 
 static int op_set_viewport(lagfx_protocol_t *p,
-                            uint32_t          encoder_type,
-                            const uint8_t    *body,
-                            size_t            body_len) {
-    (void)p; (void)encoder_type;
+                             uint32_t          encoder_type,
+                             uint32_t          task_id,
+                             const uint8_t    *body,
+                             size_t            body_len) {
+    (void)p; (void)encoder_type; (void)task_id;
     /* RE: render-decoder-handlers.md line 142 — PGCmdSetViewport (48 B == MTLViewport), POD family */
     if (body_len < 48u) {
         LAGFX_WARN("compute_inner: 0x82 SetViewport payload too small (%zu < 48)", body_len);
@@ -876,6 +853,7 @@ find_compute_inner_op_desc(uint32_t opcode) {
 
 int lagfx_compute_inner_dispatch(lagfx_protocol_t *p,
                                   uint32_t          encoder_type,
+                                  uint32_t          task_id,
                                   uint32_t          opcode,
                                   const uint8_t    *body,
                                   size_t            body_len) {
@@ -887,7 +865,7 @@ int lagfx_compute_inner_dispatch(lagfx_protocol_t *p,
                     (unsigned)encoder_type, (unsigned)opcode, body_len);
         return 1;
     }
-    return desc->handler(p, encoder_type, body, body_len);
+    return desc->handler(p, encoder_type, task_id, body, body_len);
 }
 
 const char *lagfx_compute_inner_op_name(uint32_t opcode) {

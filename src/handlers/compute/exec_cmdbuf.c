@@ -204,7 +204,7 @@ static size_t inner_walk_segment(lagfx_protocol_t *p,
         size_t body_len = total_len - 8u;
         (void)stamp;  /* dispatchers may need the stamp later */
 
-        switch (encoder_type) {
+       switch (encoder_type) {
             case 0u:
             case 1u:
                 /* Compute — Stage 30 dispatch. The descriptor table in
@@ -213,9 +213,10 @@ static size_t inner_walk_segment(lagfx_protocol_t *p,
                  * handlers are currently parse-and-trace stubs; Task 6
                  * of memory/stage30_freshman_queue.md promotes one to
                  * a real Vulkan dispatch. */
-                lagfx_compute_inner_dispatch(p, encoder_type,
-                                              opcode_full & 0xffffu,
-                                              body, body_len);
+                uint32_t task_id = task ? task->id : 0xffffffffu;
+                lagfx_compute_inner_dispatch(p, encoder_type, task_id,
+                                               opcode_full & 0xffffu,
+                                               body, body_len);
                 break;
 
             case 2u:
