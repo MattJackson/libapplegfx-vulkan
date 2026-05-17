@@ -41,6 +41,7 @@
 
 #include "common/le.h"
 #include "common/log.h"
+#include "protocol/state.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -345,17 +346,48 @@ static int op_set_vertex_buffer_offset(lagfx_protocol_t *p,
 /* === Group D — Pipeline + scissor/viewport (0x74, 0x75, 0x82) == */
 
 static int op_set_render_pipeline_state(lagfx_protocol_t *p,
-                                         uint32_t          encoder_type,
-                                         const uint8_t    *body,
-                                         size_t            body_len) {
-    (void)p; (void)encoder_type;
+                                          uint32_t          encoder_type,
+                                          const uint8_t    *body,
+                                          size_t            body_len) {
+    (void)encoder_type;
     /* RE: render-decoder-handlers.md line 118 — PGCmdSetRenderPipelineState (4 B), ref=1 */
     if (body_len < 4u) {
         LAGFX_WARN("compute_inner: 0x74 SetRenderPipelineState payload too small (%zu < 4)", body_len);
         return 1;
     }
     uint32_t reference = lagfx_le32(body + 0);
-    LAGFX_LOG("compute_inner: 0x74 SetRenderPipelineState ref=0x%x", reference);
+
+    /* Lookup current task_id by scanning p->tasks table. */
+    uint32_t task_id = 0u;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task_id = p->tasks[i].id;
+            break;
+        }
+    }
+
+    /* Look up resource registry entry for this reference. */
+    lagfx_resource_entry_t *entry = NULL;
+    const char *registry_status = "MISS";
+    const char *type_str = "N/A";
+    if (p != NULL && task_id != 0u) {
+        entry = lagfx_resource_lookup(&p->resources, reference, task_id);
+        if (entry != NULL) {
+            registry_status = "hit";
+            switch (entry->type) {
+                case LAGFX_RESOURCE_TYPE_BUFFER:     type_str = "BUFFER"; break;
+                case LAGFX_RESOURCE_TYPE_TEXTURE:    type_str = "TEXTURE"; break;
+                case LAGFX_RESOURCE_TYPE_PIPELINE:   type_str = "PIPELINE"; break;
+                case LAGFX_RESOURCE_TYPE_SAMPLER:    type_str = "SAMPLER"; break;
+                case LAGFX_RESOURCE_TYPE_HEAP:       type_str = "HEAP"; break;
+                case LAGFX_RESOURCE_TYPE_DEPTH_STENCIL_STATE: type_str = "DEPTH_STENCIL"; break;
+                default:                             type_str = "UNKNOWN"; break;
+            }
+        }
+    }
+
+    LAGFX_LOG("compute_inner: 0x74 SetRenderPipelineState ref=0x%x registry=%s type=%s",
+              reference, registry_status, type_str);
     /* TODO: Stage 70 — resolve pipeline ref to VkPipeline via resource registry and bind via vkCmdBindShadersEXT once shader objects are in place. */
     return 0;
 }
