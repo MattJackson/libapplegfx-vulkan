@@ -19,6 +19,7 @@
 #  include <vulkan/vulkan.h>
 #endif
 
+#ifdef LAGFX_HAVE_VULKAN
 /* Record and submit a single draw command into a one-shot command buffer.
  *
  * Parameters:
@@ -56,5 +57,6 @@ lagfx_status_t lagfx_vk_draw_record_and_submit(
     int32_t first_vertex,
     uint32_t first_instance,
     uint32_t index_buffer_ref);
+#endif /* LAGFX_HAVE_VULKAN */
 
 #endif /* LIBAPPLEGFX_VULKAN_DRAW_RECORD_H */

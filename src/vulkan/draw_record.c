@@ -177,26 +177,6 @@ lagfx_status_t lagfx_vk_draw_record_and_submit(
     return LAGFX_OK;
 }
 
-#else /* !LAGFX_HAVE_VULKAN */
-
-lagfx_status_t lagfx_vk_draw_record_and_submit(
-    struct lagfx_vk_state *vk,
-    VkPipeline pipeline,
-    lagfx_vk_render_target_t *rt,
-    bool indexed,
-    uint32_t vertex_count,
-    uint32_t instance_count,
-    int32_t first_vertex,
-    uint32_t first_instance,
-    uint32_t index_buffer_ref) {
-    
-    (void)vk; (void)pipeline; (void)rt; (void)indexed;
-    (void)vertex_count; (void)instance_count; (void)first_vertex;
-    (void)first_instance; (void)index_buffer_ref;
-    
-    /* No Vulkan build — return error so callers can handle gracefully */
-    LAGFX_LOG("draw_record_and_submit: no Vulkan support in this build");
-    return LAGFX_ERR_NOT_FOUND;
-}
-
 #endif /* LAGFX_HAVE_VULKAN */
+/* No vulkan-disabled stub — the function declaration is also gated in
+ * draw_record.h, so callers only see it when LAGFX_HAVE_VULKAN is on. */
