@@ -30,6 +30,48 @@ void lagfx_protocol_free(lagfx_protocol_t *p);
 #include <stdarg.h>
 #include <unistd.h>
 
+#ifdef LAGFX_HAVE_VULKAN
+/* Load SPV from path, vkCreateShaderModule, return module.
+ * Returns VK_NULL_HANDLE on any failure (logs via LAGFX_WARN). */
+static VkShaderModule load_spv_module(VkDevice device, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        LAGFX_WARN("load_spv_module: cannot open '%s'", path);
+        return VK_NULL_HANDLE;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || (sz % 4) != 0) {
+        LAGFX_WARN("load_spv_module: '%s' bad size %ld", path, sz);
+        fclose(f);
+        return VK_NULL_HANDLE;
+    }
+    uint32_t *code = malloc((size_t)sz);
+    if (!code) { fclose(f); return VK_NULL_HANDLE; }
+    if (fread(code, 1, (size_t)sz, f) != (size_t)sz) {
+        free(code); fclose(f);
+        LAGFX_WARN("load_spv_module: '%s' short read", path);
+        return VK_NULL_HANDLE;
+    }
+    fclose(f);
+
+    VkShaderModuleCreateInfo ci = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = (size_t)sz,
+        .pCode = code,
+    };
+    VkShaderModule mod = VK_NULL_HANDLE;
+    VkResult r = vkCreateShaderModule(device, &ci, NULL, &mod);
+    free(code);
+    if (r != VK_SUCCESS) {
+        LAGFX_WARN("load_spv_module: vkCreateShaderModule '%s' rc=%d", path, (int)r);
+        return VK_NULL_HANDLE;
+    }
+    return mod;
+}
+#endif
+
 /* MSIX range (4 KB) — shell owns it; we never see writes below this. */
 #define LAGFX_MSIX_RANGE_END 0x1000u
 
@@ -276,6 +318,21 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
                    (int)cat_st);
     }
 
+#ifdef LAGFX_HAVE_VULKAN
+    /* Stage 65d Option 3: load triangle SPVs from env vars */
+    const char *vpath = getenv("LAGFX_TRIANGLE_VERTEX_SPV");
+    const char *fpath = getenv("LAGFX_TRIANGLE_FRAGMENT_SPV");
+    if (vpath && fpath) {
+        dev->triangle_vertex_module   = load_spv_module(dev->vk->device, vpath);
+        dev->triangle_fragment_module = load_spv_module(dev->vk->device, fpath);
+        LAGFX_LOG("lagfx_device_new: loaded triangle shaders v=%p f=%p",
+                  (void *)dev->triangle_vertex_module,
+                  (void *)dev->triangle_fragment_module);
+    } else {
+        LAGFX_LOG("lagfx_device_new: LAGFX_TRIANGLE_*_SPV not set, modules NULL");
+    }
+#endif
+
     LAGFX_LOG("device_new: dev=%p mmio_size=%zu shell_opaque=%p vk=%p",
               (void *)dev, dev->mmio_region_size, dev->desc.shell.opaque,
               (void *)dev->vk);
@@ -313,7 +370,19 @@ void lagfx_device_free(lagfx_device_t *device) {
         device->protocol_state = NULL;
     }
 
-    /* Tear down Vulkan state (safe on NULL; in no-vulkan builds this
+    /* Stage 65d Option 3: destroy triangle shader modules if loaded */
+#ifdef LAGFX_HAVE_VULKAN
+    if (device->triangle_vertex_module != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(device->vk->device, device->triangle_vertex_module, NULL);
+        device->triangle_vertex_module = VK_NULL_HANDLE;
+    }
+    if (device->triangle_fragment_module != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(device->vk->device, device->triangle_fragment_module, NULL);
+        device->triangle_fragment_module = VK_NULL_HANDLE;
+    }
+#endif
+
+   /* Tear down Vulkan state (safe on NULL; in no-vulkan builds this
      * just free()s the placeholder struct). */
     if (device->vk) {
         lagfx_vk_shutdown(device->vk);

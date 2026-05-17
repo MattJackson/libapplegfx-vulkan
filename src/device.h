@@ -19,6 +19,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef LAGFX_HAVE_VULKAN
+#include <vulkan/vulkan.h>
+#endif
+
 /* Forward decl; defined in src/vulkan/instance.h. Kept opaque here so
  * non-vulkan TUs don't need to pull <vulkan/vulkan.h>. */
 struct lagfx_vk_state;
@@ -76,6 +80,14 @@ struct lagfx_device {
      * cross-translation-unit globals. */
     lagfx_cursor_show_state_t  cursor_show;
     lagfx_cursor_glyph_state_t cursor_glyph;
+
+    /* Stage 65d Option 3: bundled triangle shaders, used as
+     * substitute for every runtime SetRenderPipelineState until
+     * proper metallib capture lands. */
+#ifdef LAGFX_HAVE_VULKAN
+    VkShaderModule triangle_vertex_module;     /* VK_NULL_HANDLE if not loaded */
+    VkShaderModule triangle_fragment_module;   /* VK_NULL_HANDLE if not loaded */
+#endif
 };
 
 /* Validate a device handle — returns true if plausibly live. */
