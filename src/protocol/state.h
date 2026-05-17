@@ -127,10 +127,6 @@ typedef struct {
  *     Encoder: drawPrimitives:vertexStart:vertexCount:instanceCount:
  *     Note: Metal selector has 4 args but payload only fits 2 u32; wire format
  *     may pack differently than documented C++ struct field names.
- *   - DrawIndexedPrimitives64 (0x06, line 60): 24 B, ref=1
- *     Encoder: drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:
- *   - DrawIndexedPrimitives16 (0x07, line 61): 12 B, ref=1
- *     Encoder: drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:
  */
 typedef struct {
     bool       valid;           /* True if a Draw opcode was parsed for this task */
@@ -142,6 +138,38 @@ typedef struct {
     uint32_t   index_buffer_ref;/* Index buffer reference (0 if unindexed draw) */
     bool       indexed;         /* 1 = use index_buffer_ref, 0 = vertex-only draw */
 } lagfx_pending_draw_t;
+
+/* === Per-task binding slots (Stage 70d) ==========================
+ *
+ * Apple's binding model: "set N at index I" where I is a per-stage slot (vertex/fragment 0..31).
+ * Vulkan needs descriptor sets — Stage 70d just CAPTURES the bindings, not descriptor-set wiring.
+ *
+ * Binding opcodes (from render-decoder-handlers.md):
+ *   - SetVertexBufferOffset (0x7e, line 133): PGCmdSetBufferOffset (12 B) → updates offset only
+ *     Wire: [offset:u64][padding:u32][index:u32] — payload at offsets 0,8,12 per spec
+ *   - SetVertexBuffers (0x7d, line 132): PGCmdSetBuffers + N×PGCmdSetBufferEntry → updates ref+offset
+ *     Wire head: [count:u32][firstIndex:u32]; Entry: [ref:u32][offset:u64] = 12 B each
+ *   - SetFragmentBufferOffset (0x6f, line 108): PGCmdSetBufferOffset (12 B) → updates offset only
+ *     Wire: same as 0x7e but for fragment stage
+ *   - SetFragmentBuffers (0x6e, line 107): PGCmdSetBuffers + N×PGCmdSetBufferEntry → updates ref+offset
+ *     Wire head: [count:u32][firstIndex:u32]; Entry: same as vertex buffers
+ *   - SetFragmentTextures (0x72, line 111): PGCmdSetTextures + N×u32 ref → updates texture slot only
+ *     Wire head: [count:u32][firstIndex:u32]; Entry: [ref:u32] = 4 B each
+ */
+#define LAGFX_MAX_BINDING_SLOTS 32
+
+typedef struct {
+    uint32_t ref;           /* Resource registry reference (0 = unbound) */
+    uint64_t offset;        /* SetXBufferOffset payload — byte offset into the buffer */
+    bool     valid;         /* True if slot is bound (ref != 0) */
+} lagfx_binding_slot_t;
+
+typedef struct {
+    lagfx_binding_slot_t vertex_buffers[LAGFX_MAX_BINDING_SLOTS];
+    lagfx_binding_slot_t fragment_buffers[LAGFX_MAX_BINDING_SLOTS];
+    lagfx_binding_slot_t vertex_textures[LAGFX_MAX_BINDING_SLOTS];
+    lagfx_binding_slot_t fragment_textures[LAGFX_MAX_BINDING_SLOTS];
+} lagfx_bindings_t;
 
 /* === Task Entry ================================================== */
 typedef struct {
@@ -165,6 +193,13 @@ typedef struct {
     /* Pending draw description — populated by Draw opcode handlers (0x01, 0x03, 0x06, 0x07).
      * Per-task state: each task has its own pending draw descriptor. */
     lagfx_pending_draw_t pending_draw;
+
+    /* Descriptor-set bindings from SetVertexBuffer/FragmentBuffer/Texture opcodes (Stage 70d).
+     * Stores per-stage binding slots indexed by slot number (0..31). Populated by binding handlers:
+     *   - 0x7e SetVertexBufferOffset, 0x7d SetVertexBuffers → vertex_buffers[]
+     *   - 0x6f SetFragmentBufferOffset, 0x6e SetFragmentBuffers → fragment_buffers[]
+     *   - 0x81 SetVertexTextures, 0x72 SetFragmentTextures → texture arrays (TODO: add handlers) */
+    lagfx_bindings_t bindings;
 } lagfx_task_entry_t;
 
 /* === FIFO Entry ================================================== */

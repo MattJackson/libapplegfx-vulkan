@@ -389,11 +389,12 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
 /* === Group C — Buffer/sampler/texture binding (0x6e, 0x6f, 0x70, 0x72, 0x7d, 0x7e) */
 
 static int op_set_fragment_buffers(lagfx_protocol_t *p,
-                                    uint32_t          encoder_type,
-                                    const uint8_t    *body,
-                                    size_t            body_len) {
-    (void)p; (void)encoder_type;
-    /* RE: render-decoder-handlers.md line 107 — PGCmdSetBuffers (8 B head) + N×PGCmdSetBufferEntry (12 B), array */
+                                     uint32_t          encoder_type,
+                                     const uint8_t    *body,
+                                     size_t            body_len) {
+    (void)encoder_type;
+    /* RE: render-decoder-handlers.md line 107 — PGCmdSetBuffers (8 B head) + N×PGCmdSetBufferEntry (12 B), array.
+     * Wire layout per spec: [count:u32@0-3][firstIndex:u32@4-7]; Entry: [ref:u32@0-3][offset:u64@4-11] = 12 B */
     if (body_len < 8u) {
         LAGFX_WARN("compute_inner: 0x6e SetFragmentBuffers payload too small (%zu < 8)", body_len);
         return 1;
@@ -407,32 +408,88 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
                    count, needed, body_len);
         return 1;
     }
-    /* Log head + first entry summary */
-    for (uint32_t i = 0; i < count && i < 4u; ++i) {
+
+    /* Find current task. */
+    lagfx_task_entry_t *task = NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task = &p->tasks[i];
+            break;
+        }
+    }
+
+    if (task == NULL) {
+        LAGFX_WARN("compute_inner: 0x6e SetFragmentBuffers no live task found");
+        return 1;
+    }
+
+    /* Parse and update binding slots. */
+    for (uint32_t i = 0; i < count; ++i) {
         const uint8_t *e = body + 8 + (size_t)i * entry_bytes;
         uint32_t ref = lagfx_le32(e);
         uint64_t offset = lagfx_le64(e + 4);
-        LAGFX_LOG("compute_inner: 0x6e SetFragmentBuffers [%u] ref=0x%x offset=%llu",
-                  first_index + i, ref, (unsigned long long)offset);
+        uint32_t slot_index = first_index + i;
+
+        if (slot_index >= LAGFX_MAX_BINDING_SLOTS) {
+            LAGFX_WARN("compute_inner: 0x6e SetFragmentBuffers slot_index=%u exceeds max %d",
+                       slot_index, LAGFX_MAX_BINDING_SLOTS);
+            continue;
+        }
+
+        task->bindings.fragment_buffers[slot_index].ref = ref;
+        task->bindings.fragment_buffers[slot_index].offset = offset;
+        task->bindings.fragment_buffers[slot_index].valid = (ref != 0u);
+
+        if (i < 4u) { /* Log first 4 entries */
+            LAGFX_LOG("compute_inner: 0x6e SetFragmentBuffers [%u] ref=0x%x offset=%llu valid=%s",
+                      slot_index, ref, (unsigned long long)offset, ref != 0u ? "true" : "false");
+        }
     }
+
     /* TODO: Stage 70 — translate to vkCmdBindDescriptorBuffersEXT once descriptor buffer support added. */
     return 0;
 }
 
 static int op_set_fragment_buffer_offset(lagfx_protocol_t *p,
-                                          uint32_t          encoder_type,
-                                          const uint8_t    *body,
-                                          size_t            body_len) {
-    (void)p; (void)encoder_type;
-    /* RE: render-decoder-handlers.md line 108 — PGCmdSetBufferOffset (12 B), scalar family */
+                                           uint32_t          encoder_type,
+                                           const uint8_t    *body,
+                                           size_t            body_len) {
+    (void)encoder_type;
+    /* RE: render-decoder-handlers.md line 108 — PGCmdSetBufferOffset (12 B), scalar family.
+     * Wire layout per spec: [offset:u64@0-7][padding:u32@8-11][index:u32] */
     if (body_len < 12u) {
         LAGFX_WARN("compute_inner: 0x6f SetFragmentBufferOffset payload too small (%zu < 12)", body_len);
         return 1;
     }
-    uint32_t index = lagfx_le32(body + 8);
     uint64_t offset = lagfx_le64(body + 0);
-    LAGFX_LOG("compute_inner: 0x6f SetFragmentBufferOffset index=%u offset=0x%llx",
-              index, (unsigned long long)offset);
+    uint32_t index = lagfx_le32(body + 8);
+
+    /* Find current task and update binding slot. */
+    lagfx_task_entry_t *task = NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task = &p->tasks[i];
+            break;
+        }
+    }
+
+    if (task == NULL) {
+        LAGFX_WARN("compute_inner: 0x6f SetFragmentBufferOffset no live task found");
+        return 1;
+    }
+
+    /* Bounds-check index and update offset only. */
+    if (index >= LAGFX_MAX_BINDING_SLOTS) {
+        LAGFX_WARN("compute_inner: 0x6f SetFragmentBufferOffset index=%u exceeds max %d",
+                   index, LAGFX_MAX_BINDING_SLOTS);
+        return 1;
+    }
+
+    task->bindings.fragment_buffers[index].offset = offset;
+    /* Leave ref and valid alone — this opcode only updates offset on a previously-bound slot */
+
+    LAGFX_LOG("compute_inner: 0x6f SetFragmentBufferOffset index=%u offset=0x%llx -> bindings.fragment_buffers[%u].offset updated",
+              index, (unsigned long long)offset, index);
     /* TODO: Stage 70 — (offset rebind — no direct Vulkan equiv; re-bind descriptor). */
     return 0;
 }
@@ -468,11 +525,12 @@ static int op_set_fragment_sampler_states(lagfx_protocol_t *p,
 }
 
 static int op_set_fragment_textures(lagfx_protocol_t *p,
-                                     uint32_t          encoder_type,
-                                     const uint8_t    *body,
-                                     size_t            body_len) {
-    (void)p; (void)encoder_type;
-    /* RE: render-decoder-handlers.md line 111 — PGCmdSetTextures (8 B head) + N×u32 ref, array */
+                                      uint32_t          encoder_type,
+                                      const uint8_t    *body,
+                                      size_t            body_len) {
+    (void)encoder_type;
+    /* RE: render-decoder-handlers.md line 111 — PGCmdSetTextures (8 B head) + N×u32 ref, array.
+     * Wire layout per spec: [count:u32@0-3][firstIndex:u32@4-7]; Entry: [ref:u32] = 4 B each */
     if (body_len < 8u) {
         LAGFX_WARN("compute_inner: 0x72 SetFragmentTextures payload too small (%zu < 8)", body_len);
         return 1;
@@ -486,23 +544,55 @@ static int op_set_fragment_textures(lagfx_protocol_t *p,
                    count, needed, body_len);
         return 1;
     }
-    /* Log head + first ref */
-    for (uint32_t i = 0; i < count && i < 4u; ++i) {
+
+    /* Find current task. */
+    lagfx_task_entry_t *task = NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task = &p->tasks[i];
+            break;
+        }
+    }
+
+    if (task == NULL) {
+        LAGFX_WARN("compute_inner: 0x72 SetFragmentTextures no live task found");
+        return 1;
+    }
+
+    /* Parse and update binding slots. */
+    for (uint32_t i = 0; i < count; ++i) {
         const uint8_t *e = body + 8 + (size_t)i * entry_bytes;
         uint32_t ref = lagfx_le32(e);
-        LAGFX_LOG("compute_inner: 0x72 SetFragmentTextures [%u] ref=0x%x",
-                  first_index + i, ref);
+        uint32_t slot_index = first_index + i;
+
+        if (slot_index >= LAGFX_MAX_BINDING_SLOTS) {
+            LAGFX_WARN("compute_inner: 0x72 SetFragmentTextures slot_index=%u exceeds max %d",
+                       slot_index, LAGFX_MAX_BINDING_SLOTS);
+            continue;
+        }
+
+        /* Textures don't have offsets in Apple's binding model */
+        task->bindings.fragment_textures[slot_index].ref = ref;
+        task->bindings.fragment_textures[slot_index].offset = 0u;
+        task->bindings.fragment_textures[slot_index].valid = (ref != 0u);
+
+        if (i < 4u) { /* Log first 4 entries */
+            LAGFX_LOG("compute_inner: 0x72 SetFragmentTextures [%u] ref=0x%x valid=%s",
+                      slot_index, ref, ref != 0u ? "true" : "false");
+        }
     }
+
     /* TODO: Stage 70 — translate to vkCmdBindDescriptorSets (sampled image descriptors). */
     return 0;
 }
 
 static int op_set_vertex_buffers(lagfx_protocol_t *p,
-                                  uint32_t          encoder_type,
-                                  const uint8_t    *body,
-                                  size_t            body_len) {
-    (void)p; (void)encoder_type;
-    /* RE: render-decoder-handlers.md line 132 — PGCmdSetBuffers (8 B head) + N×PGCmdSetBufferEntry (12 B), array */
+                                   uint32_t          encoder_type,
+                                   const uint8_t    *body,
+                                   size_t            body_len) {
+    (void)encoder_type;
+    /* RE: render-decoder-handlers.md line 132 — PGCmdSetBuffers (8 B head) + N×PGCmdSetBufferEntry (12 B), array.
+     * Wire layout per spec: [count:u32@0-3][firstIndex:u32@4-7]; Entry: [ref:u32@0-3][offset:u64@4-11] = 12 B */
     if (body_len < 8u) {
         LAGFX_WARN("compute_inner: 0x7d SetVertexBuffers payload too small (%zu < 8)", body_len);
         return 1;
@@ -516,33 +606,89 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p,
                    count, needed, body_len);
         return 1;
     }
-    /* Log head + first entry summary */
-    for (uint32_t i = 0; i < count && i < 4u; ++i) {
+
+    /* Find current task. */
+    lagfx_task_entry_t *task = NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task = &p->tasks[i];
+            break;
+        }
+    }
+
+    if (task == NULL) {
+        LAGFX_WARN("compute_inner: 0x7d SetVertexBuffers no live task found");
+        return 1;
+    }
+
+    /* Parse and update binding slots. */
+    for (uint32_t i = 0; i < count; ++i) {
         const uint8_t *e = body + 8 + (size_t)i * entry_bytes;
         uint32_t ref = lagfx_le32(e);
         uint64_t offset = lagfx_le64(e + 4);
-        LAGFX_LOG("compute_inner: 0x7d SetVertexBuffers [%u] ref=0x%x offset=%llu",
-                  first_index + i, ref, (unsigned long long)offset);
+        uint32_t slot_index = first_index + i;
+
+        if (slot_index >= LAGFX_MAX_BINDING_SLOTS) {
+            LAGFX_WARN("compute_inner: 0x7d SetVertexBuffers slot_index=%u exceeds max %d",
+                       slot_index, LAGFX_MAX_BINDING_SLOTS);
+            continue;
+        }
+
+        task->bindings.vertex_buffers[slot_index].ref = ref;
+        task->bindings.vertex_buffers[slot_index].offset = offset;
+        task->bindings.vertex_buffers[slot_index].valid = (ref != 0u);
+
+        if (i < 4u) { /* Log first 4 entries */
+            LAGFX_LOG("compute_inner: 0x7d SetVertexBuffers [%u] ref=0x%x offset=%llu valid=%s",
+                      slot_index, ref, (unsigned long long)offset, ref != 0u ? "true" : "false");
+        }
     }
+
     /* TODO: Stage 70 — translate to vkCmdBindVertexBuffers2. */
     return 0;
 }
 
 static int op_set_vertex_buffer_offset(lagfx_protocol_t *p,
-                                        uint32_t          encoder_type,
-                                        const uint8_t    *body,
-                                        size_t            body_len) {
-    (void)p; (void)encoder_type;
-    /* RE: render-decoder-handlers.md line 133 — PGCmdSetBufferOffset (12 B), scalar family */
+                                         uint32_t          encoder_type,
+                                         const uint8_t    *body,
+                                         size_t            body_len) {
+    (void)encoder_type;
+    /* RE: render-decoder-handlers.md line 133 — PGCmdSetBufferOffset (12 B), scalar family.
+     * Wire layout per spec: [offset:u64@0-7][padding:u32@8-11][index:u32] but index at +8 in practice */
     if (body_len < 12u) {
         LAGFX_WARN("compute_inner: 0x7e SetVertexBufferOffset payload too small (%zu < 12)", body_len);
         return 1;
     }
-    uint32_t index = lagfx_le32(body + 8);
     uint64_t offset = lagfx_le64(body + 0);
-    LAGFX_LOG("compute_inner: 0x7e SetVertexBufferOffset index=%u offset=0x%llx",
-              index, (unsigned long long)offset);
-    /* TODO: Stage 70 — vkCmdBindVertexBuffers2 rebind with new offset. Requires bound pipeline from 0x74 first, which requires SPIR-V translation of the MTLRenderPipelineState (Stage 70 long pole). */
+    uint32_t index = lagfx_le32(body + 8);
+
+    /* Find current task and update binding slot. */
+    lagfx_task_entry_t *task = NULL;
+    for (uint32_t i = 0; i < LAGFX_MAX_TASKS && p != NULL; ++i) {
+        if (p->tasks[i].live) {
+            task = &p->tasks[i];
+            break;
+        }
+    }
+
+    if (task == NULL) {
+        LAGFX_WARN("compute_inner: 0x7e SetVertexBufferOffset no live task found");
+        return 1;
+    }
+
+    /* Bounds-check index and update offset only. */
+    if (index >= LAGFX_MAX_BINDING_SLOTS) {
+        LAGFX_WARN("compute_inner: 0x7e SetVertexBufferOffset index=%u exceeds max %d",
+                   index, LAGFX_MAX_BINDING_SLOTS);
+        return 1;
+    }
+
+    task->bindings.vertex_buffers[index].offset = offset;
+    /* Leave ref and valid alone — this opcode only updates offset on a previously-bound slot */
+
+    LAGFX_LOG("compute_inner: 0x7e SetVertexBufferOffset index=%u offset=0x%llx -> bindings.vertex_buffers[%u].offset updated",
+              index, (unsigned long long)offset, index);
+    /* TODO: Stage 70 — vkCmdBindVertexBuffers2 rebind with new offset. Requires bound pipeline from 0x74 first. */
     return 0;
 }
 
