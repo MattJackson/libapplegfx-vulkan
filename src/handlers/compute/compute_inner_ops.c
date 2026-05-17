@@ -236,6 +236,59 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
 
     LAGFX_LOG("compute_inner: 0x07 DrawIndexedPrimitives16 count=%u bufRef=0x%x offset=0x%x -> pending_draw.valid=true indexed=true",
               index_count, index_buffer_ref, index_buffer_offset);
+
+    /* Stage 70b/c/d observability: one-time full per-task state dump on first draw.
+     * Cites: src/protocol/state.h line 96-107 (lagfx_render_pass_desc_t),
+     *        line 131-140 (lagfx_pending_draw_t),
+     *        line 159-172 (lagfx_bindings_t). */
+    static int s_first_draw_dumped = 0;
+    if (!s_first_draw_dumped) {
+        s_first_draw_dumped = 1;
+        LAGFX_LOG("=== first draw observed: full per-task state dump ===");
+        LAGFX_LOG("  render_pass: valid=%d color_fmt=%u depth_fmt=%u clear=[%g,%g,%g,%g]",
+                  (int)task->render_pass_desc.valid,
+                  (unsigned)task->render_pass_desc.color_format,
+                  (unsigned)task->render_pass_desc.depth_format,
+                  task->render_pass_desc.clear_color[0],
+                  task->render_pass_desc.clear_color[1],
+                  task->render_pass_desc.clear_color[2],
+                  task->render_pass_desc.clear_color[3]);
+        LAGFX_LOG("  draw: prim_type=%u count=%u inst=%u base_vtx=%d first_inst=%u idx_ref=0x%x indexed=%d",
+                  task->pending_draw.primitive_type,
+                  task->pending_draw.index_count,
+                  task->pending_draw.instance_count,
+                  task->pending_draw.base_vertex,
+                  task->pending_draw.first_instance,
+                  task->pending_draw.index_buffer_ref,
+                  (int)task->pending_draw.indexed);
+        for (int i = 0; i < 8; i++) {
+            if (task->bindings.vertex_buffers[i].valid) {
+                LAGFX_LOG("  bindings: vbuf[%d] ref=0x%x offset=0x%llx",
+                          i, task->bindings.vertex_buffers[i].ref,
+                          (unsigned long long)task->bindings.vertex_buffers[i].offset);
+            }
+        }
+        for (int i = 0; i < 8; i++) {
+            if (task->bindings.fragment_buffers[i].valid) {
+                LAGFX_LOG("  bindings: fbuf[%d] ref=0x%x offset=0x%llx",
+                          i, task->bindings.fragment_buffers[i].ref,
+                          (unsigned long long)task->bindings.fragment_buffers[i].offset);
+            }
+        }
+        for (int i = 0; i < 8; i++) {
+            if (task->bindings.vertex_textures[i].valid) {
+                LAGFX_LOG("  bindings: vtex[%d] ref=0x%x",
+                          i, task->bindings.vertex_textures[i].ref);
+            }
+        }
+        for (int i = 0; i < 8; i++) {
+            if (task->bindings.fragment_textures[i].valid) {
+                LAGFX_LOG("  bindings: ftex[%d] ref=0x%x",
+                          i, task->bindings.fragment_textures[i].ref);
+            }
+        }
+    }
+
     /* TODO: Stage 70 — translate to vkCmdDrawIndexed after binding index buffer. */
     return 0;
 }
