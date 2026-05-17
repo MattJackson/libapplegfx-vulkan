@@ -777,8 +777,8 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
         dev_with_vk->triangle_vertex_module != VK_NULL_HANDLE &&
         dev_with_vk->triangle_fragment_module != VK_NULL_HANDLE) {
         task->pending_pipeline.valid = true;
-        task->pending_pipeline.vertex_shader   = dev_with_vk->triangle_vertex_module;
-        task->pending_pipeline.fragment_shader = dev_with_vk->triangle_fragment_module;
+        task->pending_pipeline.vertex_shader   = (uintptr_t)dev_with_vk->triangle_vertex_module;
+        task->pending_pipeline.fragment_shader = (uintptr_t)dev_with_vk->triangle_fragment_module;
         task->pending_pipeline.reference       = reference;
         LAGFX_LOG("op_0x74 Option 3: substituted triangle shaders for ref=0x%x", reference);
     } else {

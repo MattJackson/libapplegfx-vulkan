@@ -176,12 +176,14 @@ typedef struct {
 
 /* Stage 65d Option 3: shader modules selected for this task.
  * Currently always copied from device's bundled triangle SPVs
- * — pending proper metallib capture. */
+ * — pending proper metallib capture. VkShaderModule handles are
+ * stored as uintptr_t so this struct stays visible across translation
+ * units that don't pull in <vulkan/vulkan.h>. Cast at use site. */
 typedef struct {
-    bool            valid;
-    VkShaderModule  vertex_shader;    /* VK_NULL_HANDLE if not set */
-    VkShaderModule  fragment_shader;  /* VK_NULL_HANDLE if not set */
-    uint32_t        reference;        /* the SetRenderPipelineState ref value (recorded for debug) */
+    bool       valid;
+    uintptr_t  vertex_shader;    /* VkShaderModule, NULL if not set */
+    uintptr_t  fragment_shader;  /* VkShaderModule, NULL if not set */
+    uint32_t   reference;        /* SetRenderPipelineState ref value (debug) */
 } lagfx_pending_pipeline_t;
 
 /* === Task Entry ================================================== */

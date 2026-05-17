@@ -66,7 +66,10 @@ static void sha256_update(sha256_ctx_t *ctx, const void *data, size_t len) {
             #define EP1(x) (ROTR(x,6)^ROTR(x,11)^ROTR(x,25))
 
             for (i = 0; i < 64; ++i) {
-                uint32_t t1 = hh + EP1(e) + CH(e,f,g) + k[i] + w[i&15];
+                /* w[i] not w[i&15] — message schedule above filled w[16..63]
+                 * with extended values; the rolling-16 variant would also need
+                 * to do the extension in-place into w[i & 15], which we don't. */
+                uint32_t t1 = hh + EP1(e) + CH(e,f,g) + k[i] + w[i];
                 uint32_t t2 = EP0(a) + MAJ(a,b,c);
                 hh = g; g = f; f = e; e = d + t1;
                 d = c; c = b; b = a; a = t1 + t2;
