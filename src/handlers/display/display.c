@@ -87,6 +87,18 @@ lagfx_handler_status_t lagfx_display_cursor_glyph(lagfx_protocol_t *p, const lag
         dev->cursor_glyph.captured_len  = 0;  /* TODO Stage 25: shell.read_memory(glyph_va) */
     }
 
+    if (p->dev && display_id < LAGFX_MAX_DISPLAYS) {
+        lagfx_device_t *dev   = (lagfx_device_t *)p->dev;
+        lagfx_display_t *display = dev->displays[display_id];
+        if (display && display->desc.callbacks.cursor_glyph) {
+            display->desc.callbacks.cursor_glyph(
+                display->desc.callbacks.opaque,
+                NULL,
+                width, height,
+                (lagfx_coord_t){ hot_x, hot_y });
+        }
+    }
+
     return LAGFX_HANDLER_OK;
 }
 
@@ -134,7 +146,20 @@ lagfx_handler_status_t lagfx_display_cursor_show(lagfx_protocol_t *p, const lagf
         dev->cursor_show.hot_y      = hot_y;
     }
 
-    /* TODO Stage 25: Call QEMU dpy_mouse_set to move cursor on noVNC display. */
+    if (p->dev && display_id < LAGFX_MAX_DISPLAYS) {
+        lagfx_device_t *dev   = (lagfx_device_t *)p->dev;
+        lagfx_display_t *display = dev->displays[display_id];
+        if (display) {
+            if (display->desc.callbacks.cursor_moved) {
+                display->desc.callbacks.cursor_moved(display->desc.callbacks.opaque);
+            }
+            if (display->desc.callbacks.cursor_show) {
+                display->desc.callbacks.cursor_show(
+                    display->desc.callbacks.opaque,
+                    visible != 0);
+            }
+        }
+    }
 
     return LAGFX_HANDLER_OK;
 }
