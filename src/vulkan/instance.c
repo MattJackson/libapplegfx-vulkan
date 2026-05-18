@@ -471,6 +471,24 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
                    (int)pp_st);
     }
 
+    /* Stage 65d Option 3 — create the shared empty pipeline layout for
+     * substitute triangle pipelines. Vulkan rejects layout=VK_NULL_HANDLE
+     * in VkGraphicsPipelineCreateInfo, so even shaders with zero
+     * descriptor bindings need a valid (empty) layout. */
+    {
+        VkPipelineLayoutCreateInfo el_plci = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        };
+        VkResult lr = vkCreatePipelineLayout(s->device, &el_plci, NULL,
+                                             &s->empty_layout);
+        if (lr != VK_SUCCESS) {
+            LAGFX_WARN("vk_init: vkCreatePipelineLayout(empty_layout) failed "
+                       "(%d) — Stage 65d Option 3 pipeline builds will fail",
+                       (int)lr);
+            s->empty_layout = VK_NULL_HANDLE;
+        }
+    }
+
     *out = s;
     return LAGFX_OK;
 }
@@ -486,6 +504,10 @@ void lagfx_vk_shutdown(struct lagfx_vk_state *state) {
     if (state->frame_fence != VK_NULL_HANDLE && state->device != VK_NULL_HANDLE) {
         vkDestroyFence(state->device, state->frame_fence, NULL);
         state->frame_fence = VK_NULL_HANDLE;
+    }
+    if (state->empty_layout != VK_NULL_HANDLE && state->device != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(state->device, state->empty_layout, NULL);
+        state->empty_layout = VK_NULL_HANDLE;
     }
     lagfx_vk_pipeline_shutdown(state);
     lagfx_vk_command_pool_destroy(state);

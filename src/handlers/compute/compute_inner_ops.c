@@ -115,6 +115,7 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
             lagfx_pipeline_desc_t pdesc = {
                 .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
                 .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .layout          = dev_with_vk->vk->empty_layout,
                 .color_format    = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
             };
@@ -199,6 +200,7 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
             lagfx_pipeline_desc_t pdesc = {
                 .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
                 .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .layout          = dev_with_vk->vk->empty_layout,
                 .color_format    = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
             };
@@ -284,6 +286,7 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
             lagfx_pipeline_desc_t pdesc = {
                 .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
                 .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .layout          = dev_with_vk->vk->empty_layout,
                 .color_format    = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
             };
@@ -368,6 +371,7 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
             lagfx_pipeline_desc_t pdesc = {
                 .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
                 .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .layout          = dev_with_vk->vk->empty_layout,
                 .color_format    = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
             };

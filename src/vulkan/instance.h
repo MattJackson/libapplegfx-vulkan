@@ -71,6 +71,13 @@ struct lagfx_vk_state {
     VkPipelineLayout passthrough_layout;
     VkDescriptorSetLayout passthrough_dsl;
 
+    /* Stage 65d Option 3 — empty pipeline layout (no sets, no push
+     * constants) for the substitute triangle pipeline whose shaders
+     * declare zero descriptor bindings. vkCreateGraphicsPipelines
+     * rejects layout=VK_NULL_HANDLE per the spec; this is the minimal
+     * valid layout shared by every triangle-substitute pipeline build. */
+    VkPipelineLayout empty_layout;
+
     VkImage          frame_image;
     VkImageView      frame_image_view;
     VkDeviceMemory   frame_image_mem;

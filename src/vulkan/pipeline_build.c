@@ -11,6 +11,13 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
         || !out_pipeline) {
         return LAGFX_ERR_INVALID_ARG;
     }
+    if (desc->layout == VK_NULL_HANDLE) {
+        /* Vulkan spec (VUID-VkGraphicsPipelineCreateInfo-layout-06602):
+         * layout must be valid even when shaders declare zero descriptor
+         * bindings. Callers should pass the device's empty_layout for
+         * the substitute triangle pipeline. */
+        return LAGFX_ERR_INVALID_ARG;
+    }
 
     /* Vertex input — empty struct as in triangle-lavapipe-e2e.c */
     VkPipelineVertexInputStateCreateInfo vin = {
@@ -107,7 +114,7 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
         .pMultisampleState = &ms,
         .pDepthStencilState = &ds,
         .pColorBlendState = &cb,
-        .layout = VK_NULL_HANDLE,  /* caller must provide layout if needed */
+        .layout = desc->layout,
         .renderPass = VK_NULL_HANDLE,
         .subpass = 0,
     };

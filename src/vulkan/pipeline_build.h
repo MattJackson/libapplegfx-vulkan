@@ -16,6 +16,7 @@ extern "C" {
 typedef void *VkDevice;
 typedef void *VkShaderModule;
 typedef void *VkPipeline;
+typedef void *VkPipelineLayout;
 typedef int   VkFormat;
 #endif
 
@@ -25,10 +26,11 @@ typedef int   VkFormat;
  * handlers populate more fields.
  */
 typedef struct {
-    VkShaderModule vertex_shader;     /* required */
-    VkShaderModule fragment_shader;   /* required */
-    VkFormat       color_format;      /* default: VK_FORMAT_B8G8R8A8_UNORM */
-    VkFormat       depth_format;      /* default: VK_FORMAT_UNDEFINED (no depth) */
+    VkShaderModule   vertex_shader;     /* required */
+    VkShaderModule   fragment_shader;   /* required */
+    VkPipelineLayout layout;            /* required — Vulkan spec forbids VK_NULL_HANDLE */
+    VkFormat         color_format;      /* default: VK_FORMAT_B8G8R8A8_UNORM */
+    VkFormat         depth_format;      /* default: VK_FORMAT_UNDEFINED (no depth) */
     /* Future fields (Stage 70b+):
      *   cull_mode, front_face, blend factor, depth-stencil state... */
 } lagfx_pipeline_desc_t;
