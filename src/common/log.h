@@ -24,6 +24,8 @@
 #ifndef LIBAPPLEGFX_COMMON_LOG_H
 #define LIBAPPLEGFX_COMMON_LOG_H
 
+#include <stdint.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,6 +73,30 @@ extern void lagfx_err_impl(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
 extern void lagfx_trace_impl(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
+
+/* Opcode trace support (Task O2) — initialized at first log call from env var.
+ * g_trace_opcodes contains up to 8 opcodes; entries beyond are silently ignored.
+ * Use lagfx_is_opcode_traced(opcode) to check if an opcode should be traced. */
+extern int g_trace_opcodes[8];
+extern int g_trace_opcodes_count;
+
+static inline bool lagfx_is_opcode_traced(uint32_t opcode) {
+    for (int i = 0; i < g_trace_opcodes_count && i < 8; ++i) {
+        if (g_trace_opcodes[i] == (int)opcode) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* New macro: logs at INFO level if opcode is in trace list OR global level >= trace.
+ * Otherwise no-op. Ready for adoption by handlers/ during Stage 80 debugging. */
+#define LAGFX_OPCODE_TRACE(opcode, fmt, ...) \
+    do { \
+        if (lagfx_log_level() >= LAGFX_LOG_LVL_TRACE || lagfx_is_opcode_traced(opcode)) { \
+            lagfx_log_impl(fmt, ##__VA_ARGS__); \
+        } \
+    } while (0)
 
 #define LAGFX_LOG(fmt, ...) \
     do { \

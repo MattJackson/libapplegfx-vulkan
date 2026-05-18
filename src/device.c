@@ -96,6 +96,52 @@ void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset, uint32_t value) {
     doorbell_handle_write(device->protocol_state, offset, value);
 }
 
+/* Opcode trace array (Task O2) — up to 8 entries, populated from LAGFX_TRACE_OPCODE.
+ * Unset = empty array = no opcode-specific tracing (default behavior). */
+int g_trace_opcodes[8];
+int g_trace_opcodes_count = 0;
+
+static void lagfx_init_opcode_trace(void) {
+    static bool initialized = false;
+    if (initialized) return;
+    initialized = true;
+    
+    const char *env = getenv("LAGFX_TRACE_OPCODE");
+    if (!env || env[0] == '\0') {
+        return;  /* Unset: default to no opcode tracing */
+    }
+    
+    g_trace_opcodes_count = 0;
+    const char *p = env;
+    
+    while (*p && g_trace_opcodes_count < 8) {
+        char *endptr = NULL;
+        long val = strtol(p, &endptr, 16);
+        
+        if (endptr == p || val < 0 || val > 0xFFFF) {
+            /* Invalid entry: skip */
+            if (*p == ',') p++;
+            else break;
+            continue;
+        }
+        
+        g_trace_opcodes[g_trace_opcodes_count++] = (int)val;
+        p = endptr;
+        
+        if (*p == ',') {
+            p++;
+            while (*p == ' ') p++;  /* skip whitespace after comma */
+        } else if (*p != '\0') {
+            break;
+        }
+    }
+    
+    if (g_trace_opcodes_count > 0) {
+        LAGFX_LOG("opcode trace enabled: %d opcodes (%s)",
+                  g_trace_opcodes_count, env);
+    }
+}
+
 /* Global log file handle — opened lazily on first write */
 static FILE *lagfx_log_file = NULL;
 
@@ -111,6 +157,9 @@ static FILE *lagfx_log_file = NULL;
  * real-time visibility in Docker logs. Falls back to stderr if file open
  * fails. */
 static void lagfx_log_internal(const char *prefix, const char *fmt, va_list args) {
+    /* Initialize opcode trace array from env var on first log call */
+    lagfx_init_opcode_trace();
+    
     /* Lazy-open log file on first write */
     if (!lagfx_log_file) {
         const char *path = getenv("LAGFX_LOG_FILE");
