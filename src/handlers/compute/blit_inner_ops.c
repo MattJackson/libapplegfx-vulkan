@@ -30,6 +30,11 @@
 
 #include "common/le.h"
 #include "common/log.h"
+#include "../device.h"
+#include "../translate/blit_encoder.h"
+#include "../protocol/resource_registry.h"
+#include "../protocol/state.h"  /* For lagfx_protocol_t full definition */
+#include "../vulkan/iosurface.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -75,7 +80,6 @@ static int op_ack_stub(lagfx_protocol_t *p, const uint8_t *payload, size_t len) 
  *    show which layout the kext actually sends.)
  */
 static int op_copy_texture_to_texture(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
-    (void)p;
     if (len < 40) {
         LAGFX_WARN("CopyFromTextureToTexture: payload too short (%zu < 40)", len);
         return 0;
@@ -90,16 +94,54 @@ static int op_copy_texture_to_texture(lagfx_protocol_t *p, const uint8_t *payloa
     uint32_t src_d     = lagfx_le32(payload + 28);
     uint32_t dst_slice = lagfx_le32(payload + 32);
     uint32_t dst_level = lagfx_le32(payload + 36);
+
     LAGFX_LOG("CopyFromTextureToTexture: src=0x%x dst=0x%x "
               "src_origin=(%u,%u,%u) src_size=%ux%ux%u dst_slice=%u dst_level=%u",
               src_ref, dst_ref, src_x, src_y, src_z,
               src_w, src_h, src_d, dst_slice, dst_level);
-    /* TODO: Stage 30 — translate to vkCmdCopyImage once the resource
-     * registry carries texture_ref → VkImage binding for the active
-     * task. The pre-refactor handler relied on
-     *   lagfx_resource_lookup(...).host_handle = lagfx_vk_iosurface_t*
-     * which is reachable today but the iosurface helper was scoped to
-     * the pre-refactor display/render encoder. */
+
+#ifdef LAGFX_HAVE_VULKAN
+    struct lagfx_device *dev = (struct lagfx_device *)p->dev;
+    if (!dev || !dev->vk) {
+        LAGFX_WARN("CopyFromTextureToTexture: Vulkan state not available");
+        return 0;
+    }
+
+    lagfx_resource_registry_t *reg = &p->resources;
+    lagfx_resource_entry_t *src_entry = lagfx_resource_lookup(reg, src_ref, p->current_chan_id);
+    lagfx_resource_entry_t *dst_entry = lagfx_resource_lookup(reg, dst_ref, p->current_chan_id);
+
+    if (!src_entry || !src_entry->host_handle) {
+        LAGFX_WARN("CopyFromTextureToTexture: source texture ref 0x%x not found", src_ref);
+        return 0;
+    }
+    if (!dst_entry || !dst_entry->host_handle) {
+        LAGFX_WARN("CopyFromTextureToTexture: dest texture ref 0x%x not found", dst_ref);
+        return 0;
+    }
+
+    lagfx_vk_iosurface_t *src_tex = (lagfx_vk_iosurface_t *)src_entry->host_handle;
+    lagfx_vk_iosurface_t *dst_tex = (lagfx_vk_iosurface_t *)dst_entry->host_handle;
+
+    MTLOrigin src_origin = {.x = src_x, .y = src_y, .z = src_z};
+    MTLSize src_size   = {.width = src_w, .height = src_h, .depth = src_d};
+
+    lagfx_status_t st = lagfx_translate_blit_copy_texture_to_texture(
+        dev->vk,
+        src_tex,
+        dst_tex,
+        &src_origin,
+        &src_size,
+        dst_slice,
+        dst_level
+    );
+
+    if (st != LAGFX_OK) {
+        LAGFX_WARN("CopyFromTextureToTexture: blit translation failed (status=%d)", (int)st);
+        return 0;
+    }
+#endif /* LAGFX_HAVE_VULKAN */
+
     return 0;
 }
 
@@ -113,7 +155,6 @@ static int op_copy_texture_to_texture(lagfx_protocol_t *p, const uint8_t *payloa
  *   +68  u32 pixel_format (MTLPixelFormat)
  */
 static int op_fill_texture_with_color(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
-    (void)p;
     if (len < 92) {
         LAGFX_WARN("FillTextureWithColor: payload too short (%zu < 92)", len);
         return 0;
@@ -133,11 +174,49 @@ static int op_fill_texture_with_color(lagfx_protocol_t *p, const uint8_t *payloa
         memcpy(&color[i], &u, sizeof(color[i]));
     }
     uint32_t pixel_format = lagfx_le32(payload + 68);
+
     LAGFX_LOG("FillTextureWithColor: ref=0x%x level=%u slice=%u "
               "origin=(%u,%u,%u) size=%ux%ux%u color=(%.3f,%.3f,%.3f,%.3f) fmt=0x%x",
               texture_ref, level, slice, ox, oy, oz, w, h, d,
               color[0], color[1], color[2], color[3], pixel_format);
-    /* TODO: Stage 30 — translate to vkCmdClearColorImage. */
+
+#ifdef LAGFX_HAVE_VULKAN
+    struct lagfx_device *dev = (struct lagfx_device *)p->dev;
+    if (!dev || !dev->vk) {
+        LAGFX_WARN("FillTextureWithColor: Vulkan state not available");
+        return 0;
+    }
+
+    lagfx_resource_registry_t *reg = &p->resources;
+    lagfx_resource_entry_t *entry = lagfx_resource_lookup(reg, texture_ref, p->current_chan_id);
+
+    if (!entry || !entry->host_handle) {
+        LAGFX_WARN("FillTextureWithColor: texture ref 0x%x not found", texture_ref);
+        return 0;
+    }
+
+    lagfx_vk_iosurface_t *tex = (lagfx_vk_iosurface_t *)entry->host_handle;
+
+    MTLOrigin origin   = {.x = ox, .y = oy, .z = oz};
+    MTLSize size       = {.width = w, .height = h, .depth = d};
+
+    lagfx_status_t st = lagfx_translate_blit_fill_texture_color(
+        dev->vk,
+        tex,
+        level,
+        slice,
+        &origin,
+        &size,
+        color,
+        pixel_format
+    );
+
+    if (st != LAGFX_OK) {
+        LAGFX_WARN("FillTextureWithColor: blit translation failed (status=%d)", (int)st);
+        return 0;
+    }
+#endif /* LAGFX_HAVE_VULKAN */
+
     return 0;
 }
 

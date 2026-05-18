@@ -31,7 +31,7 @@
 
 #include "render_inner_ops.h"
 #include "protocol/render_pass.h"
-
+#include "protocol/opcodes.h"  /* For LAGFX_HANDLER_OK enum */
 #include "common/le.h"
 #include "common/log.h"
 

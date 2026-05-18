@@ -488,17 +488,18 @@ endif
 # Phase 65e: shader_cache unit tests. Exercises LRU eviction, hit/miss stats, and
 # stage-distinguishing key generation for the content-addressed SPIR-V cache.
 if fs.is_file(meson.current_source_dir() / 'shader_cache_test.c')
-   shader_cache_deps = [libapplegfx_vulkan_dep]
-   if vulkan_dep.found()
-     shader_cache_deps += [vulkan_dep]
-   endif
-   shader_cache_test = executable('shader-cache-test',
-     'shader_cache_test.c',
-     include_directories : [include_dir, internal_include_dir],
-     dependencies : shader_cache_deps,
-     build_by_default : true,
-   )
-   test('shader cache (unit)', shader_cache_test)
+    shader_cache_deps = [libapplegfx_vulkan_dep]
+    if vulkan_dep.found()
+      shader_cache_deps += [vulkan_dep]
+    endif
+    shader_cache_test = executable('shader-cache-test',
+      'shader_cache_test.c',
+      include_directories : [include_dir, internal_include_dir],
+      dependencies : shader_cache_deps,
+      build_by_default : true,
+    )
+    test('shader cache (unit)', shader_cache_test)
 endif
+
 
 
