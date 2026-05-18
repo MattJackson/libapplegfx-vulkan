@@ -134,14 +134,20 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
                 /* Step 4: record and submit the draw command */
                 lagfx_display_t *display = dev_with_vk->displays[0];
                 if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
+                    /* Stage 65d Option 3: always draw the bundled triangle
+                     * (3 vertices, 1 instance, unindexed). The guest's
+                     * vertex_count / instance_count / index buffer are
+                     * meaningless for the substitute path — triangle.vert
+                     * hardcodes vec2 verts[3] and reads gl_VertexIndex. */
                     st = lagfx_vk_draw_record_and_submit(
                         dev_with_vk->vk, pipeline, &display->rt,
-                        false,  /* indexed */
-                        vertex_count, task->pending_draw.instance_count,
-                        task->pending_draw.base_vertex, task->pending_draw.first_instance,
-                        0);  /* index_buffer_ref ignored for unindexed */
+                        false,  /* indexed — always unindexed for substitute */
+                        3,      /* vertex_count — the triangle has 3 vertices */
+                        1,      /* instance_count — one triangle is enough */
+                        0, 0,   /* base_vertex, first_instance */
+                        0);     /* index_buffer_ref unused */
                     if (st == LAGFX_OK) {
-                        LAGFX_LOG("op_0x01 Option 3 Step 4: drew successfully vertexCount=%u", vertex_count);
+                        LAGFX_LOG("op_0x01 Option 3 Step 4: drew substitute triangle (guest req vertexCount=%u)", vertex_count);
                         /* Signal the display tick: post-draw, the render
                          * target VkImage has fresh pixels. QEMU's frame_ready_bh
                          * will pull via lagfx_display_read_frame. Without
@@ -231,14 +237,12 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
                 /* Step 4: record and submit the draw command */
                 lagfx_display_t *display = dev_with_vk->displays[0];
                 if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
+                    /* Stage 65d Option 3 substitute — see op_0x01 site for rationale. */
                     st = lagfx_vk_draw_record_and_submit(
                         dev_with_vk->vk, pipeline, &display->rt,
-                        false,  /* indexed */
-                        vertex_count, task->pending_draw.instance_count,
-                        task->pending_draw.base_vertex, task->pending_draw.first_instance,
-                        0);  /* index_buffer_ref ignored for unindexed */
+                        false, 3, 1, 0, 0, 0);
                     if (st == LAGFX_OK) {
-                        LAGFX_LOG("op_0x03 Option 3 Step 4: drew successfully vertexCount=%u", vertex_count);
+                        LAGFX_LOG("op_0x03 Option 3 Step 4: drew substitute triangle (guest req vertexCount=%u)", vertex_count);
                         lagfx_display_signal_frame_ready(display);
                     } else {
                         LAGFX_WARN("op_0x03 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
@@ -324,14 +328,14 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
                 /* Step 4: record and submit the indexed draw command */
                 lagfx_display_t *display = dev_with_vk->displays[0];
                 if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
+                    /* Stage 65d Option 3 substitute — see op_0x01 site for rationale.
+                     * Override indexed=true → false; the substitute triangle ignores
+                     * the index buffer and draws 3 vertices unconditionally. */
                     st = lagfx_vk_draw_record_and_submit(
                         dev_with_vk->vk, pipeline, &display->rt,
-                        true,  /* indexed */
-                        index_count, task->pending_draw.instance_count,
-                        task->pending_draw.base_vertex, task->pending_draw.first_instance,
-                        task->pending_draw.index_buffer_ref);
+                        false, 3, 1, 0, 0, 0);
                     if (st == LAGFX_OK) {
-                        LAGFX_LOG("op_0x06 Option 3 Step 4: drew indexed successfully indexCount=%u", index_count);
+                        LAGFX_LOG("op_0x06 Option 3 Step 4: drew substitute triangle (guest req indexCount=%u)", index_count);
                         lagfx_display_signal_frame_ready(display);
                     } else {
                         LAGFX_WARN("op_0x06 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
@@ -413,17 +417,14 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
                 LAGFX_LOG("op_0x82 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, index_count);
                 
-                /* Step 4: record and submit the indexed draw command */
+                /* Step 4: Stage 65d Option 3 substitute — see op_0x01 for rationale. */
                 lagfx_display_t *display = dev_with_vk->displays[0];
                 if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
                     st = lagfx_vk_draw_record_and_submit(
                         dev_with_vk->vk, pipeline, &display->rt,
-                        true,  /* indexed */
-                        index_count, task->pending_draw.instance_count,
-                        task->pending_draw.base_vertex, task->pending_draw.first_instance,
-                        task->pending_draw.index_buffer_ref);
+                        false, 3, 1, 0, 0, 0);
                     if (st == LAGFX_OK) {
-                        LAGFX_LOG("op_0x82 Option 3 Step 4: drew indexed successfully indexCount=%u", index_count);
+                        LAGFX_LOG("op_0x82 Option 3 Step 4: drew substitute triangle (guest req indexCount=%u)", index_count);
                         lagfx_display_signal_frame_ready(display);
                     } else {
                         LAGFX_WARN("op_0x82 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
