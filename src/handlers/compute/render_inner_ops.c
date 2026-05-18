@@ -99,7 +99,7 @@ static int op_draw_primitives_16(lagfx_protocol_t *p, const uint8_t *payload, si
     uint32_t prim_type    = lagfx_le32(payload + 0);
     uint16_t vertex_start = lagfx_le16(payload + 4);
     uint16_t vertex_count = lagfx_le16(payload + 6);
-    LAGFX_TRACE("DrawPrimitives16: type=%u start=%u count=%u",
+    LAGFX_LOG("DrawPrimitives16: type=%u start=%u count=%u",
                 prim_type, vertex_start, vertex_count);
     return 0;
 }
@@ -125,7 +125,7 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p, const uint8_t *p
     uint32_t prim_type    = lagfx_le32(payload + 0);
     uint16_t vertex_start = lagfx_le16(payload + 4);
     uint16_t vertex_count = lagfx_le16(payload + 6);
-    LAGFX_TRACE("DrawInstancedPrimitives16: type=%u start=%u count=%u",
+    LAGFX_LOG("DrawInstancedPrimitives16: type=%u start=%u count=%u",
                 prim_type, vertex_start, vertex_count);
     return 0;
 }
@@ -153,7 +153,7 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p, const uint8_t *pay
     uint32_t index_type       = lagfx_le32(payload + 8);
     uint32_t index_buf_ref    = lagfx_le32(payload + 12);
     uint64_t index_buf_offset = lagfx_le64(payload + 16);
-    LAGFX_TRACE("DrawIndexedPrimitives64: type=%u count=%u idxType=%u idxBufRef=0x%08x off=%llu",
+    LAGFX_LOG("DrawIndexedPrimitives64: type=%u count=%u idxType=%u idxBufRef=0x%08x off=%llu",
                 prim_type, index_count, index_type, index_buf_ref,
                 (unsigned long long)index_buf_offset);
     return 0;
@@ -162,7 +162,7 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p, const uint8_t *pay
 static int op_draw_indexed_primitives_16(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
     (void)p;
     if (len < 12) { LAGFX_WARN("DrawIndexedPrimitives16: payload too short (%zu < 12)", len); return 0; }
-    LAGFX_TRACE("DrawIndexedPrimitives16: type=%u count=%u idxBufRef=0x%08x",
+    LAGFX_LOG("DrawIndexedPrimitives16: type=%u count=%u idxBufRef=0x%08x",
                 lagfx_le32(payload + 0), lagfx_le16(payload + 4),
                 lagfx_le32(payload + 8));
     return 0;
@@ -474,10 +474,10 @@ static int op_set_depth_clip_mode(lagfx_protocol_t *p, const uint8_t *payload, s
 /* Variable-length list opcode helpers ---------------------------- */
 
 static int op_set_buffers_variable(lagfx_protocol_t *p,
-                                    const uint8_t   *payload,
-                                    size_t           len,
-                                    const char      *name,
-                                    size_t           entry_bytes) {
+                                     const uint8_t   *payload,
+                                     size_t           len,
+                                     const char      *name,
+                                     size_t           entry_bytes) {
     (void)p;
     if (len < 8) { LAGFX_WARN("%s: payload too short (%zu < 8)", name, len); return 0; }
     uint32_t count = lagfx_le32(payload + 0);
@@ -487,7 +487,7 @@ static int op_set_buffers_variable(lagfx_protocol_t *p,
         LAGFX_WARN("%s: count=%u needs %zu bytes, got %zu", name, count, needed, len);
         return 0;
     }
-    LAGFX_TRACE("%s: count=%u first=%u entry_bytes=%zu", name, count, first, entry_bytes);
+    LAGFX_LOG("%s: count=%u first=%u entry_bytes=%zu", name, count, first, entry_bytes);
     for (uint32_t i = 0; i < count && i < 4; ++i) {
         const uint8_t *e = payload + 8 + (size_t)i * entry_bytes;
         uint32_t ref = lagfx_le32(e);
@@ -508,7 +508,7 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p, const uint8_t *payload, 
 static int op_set_fragment_buffer_offset(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
     (void)p;
     if (len < 12) { LAGFX_WARN("SetFragmentBufferOffset: payload too short (%zu < 12)", len); return 0; }
-    LAGFX_TRACE("SetFragmentBufferOffset: offset=%llu index=%u",
+    LAGFX_LOG("SetFragmentBufferOffset: offset=%llu index=%u",
                 (unsigned long long)lagfx_le64(payload + 0), lagfx_le32(payload + 8));
     return 0;
 }
@@ -537,7 +537,7 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p, const uint8_t *payl
     (void)p;
     if (len < 4) { LAGFX_WARN("SetRenderPipelineState: payload too short (%zu < 4)", len); return 0; }
     uint32_t reference = lagfx_le32(payload + 0);
-    LAGFX_TRACE("SetRenderPipelineState: ref=0x%08x", reference);
+    LAGFX_LOG("SetRenderPipelineState: ref=0x%08x", reference);
     /* TODO: Stage 30 — resolve pipeline ref to VkPipeline via resource
      * registry and bind via vkCmdBindPipeline once the encoder state
      * lives on the protocol struct. */
@@ -547,7 +547,7 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p, const uint8_t *payl
 static int op_set_scissor_rect(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
     (void)p;
     if (len < 32) { LAGFX_WARN("SetScissorRect: payload too short (%zu < 32)", len); return 0; }
-    LAGFX_TRACE("SetScissorRect: x=%llu y=%llu w=%llu h=%llu",
+    LAGFX_LOG("SetScissorRect: x=%llu y=%llu w=%llu h=%llu",
                 (unsigned long long)lagfx_le64(payload + 0),
                 (unsigned long long)lagfx_le64(payload + 8),
                 (unsigned long long)lagfx_le64(payload + 16),
@@ -613,7 +613,7 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p, const uint8_t *payload, si
 static int op_set_vertex_buffer_offset(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
     (void)p;
     if (len < 12) { LAGFX_WARN("SetVertexBufferOffset: payload too short (%zu < 12)", len); return 0; }
-    LAGFX_TRACE("SetVertexBufferOffset: offset=%llu index=%u",
+    LAGFX_LOG("SetVertexBufferOffset: offset=%llu index=%u",
                 (unsigned long long)lagfx_le64(payload + 0), lagfx_le32(payload + 8));
     return 0;
 }
@@ -633,7 +633,7 @@ static int op_set_vertex_textures(lagfx_protocol_t *p, const uint8_t *payload, s
 static int op_set_viewport(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
     (void)p;
     if (len < 48) { LAGFX_WARN("SetViewport: payload too short (%zu < 48)", len); return 0; }
-    LAGFX_TRACE("SetViewport: origin=(%g,%g) size=%gx%g znear=%g zfar=%g",
+    LAGFX_LOG("SetViewport: origin=(%g,%g) size=%gx%g znear=%g zfar=%g",
                 r_f64(payload + 0),  r_f64(payload + 8),
                 r_f64(payload + 16), r_f64(payload + 24),
                 r_f64(payload + 32), r_f64(payload + 40));
