@@ -357,13 +357,13 @@ static int op_draw_indexed_instanced_base_primitives_16_2(lagfx_protocol_t *p, c
 }
 
 /* 0x2c — Unknown. RE pending; TSV row says "<default/throw>".
- * macOS sends this repeatedly with len=88. Log full hex dump on WARN
- * so the next RE pass has data without needing trace level. */
-static int op_unknown_0x2c(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
+ * macOS sends this repeatedly with len=88 during render setup. Log full hex dump
+ * on WARN so the next RE pass has data without needing trace level. */
+static int op_0x2c(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
     (void)p;
     if (!payload || len < 88u) {
-        LAGFX_WARN("Unknown(0x2c): payload too short (%zu < 88)", len);
-        return 0;
+        LAGFX_WARN("0x2c: payload too short (%zu < 88)", len);
+        return LAGFX_HANDLER_OK;
     }
     char buf[88 * 3 + 1];
     size_t pos = 0;
@@ -372,10 +372,10 @@ static int op_unknown_0x2c(lagfx_protocol_t *p, const uint8_t *payload, size_t l
                          i == 0 ? "" : " ", (unsigned)payload[i]);
         if (w > 0) pos += (size_t)w;
     }
-    LAGFX_WARN("Unknown(0x2c): len=%zu payload=[%s]", len, buf);
-    /* TODO: Stage 30 — RE PGDeserializerRenderDecoder-decodeWithHeader
-     * to discover semantics. */
-    return 0;
+    LAGFX_WARN("0x2c: len=%zu payload=[%s]", len, buf);
+    /* TODO Stage 30: RE PGDeserializerRenderDecoder-decodeWithHeader to discover
+     * semantics. Wire-format hypotheses in paravirt-re/library/render-opcode-0x2c-re-2026-05-18.md */
+    return LAGFX_HANDLER_OK;
 }
 
 /* 0x3c — command-buffer-inner (recursive cmdbuf reference).
@@ -952,7 +952,7 @@ static const lagfx_render_inner_op_desc_t g_table[] = {
     { 0x1c, "DrawIndexedInstancedBasePrimitives64_2",    48, 1, op_draw_indexed_instanced_base_primitives_64_2 },
     { 0x1d, "DrawIndexedInstancedBasePrimitives16_2",    20, 1, op_draw_indexed_instanced_base_primitives_16_2 },
     /* 0x2c — RE pending, macOS sends len=88 during render setup */
-    { 0x2c, "Unknown(0x2c)",                             88, 0, op_unknown_0x2c },
+    { 0x2c, "Unknown(0x2c)",                             88, 0, op_0x2c },
     /* 0x3c — recursive cmdbuf reference (Stage 30 deferred) */
     { 0x3c, "command-buffer-inner",                      20, 2, op_command_buffer_inner },
 
