@@ -70,19 +70,24 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
         .pAttachments = &blend_att,
     };
 
-    /* Shader stages */
+    /* Shader stages — entry-point names default to "main" but can be
+     * overridden via desc. The Stage 65d Option 3 substitute triangle
+     * SPVs use "triangle_vertex" / "triangle_fragment" because they're
+     * produced by the AIR-to-SPIRV translator, not glslang. */
+    const char *v_entry = desc->vertex_entry_point   ? desc->vertex_entry_point   : "main";
+    const char *f_entry = desc->fragment_entry_point ? desc->fragment_entry_point : "main";
     VkPipelineShaderStageCreateInfo stages[2] = {
         {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .stage = VK_SHADER_STAGE_VERTEX_BIT,
             .module = desc->vertex_shader,
-            .pName = "main",
+            .pName = v_entry,
         },
         {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
             .module = desc->fragment_shader,
-            .pName = "main",
+            .pName = f_entry,
         },
     };
 

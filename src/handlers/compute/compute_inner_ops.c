@@ -113,11 +113,17 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
         if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
             VkDevice device = dev_with_vk->vk->device;
             lagfx_pipeline_desc_t pdesc = {
-                .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
-                .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
-                .layout          = dev_with_vk->vk->empty_layout,
-                .color_format    = (VkFormat)task->render_pass_desc.color_format,
-                .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
+                .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
+                .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .layout               = dev_with_vk->vk->empty_layout,
+                /* Stage 65d Option 3: the substitute triangle SPVs were
+                 * compiled by the AIR-to-SPIRV translator and use the
+                 * function names from triangle.metal as entry points,
+                 * not glslang's default "main". */
+                .vertex_entry_point   = "triangle_vertex",
+                .fragment_entry_point = "triangle_fragment",
+                .color_format         = (VkFormat)task->render_pass_desc.color_format,
+                .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
             VkPipeline pipeline = VK_NULL_HANDLE;
             lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
@@ -198,11 +204,17 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
         if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
             VkDevice device = dev_with_vk->vk->device;
             lagfx_pipeline_desc_t pdesc = {
-                .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
-                .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
-                .layout          = dev_with_vk->vk->empty_layout,
-                .color_format    = (VkFormat)task->render_pass_desc.color_format,
-                .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
+                .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
+                .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .layout               = dev_with_vk->vk->empty_layout,
+                /* Stage 65d Option 3: the substitute triangle SPVs were
+                 * compiled by the AIR-to-SPIRV translator and use the
+                 * function names from triangle.metal as entry points,
+                 * not glslang's default "main". */
+                .vertex_entry_point   = "triangle_vertex",
+                .fragment_entry_point = "triangle_fragment",
+                .color_format         = (VkFormat)task->render_pass_desc.color_format,
+                .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
             VkPipeline pipeline = VK_NULL_HANDLE;
             lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
@@ -284,11 +296,17 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
         if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
             VkDevice device = dev_with_vk->vk->device;
             lagfx_pipeline_desc_t pdesc = {
-                .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
-                .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
-                .layout          = dev_with_vk->vk->empty_layout,
-                .color_format    = (VkFormat)task->render_pass_desc.color_format,
-                .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
+                .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
+                .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .layout               = dev_with_vk->vk->empty_layout,
+                /* Stage 65d Option 3: the substitute triangle SPVs were
+                 * compiled by the AIR-to-SPIRV translator and use the
+                 * function names from triangle.metal as entry points,
+                 * not glslang's default "main". */
+                .vertex_entry_point   = "triangle_vertex",
+                .fragment_entry_point = "triangle_fragment",
+                .color_format         = (VkFormat)task->render_pass_desc.color_format,
+                .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
             VkPipeline pipeline = VK_NULL_HANDLE;
             lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
@@ -369,11 +387,17 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
         if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
             VkDevice device = dev_with_vk->vk->device;
             lagfx_pipeline_desc_t pdesc = {
-                .vertex_shader   = (VkShaderModule)task->pending_pipeline.vertex_shader,
-                .fragment_shader = (VkShaderModule)task->pending_pipeline.fragment_shader,
-                .layout          = dev_with_vk->vk->empty_layout,
-                .color_format    = (VkFormat)task->render_pass_desc.color_format,
-                .depth_format    = (VkFormat)task->render_pass_desc.depth_format,
+                .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
+                .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
+                .layout               = dev_with_vk->vk->empty_layout,
+                /* Stage 65d Option 3: the substitute triangle SPVs were
+                 * compiled by the AIR-to-SPIRV translator and use the
+                 * function names from triangle.metal as entry points,
+                 * not glslang's default "main". */
+                .vertex_entry_point   = "triangle_vertex",
+                .fragment_entry_point = "triangle_fragment",
+                .color_format         = (VkFormat)task->render_pass_desc.color_format,
+                .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
             VkPipeline pipeline = VK_NULL_HANDLE;
             lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
