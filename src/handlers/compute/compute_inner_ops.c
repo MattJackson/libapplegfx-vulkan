@@ -142,6 +142,12 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
                         0);  /* index_buffer_ref ignored for unindexed */
                     if (st == LAGFX_OK) {
                         LAGFX_LOG("op_0x01 Option 3 Step 4: drew successfully vertexCount=%u", vertex_count);
+                        /* Signal the display tick: post-draw, the render
+                         * target VkImage has fresh pixels. QEMU's frame_ready_bh
+                         * will pull via lagfx_display_read_frame. Without
+                         * this the steady-state path is silent because the
+                         * kext's vchan_display_submit only fires during boot. */
+                        lagfx_display_signal_frame_ready(display);
                     } else {
                         LAGFX_WARN("op_0x01 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
                     }
@@ -233,6 +239,7 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
                         0);  /* index_buffer_ref ignored for unindexed */
                     if (st == LAGFX_OK) {
                         LAGFX_LOG("op_0x03 Option 3 Step 4: drew successfully vertexCount=%u", vertex_count);
+                        lagfx_display_signal_frame_ready(display);
                     } else {
                         LAGFX_WARN("op_0x03 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
                     }
@@ -325,6 +332,7 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
                         task->pending_draw.index_buffer_ref);
                     if (st == LAGFX_OK) {
                         LAGFX_LOG("op_0x06 Option 3 Step 4: drew indexed successfully indexCount=%u", index_count);
+                        lagfx_display_signal_frame_ready(display);
                     } else {
                         LAGFX_WARN("op_0x06 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
                     }
@@ -416,6 +424,7 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
                         task->pending_draw.index_buffer_ref);
                     if (st == LAGFX_OK) {
                         LAGFX_LOG("op_0x82 Option 3 Step 4: drew indexed successfully indexCount=%u", index_count);
+                        lagfx_display_signal_frame_ready(display);
                     } else {
                         LAGFX_WARN("op_0x82 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
                     }

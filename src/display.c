@@ -166,6 +166,12 @@ static void set_frame_ready(lagfx_display_t *display) {
     notify_frame_ready(display);
 }
 
+void lagfx_display_signal_frame_ready(lagfx_display_t *display) {
+    if (display) {
+        set_frame_ready(display);
+    }
+}
+
 lagfx_display_t *lagfx_display_new(lagfx_device_t *device,
                                     const lagfx_display_descriptor_t *desc,
                                     uint32_t port, uint32_t serial_num,

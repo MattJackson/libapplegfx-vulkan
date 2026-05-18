@@ -166,4 +166,11 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
     uint64_t scanout_gpa,
     uint64_t scanout_length);
 
+/* Stage 65d Option 3 — flag the display as "frame ready" so QEMU's
+ * display-tick callback will pull pixels via lagfx_display_read_frame.
+ * Called after each substitute-triangle draw because the kext's normal
+ * vchan_display_submit signal only fires during boot (compositor-driven
+ * scanout isn't wired yet). Internal API, no-op on NULL display. */
+void lagfx_display_signal_frame_ready(lagfx_display_t *display);
+
 #endif /* LIBAPPLEGFX_DISPLAY_INTERNAL_H */
