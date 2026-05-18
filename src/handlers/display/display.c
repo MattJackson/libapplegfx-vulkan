@@ -256,6 +256,10 @@ lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
               "(w=%u h=%u fb_len=%u fmt='BGRA' num_formats=1 ss[+0x104]=0xC)",
               display_index, w, h, w * h * bpp);
 
+    LAGFX_LOG("vchan_setup_shared_state: display[%u] ONLINE EVENT - "
+              "ss[+0x104] set to 0xC (enable() completed) for multi-display routing",
+              display_index);
+
     return LAGFX_HANDLER_OK;
 }
 

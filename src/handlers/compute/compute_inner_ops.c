@@ -131,6 +131,18 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
                 LAGFX_LOG("op_0x01 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, vertex_count);
                 
+                /* Multi-display observability (Task 80-J): log which displays
+                 * have rt_ready=true at the moment we hit the Step-3 gate.
+                 * This surfaces evidence of which display boot traffic targets */
+                LAGFX_LOG("op_0x01 Option 3: multi-display state - checking render targets");
+                for (unsigned i = 0u; i < dev_with_vk->display_count && i < LAGFX_MAX_DISPLAYS; ++i) {
+                    lagfx_display_t *d = dev_with_vk->displays[i];
+                    if (d != NULL) {
+                        LAGFX_LOG("op_0x01 Option 3: display[%u] port=%u rt_ready=%s",
+                                  i, d->port, d->rt_ready ? "true" : "false");
+                    }
+                }
+                
                 /* Step 4: record and submit the draw command */
                 lagfx_display_t *display = dev_with_vk->displays[0];
                 if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
@@ -234,6 +246,18 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
                 LAGFX_LOG("op_0x03 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, vertex_count);
                 
+                /* Multi-display observability (Task 80-J): log which displays
+                 * have rt_ready=true at the moment we hit the Step-3 gate.
+                 * This surfaces evidence of which display boot traffic targets */
+                LAGFX_LOG("op_0x03 Option 3: multi-display state - checking render targets");
+                for (unsigned i = 0u; i < dev_with_vk->display_count && i < LAGFX_MAX_DISPLAYS; ++i) {
+                    lagfx_display_t *d = dev_with_vk->displays[i];
+                    if (d != NULL) {
+                        LAGFX_LOG("op_0x03 Option 3: display[%u] port=%u rt_ready=%s",
+                                  i, d->port, d->rt_ready ? "true" : "false");
+                    }
+                }
+                
                 /* Step 4: record and submit the draw command */
                 lagfx_display_t *display = dev_with_vk->displays[0];
                 if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
@@ -324,6 +348,18 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
             if (st == LAGFX_OK) {
                 LAGFX_LOG("op_0x06 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, index_count);
+                
+                /* Multi-display observability (Task 80-J): log which displays
+                 * have rt_ready=true at the moment we hit the Step-3 gate.
+                 * This surfaces evidence of which display boot traffic targets */
+                LAGFX_LOG("op_0x06 Option 3: multi-display state - checking render targets");
+                for (unsigned i = 0u; i < dev_with_vk->display_count && i < LAGFX_MAX_DISPLAYS; ++i) {
+                    lagfx_display_t *d = dev_with_vk->displays[i];
+                    if (d != NULL) {
+                        LAGFX_LOG("op_0x06 Option 3: display[%u] port=%u rt_ready=%s",
+                                  i, d->port, d->rt_ready ? "true" : "false");
+                    }
+                }
                 
                 /* Step 4: record and submit the indexed draw command */
                 lagfx_display_t *display = dev_with_vk->displays[0];
@@ -416,6 +452,18 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
             if (st == LAGFX_OK) {
                 LAGFX_LOG("op_0x82 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, index_count);
+                
+                /* Multi-display observability (Task 80-J): log which displays
+                 * have rt_ready=true at the moment we hit the Step-3 gate.
+                 * This surfaces evidence of which display boot traffic targets */
+                LAGFX_LOG("op_0x82 Option 3: multi-display state - checking render targets");
+                for (unsigned i = 0u; i < dev_with_vk->display_count && i < LAGFX_MAX_DISPLAYS; ++i) {
+                    lagfx_display_t *d = dev_with_vk->displays[i];
+                    if (d != NULL) {
+                        LAGFX_LOG("op_0x82 Option 3: display[%u] port=%u rt_ready=%s",
+                                  i, d->port, d->rt_ready ? "true" : "false");
+                    }
+                }
                 
                 /* Step 4: Stage 65d Option 3 substitute — see op_0x01 for rationale. */
                 lagfx_display_t *display = dev_with_vk->displays[0];
