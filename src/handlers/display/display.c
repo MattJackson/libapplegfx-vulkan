@@ -154,8 +154,8 @@ lagfx_handler_status_t lagfx_display_vchan_setup_shared_state(
     uint32_t display_index = lagfx_le32(hdr->payload + 0);
     uint32_t ss_pfn        = lagfx_le32(hdr->payload + 4);
 
-    LAGFX_LOG("vchan_setup_shared_state: display[%u] ss_pfn=0x%x stamp=0x%08x",
-              display_index, ss_pfn, hdr->stamp);
+    LAGFX_LOG("vchan_setup_shared_state: display[%u] ss_pfn=0x%x stamp=0x%08x publishing %ux%u BGRA",
+              display_index, ss_pfn, hdr->stamp, LAGFX_DISPLAY_DEFAULT_W, LAGFX_DISPLAY_DEFAULT_H);
 
     if (ss_pfn == 0u) {
         LAGFX_WARN("vchan_setup_shared_state: ss_pfn=0 for display[%u]", display_index);
