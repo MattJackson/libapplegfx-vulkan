@@ -39,6 +39,13 @@
  * device.c calls lagfx_apply_thread_count_env BEFORE invoking
  * lagfx_vk_init, so by the time we hit vkCreateInstance below the
  * env var is in place. See the note in device.c near the setenv.
+ *
+ * === Vulkan validation layers ===================================
+ *
+ * Validation layers are disabled by default (no perf cost in steady-state).
+ * Set LAGFX_VK_VALIDATION=1 environment variable to opt-in for debugging
+ * Stage 80+ issues. Layers enabled: VK_LAYER_KHRONOS_validation.
+ * Debug messenger installed with VERBOSE+WARNING+ERROR severity.
  */
 
 #include "instance.h"
@@ -116,11 +123,26 @@ static uint32_t pick_queue_family(VkPhysicalDevice phys) {
     return found;
 }
 
+/* Debug message callback for validation layers — prints VUIDs and warnings. */
+static VkBool32 VKAPI_PTR lagfx_debug_callback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType,
+    const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
+    void *pUserData) {
+    (void)pUserData;
+    (void)messageType;
+    if (messageSeverity == VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT) {
+        return VK_FALSE;
+    }
+    fprintf(stderr, "lagfx validation: %s\n", pCallbackData->pMessage);
+    return VK_FALSE;
+}
+
 /* Choose physical device: prefer CPU-type (lavapipe) for our use
  * case — we're targeting headless-CPU rendering. Fall back to the
  * first device with a graphics queue family. */
 static VkPhysicalDevice pick_phys_device(VkInstance inst,
-                                         uint32_t *qfam_out) {
+                                          uint32_t *qfam_out) {
     uint32_t n = 0;
     if (vkEnumeratePhysicalDevices(inst, &n, NULL) != VK_SUCCESS || n == 0) {
         LAGFX_ERR("vk_init: no Vulkan physical devices enumerable");
@@ -169,7 +191,7 @@ static VkPhysicalDevice pick_phys_device(VkInstance inst,
 /* --- Public entry points --------------------------------------- */
 
 lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
-                             const lagfx_device_descriptor_t *desc) {
+                              const lagfx_device_descriptor_t *desc) {
     if (!out) {
         return LAGFX_ERR_INVALID_ARG;
     }
@@ -185,6 +207,14 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
     struct lagfx_vk_state *s = calloc(1, sizeof(*s));
     if (!s) {
         return LAGFX_ERR_OUT_OF_MEMORY;
+    }
+
+    /* === Validation layers (optional, gated by env var) ========== */
+    const char *validation_env = getenv("LAGFX_VK_VALIDATION");
+    bool enable_validation = validation_env && strcmp(validation_env, "1") == 0;
+
+    if (enable_validation) {
+        LAGFX_LOG("vk_init: enabling Vulkan validation layers (LAGFX_VK_VALIDATION=1)");
     }
 
     /* === Instance =================================================
@@ -227,6 +257,42 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
     }
     free(avail);
 
+    /* === Validation layers (optional) ============================ */
+    const char *validation_layers[] = {"VK_LAYER_KHRONOS_validation"};
+    const char *all_layers[2] = {0};
+    uint32_t layer_count = 0;
+    
+    if (enable_validation) {
+        /* Check if validation layer is available */
+        uint32_t check_n = 0;
+        vkEnumerateInstanceLayerProperties(&check_n, NULL);
+        VkLayerProperties *layers = NULL;
+        bool found = false;
+        
+        if (check_n > 0) {
+            layers = calloc(check_n, sizeof(*layers));
+            if (layers) {
+                vkEnumerateInstanceLayerProperties(&check_n, layers);
+                for (uint32_t i = 0; i < check_n; ++i) {
+                    if (strcmp(layers[i].layerName, "VK_LAYER_KHRONOS_validation") == 0) {
+                        found = true;
+                        break;
+                    }
+                }
+                free(layers);
+            }
+        }
+        
+        if (!found) {
+            LAGFX_WARN("vk_init: LAGFX_VK_VALIDATION=1 but VK_LAYER_KHRONOS_validation not available — skipping");
+            enable_validation = false;
+        } else {
+            all_layers[0] = validation_layers[0];
+            layer_count = 1;
+            LAGFX_LOG("vk_init: validation layer 'VK_LAYER_KHRONOS_validation' enabled");
+        }
+    }
+
     VkApplicationInfo app = {
         .sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName   = "libapplegfx-vulkan",
@@ -242,6 +308,8 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
         .sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .flags                   = inst_flags,
         .pApplicationInfo        = &app,
+        .enabledLayerCount       = layer_count,
+        .ppEnabledLayerNames     = layer_count > 0 ? all_layers : NULL,
         .enabledExtensionCount   = use_inst_n,
         .ppEnabledExtensionNames = use_inst_n ? use_inst_exts : NULL,
     };
@@ -250,6 +318,35 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
         LAGFX_ERR("vk_init: vkCreateInstance failed (VkResult=%d)", (int)vr);
         free(s);
         return LAGFX_ERR_VULKAN_INIT;
+    }
+
+    /* === Debug messenger (optional, gated by env var) ========== */
+    if (enable_validation) {
+        s->create_debug_messenger_fn = (PFN_vkCreateDebugUtilsMessengerEXT)
+            vkGetInstanceProcAddr(s->instance, "vkCreateDebugUtilsMessengerEXT");
+        s->destroy_debug_messenger_fn = (PFN_vkDestroyDebugUtilsMessengerEXT)
+            vkGetInstanceProcAddr(s->instance, "vkDestroyDebugUtilsMessengerEXT");
+
+        if (s->create_debug_messenger_fn) {
+            VkDebugUtilsMessengerCreateInfoEXT mc = {
+                .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+                .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+                                 | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+                             | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                .pfnUserCallback = lagfx_debug_callback,
+            };
+
+            vr = s->create_debug_messenger_fn(s->instance, &mc, NULL, &s->debug_messenger);
+            if (vr != VK_SUCCESS) {
+                LAGFX_WARN("vk_init: vkCreateDebugUtilsMessengerEXT failed (%d) — validation messages will not be captured", (int)vr);
+                s->debug_messenger = VK_NULL_HANDLE;
+            } else {
+                LAGFX_LOG("vk_init: debug messenger installed");
+            }
+        } else {
+            LAGFX_WARN("vk_init: vkCreateDebugUtilsMessengerEXT not found — validation messages will not be captured");
+        }
     }
 
     /* === Physical device ========================================= */
@@ -514,6 +611,14 @@ void lagfx_vk_shutdown(struct lagfx_vk_state *state) {
     if (state->device != VK_NULL_HANDLE) {
         vkDestroyDevice(state->device, NULL);
     }
+    
+    /* Destroy debug messenger before instance */
+    if (state->instance != VK_NULL_HANDLE && state->debug_messenger != VK_NULL_HANDLE
+        && state->destroy_debug_messenger_fn) {
+        state->destroy_debug_messenger_fn(state->instance, state->debug_messenger, NULL);
+        state->debug_messenger = VK_NULL_HANDLE;
+    }
+    
     if (state->instance != VK_NULL_HANDLE) {
         vkDestroyInstance(state->instance, NULL);
     }

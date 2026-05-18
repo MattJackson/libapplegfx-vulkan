@@ -116,6 +116,12 @@ struct lagfx_vk_state {
      * VkDevices can each carry their own pfn. Populated lazily by
      * resolve_push_desc() in src/translate/render_encoder.c. */
     PFN_vkCmdPushDescriptorSetKHR push_desc_pfn;
+
+    /* Vulkan validation layer debug messenger (optional, gated by
+     * LAGFX_VK_VALIDATION=1 at runtime). Destroyed before vkDestroyInstance. */
+    VkDebugUtilsMessengerEXT debug_messenger;
+    PFN_vkCreateDebugUtilsMessengerEXT create_debug_messenger_fn;
+    PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_messenger_fn;
 #else
     /* Pad so sizeof(struct) > 0 on no-vulkan builds. */
     int _placeholder;
