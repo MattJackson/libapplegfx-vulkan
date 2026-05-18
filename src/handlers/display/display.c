@@ -66,6 +66,8 @@ lagfx_handler_status_t lagfx_display_cursor_glyph(lagfx_protocol_t *p, const lag
 
     LAGFX_LOG("CmdDisplayCursorGlyph: display_id=%u %ux%d bpr=%u hot=(%u,%u) va=0x%llx",
               display_id, width, height, bytes_per_row, hot_x, hot_y, (unsigned long long)glyph_va);
+    LAGFX_LOG("[cursor] glyph_upload: display_id=%u size=%ux%d hotspot=(%u,%u) bytes_per_row=%u VA=0x%llx",
+              display_id, width, height, hot_x, hot_y, bytes_per_row, (unsigned long long)glyph_va);
 
     /* Stamp the device-shared cursor_glyph state so
      * lagfx_display_submit_clear_color picks up the new metadata.
@@ -114,6 +116,8 @@ lagfx_handler_status_t lagfx_display_cursor_show(lagfx_protocol_t *p, const lagf
 
     LAGFX_LOG("CmdDisplayCursorShow: display_id=%u pos=(%d,%d) visible=%u hot=(%u,%u)",
               display_id, x, y, visible, hot_x, hot_y);
+    LAGFX_LOG("[cursor] cursor_move: display_id=%u pos=(%d,%d) visible=%u hotspot=(%u,%u)",
+              display_id, x, y, (int)visible, hot_x, hot_y);
 
     /* Stamp the device-shared cursor_show state. macOS publishes one
      * cursor across all attached displays — see device.h "Cursor
