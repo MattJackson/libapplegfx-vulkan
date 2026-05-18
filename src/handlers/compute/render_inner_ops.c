@@ -391,9 +391,10 @@ static int op_command_buffer_inner(lagfx_protocol_t *p, const uint8_t *payload, 
     }
     uint32_t resource_id = lagfx_le32(payload + 0);
     uint32_t pad         = lagfx_le32(payload + 4);
-    LAGFX_TRACE("command_buffer_inner: resource_id=%u pad=0x%08x — recursion deferred",
-                resource_id, pad);
-    /* TODO: Stage 30 — recursively walk the referenced cmdbuf via the
+    (void)pad;
+    LAGFX_LOG("render_inner: 0x3c recursive-cmdbuf ref=0x%x (deferred — no recursion)",
+              resource_id);
+    /* TODO: Stage 85+ — recursively walk the referenced cmdbuf via the
      * per-task radix translator. */
     return 0;
 }
