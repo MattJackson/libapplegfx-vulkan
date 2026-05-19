@@ -36,6 +36,7 @@
 #define LIBAPPLEGFX_AIR_BLOCK_READER_H
 
 #include "bitstream.h"
+#include "abbrev.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -88,6 +89,20 @@ typedef struct {
  * 1024 is a safe ceiling. */
 #define LAGFX_RECORD_MAX_OPS  1024u
 
+/* BLOCKINFO-sourced abbreviations keyed by target block ID. Capacity
+ * sized for the standard LLVM blocks (0..24) plus a margin. */
+#define LAGFX_BLOCKINFO_MAX_BLOCK_IDS 32u
+
+typedef struct {
+    lagfx_abbrev_table_t per_block[LAGFX_BLOCKINFO_MAX_BLOCK_IDS];
+} lagfx_blockinfo_t;
+
+static inline void lagfx_blockinfo_init(lagfx_blockinfo_t *bi) {
+    for (uint32_t i = 0; i < LAGFX_BLOCKINFO_MAX_BLOCK_IDS; i++) {
+        lagfx_abbrev_table_reset(&bi->per_block[i]);
+    }
+}
+
 /* Per-block context. The caller initializes for the outermost
  * MODULE_BLOCK; recursive entries push/pop via lagfx_block_enter()
  * and lagfx_block_exit() to manage the abbreviation width stack. */
@@ -96,6 +111,10 @@ typedef struct {
     uint32_t abbrev_width;     /* current bits-per-abbrev-code (set by ENTER_SUBBLOCK) */
     uint32_t block_id;         /* block ID we entered (debugging) */
     size_t   end_pos;          /* absolute bit position where this block ends */
+
+    /* Per-block abbreviation table. Populated from BLOCKINFO at entry
+     * time + appended via DEFINE_ABBREV records inside the block. */
+    lagfx_abbrev_table_t abbrevs;
 } lagfx_block_t;
 
 /* Enter the next sub-block at the current cursor position.
@@ -116,6 +135,7 @@ typedef struct {
  */
 bool lagfx_block_enter(lagfx_bitstream_t *bs,
                         uint32_t           parent_abbrev_width,
+                        const lagfx_blockinfo_t *blockinfo,  /* optional; NULL = no prefab abbrevs */
                         lagfx_block_t     *out_block);
 
 /* Skip over a sub-block. Cursor must be positioned at an

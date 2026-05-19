@@ -33,6 +33,29 @@ static const uint8_t kLlvmBitcodeWrapperMagic[4] = { 0xDE, 0xC0, 0x17, 0x0B };
 /* Raw LLVM Bitstream magic (the body starts with this). */
 static const uint8_t kLlvmBitstreamMagic[4] = { 0x42, 0x43, 0xC0, 0xDE };  /* 'B','C',0xC0,0xDE */
 
+/* TYPE_BLOCK record codes per llvm/Bitcode/LLVMBitCodes.h. */
+enum {
+    LAGFX_TYPE_NUMENTRY     = 1,
+    LAGFX_TYPE_VOID         = 2,
+    LAGFX_TYPE_FLOAT        = 3,
+    LAGFX_TYPE_DOUBLE       = 4,
+    LAGFX_TYPE_LABEL        = 5,
+    LAGFX_TYPE_OPAQUE       = 6,
+    LAGFX_TYPE_INTEGER      = 7,
+    LAGFX_TYPE_POINTER      = 8,
+    LAGFX_TYPE_FUNCTION_OLD = 9,
+    LAGFX_TYPE_HALF         = 10,
+    LAGFX_TYPE_ARRAY        = 11,
+    LAGFX_TYPE_VECTOR       = 12,
+    LAGFX_TYPE_METADATA     = 16,
+    LAGFX_TYPE_STRUCT_ANON  = 18,
+    LAGFX_TYPE_STRUCT_NAME  = 19,
+    LAGFX_TYPE_STRUCT_NAMED = 20,
+    LAGFX_TYPE_FUNCTION     = 21,
+    LAGFX_TYPE_TOKEN        = 22,
+    LAGFX_TYPE_BFLOAT       = 23,
+};
+
 /* Module record codes we care about for Phase 1.
  * Reference: llvm/include/llvm/Bitcode/LLVMBitCodes.h ModuleCodes enum. */
 enum {
@@ -275,7 +298,13 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
         return LAGFX_ERR_OUT_OF_MEMORY;
     }
 
-    /* Step 3: parse MODULE_BLOCK + its records.
+    /* Step 3: BLOCKINFO is the first thing in modules with shared
+     * abbrev tables. We need to parse it BEFORE entering MODULE so we
+     * can install per-target-block-id abbrevs. */
+    lagfx_blockinfo_t blockinfo;
+    lagfx_blockinfo_init(&blockinfo);
+
+    /* Step 4: parse MODULE_BLOCK + its records.
      * Bitstream starts immediately after the 4-byte magic. The first
      * abbrev code (at width 2, the root width) should be
      * ENTER_SUBBLOCK introducing MODULE_BLOCK. */
@@ -305,7 +334,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
             return LAGFX_ERR_PROTOCOL;
         }
         lagfx_block_t blk;
-        if (!lagfx_block_enter(&bs, kRootAbbrevWidth, &blk)) {
+        if (!lagfx_block_enter(&bs, kRootAbbrevWidth, NULL, &blk)) {
             LAGFX_ERR("air_bitcode_reader: failed to enter root sub-block");
             lagfx_air_module_free(m);
             return LAGFX_ERR_PROTOCOL;
@@ -321,17 +350,190 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                 if (!lagfx_block_next_record(&blk, scratch_ops, &rec,
                                               &is_end, &is_subblock,
                                               &is_define_abbrev, &sub_id)) {
-                    /* Application-defined abbrev or other unhandled
-                     * encoding. Phase 1 can't handle these; bail with
-                     * what we have so far rather than corrupting. */
-                    LAGFX_LOG("air_bitcode_reader: hit unhandled abbrev at bit %zu — Phase 1 stopping module parse here",
+                    LAGFX_LOG("air_bitcode_reader: failed to read MODULE record at bit %zu — stopping module parse",
                               lagfx_bs_pos(&bs));
                     break;
                 }
                 if (is_end) break;
                 if (is_subblock) {
-                    /* Skip sub-block for now — per-block decoders land
-                     * in subsequent commits. */
+                    if (sub_id == LAGFX_BLK_BLOCKINFO) {
+                        /* Parse BLOCKINFO: SETBID records partition the
+                         * following DEFINE_ABBREVs by target block ID. */
+                        lagfx_block_t bi;
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, NULL, &bi)) {
+                            LAGFX_ERR("air_bitcode_reader: failed to enter BLOCKINFO");
+                            break;
+                        }
+                        uint32_t target_block_id = 0xFFFFFFFFu;
+                        while (lagfx_bs_pos(&bs) < bi.end_pos) {
+                            lagfx_record_t birec = {0};
+                            bool bi_end = false, bi_sub = false, bi_da = false;
+                            uint32_t bi_sub_id = 0;
+                            if (!lagfx_block_next_record(&bi, scratch_ops, &birec,
+                                                          &bi_end, &bi_sub, &bi_da,
+                                                          &bi_sub_id)) {
+                                break;
+                            }
+                            if (bi_end) break;
+                            if (bi_sub) {
+                                /* BLOCKINFO shouldn't have sub-blocks. */
+                                lagfx_block_skip(&bs, bi.abbrev_width);
+                                continue;
+                            }
+                            if (bi_da) {
+                                /* DEFINE_ABBREV inside BLOCKINFO: the
+                                 * abbrev got appended to `bi.abbrevs`.
+                                 * Move it into blockinfo.per_block[target]. */
+                                if (target_block_id < LAGFX_BLOCKINFO_MAX_BLOCK_IDS &&
+                                    bi.abbrevs.num_entries > 0u) {
+                                    lagfx_abbrev_table_t *dst =
+                                        &blockinfo.per_block[target_block_id];
+                                    if (dst->num_entries < LAGFX_ABBREV_MAX_PER_BLOCK) {
+                                        dst->entries[dst->num_entries++] =
+                                            bi.abbrevs.entries[bi.abbrevs.num_entries - 1u];
+                                    }
+                                }
+                                continue;
+                            }
+                            /* SETBID record: code 1, op0 = target block id. */
+                            if (birec.code == 1u && birec.num_ops >= 1u) {
+                                target_block_id = (uint32_t)birec.ops[0];
+                            }
+                            /* BLOCKNAME (2) / SETRECORDNAME (3): debug
+                             * info, ignored. */
+                        }
+                        continue;
+                    }
+                    if (sub_id == LAGFX_BLK_TYPE) {
+                        /* Decode TYPE_BLOCK into m->types[]. */
+                        lagfx_block_t tb;
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, &blockinfo, &tb)) {
+                            LAGFX_ERR("air_bitcode_reader: failed to enter TYPE_BLOCK");
+                            break;
+                        }
+                        /* Reserve a working buffer for types — sized by
+                         * NUMENTRY record if it comes first, otherwise
+                         * grow as needed. For simplicity, hard-cap at
+                         * 4096; real metallibs are ~20-30 types. */
+                        const uint32_t MAX_TYPES = 4096u;
+                        uint32_t types_off = arena_reserve(&m->arena,
+                                                            sizeof(lagfx_air_type_t) * MAX_TYPES);
+                        if (types_off == 0u) {
+                            lagfx_air_module_free(m);
+                            return LAGFX_ERR_OUT_OF_MEMORY;
+                        }
+                        lagfx_air_type_t *types = (lagfx_air_type_t *)(m->arena.base + types_off);
+                        uint32_t num_types = 0u;
+                        /* Track pending STRUCT_NAME → STRUCT_NAMED association. */
+                        uint32_t pending_name_offset = 0u;
+
+                        while (lagfx_bs_pos(&bs) < tb.end_pos) {
+                            lagfx_record_t trec = {0};
+                            bool t_end = false, t_sub = false, t_da = false;
+                            uint32_t t_sub_id = 0;
+                            if (!lagfx_block_next_record(&tb, scratch_ops, &trec,
+                                                          &t_end, &t_sub, &t_da,
+                                                          &t_sub_id)) {
+                                LAGFX_LOG("air_bitcode_reader: TYPE_BLOCK read failed at bit %zu",
+                                          lagfx_bs_pos(&bs));
+                                break;
+                            }
+                            if (t_end) break;
+                            if (t_sub) { lagfx_block_skip(&bs, tb.abbrev_width); continue; }
+                            if (t_da) continue;
+
+                            if (trec.code == LAGFX_TYPE_NUMENTRY) {
+                                /* NUMENTRY hints number of types; we just continue. */
+                                continue;
+                            }
+
+                            if (num_types >= MAX_TYPES) break;
+                            lagfx_air_type_t *t = &types[num_types];
+                            t->op = NULL;
+                            t->num_op = 0u;
+                            t->name_offset = 0u;
+
+                            switch (trec.code) {
+                                case LAGFX_TYPE_VOID:      t->kind = LAGFX_AIR_TYPE_VOID; break;
+                                case LAGFX_TYPE_FLOAT:     t->kind = LAGFX_AIR_TYPE_FLOAT; break;
+                                case LAGFX_TYPE_DOUBLE:    t->kind = LAGFX_AIR_TYPE_DOUBLE; break;
+                                case LAGFX_TYPE_HALF:      t->kind = LAGFX_AIR_TYPE_HALF; break;
+                                case LAGFX_TYPE_LABEL:     t->kind = LAGFX_AIR_TYPE_LABEL; break;
+                                case LAGFX_TYPE_METADATA:  t->kind = LAGFX_AIR_TYPE_METADATA; break;
+                                case LAGFX_TYPE_INTEGER:
+                                case LAGFX_TYPE_POINTER:
+                                case LAGFX_TYPE_VECTOR:
+                                case LAGFX_TYPE_ARRAY:
+                                case LAGFX_TYPE_FUNCTION:
+                                case LAGFX_TYPE_STRUCT_ANON:
+                                case LAGFX_TYPE_STRUCT_NAMED: {
+                                    /* These types have operands; intern them
+                                     * into the arena. */
+                                    static const lagfx_air_type_kind_t kind_map[] = {
+                                        [LAGFX_TYPE_INTEGER]      = LAGFX_AIR_TYPE_INTEGER,
+                                        [LAGFX_TYPE_POINTER]      = LAGFX_AIR_TYPE_POINTER,
+                                        [LAGFX_TYPE_VECTOR]       = LAGFX_AIR_TYPE_VECTOR,
+                                        [LAGFX_TYPE_ARRAY]        = LAGFX_AIR_TYPE_ARRAY,
+                                        [LAGFX_TYPE_FUNCTION]     = LAGFX_AIR_TYPE_FUNCTION,
+                                        [LAGFX_TYPE_STRUCT_ANON]  = LAGFX_AIR_TYPE_STRUCT_ANON,
+                                        [LAGFX_TYPE_STRUCT_NAMED] = LAGFX_AIR_TYPE_STRUCT_NAMED,
+                                    };
+                                    t->kind = kind_map[trec.code];
+                                    /* Stash operands as u32 array in arena. */
+                                    uint32_t u32_buf[LAGFX_RECORD_MAX_OPS];
+                                    for (uint32_t i = 0; i < trec.num_ops; i++) {
+                                        u32_buf[i] = (uint32_t)trec.ops[i];
+                                    }
+                                    uint32_t off = arena_intern_u32_array(&m->arena, u32_buf, trec.num_ops);
+                                    if (off == 0u && trec.num_ops > 0u) {
+                                        lagfx_air_module_free(m);
+                                        return LAGFX_ERR_OUT_OF_MEMORY;
+                                    }
+                                    /* WARNING: arena_intern_u32_array may have
+                                     * realloc'd m->arena.base, invalidating
+                                     * `types` pointer. Refresh from offset. */
+                                    types = (lagfx_air_type_t *)(m->arena.base + types_off);
+                                    t = &types[num_types];
+                                    t->op = (off == 0u) ? NULL : (const uint32_t *)(m->arena.base + off);
+                                    t->num_op = trec.num_ops;
+                                    if (trec.code == LAGFX_TYPE_STRUCT_NAMED) {
+                                        t->name_offset = pending_name_offset;
+                                        pending_name_offset = 0u;
+                                    }
+                                    break;
+                                }
+                                case LAGFX_TYPE_STRUCT_NAME: {
+                                    /* String operands (one char per op). Stash in arena
+                                     * so the NEXT STRUCT_NAMED can reference. */
+                                    size_t len = trec.num_ops;
+                                    uint32_t off = arena_reserve(&m->arena, len + 1u);
+                                    if (off == 0u) {
+                                        lagfx_air_module_free(m);
+                                        return LAGFX_ERR_OUT_OF_MEMORY;
+                                    }
+                                    types = (lagfx_air_type_t *)(m->arena.base + types_off);
+                                    for (size_t i = 0; i < len; i++) {
+                                        m->arena.base[off + i] = (uint8_t)(trec.ops[i] & 0xFFu);
+                                    }
+                                    m->arena.base[off + len] = 0;
+                                    pending_name_offset = off;
+                                    continue;  /* don't increment num_types */
+                                }
+                                default:
+                                    t->kind = LAGFX_AIR_TYPE_UNKNOWN;
+                                    break;
+                            }
+                            num_types++;
+                        }
+
+                        m->types = types;
+                        m->num_types = num_types;
+                        LAGFX_TRACE("air_bitcode_reader: TYPE_BLOCK decoded %u entries",
+                                    num_types);
+                        continue;
+                    }
+
+                    /* Other sub-blocks: skip for now. */
                     if (!lagfx_block_skip(&bs, blk.abbrev_width)) {
                         LAGFX_ERR("air_bitcode_reader: failed to skip sub-block id=%u", sub_id);
                         break;

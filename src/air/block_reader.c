@@ -51,70 +51,33 @@ static bool read_enter_subblock_payload(lagfx_bitstream_t *bs,
 bool
 lagfx_block_enter(lagfx_bitstream_t *bs,
                   uint32_t           parent_abbrev_width,
+                  const lagfx_blockinfo_t *blockinfo,
                   lagfx_block_t     *out_block) {
     bool err = false;
     uint32_t code = lagfx_bs_read_bits(bs, parent_abbrev_width, &err);
     if (err) return false;
     if (code != LAGFX_ABBREV_ENTER_SUBBLOCK) return false;
-    return read_enter_subblock_payload(bs, out_block);
+    if (!read_enter_subblock_payload(bs, out_block)) return false;
+
+    /* Initialize per-block abbrev table; install BLOCKINFO-sourced
+     * abbrevs for this block ID if available. */
+    lagfx_abbrev_table_reset(&out_block->abbrevs);
+    if (blockinfo && out_block->block_id < LAGFX_BLOCKINFO_MAX_BLOCK_IDS) {
+        if (!lagfx_abbrev_table_copy(&out_block->abbrevs,
+                                       &blockinfo->per_block[out_block->block_id])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool
 lagfx_block_skip(lagfx_bitstream_t *bs,
                   uint32_t           parent_abbrev_width) {
     lagfx_block_t blk;
-    if (!lagfx_block_enter(bs, parent_abbrev_width, &blk)) return false;
+    if (!lagfx_block_enter(bs, parent_abbrev_width, NULL, &blk)) return false;
     /* Jump straight to end_pos + align to 32 bits. */
     if (!lagfx_bs_seek(bs, blk.end_pos)) return false;
-    return true;
-}
-
-/* === DEFINE_ABBREV payload skipper ================================ */
-
-/* Skip a DEFINE_ABBREV record payload. Format (per spec):
- *   numops:vbr5
- *   ...numops operand descriptors...
- *
- * Each operand descriptor:
- *   isLiteral:fixed1
- *   if isLiteral:
- *     value:vbr8
- *   else:
- *     encoding:fixed3
- *     if encoding ∈ {Fixed, VBR}:
- *       width:vbr5
- *
- * Phase 1 doesn't yet REGISTER abbreviations (so we can't decode
- * application-defined abbrev codes), but we have to consume the
- * DEFINE_ABBREV bytes correctly to stay aligned with the bitstream.
- *
- * Encoding codes per spec:
- *   1 = Fixed   (width follows)
- *   2 = VBR     (width follows)
- *   3 = Array   (next operand is the element type)
- *   4 = Char6   (no width; 6-bit char encoding)
- *   5 = Blob    (no width; aligned to 32 bits, length follows)
- */
-static bool skip_define_abbrev(lagfx_bitstream_t *bs) {
-    bool err = false;
-    uint32_t num_ops = lagfx_bs_read_vbr(bs, 5, &err);
-    if (err) return false;
-    for (uint32_t i = 0; i < num_ops; i++) {
-        uint32_t is_literal = lagfx_bs_read_bits(bs, 1, &err);
-        if (err) return false;
-        if (is_literal) {
-            (void)lagfx_bs_read_vbr(bs, 8, &err);
-            if (err) return false;
-        } else {
-            uint32_t encoding = lagfx_bs_read_bits(bs, 3, &err);
-            if (err) return false;
-            if (encoding == 1u || encoding == 2u) {  /* Fixed or VBR */
-                (void)lagfx_bs_read_vbr(bs, 5, &err);
-                if (err) return false;
-            }
-            /* Array (3), Char6 (4), Blob (5): no width operand. */
-        }
-    }
     return true;
 }
 
@@ -179,7 +142,9 @@ lagfx_block_next_record(lagfx_block_t  *block,
     }
 
     if (code == LAGFX_ABBREV_DEFINE_ABBREV) {
-        if (!skip_define_abbrev(block->bs)) return false;
+        if (!lagfx_abbrev_table_define(&block->abbrevs, block->bs)) {
+            return false;
+        }
         *out_is_define_abbrev = true;
         return true;
     }
@@ -201,14 +166,25 @@ lagfx_block_next_record(lagfx_block_t  *block,
         return true;
     }
 
-    /* Application-defined abbreviation (code >= 4). Phase 1 doesn't
-     * yet register/replay abbreviations, so we can't decode these.
-     * For the module-level blocks we care about, almost all data is
-     * UNABBREV_RECORD (the LLVM bitcode emitter uses DEFINE_ABBREV
-     * for size compression but always falls back to UNABBREV for
-     * fields that don't fit the abbreviation pattern).
-     *
-     * For now: signal as an error so the caller knows it hit one.
-     * Future work: implement abbrev table replay. */
-    return false;
+    /* Application-defined abbreviation (code >= 4). Decode via the
+     * per-block abbrev table populated by DEFINE_ABBREV records +
+     * (optionally) BLOCKINFO-sourced entries installed at block entry. */
+    uint32_t record_code = 0u;
+    uint32_t num_ops = 0u;
+    const uint8_t *blob_data = NULL;
+    uint32_t blob_len = 0u;
+
+    /* `scratch_ops` is u64*, but lagfx_abbrev_decode_record stores u64s. */
+    if (!lagfx_abbrev_decode_record(&block->abbrevs, code, block->bs,
+                                     scratch_ops, LAGFX_RECORD_MAX_OPS,
+                                     &record_code, &num_ops,
+                                     &blob_data, &blob_len)) {
+        return false;
+    }
+    out_record->code = record_code;
+    out_record->ops = scratch_ops;
+    out_record->num_ops = num_ops;
+    out_record->blob_data = blob_data;
+    out_record->blob_len = blob_len;
+    return true;
 }
