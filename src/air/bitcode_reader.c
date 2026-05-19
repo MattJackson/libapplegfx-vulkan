@@ -404,6 +404,146 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                         }
                         continue;
                     }
+                    if (sub_id == LAGFX_BLK_CONSTANTS) {
+                        /* CONSTANTS_BLOCK: SETTYPE records change the
+                         * 'current type', then constant records (INTEGER,
+                         * FLOAT, NULL, AGGREGATE, STRING, DATA, ...) emit
+                         * constants of that type. Phase 1 collects basic
+                         * constants; complex (AGGREGATE, DATA) constants
+                         * collected as UNKNOWN with raw bytes for now. */
+                        lagfx_block_t cb;
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, &blockinfo, &cb)) break;
+                        const uint32_t MAX_CONSTS = 4096u;
+                        uint32_t consts_off = arena_reserve(&m->arena,
+                                                              sizeof(lagfx_air_constant_t) * MAX_CONSTS);
+                        if (consts_off == 0u) {
+                            lagfx_air_module_free(m);
+                            return LAGFX_ERR_OUT_OF_MEMORY;
+                        }
+                        lagfx_air_constant_t *consts = (lagfx_air_constant_t *)(m->arena.base + consts_off);
+                        uint32_t num_consts = 0u;
+                        uint32_t current_type = 0u;
+
+                        while (lagfx_bs_pos(&bs) < cb.end_pos) {
+                            lagfx_record_t crec = {0};
+                            bool c_end = false, c_sub = false, c_da = false;
+                            uint32_t c_sub_id = 0;
+                            if (!lagfx_block_next_record(&cb, scratch_ops, &crec,
+                                                          &c_end, &c_sub, &c_da, &c_sub_id)) break;
+                            if (c_end) break;
+                            if (c_sub) { lagfx_block_skip(&bs, cb.abbrev_width); continue; }
+                            if (c_da) continue;
+                            if (num_consts >= MAX_CONSTS) break;
+
+                            /* CST_CODE_SETTYPE (1): switches current type. */
+                            if (crec.code == 1u) {
+                                if (crec.num_ops >= 1u) current_type = (uint32_t)crec.ops[0];
+                                continue;
+                            }
+                            lagfx_air_constant_t *c = &consts[num_consts];
+                            c->type_index = current_type;
+                            c->payload.bytes.offset = 0;
+                            c->payload.bytes.len = 0;
+                            switch (crec.code) {
+                                case 2u:  /* CST_CODE_NULL */
+                                    c->kind = LAGFX_AIR_CONST_NULL; break;
+                                case 3u:  /* CST_CODE_UNDEF */
+                                    c->kind = LAGFX_AIR_CONST_UNDEF; break;
+                                case 4u:  /* CST_CODE_INTEGER */
+                                    c->kind = LAGFX_AIR_CONST_INTEGER;
+                                    /* Signed VBR: low bit = sign, remaining bits = magnitude. */
+                                    if (crec.num_ops >= 1) {
+                                        uint64_t raw = crec.ops[0];
+                                        int64_t v = (raw & 1) ? -(int64_t)(raw >> 1) : (int64_t)(raw >> 1);
+                                        c->payload.i64 = v;
+                                    }
+                                    break;
+                                case 6u:  /* CST_CODE_FLOAT */
+                                    c->kind = LAGFX_AIR_CONST_FLOAT;
+                                    if (crec.num_ops >= 1) {
+                                        union { uint64_t u; double f; } cv;
+                                        cv.u = crec.ops[0];
+                                        c->payload.f64 = cv.f;
+                                    }
+                                    break;
+                                case 8u:  /* CST_CODE_STRING */
+                                case 9u:  /* CST_CODE_CSTRING */
+                                {
+                                    c->kind = LAGFX_AIR_CONST_STRING;
+                                    /* One char per op. */
+                                    uint32_t off = arena_reserve(&m->arena, crec.num_ops + 1u);
+                                    if (off == 0u) { lagfx_air_module_free(m); return LAGFX_ERR_OUT_OF_MEMORY; }
+                                    consts = (lagfx_air_constant_t *)(m->arena.base + consts_off);
+                                    c = &consts[num_consts];
+                                    for (uint32_t i = 0; i < crec.num_ops; i++) {
+                                        m->arena.base[off + i] = (uint8_t)(crec.ops[i] & 0xFFu);
+                                    }
+                                    m->arena.base[off + crec.num_ops] = 0;
+                                    c->payload.bytes.offset = off;
+                                    c->payload.bytes.len = crec.num_ops;
+                                    break;
+                                }
+                                case 22u: /* CST_CODE_DATA */
+                                    c->kind = LAGFX_AIR_CONST_DATA;
+                                    /* Stash op-array via arena. */
+                                    {
+                                        uint32_t u32_buf[LAGFX_RECORD_MAX_OPS];
+                                        for (uint32_t i = 0; i < crec.num_ops; i++) u32_buf[i] = (uint32_t)crec.ops[i];
+                                        uint32_t off = arena_intern_u32_array(&m->arena, u32_buf, crec.num_ops);
+                                        consts = (lagfx_air_constant_t *)(m->arena.base + consts_off);
+                                        c = &consts[num_consts];
+                                        c->payload.bytes.offset = off;
+                                        c->payload.bytes.len = crec.num_ops * sizeof(uint32_t);
+                                    }
+                                    break;
+                                case 7u:  /* CST_CODE_AGGREGATE */
+                                    c->kind = LAGFX_AIR_CONST_AGGREGATE;
+                                    {
+                                        uint32_t u32_buf[LAGFX_RECORD_MAX_OPS];
+                                        for (uint32_t i = 0; i < crec.num_ops; i++) u32_buf[i] = (uint32_t)crec.ops[i];
+                                        uint32_t off = arena_intern_u32_array(&m->arena, u32_buf, crec.num_ops);
+                                        consts = (lagfx_air_constant_t *)(m->arena.base + consts_off);
+                                        c = &consts[num_consts];
+                                        c->payload.bytes.offset = off;
+                                        c->payload.bytes.len = crec.num_ops * sizeof(uint32_t);
+                                    }
+                                    break;
+                                default:
+                                    c->kind = LAGFX_AIR_CONST_UNKNOWN;
+                                    break;
+                            }
+                            num_consts++;
+                        }
+                        m->constants = consts;
+                        m->num_constants = num_consts;
+                        LAGFX_TRACE("air_bitcode_reader: CONSTANTS_BLOCK decoded %u constants", num_consts);
+                        continue;
+                    }
+
+                    if (sub_id == LAGFX_BLK_METADATA ||
+                        sub_id == LAGFX_BLK_METADATA_KIND ||
+                        sub_id == LAGFX_BLK_METADATA_ATTACHMENT) {
+                        /* METADATA blocks: phase-1 stub. METADATA_BLOCK has
+                         * many record types (STRING, NAME, NAMED_NODE,
+                         * NODE, VALUE, KIND, GENERIC_DEBUG, ...). Full
+                         * decoding deferred to a follow-up (Phase 3 will
+                         * consume metadata for the air.* intrinsic
+                         * semantic mapping). For now we just walk past. */
+                        lagfx_block_t mb;
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, &blockinfo, &mb)) break;
+                        while (lagfx_bs_pos(&bs) < mb.end_pos) {
+                            lagfx_record_t mrec = {0};
+                            bool m_end = false, m_sub = false, m_da = false;
+                            uint32_t m_sub_id = 0;
+                            if (!lagfx_block_next_record(&mb, scratch_ops, &mrec,
+                                                          &m_end, &m_sub, &m_da, &m_sub_id)) break;
+                            if (m_end) break;
+                            if (m_sub) { lagfx_block_skip(&bs, mb.abbrev_width); continue; }
+                            if (m_da) continue;
+                        }
+                        continue;
+                    }
+
                     if (sub_id == LAGFX_BLK_PARAMATTR_GROUP) {
                         /* PARAMATTR_GROUP: each ENTRY record has a
                          * group_id (op0) followed by attribute pairs.

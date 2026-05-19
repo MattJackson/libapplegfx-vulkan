@@ -164,7 +164,9 @@ static int test_real_triangle_metallib(void) {
     }
     uint32_t num_pag = 0;
     (void)lagfx_air_module_param_attr_groups(m, &num_pag);
-    printf("       paramattr_groups=%u\n", num_pag);
+    uint32_t num_consts = 0;
+    (void)lagfx_air_module_constants(m, &num_consts);
+    printf("       paramattr_groups=%u  constants=%u\n", num_pag, num_consts);
     lagfx_air_module_free(m);
     free(blob);
     return 0;
