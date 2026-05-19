@@ -1019,12 +1019,41 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                 if (bv != 0u) {
                     uint64_t bg = 0;
                     if (lagfx_task_translate(p, task, bv, &bg)) {
-                        uint8_t h[8] = {0};
-                        if (sdev->desc.shell.read_memory(sdev->desc.shell.opaque, bg, 8, h)) {
-                            LAGFX_LOG("Phase B step5 V2.3 sweep[ref=0x%x] bytes_gpa=0x%llx hdr=%02x%02x%02x%02x %02x%02x%02x%02x%s",
+                        uint8_t h[16] = {0};
+                        if (sdev->desc.shell.read_memory(sdev->desc.shell.opaque, bg, 16, h)) {
+                            LAGFX_LOG("Phase B step5 V2.3 sweep[ref=0x%x] bytes_gpa=0x%llx hdr=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x%s",
                                       i, (unsigned long long)bg,
                                       h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7],
+                                      h[8], h[9], h[10], h[11], h[12], h[13], h[14], h[15],
                                       (h[0]=='M' && h[1]=='T' && h[2]=='L' && h[3]=='B') ? " *** MTLB ***" : "");
+                            /* V2.4 — for type=0x06 (suspected function-bytes/library), the
+                             * first u64 at bytes_va looks like a task-VA pointer to the actual
+                             * shader bytes. Walk one more level. */
+                            if (s[0] == 0x06u) {
+                                uint64_t next_va = lagfx_le64(h + 0);
+                                if (next_va != 0u) {
+                                    uint64_t next_gpa = 0;
+                                    if (lagfx_task_translate(p, task, next_va, &next_gpa)) {
+                                        uint8_t nh[32] = {0};
+                                        if (sdev->desc.shell.read_memory(sdev->desc.shell.opaque, next_gpa, 32, nh)) {
+                                            LAGFX_LOG("Phase B step5 V2.4 child[ref=0x%x type=0x06] next_va=0x%llx next_gpa=0x%llx first32=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x%s",
+                                                      i, (unsigned long long)next_va,
+                                                      (unsigned long long)next_gpa,
+                                                      nh[0], nh[1], nh[2], nh[3], nh[4], nh[5], nh[6], nh[7],
+                                                      nh[8], nh[9], nh[10], nh[11], nh[12], nh[13], nh[14], nh[15],
+                                                      nh[16], nh[17], nh[18], nh[19], nh[20], nh[21], nh[22], nh[23],
+                                                      nh[24], nh[25], nh[26], nh[27], nh[28], nh[29], nh[30], nh[31],
+                                                      (nh[0]=='M' && nh[1]=='T' && nh[2]=='L' && nh[3]=='B') ? " *** MTLB AT TYPE-6 ***" : "");
+                                        } else {
+                                            LAGFX_LOG("Phase B step5 V2.4 child[ref=0x%x] next_gpa=0x%llx read failed",
+                                                      i, (unsigned long long)next_gpa);
+                                        }
+                                    } else {
+                                        LAGFX_LOG("Phase B step5 V2.4 child[ref=0x%x] next_va=0x%llx translate failed",
+                                                  i, (unsigned long long)next_va);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
