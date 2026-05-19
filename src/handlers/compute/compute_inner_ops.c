@@ -996,6 +996,42 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
      *   4. Read first 16 bytes at bytes_gpa → check for "MTLB" magic
      *
      * Env-gated with LAGFX_PHASE_B_DUMP; hard cap of 20 dumps total. */
+    /* V2.3 — one-time sweep at first op_0x74 invocation: walk slot[0..127]
+     * and dump (slot_addr, type, bytes_va) for every live slot. Goal: find
+     * the slot type that holds metallib bytes (MTLB magic at bytes_va).
+     * Env-gated via LAGFX_PHASE_B_SWEEP. */
+    if (getenv("LAGFX_PHASE_B_SWEEP") != NULL && task->heap_pfn != 0u) {
+        static bool swept = false;
+        if (!swept) {
+            swept = true;
+            lagfx_device_t *sdev = (lagfx_device_t *)p->dev;
+            uint64_t heap_va = (uint64_t)task->heap_pfn << 12;
+            for (uint32_t i = 0; i < 128u; i++) {
+                uint64_t sv = heap_va + (uint64_t)i * 12ull;
+                uint64_t sg = 0;
+                if (!lagfx_task_translate(p, task, sv, &sg)) continue;
+                uint8_t s[12] = {0};
+                if (!sdev->desc.shell.read_memory(sdev->desc.shell.opaque, sg, 12, s)) continue;
+                if (s[0] == 0u) continue;  /* slot not live */
+                uint64_t bv = lagfx_le64(s + 4);
+                LAGFX_LOG("Phase B step5 V2.3 sweep[ref=0x%x] type=0x%02x flags=%02x%02x%02x bytes_va=0x%llx",
+                          i, s[0], s[1], s[2], s[3], (unsigned long long)bv);
+                if (bv != 0u) {
+                    uint64_t bg = 0;
+                    if (lagfx_task_translate(p, task, bv, &bg)) {
+                        uint8_t h[8] = {0};
+                        if (sdev->desc.shell.read_memory(sdev->desc.shell.opaque, bg, 8, h)) {
+                            LAGFX_LOG("Phase B step5 V2.3 sweep[ref=0x%x] bytes_gpa=0x%llx hdr=%02x%02x%02x%02x %02x%02x%02x%02x%s",
+                                      i, (unsigned long long)bg,
+                                      h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7],
+                                      (h[0]=='M' && h[1]=='T' && h[2]=='L' && h[3]=='B') ? " *** MTLB ***" : "");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if (getenv("LAGFX_PHASE_B_DUMP") != NULL && task->heap_pfn != 0u) {
         static uint32_t dump_count = 0u;
         if (dump_count < 20u) {
