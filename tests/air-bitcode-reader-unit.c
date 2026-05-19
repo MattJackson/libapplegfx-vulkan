@@ -148,14 +148,23 @@ static int test_real_triangle_metallib(void) {
     /* Inspect type table: triangle should have ~19 types per bcanalyzer. */
     uint32_t num_types = 0;
     const lagfx_air_type_t *types = lagfx_air_module_types(m, &num_types);
-    printf("PASS: triangle .air.bc parsed (triple='%s' num_types=%u from %s)\n",
-           triple, num_types, used);
+    uint32_t num_funcs = 0;
+    const lagfx_air_function_t *fns = lagfx_air_module_functions(m, &num_funcs);
+    printf("PASS: triangle .air.bc parsed (triple='%s' num_types=%u num_funcs=%u from %s)\n",
+           triple, num_types, num_funcs, used);
     if (num_types > 0) {
         printf("       type[0] kind=%d\n", (int)types[0].kind);
         if (num_types > 5) {
             printf("       type[5] kind=%d num_op=%u\n", (int)types[5].kind, types[5].num_op);
         }
     }
+    if (num_funcs > 0) {
+        printf("       fn[0] type_index=%u is_proto=%d\n",
+               fns[0].type_index, (int)fns[0].is_proto);
+    }
+    uint32_t num_pag = 0;
+    (void)lagfx_air_module_param_attr_groups(m, &num_pag);
+    printf("       paramattr_groups=%u\n", num_pag);
     lagfx_air_module_free(m);
     free(blob);
     return 0;
@@ -209,8 +218,14 @@ static int test_real_macos_metallib(void) {
     }
     uint32_t num_types = 0;
     (void)lagfx_air_module_types(m, &num_types);
-    printf("PASS: captured macOS .air.bc parsed (triple='%s' num_types=%u from %s)\n",
-           triple, num_types, used);
+    uint32_t num_funcs = 0;
+    const lagfx_air_function_t *fns = lagfx_air_module_functions(m, &num_funcs);
+    printf("PASS: captured macOS .air.bc parsed (triple='%s' num_types=%u num_funcs=%u from %s)\n",
+           triple, num_types, num_funcs, used);
+    if (num_funcs > 0) {
+        printf("       fn[0] type_index=%u is_proto=%d linkage=%u\n",
+               fns[0].type_index, (int)fns[0].is_proto, fns[0].linkage);
+    }
     lagfx_air_module_free(m);
     free(blob);
     return 0;
