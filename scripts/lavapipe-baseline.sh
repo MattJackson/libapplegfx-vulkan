@@ -107,13 +107,14 @@ log "Probing lavapipe ICD..."
 LAVAPIPE_ICD=""
 LAVAPIPE_VERSION="unknown"
 
-VI_OUTPUT=$(vulkaninfo 2>&1)
-if echo "$VI_OUTPUT" | grep -qE "lvp|llvmpipe|lavapipe"; then
+VI_TMP=$(mktemp)
+vulkaninfo 2>"$VI_TMP" || true
+if grep -qE "lvp|llvmpipe|lavapipe" "$VI_TMP"; then
   LAVAPIPE_ICD="/usr/share/vulkan/icd.d/lvp_icd.json"
   export VK_ICD_FILENAMES="$LAVAPIPE_ICD"
-  LAVAPIPE_VERSION=$(echo "$VI_OUTPUT" | grep "driverInfo" | head -1 || echo "unknown")
+  LAVAPIPE_VERSION=$(grep "driverInfo" "$VI_TMP" | head -1 || echo "unknown")
   log "lavapipe ICD found: $LAVAPIPE_ICD"
-elif echo "$VI_OUTPUT" | grep -qi "lavapipe\|llvmpipe"; then
+elif grep -qi "lavapipe\|llvmpipe" "$VI_TMP"; then
   # Try common lavapipe ICD paths
   for i in /usr/share/vulkan/icd.d/lvp_icd.json \
            /etc/vulkan/icd.d/lvp_icd.json \
@@ -154,7 +155,7 @@ else
   fi
 fi
 
-rm -f "$LOGOUT" 2>/dev/null || true
+rm -f "$VI_TMP" "$LOGOUT" 2>/dev/null || true
 
 # --- Build test binary if needed -------------------------------------------
 
