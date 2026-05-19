@@ -1017,25 +1017,58 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                     if (apv_type != 0u && bytes_va != 0u) {
                         uint64_t bytes_gpa = 0;
                         if (lagfx_task_translate(p, task, bytes_va, &bytes_gpa)) {
-                            uint8_t hdr[16] = {0};
-                            if (dev->desc.shell.read_memory(dev->desc.shell.opaque, bytes_gpa, 16, hdr)) {
-                                LAGFX_LOG("Phase B step5 V2 bytes[ref=0x%x] bytes_va=0x%llx "
-                                          "bytes_gpa=0x%llx hdr=%02x%02x%02x%02x"
-                                          "%02x%02x%02x%02x%02x%02x%02x%02x"
-                                          "%02x%02x%02x%02x",
+                            /* V2.1 — read 128 bytes (was 16); pipeline-state
+                             * descriptors are larger than MTLB headers. The
+                             * 2026-05-18 V2 deploy showed bytes[ref=0xd] starts
+                             * with `0e 00 00 00 3c 00 00 00 0d 00 00 00 29 00 00 00`
+                             * — a 16-byte TLV header with inner_type=0x0e,
+                             * inner_size=0x3c, ref=reference, payload_len=0x29.
+                             * Sub-objectIds for vertex/fragment funcs are
+                             * likely in the payload beyond +16. */
+                            uint8_t hdr[128] = {0};
+                            if (dev->desc.shell.read_memory(dev->desc.shell.opaque, bytes_gpa, 128, hdr)) {
+                                LAGFX_LOG("Phase B step5 V2.1 bytes[ref=0x%x] bytes_va=0x%llx "
+                                          "bytes_gpa=0x%llx first16=%02x%02x%02x%02x "
+                                          "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
                                           reference, (unsigned long long)bytes_va,
                                           (unsigned long long)bytes_gpa,
                                           hdr[0], hdr[1], hdr[2], hdr[3],
                                           hdr[4], hdr[5], hdr[6], hdr[7],
                                           hdr[8], hdr[9], hdr[10], hdr[11],
                                           hdr[12], hdr[13], hdr[14], hdr[15]);
+                                /* Parse TLV header per V2 observation:
+                                 *   u32 inner_type @ +0, u32 inner_size @ +4,
+                                 *   u32 ref @ +8, u32 payload_len @ +12 */
+                                uint32_t tlv_type = lagfx_le32(hdr + 0);
+                                uint32_t tlv_size = lagfx_le32(hdr + 4);
+                                uint32_t tlv_ref  = lagfx_le32(hdr + 8);
+                                uint32_t tlv_len  = lagfx_le32(hdr + 12);
+                                LAGFX_LOG("Phase B step5 V2.1 TLV: type=0x%x size=0x%x ref=0x%x len=0x%x",
+                                          tlv_type, tlv_size, tlv_ref, tlv_len);
+                                LAGFX_LOG("Phase B step5 V2.1 desc[ref=0x%x] +16..+63: "
+                                          "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x "
+                                          "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x "
+                                          "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+                                          reference,
+                                          hdr[16], hdr[17], hdr[18], hdr[19],
+                                          hdr[20], hdr[21], hdr[22], hdr[23],
+                                          hdr[24], hdr[25], hdr[26], hdr[27],
+                                          hdr[28], hdr[29], hdr[30], hdr[31],
+                                          hdr[32], hdr[33], hdr[34], hdr[35],
+                                          hdr[36], hdr[37], hdr[38], hdr[39],
+                                          hdr[40], hdr[41], hdr[42], hdr[43],
+                                          hdr[44], hdr[45], hdr[46], hdr[47],
+                                          hdr[48], hdr[49], hdr[50], hdr[51],
+                                          hdr[52], hdr[53], hdr[54], hdr[55],
+                                          hdr[56], hdr[57], hdr[58], hdr[59],
+                                          hdr[60], hdr[61], hdr[62], hdr[63]);
                                 if (hdr[0] == 'M' && hdr[1] == 'T' &&
                                     hdr[2] == 'L' && hdr[3] == 'B') {
-                                    LAGFX_LOG("Phase B step5 V2 *** MTLB HIT *** ref=0x%x — V2 confirmed", reference);
+                                    LAGFX_LOG("Phase B step5 V2.1 *** MTLB HIT *** ref=0x%x", reference);
                                 }
                             }
                         } else {
-                            LAGFX_LOG("Phase B step5 V2 bytes_va=0x%llx translate failed", (unsigned long long)bytes_va);
+                            LAGFX_LOG("Phase B step5 V2.1 bytes_va=0x%llx translate failed", (unsigned long long)bytes_va);
                         }
                     }
                     dump_count++;
