@@ -97,6 +97,13 @@ struct lagfx_air_module {
     uint32_t datalayout_offset;
     uint32_t source_filename_offset;
 
+    /* True when the file contains a STRTAB_BLOCK or SYMTAB_BLOCK at the
+     * root level. When set, symbol-bearing module records (FUNCTION,
+     * GLOBALVAR, ALIAS, IFUNC) prepend two operands [strtab_offset,
+     * strtab_size] before the rest of the record schema. Both the
+     * bundled triangle and captured macOS metallibs use this layout. */
+    bool has_strtab;
+
     /* Parsed tables (pointers into arena, counts inline). Phase 1
      * populates incrementally; some may be empty for some modules. */
     lagfx_air_type_t            *types;
@@ -304,6 +311,32 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
     lagfx_blockinfo_t blockinfo;
     lagfx_blockinfo_init(&blockinfo);
 
+    /* Step 3a: STRTAB schema selection.
+     *
+     * Symbol-bearing module records (FUNCTION, GLOBALVAR, ALIAS, IFUNC)
+     * use one of two operand layouts:
+     *
+     *   STRTAB-bearing (newer):  [strtab_off, strtab_size, type, cc,
+     *                             isProto, linkage, paramattr, ...]
+     *   Legacy:                  [type, cc, isProto, linkage,
+     *                             paramattr, ...]
+     *
+     * The triangle and every captured macOS metallib in
+     * `scratch/captured-metallibs-2026-05-19/` use the STRTAB-bearing
+     * layout (verified by manual decode of FUNCTION records: strtab_size
+     * always matches the function name length, and isProto sits at the
+     * expected schema slot). We default to that schema.
+     *
+     * A root-level STRTAB_BLOCK/SYMTAB_BLOCK pre-scan was attempted
+     * (commit ${PR}) but Apple's MODULE_BLOCK size accounting confuses
+     * the lightweight pre-pass: triangle was detected fine, but
+     * captured-macOS files have MODULE_BLOCK extending past its
+     * self-reported block_size. Rather than ship a half-working
+     * detector, we hard-code the schema and revisit if we ever ingest
+     * legacy-layout AIR bitcode (none observed in 2 weeks of capture). */
+    m->has_strtab = true;
+    LAGFX_TRACE("air_bitcode_reader: assuming STRTAB-bearing FUNCTION schema");
+
     /* Step 4: parse MODULE_BLOCK + its records.
      * Bitstream starts immediately after the 4-byte magic. The first
      * abbrev code (at width 2, the root width) should be
@@ -343,6 +376,11 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
         if (blk.block_id == LAGFX_BLK_MODULE) {
             /* Parse MODULE_BLOCK records + sub-blocks. */
             uint64_t scratch_ops[LAGFX_RECORD_MAX_OPS];
+            /* Cursor into m->functions[] for body-offset assignment as
+             * FUNCTION_BLOCK sub-blocks are encountered. LLVM emits one
+             * FUNCTION_BLOCK per non-prototype FUNCTION declaration in
+             * declaration order; we walk both lists in lock-step. */
+            uint32_t next_body_fn = 0u;
             while (lagfx_bs_pos(&bs) < blk.end_pos) {
                 lagfx_record_t rec = {0};
                 bool is_end = false, is_subblock = false, is_define_abbrev = false;
@@ -517,6 +555,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                         m->constants = consts;
                         m->num_constants = num_consts;
                         LAGFX_TRACE("air_bitcode_reader: CONSTANTS_BLOCK decoded %u constants", num_consts);
+                        (void)lagfx_bs_seek(&bs, cb.end_pos);
                         continue;
                     }
 
@@ -541,6 +580,10 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                             if (m_sub) { lagfx_block_skip(&bs, mb.abbrev_width); continue; }
                             if (m_da) continue;
                         }
+                        /* Recover from early-exit: seek to declared end so
+                         * the outer MODULE walker resumes cleanly even if
+                         * we hit an unknown abbrev mid-block. */
+                        (void)lagfx_bs_seek(&bs, mb.end_pos);
                         continue;
                     }
 
@@ -586,6 +629,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                         m->param_attr_groups = groups;
                         m->num_param_attr_groups = num_groups;
                         LAGFX_TRACE("air_bitcode_reader: PARAMATTR_GROUP decoded %u groups", num_groups);
+                        (void)lagfx_bs_seek(&bs, pg.end_pos);
                         continue;
                     }
 
@@ -606,6 +650,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                             if (p_da) continue;
                             /* Phase 1: just walk. */
                         }
+                        (void)lagfx_bs_seek(&bs, pa.end_pos);
                         continue;
                     }
 
@@ -629,6 +674,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                              * surface the tags if needed for function-body
                              * decoding. */
                         }
+                        (void)lagfx_bs_seek(&bs, ob.end_pos);
                         continue;
                     }
 
@@ -758,6 +804,41 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                         m->num_types = num_types;
                         LAGFX_TRACE("air_bitcode_reader: TYPE_BLOCK decoded %u entries",
                                     num_types);
+                        (void)lagfx_bs_seek(&bs, tb.end_pos);
+                        continue;
+                    }
+
+                    if (sub_id == LAGFX_BLK_FUNCTION) {
+                        /* FUNCTION_BLOCK: instruction stream for one
+                         * function body. Phase 2 will decode; Phase 1
+                         * just stashes the bit-offset + length on the
+                         * next unassigned non-prototype function. The
+                         * stashed offset points AT the ENTER_SUBBLOCK
+                         * abbrev code so a Phase 2 reader can position
+                         * its bitstream cursor there and call
+                         * lagfx_block_enter() directly. */
+                        size_t body_start = lagfx_bs_pos(&bs);
+                        if (!lagfx_block_skip(&bs, blk.abbrev_width)) {
+                            LAGFX_ERR("air_bitcode_reader: failed to skip FUNCTION_BLOCK");
+                            break;
+                        }
+                        size_t body_end = lagfx_bs_pos(&bs);
+                        /* Advance next_body_fn past any prototypes (no
+                         * body to attach). */
+                        while (next_body_fn < m->num_functions &&
+                               m->functions[next_body_fn].is_proto) {
+                            next_body_fn++;
+                        }
+                        if (next_body_fn < m->num_functions) {
+                            m->functions[next_body_fn].body_offset = body_start;
+                            m->functions[next_body_fn].body_length = body_end - body_start;
+                            LAGFX_TRACE("air_bitcode_reader: FUNCTION_BLOCK[%u] body @ bit %zu len %zu",
+                                        next_body_fn, body_start, body_end - body_start);
+                            next_body_fn++;
+                        } else {
+                            LAGFX_LOG("air_bitcode_reader: FUNCTION_BLOCK without a matching non-proto declaration (functions=%u)",
+                                      m->num_functions);
+                        }
                         continue;
                     }
 
@@ -797,43 +878,55 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                     }
                     case 8u:  /* MODULE_CODE_FUNCTION */
                     {
-                        /* Operands (per llvm/Bitcode/LLVMBitCodes.h):
-                         *   op0 = type_index (function type)
-                         *   op1 = calling convention
-                         *   op2 = isProto (0 = has body, 1 = declaration)
-                         *   op3 = linkage
-                         *   op4 = paramattr index (1-based; 0 = none)
-                         *   op5+ = additional fields (alignment, section, etc.)
-                         */
-                        if (rec.num_ops < 3u) break;
-                        /* Allocate function slot. */
-                        uint32_t off = arena_reserve(&m->arena, sizeof(lagfx_air_function_t));
-                        if (off == 0u) {
+                        /* Two schemas per llvm/Bitcode/LLVMBitCodes.h:
+                         *
+                         *  STRTAB-bearing module (has_strtab=true):
+                         *    op0 = strtab_offset (name into root STRTAB)
+                         *    op1 = strtab_size   (name length)
+                         *    op2 = type_index (function type)
+                         *    op3 = calling convention
+                         *    op4 = isProto (0 = has body, 1 = declaration)
+                         *    op5 = linkage
+                         *    op6 = paramattr index (1-based; 0 = none)
+                         *    op7+ = alignment, section, visibility, ...
+                         *
+                         *  Legacy / non-STRTAB module:
+                         *    op0 = type_index
+                         *    op1 = calling convention
+                         *    op2 = isProto
+                         *    op3 = linkage
+                         *    op4 = paramattr index
+                         *    op5+ = ...
+                         *
+                         * Triangle + every captured macOS metallib we have
+                         * use the STRTAB schema; the legacy branch is
+                         * here for completeness against older bitcode. */
+                        const uint32_t off_off = m->has_strtab ? 2u : 0u;
+                        if (rec.num_ops < off_off + 3u) break;
+                        uint32_t blob_off = arena_reserve(&m->arena, sizeof(lagfx_air_function_t));
+                        if (blob_off == 0u) {
                             lagfx_air_module_free(m);
                             return LAGFX_ERR_OUT_OF_MEMORY;
                         }
-                        /* m->functions is set to the FIRST function's slot
-                         * when num_functions transitions 0 → 1; further
-                         * appends rely on arena being contiguous, which it
-                         * isn't guaranteed to be after intermediate
-                         * arena_reserve calls. To keep this simple for
-                         * Phase 1, we just track the offset of the first
-                         * and the count, and rely on the fact that the
-                         * MODULE_CODE_FUNCTION records typically appear
-                         * contiguously after the sub-blocks have been
-                         * walked. If they don't, we may need to copy. For
-                         * now: assert via the offset check. */
                         if (m->num_functions == 0u) {
-                            m->functions = (lagfx_air_function_t *)(m->arena.base + off);
+                            m->functions = (lagfx_air_function_t *)(m->arena.base + blob_off);
                         }
                         lagfx_air_function_t *fn =
-                            (lagfx_air_function_t *)(m->arena.base + off);
-                        fn->name_offset = 0u;  /* names live in VALUE_SYMTAB; not yet decoded */
-                        fn->type_index = (uint32_t)rec.ops[0];
-                        fn->linkage = (rec.num_ops > 3) ? (uint32_t)rec.ops[3] : 0u;
-                        fn->visibility = (rec.num_ops > 7) ? (uint32_t)rec.ops[7] : 0u;
-                        fn->is_proto = (rec.ops[2] != 0u);
-                        fn->param_attr_index = (rec.num_ops > 4) ? (uint32_t)rec.ops[4] : 0u;
+                            (lagfx_air_function_t *)(m->arena.base + blob_off);
+                        /* For STRTAB modules: stash strtab_offset in
+                         * name_offset for now (resolved to a string later
+                         * when STRTAB BLOB is parsed). For non-STRTAB:
+                         * name comes from VALUE_SYMTAB and stays 0 here. */
+                        fn->name_offset      = m->has_strtab ? (uint32_t)rec.ops[0] : 0u;
+                        fn->type_index       = (uint32_t)rec.ops[off_off + 0u];
+                        /* off_off+1 is calling convention; not stored yet. */
+                        fn->is_proto         = (rec.ops[off_off + 2u] != 0u);
+                        fn->linkage          = (rec.num_ops > off_off + 3u)
+                                                ? (uint32_t)rec.ops[off_off + 3u] : 0u;
+                        fn->param_attr_index = (rec.num_ops > off_off + 4u)
+                                                ? (uint32_t)rec.ops[off_off + 4u] : 0u;
+                        fn->visibility       = (rec.num_ops > off_off + 7u)
+                                                ? (uint32_t)rec.ops[off_off + 7u] : 0u;
                         fn->body_offset = 0u;
                         fn->body_length = 0u;
                         m->num_functions++;

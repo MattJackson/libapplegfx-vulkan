@@ -158,9 +158,38 @@ static int test_real_triangle_metallib(void) {
             printf("       type[5] kind=%d num_op=%u\n", (int)types[5].kind, types[5].num_op);
         }
     }
-    if (num_funcs > 0) {
-        printf("       fn[0] type_index=%u is_proto=%d\n",
-               fns[0].type_index, (int)fns[0].is_proto);
+    /* Triangle has 3 FUNCTION declarations: one body ("triangle_vertex")
+     * and two intrinsic prototypes. Phase 2 step 1 added STRTAB-aware
+     * record parsing + body_offset stashing; verify both are correct. */
+    if (num_funcs != 3) {
+        printf("FAIL: expected num_funcs=3, got %u\n", num_funcs);
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    uint32_t protos = 0, with_body = 0;
+    for (uint32_t i = 0; i < num_funcs; i++) {
+        if (fns[i].is_proto) protos++;
+        else with_body++;
+        printf("       fn[%u] type_index=%u is_proto=%d body_offset=%zu body_length=%zu\n",
+               i, fns[i].type_index, (int)fns[i].is_proto,
+               fns[i].body_offset, fns[i].body_length);
+    }
+    if (with_body != 1 || protos != 2) {
+        printf("FAIL: triangle expected 1 body + 2 protos, got %u + %u\n",
+               with_body, protos);
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    /* The one non-proto must have a populated body_offset/body_length. */
+    for (uint32_t i = 0; i < num_funcs; i++) {
+        if (!fns[i].is_proto && (fns[i].body_offset == 0 || fns[i].body_length == 0)) {
+            printf("FAIL: fn[%u] non-proto missing body_offset/length\n", i);
+            lagfx_air_module_free(m);
+            free(blob);
+            return 1;
+        }
     }
     uint32_t num_pag = 0;
     (void)lagfx_air_module_param_attr_groups(m, &num_pag);
@@ -224,16 +253,82 @@ static int test_real_macos_metallib(void) {
     const lagfx_air_function_t *fns = lagfx_air_module_functions(m, &num_funcs);
     printf("PASS: captured macOS .air.bc parsed (triple='%s' num_types=%u num_funcs=%u from %s)\n",
            triple, num_types, num_funcs, used);
-    if (num_funcs > 0) {
-        printf("       fn[0] type_index=%u is_proto=%d linkage=%u\n",
-               fns[0].type_index, (int)fns[0].is_proto, fns[0].linkage);
+    /* ViewportToNDC is a compiled shader: 1 FUNCTION declaration with a
+     * body (no intrinsic prototypes — those would appear if the shader
+     * called any air.* helpers). */
+    if (num_funcs != 1) {
+        printf("FAIL: expected num_funcs=1 for ViewportToNDC, got %u\n", num_funcs);
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    printf("       fn[0] type_index=%u is_proto=%d linkage=%u body_offset=%zu body_length=%zu\n",
+           fns[0].type_index, (int)fns[0].is_proto, fns[0].linkage,
+           fns[0].body_offset, fns[0].body_length);
+    if (fns[0].is_proto) {
+        printf("FAIL: ViewportToNDC fn[0] should have a body (is_proto=0)\n");
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    /* body_offset stashing for ViewportToNDC requires the MODULE walker
+     * to successfully traverse the OPERAND_BUNDLE_TAGS_BLOCK that sits
+     * BEFORE FUNCTION_BLOCK in Apple's emission order. That block uses
+     * Apple-custom abbrev encoding — bcanalyzer dies there too, see
+     * tail of /tmp/viewport_dump.txt with "Invalid abbrev number".
+     * Tracked under Phase 2 step 4. Triangle's MODULE order puts
+     * OPERAND_BUNDLE_TAGS AFTER FUNCTION_BLOCK, so triangle works. */
+    if (fns[0].body_offset != 0) {
+        printf("       NOTE: body_offset stash works for ViewportToNDC — Phase 2.4 progress\n");
+    } else {
+        printf("       NOTE: body_offset=0 expected (Apple OPERAND_BUNDLE_TAGS decode pending — Phase 2.4)\n");
     }
     lagfx_air_module_free(m);
     free(blob);
     return 0;
 }
 
-int main(void) {
+static int test_file_mode(const char *filepath) {
+    size_t len = 0;
+    uint8_t *blob = slurp(filepath, &len);
+    if (!blob) {
+        printf("ERROR: failed to open '%s'\n", filepath);
+        return 1;
+    }
+
+    lagfx_air_module_t *m = NULL;
+    lagfx_status_t st = lagfx_air_module_open(blob, len, &m);
+    if (st != LAGFX_OK || m == NULL) {
+        printf("ERROR: open failed (st=%d)\n", (int)st);
+        free(blob);
+        return 1;
+    }
+
+    const char *triple = lagfx_air_module_triple(m);
+    uint32_t num_types = 0;
+    (void)lagfx_air_module_types(m, &num_types);
+    uint32_t num_funcs = 0;
+    (void)lagfx_air_module_functions(m, &num_funcs);
+    uint32_t num_pag = 0;
+    (void)lagfx_air_module_param_attr_groups(m, &num_pag);
+    uint32_t num_consts = 0;
+    (void)lagfx_air_module_constants(m, &num_consts);
+
+    const char *dl = lagfx_air_module_datalayout(m);
+    printf("triple='%s' datalayout='%s' num_types=%u num_funcs=%u paramattr_groups=%u constants=%u\n",
+           triple ? triple : "(none)", dl ? dl : "(none)",
+           num_types, num_funcs, num_pag, num_consts);
+
+    lagfx_air_module_free(m);
+    free(blob);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc == 3 && strcmp(argv[1], "--file") == 0) {
+        return test_file_mode(argv[2]);
+    }
+
     int rc = 0;
     rc |= test_open_close_smoke();
     rc |= test_bad_magic();
