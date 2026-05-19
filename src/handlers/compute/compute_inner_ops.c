@@ -998,6 +998,52 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                 LAGFX_LOG("Phase B lookup pipeline_ref=0x%x vert=0x%x %s(gpa=0x%llx len=%u) frag=0x%x %s(gpa=0x%llx len=%u)",
                           reference, vert_ref, got_v ? "OK" : "FAIL", (unsigned long long)v_gpa, v_len,
                           frag_ref, got_f ? "OK" : (frag_ref == 0 ? "N/A" : "FAIL"), (unsigned long long)f_gpa, f_len);
+
+                /* On FAIL: dump what's actually at slot[vert_ref] so we can
+                 * see whether the type is wrong, the bytes_va is wrong, or
+                 * the MTLB magic is missing. */
+                if (!got_v) {
+                    lagfx_device_t *ddbg = (lagfx_device_t *)p->dev;
+                    uint64_t sva = ((uint64_t)task->heap_pfn << 12) + (uint64_t)vert_ref * 12ull;
+                    uint64_t sgpa = 0;
+                    if (lagfx_task_translate(p, task, sva, &sgpa)) {
+                        uint8_t slot_bytes[12] = {0};
+                        if (ddbg->desc.shell.read_memory(ddbg->desc.shell.opaque, sgpa, 12, slot_bytes)) {
+                            uint64_t bv = lagfx_le64(slot_bytes + 4);
+                            LAGFX_LOG("Phase B lookup-fail vert=0x%x slot_va=0x%llx slot_gpa=0x%llx type=0x%02x flags=%02x%02x%02x bytes_va=0x%llx",
+                                      vert_ref, (unsigned long long)sva, (unsigned long long)sgpa,
+                                      slot_bytes[0], slot_bytes[1], slot_bytes[2], slot_bytes[3],
+                                      (unsigned long long)bv);
+                            /* If type IS 0x06, dig deeper: read bytes_va → next_va → MTLB check. */
+                            if (slot_bytes[0] == 0x06u && bv != 0u) {
+                                uint64_t bgpa = 0;
+                                if (lagfx_task_translate(p, task, bv, &bgpa)) {
+                                    uint8_t lv1[16] = {0};
+                                    if (ddbg->desc.shell.read_memory(ddbg->desc.shell.opaque, bgpa, 16, lv1)) {
+                                        uint64_t nva = lagfx_le64(lv1 + 0);
+                                        LAGFX_LOG("Phase B lookup-fail vert=0x%x lvl1 bytes_gpa=0x%llx first16=%02x%02x%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x%02x%02x next_va=0x%llx",
+                                                  vert_ref, (unsigned long long)bgpa,
+                                                  lv1[0], lv1[1], lv1[2], lv1[3], lv1[4], lv1[5], lv1[6], lv1[7],
+                                                  lv1[8], lv1[9], lv1[10], lv1[11], lv1[12], lv1[13], lv1[14], lv1[15],
+                                                  (unsigned long long)nva);
+                                        if (nva != 0u) {
+                                            uint64_t ngpa = 0;
+                                            if (lagfx_task_translate(p, task, nva, &ngpa)) {
+                                                uint8_t lv2[8] = {0};
+                                                if (ddbg->desc.shell.read_memory(ddbg->desc.shell.opaque, ngpa, 8, lv2)) {
+                                                    LAGFX_LOG("Phase B lookup-fail vert=0x%x lvl2 next_gpa=0x%llx first8=%02x%02x%02x%02x %02x%02x%02x%02x%s",
+                                                              vert_ref, (unsigned long long)ngpa,
+                                                              lv2[0], lv2[1], lv2[2], lv2[3], lv2[4], lv2[5], lv2[6], lv2[7],
+                                                              (lv2[0]=='M' && lv2[1]=='T' && lv2[2]=='L' && lv2[3]=='B') ? " HAS MTLB" : " NO MTLB");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 lookup_count++;
             }
         }
