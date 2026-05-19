@@ -506,5 +506,22 @@ endif
 # multiple bugs and was removed; the API is correctness-validated by the
 # in-vivo MTLB hits documented in phase_b_step5_v2_4_MTLB_CONFIRMED.md.
 
+# Phase 1 clean-room AIR bitcode reader unit tests. Validates wrapper-header
+# parsing + invalid-input rejection. Per-block decoder tests land as the
+# decoders themselves do (TYPE_BLOCK, PARAMATTR, CONSTANTS, METADATA, etc.).
+if fs.is_file(meson.current_source_dir() / 'air-bitcode-reader-unit.c')
+  air_reader_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air_reader_deps += [vulkan_dep]
+  endif
+  air_reader_test = executable('air-bitcode-reader-unit',
+    'air-bitcode-reader-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air_reader_deps,
+    build_by_default : true,
+  )
+  test('air bitcode reader (unit)', air_reader_test)
+endif
+
 
 

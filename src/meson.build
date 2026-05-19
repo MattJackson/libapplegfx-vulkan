@@ -22,3 +22,5 @@ subdir('vulkan')
 subdir('shaders')
 subdir('translate')
 subdir('air2spirv')
+subdir('air')             # Phase 1+ clean-room AIR bitcode reader
+lagfx_sources += air_sources
