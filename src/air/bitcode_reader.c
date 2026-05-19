@@ -17,6 +17,7 @@
 
 #include "bitcode_reader.h"
 #include "bitstream.h"
+#include "block_reader.h"
 
 #include "common/log.h"
 
@@ -31,30 +32,6 @@ static const uint8_t kLlvmBitcodeWrapperMagic[4] = { 0xDE, 0xC0, 0x17, 0x0B };
 
 /* Raw LLVM Bitstream magic (the body starts with this). */
 static const uint8_t kLlvmBitstreamMagic[4] = { 0x42, 0x43, 0xC0, 0xDE };  /* 'B','C',0xC0,0xDE */
-
-/* Standard LLVM block IDs we care about in Phase 1.
- * Reference: llvm/include/llvm/Bitcode/LLVMBitCodes.h (upstream). */
-enum {
-    LAGFX_BLK_BLOCKINFO          = 0,
-    LAGFX_BLK_FIRST_APPLICATION  = 8,
-    LAGFX_BLK_MODULE             = 8,
-    LAGFX_BLK_PARAMATTR          = 9,
-    LAGFX_BLK_PARAMATTR_GROUP    = 10,
-    LAGFX_BLK_CONSTANTS          = 11,
-    LAGFX_BLK_FUNCTION           = 12,
-    LAGFX_BLK_IDENTIFICATION     = 13,
-    LAGFX_BLK_VALUE_SYMTAB       = 14,
-    LAGFX_BLK_METADATA           = 15,
-    LAGFX_BLK_METADATA_ATTACHMENT= 16,
-    LAGFX_BLK_TYPE               = 17,
-    LAGFX_BLK_USELIST            = 18,
-    LAGFX_BLK_MODULE_STRTAB      = 19,
-    LAGFX_BLK_GLOBALVAL_SUMMARY  = 20,
-    LAGFX_BLK_OPERAND_BUNDLE_TAGS= 21,
-    LAGFX_BLK_METADATA_KIND      = 22,
-    LAGFX_BLK_STRTAB             = 23,
-    LAGFX_BLK_SYMTAB             = 24,
-};
 
 /* Module record codes we care about for Phase 1.
  * Reference: llvm/include/llvm/Bitcode/LLVMBitCodes.h ModuleCodes enum. */
@@ -298,13 +275,120 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
         return LAGFX_ERR_OUT_OF_MEMORY;
     }
 
-    /* Step 3: TODO Phase 1 sub-tasks — parse MODULE_BLOCK and its
-     * children. For now, we have the wrapper validated and an empty
-     * module struct ready to populate. The bitstream-cursor + per-block
-     * decoders land incrementally as separate sub-task commits. */
+    /* Step 3: parse MODULE_BLOCK + its records.
+     * Bitstream starts immediately after the 4-byte magic. The first
+     * abbrev code (at width 2, the root width) should be
+     * ENTER_SUBBLOCK introducing MODULE_BLOCK. */
     lagfx_bitstream_t bs;
     lagfx_bs_init(&bs, blob + body_off, body_len);
-    (void)bs;  /* used by per-block decoders to come */
+
+    /* Root abbrev width is 2 bits per LLVM Bitstream spec. */
+    const uint32_t kRootAbbrevWidth = 2u;
+
+    /* Enter top-level block. Could be IDENTIFICATION_BLOCK first then
+     * MODULE_BLOCK — Apple's metallib bitcode starts with IDENT then
+     * MODULE. We scan blocks at the root level until we hit MODULE. */
+    while (!lagfx_bs_at_end(&bs)) {
+        bool err = false;
+        size_t pos_before_code = lagfx_bs_pos(&bs);
+        uint32_t code = lagfx_bs_read_bits(&bs, kRootAbbrevWidth, &err);
+        if (err) break;
+        if (code != LAGFX_ABBREV_ENTER_SUBBLOCK) {
+            /* Root level should only have ENTER_SUBBLOCK at top. */
+            LAGFX_ERR("air_bitcode_reader: unexpected root abbrev code %u", code);
+            lagfx_air_module_free(m);
+            return LAGFX_ERR_PROTOCOL;
+        }
+        /* Seek back to re-enter via the helper. */
+        if (!lagfx_bs_seek(&bs, pos_before_code)) {
+            lagfx_air_module_free(m);
+            return LAGFX_ERR_PROTOCOL;
+        }
+        lagfx_block_t blk;
+        if (!lagfx_block_enter(&bs, kRootAbbrevWidth, &blk)) {
+            LAGFX_ERR("air_bitcode_reader: failed to enter root sub-block");
+            lagfx_air_module_free(m);
+            return LAGFX_ERR_PROTOCOL;
+        }
+
+        if (blk.block_id == LAGFX_BLK_MODULE) {
+            /* Parse MODULE_BLOCK records + sub-blocks. */
+            uint64_t scratch_ops[LAGFX_RECORD_MAX_OPS];
+            while (lagfx_bs_pos(&bs) < blk.end_pos) {
+                lagfx_record_t rec = {0};
+                bool is_end = false, is_subblock = false, is_define_abbrev = false;
+                uint32_t sub_id = 0;
+                if (!lagfx_block_next_record(&blk, scratch_ops, &rec,
+                                              &is_end, &is_subblock,
+                                              &is_define_abbrev, &sub_id)) {
+                    /* Application-defined abbrev or other unhandled
+                     * encoding. Phase 1 can't handle these; bail with
+                     * what we have so far rather than corrupting. */
+                    LAGFX_LOG("air_bitcode_reader: hit unhandled abbrev at bit %zu — Phase 1 stopping module parse here",
+                              lagfx_bs_pos(&bs));
+                    break;
+                }
+                if (is_end) break;
+                if (is_subblock) {
+                    /* Skip sub-block for now — per-block decoders land
+                     * in subsequent commits. */
+                    if (!lagfx_block_skip(&bs, blk.abbrev_width)) {
+                        LAGFX_ERR("air_bitcode_reader: failed to skip sub-block id=%u", sub_id);
+                        break;
+                    }
+                    continue;
+                }
+                if (is_define_abbrev) continue;
+
+                /* Dispatch on record code. Phase 1 handles the
+                 * module-level metadata strings (TRIPLE, DATALAYOUT,
+                 * SOURCE_FILENAME); per-field decoders for FUNCTION
+                 * records etc. follow later. */
+                switch (rec.code) {
+                    case 1u:  /* MODULE_CODE_VERSION */
+                        /* op[0] = version (typically 2). Not stored. */
+                        break;
+                    case 2u:  /* MODULE_CODE_TRIPLE — operands are 1 char per op */
+                    case 3u:  /* MODULE_CODE_DATALAYOUT — same encoding */
+                    case 16u: /* MODULE_CODE_SOURCE_FILENAME — same encoding */
+                    {
+                        /* Reserve space for NUL terminator. */
+                        size_t len = rec.num_ops;
+                        uint32_t off = arena_reserve(&m->arena, len + 1u);
+                        if (off == 0u) {
+                            lagfx_air_module_free(m);
+                            return LAGFX_ERR_OUT_OF_MEMORY;
+                        }
+                        for (uint32_t i = 0; i < len; i++) {
+                            m->arena.base[off + i] = (uint8_t)(rec.ops[i] & 0xFFu);
+                        }
+                        m->arena.base[off + len] = 0;
+                        if (rec.code == 2u) m->triple_offset = off;
+                        else if (rec.code == 3u) m->datalayout_offset = off;
+                        else m->source_filename_offset = off;
+                        break;
+                    }
+                    default:
+                        /* Other module-level records (FUNCTION decls,
+                         * GLOBALVAR, ALIAS, etc.) — Phase 1 ignores
+                         * them; later phases will decode. */
+                        break;
+                }
+            }
+            /* MODULE_BLOCK done. */
+            break;
+        } else {
+            /* Non-MODULE block at root (e.g., IDENTIFICATION_BLOCK).
+             * Skip and continue. We already entered it; need to seek
+             * past its end. */
+            if (!lagfx_bs_seek(&bs, blk.end_pos)) {
+                LAGFX_ERR("air_bitcode_reader: failed to seek past root sub-block id=%u",
+                          blk.block_id);
+                lagfx_air_module_free(m);
+                return LAGFX_ERR_PROTOCOL;
+            }
+        }
+    }
 
     *out_module = m;
     return LAGFX_OK;

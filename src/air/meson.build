@@ -4,4 +4,5 @@
 air_sources = files(
   'bitcode_reader.c',
   'bitstream.c',
+  'block_reader.c',
 )

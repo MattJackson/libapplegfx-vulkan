@@ -97,13 +97,111 @@ static int test_truncated_wrapper(void) {
 }
 
 static int test_real_triangle_metallib(void) {
-    /* The full .metallib has its own MTLB wrapper format around the
-     * embedded bitcode. We need just the bitcode payload for the
-     * reader. For now we use the canned wrapper test above; a future
-     * iteration will plumb metallib_extract through to feed actual
-     * function bitcode payloads here. */
-    (void)slurp;  /* keep helper referenced for future tests */
-    printf("SKIP: triangle metallib end-to-end (needs metallib_extract integration)\n");
+    /* Locate the extracted triangle bitcode. Tests run from builddir,
+     * so source is at ../tests/fixtures. The .air.bc files we want
+     * come from running triangle-extract-only on the triangle metallib,
+     * which we do once and stash in builddir-relative paths. */
+    const char *candidates[] = {
+        "/tmp/scoping/triangle_vertex.air.bc",
+        "tests/fixtures/triangle_vertex.air.bc",
+        "../tests/fixtures/triangle_vertex.air.bc",
+        NULL
+    };
+    uint8_t *blob = NULL;
+    size_t   len  = 0;
+    const char *used = NULL;
+    for (int i = 0; candidates[i]; i++) {
+        blob = slurp(candidates[i], &len);
+        if (blob) { used = candidates[i]; break; }
+    }
+    if (!blob) {
+        printf("SKIP: triangle .air.bc fixture not found (regenerate via "
+               "examples/triangle-extract-only)\n");
+        return 0;
+    }
+
+    lagfx_air_module_t *m = NULL;
+    lagfx_status_t st = lagfx_air_module_open(blob, len, &m);
+    if (st != LAGFX_OK || m == NULL) {
+        printf("FAIL: triangle .air.bc open: st=%d m=%p (from %s)\n",
+               (int)st, (void *)m, used);
+        free(blob);
+        return 1;
+    }
+
+    /* Validate the triple — triangle metallib has
+     * "air64_v28-apple-macosx<version>". */
+    const char *triple = lagfx_air_module_triple(m);
+    if (!triple) {
+        printf("FAIL: triangle .air.bc missing triple\n");
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    if (strncmp(triple, "air64", 5) != 0) {
+        printf("FAIL: triangle .air.bc triple doesn't start with 'air64' (got '%s')\n",
+               triple);
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    printf("PASS: triangle .air.bc parsed (triple='%s' from %s)\n",
+           triple, used);
+    lagfx_air_module_free(m);
+    free(blob);
+    return 0;
+}
+
+static int test_real_macos_metallib(void) {
+    /* Try one of the captured macOS metallibs. Like the triangle test
+     * above, these live in /tmp/air-bc-dump/ after running
+     * triangle-extract-only on a captured .metallib. */
+    const char *candidates[] = {
+        "/tmp/air-bc-dump/ViewportToNDC.air.bc",
+        "../scratch/captured-metallibs-2026-05-19/ViewportToNDC.air.bc",
+        NULL
+    };
+    uint8_t *blob = NULL;
+    size_t   len  = 0;
+    const char *used = NULL;
+    for (int i = 0; candidates[i]; i++) {
+        blob = slurp(candidates[i], &len);
+        if (blob) { used = candidates[i]; break; }
+    }
+    if (!blob) {
+        printf("SKIP: captured macOS .air.bc not found (regenerate via "
+               "extract on captured-metallibs-2026-05-19/)\n");
+        return 0;
+    }
+
+    lagfx_air_module_t *m = NULL;
+    lagfx_status_t st = lagfx_air_module_open(blob, len, &m);
+    if (st != LAGFX_OK || m == NULL) {
+        printf("FAIL: captured macOS .air.bc open: st=%d m=%p (from %s)\n",
+               (int)st, (void *)m, used);
+        free(blob);
+        return 1;
+    }
+
+    const char *triple = lagfx_air_module_triple(m);
+    if (!triple) {
+        printf("FAIL: captured macOS .air.bc missing triple\n");
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    /* Captured metallibs are 'air64-apple-macosx15.7.0' (no _v28 suffix). */
+    if (strncmp(triple, "air64", 5) != 0) {
+        printf("FAIL: captured macOS triple doesn't start with 'air64' (got '%s')\n",
+               triple);
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    printf("PASS: captured macOS .air.bc parsed (triple='%s' from %s)\n",
+           triple, used);
+    lagfx_air_module_free(m);
+    free(blob);
     return 0;
 }
 
@@ -113,5 +211,6 @@ int main(void) {
     rc |= test_bad_magic();
     rc |= test_truncated_wrapper();
     rc |= test_real_triangle_metallib();
+    rc |= test_real_macos_metallib();
     return rc ? 1 : 0;
 }
