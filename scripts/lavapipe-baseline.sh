@@ -107,8 +107,8 @@ log "Probing lavapipe ICD..."
 LAVAPIPE_ICD=""
 LAVAPIPE_VERSION="unknown"
 
-VI_TMP=$(mktemp)
-vulkaninfo 2>"$VI_TMP" || true
+VI_TMP="/tmp/vulkaninfo-lavapipe-probe.txt"
+vulkaninfo >"$VI_TMP" 2>&1 || true
 if grep -qE "lvp|llvmpipe|lavapipe" "$VI_TMP"; then
   LAVAPIPE_ICD="/usr/share/vulkan/icd.d/lvp_icd.json"
   export VK_ICD_FILENAMES="$LAVAPIPE_ICD"
@@ -128,12 +128,12 @@ fi
 
 if [[ -n "$LAVAPIPE_ICD" && -f "$LAVAPIPE_ICD" ]]; then
   export VK_ICD_FILENAMES="$LAVAPIPE_ICD"
-  LAVAPIPE_VERSION=$(vulkaninfo 2>&1 | grep "driverInfo" | head -1 || echo "unknown")
+  LAVAPIPE_VERSION=$(grep "driverInfo" "$VI_TMP" | head -1 || echo "unknown")
   log "lavapipe ICD found: $LAVAPIPE_ICD"
 else
   # Try to find any CPU-based Vulkan ICD
-  LOGOUT=$(mktemp)
-  vulkaninfo 2>/dev/null >"$LOGOUT" || true
+  LOGOUT="/tmp/vulkaninfo-cpu-probe.txt"
+  vulkaninfo >"$LOGOUT" 2>&1 || true
   
   DEVICE_NAME=""
   if grep -q "VK_PHYSICAL_DEVICE_TYPE_CPU" "$LOGOUT"; then
