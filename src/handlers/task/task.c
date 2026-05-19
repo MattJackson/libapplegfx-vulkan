@@ -89,8 +89,8 @@ lagfx_handler_status_t lagfx_task_delete_task(lagfx_protocol_t *p, const lagfx_c
 
     lagfx_task_entry_t *entry = lagfx_protocol_find_task(p, task_id);
     if (!entry) {
-        LAGFX_WARN("CmdDeleteTask: taskID=%u not found", task_id);
-        return LAGFX_HANDLER_ERR_STATE;
+        LAGFX_TRACE("CmdDeleteTask: taskID=%u not found (idempotent)", task_id);
+        return LAGFX_HANDLER_OK;
     }
 
     /* Call shell.destroy_task if available. */

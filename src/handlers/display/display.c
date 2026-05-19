@@ -439,6 +439,7 @@ lagfx_handler_status_t lagfx_display_define_child_fifo(
               (uint32_t)ring_size, entry_count, hdr->stamp);
 
     /* TODO: Store child FIFO geometry for sub-channel command delivery */
+    LAGFX_WARN("CmdDefineChildFIFO: FIFO geometry storage not implemented yet");
 
     return LAGFX_HANDLER_OK;
 }
@@ -462,6 +463,7 @@ lagfx_handler_status_t lagfx_display_vchan_present(
               display_index, surface_id, plane_id, hdr->stamp);
 
     /* TODO: Call lagfx_vk_display_present_surface() for Vulkan scanout */
+    LAGFX_WARN("vchan_present: Vulkan scanout not wired (Stage 80 blocker)");
 
     return LAGFX_HANDLER_OK;
 }
@@ -485,6 +487,7 @@ lagfx_handler_status_t lagfx_display_vchan_present_gamma(
               display_index, surface_id, lagfx_le32(hdr->payload + 20), hdr->stamp);
 
     /* TODO: Upload gamma table and call lagfx_vk_display_present_surface() */
+    LAGFX_WARN("vchan_present: Vulkan scanout not wired (Stage 80 blocker)");
 
     return LAGFX_HANDLER_OK;
 }

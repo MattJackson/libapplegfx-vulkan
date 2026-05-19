@@ -1040,13 +1040,20 @@ static const lagfx_render_inner_op_desc_t *table_lookup(uint32_t opcode) {
 }
 
 int lagfx_render_inner_dispatch(lagfx_protocol_t *p,
-                                uint32_t          opcode,
-                                const uint8_t    *payload,
-                                size_t            len) {
+                                 uint32_t          opcode,
+                                 const uint8_t    *payload,
+                                 size_t            len) {
+    static unsigned long s_unknown_opcodes = 0;
+    s_unknown_opcodes++;
+    
     const lagfx_render_inner_op_desc_t *d = table_lookup(opcode);
     if (!d) {
-        LAGFX_WARN("render inner: unknown opcode 0x%03x len=%zu — absorbed",
-                   (unsigned)(opcode & 0xfffu), len);
+        if (s_unknown_opcodes <= 10) {
+            LAGFX_WARN("render inner: unknown opcode 0x%03x len=%zu — absorbed (count=%lu)",
+                       (unsigned)(opcode & 0xfffu), len, s_unknown_opcodes);
+        } else if (s_unknown_opcodes == 11) {
+            LAGFX_WARN("render inner: suppressing further unknown opcode logs");
+        }
         return 0;
     }
     LAGFX_TRACE("render inner: op=0x%02x (%s) len=%zu",
