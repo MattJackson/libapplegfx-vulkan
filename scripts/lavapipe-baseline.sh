@@ -108,6 +108,7 @@ LAVAPIPE_ICD=""
 LAVAPIPE_VERSION="unknown"
 
 VI_TMP="/tmp/vulkaninfo-lavapipe-probe.txt"
+LOGOUT="/tmp/vulkaninfo-cpu-probe.txt"
 vulkaninfo >"$VI_TMP" 2>&1 || true
 if grep -qE "lvp|llvmpipe|lavapipe" "$VI_TMP"; then
   LAVAPIPE_ICD="/usr/share/vulkan/icd.d/lvp_icd.json"
