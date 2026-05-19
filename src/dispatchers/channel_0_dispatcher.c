@@ -245,8 +245,7 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                       hdr->stamp, (unsigned)hdr->payload_size);
             break;
         case LAGFX_OP_SYNCHRONIZE_RESOURCES: /* 0x42 */
-            LAGFX_LOG("ch0: 0x42 CmdSynchronizeResources stamp=0x%08x payload=%u",
-                      hdr->stamp, (unsigned)hdr->payload_size);
+            lagfx_sync_synchronize_resources(p, hdr);
             break;
         case LAGFX_OP_SYNCHRONIZE_DISCARD:   /* 0x23 */
             LAGFX_LOG("ch0: 0x23 CmdSynchronizeDiscard stamp=0x%08x payload=%u",

@@ -36,10 +36,8 @@ lagfx_handler_status_t lagfx_sync_synchronize_resources(lagfx_protocol_t *p, con
     LAGFX_LOG("CmdSynchronizeResources: taskID=%u range_count=%u stamp=0x%08x",
               task_id, range_count, hdr->stamp);
 
-    /* TODO: Flush host cache for each {gpa, length} range in guest memory.
-     *       This ensures guest sees all writes before stamp completes. */
-
-    return LAGFX_HANDLER_OK;
+    LAGFX_WARN("CmdSynchronizeResources: cache flush not implemented yet");
+    return LAGFX_HANDLER_ERR_NOT_IMPLEMENTED;
 }
 
 lagfx_handler_status_t lagfx_display_swap_mapping(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {

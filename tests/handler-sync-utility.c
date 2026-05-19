@@ -42,8 +42,9 @@ static int test_sync_synchronize_resources(void) {
     
     int rc = lagfx_sync_synchronize_resources(p, &hdr);
     free(p);
-    printf("%s: sync_synchronize_resources stub\n", rc == LAGFX_HANDLER_OK ? "PASS" : "FAIL");
-    return rc != LAGFX_HANDLER_OK;
+    printf("%s: sync_synchronize_resources returns NOT_IMPLEMENTED\n", 
+           rc == LAGFX_HANDLER_ERR_NOT_IMPLEMENTED ? "PASS" : "FAIL");
+    return rc != LAGFX_HANDLER_ERR_NOT_IMPLEMENTED;
 }
 
 static int test_resource_set_placement(void) {

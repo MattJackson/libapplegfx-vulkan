@@ -179,10 +179,11 @@ typedef enum {
 /* === Handler return codes ====================================== */
 
 typedef enum {
-    LAGFX_HANDLER_OK        = 0,  /* command consumed; advance read_ptr */
-    LAGFX_HANDLER_ERR_SIZE  = 1,  /* payload too small / malformed */
-    LAGFX_HANDLER_ERR_STATE = 2,  /* table full / not found / etc. */
+    LAGFX_HANDLER_OK           = 0,  /* command consumed; advance read_ptr */
+    LAGFX_HANDLER_ERR_SIZE     = 1,  /* payload too small / malformed */
+    LAGFX_HANDLER_ERR_STATE    = 2,  /* table full / not found / etc. */
     LAGFX_HANDLER_ERR_INTERNAL = 3,
+    LAGFX_HANDLER_ERR_NOT_IMPLEMENTED = 4,  /* handler unimplemented; surface visibly */
 } lagfx_handler_status_t;
 
 /* === Parsed command header =====================================
