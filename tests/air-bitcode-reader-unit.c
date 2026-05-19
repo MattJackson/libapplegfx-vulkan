@@ -196,6 +196,69 @@ static int test_real_triangle_metallib(void) {
     uint32_t num_consts = 0;
     (void)lagfx_air_module_constants(m, &num_consts);
     printf("       paramattr_groups=%u  constants=%u\n", num_pag, num_consts);
+
+    /* Phase 2 step 2: decode the one non-prototype function body and
+     * verify the instruction count matches bcanalyzer's per-record
+     * histogram for triangle_vertex.air.bc:
+     *
+     *   DECLAREBLOCKS(1) + ALLOCA(1) + CAST(2) + CALL(2) + GEP(4) +
+     *   STORE(3) + LOAD(1) + SHUFFLEVEC(2) + INSERTVAL(1) + RET(1)
+     *   = 18 total records
+     */
+    uint32_t body_fn = (uint32_t)-1;
+    for (uint32_t i = 0; i < num_funcs; i++) {
+        if (!fns[i].is_proto) { body_fn = i; break; }
+    }
+    if (body_fn == (uint32_t)-1) {
+        printf("FAIL: triangle has no non-prototype function to decode\n");
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    lagfx_air_function_body_t *fb = NULL;
+    lagfx_status_t bst = lagfx_air_function_body_open(m, body_fn, &fb);
+    if (bst != LAGFX_OK || !fb) {
+        printf("FAIL: triangle function_body_open st=%d\n", (int)bst);
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    uint32_t ni = 0;
+    const lagfx_air_inst_t *insts = lagfx_air_function_body_instructions(fb, &ni);
+    printf("       fn[%u] body: num_blocks=%u num_instructions=%u\n",
+           body_fn, lagfx_air_function_body_num_blocks(fb), ni);
+    /* Per-code histogram. */
+    uint32_t counts[60] = {0};
+    for (uint32_t i = 0; i < ni; i++) {
+        if (insts[i].raw_code < 60u) counts[insts[i].raw_code]++;
+    }
+    printf("       hist:  DECLAREBLOCKS=%u ALLOCA=%u CAST=%u CALL=%u "
+           "GEP=%u STORE=%u LOAD=%u SHUFFLEVEC=%u INSERTVAL=%u RET=%u\n",
+           counts[1], counts[19], counts[3], counts[34],
+           counts[43], counts[44], counts[20], counts[8],
+           counts[27], counts[10]);
+    /* Triangle ground truth from bcanalyzer histogram (lines 95-104
+     * of /tmp/triangle_vertex_dump.txt summary). */
+    int triangle_ok = (ni == 18u &&
+                       lagfx_air_function_body_num_blocks(fb) == 1u &&
+                       counts[1]  == 1u &&  /* DECLAREBLOCKS */
+                       counts[19] == 1u &&  /* ALLOCA */
+                       counts[3]  == 2u &&  /* CAST */
+                       counts[34] == 2u &&  /* CALL */
+                       counts[43] == 4u &&  /* GEP */
+                       counts[44] == 3u &&  /* STORE */
+                       counts[20] == 1u &&  /* LOAD */
+                       counts[8]  == 2u &&  /* SHUFFLEVEC */
+                       counts[27] == 1u &&  /* INSERTVAL */
+                       counts[10] == 1u);   /* RET */
+    lagfx_air_function_body_free(fb);
+    if (!triangle_ok) {
+        printf("FAIL: triangle function body histogram doesn't match bcanalyzer ground truth\n");
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+
     lagfx_air_module_free(m);
     free(blob);
     return 0;

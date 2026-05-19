@@ -212,6 +212,90 @@ lagfx_status_t lagfx_air_module_open(const uint8_t      *blob,
  * with NULL. */
 void lagfx_air_module_free(lagfx_air_module_t *module);
 
+/* === Phase 2 — FUNCTION_BLOCK body decoder ======================== */
+
+/* LLVM function-body instruction codes (FUNC_CODE_* in
+ * llvm/Bitcode/LLVMBitCodes.h). Stored verbatim on each decoded
+ * lagfx_air_inst_t so a translator can dispatch on them. Note that
+ * LLVM keeps both legacy and modern variants for GEP/STORE/etc.:
+ * the modern variants embed a type index and the legacy variants
+ * infer it from pointer operands; both appear in real bitcode and
+ * we surface both unmodified. */
+typedef enum {
+    LAGFX_AIR_INST_UNKNOWN       = 0,   /* sentinel for unrecognized codes */
+    LAGFX_AIR_INST_DECLAREBLOCKS = 1,   /* block-count declaration */
+    LAGFX_AIR_INST_BINOP         = 2,
+    LAGFX_AIR_INST_CAST          = 3,
+    LAGFX_AIR_INST_GEP_OLD       = 4,
+    LAGFX_AIR_INST_SELECT        = 5,
+    LAGFX_AIR_INST_EXTRACTELT    = 6,
+    LAGFX_AIR_INST_INSERTELT     = 7,
+    LAGFX_AIR_INST_SHUFFLEVEC    = 8,
+    LAGFX_AIR_INST_CMP           = 9,
+    LAGFX_AIR_INST_RET           = 10,
+    LAGFX_AIR_INST_BR            = 11,
+    LAGFX_AIR_INST_SWITCH        = 12,
+    LAGFX_AIR_INST_UNREACHABLE   = 15,
+    LAGFX_AIR_INST_PHI           = 16,
+    LAGFX_AIR_INST_ALLOCA        = 19,
+    LAGFX_AIR_INST_LOAD          = 20,
+    LAGFX_AIR_INST_STORE_OLD     = 24,
+    LAGFX_AIR_INST_EXTRACTVAL    = 26,
+    LAGFX_AIR_INST_INSERTVAL     = 27,
+    LAGFX_AIR_INST_CMP2          = 28,
+    LAGFX_AIR_INST_VSELECT       = 29,
+    LAGFX_AIR_INST_INDIRECTBR    = 31,
+    LAGFX_AIR_INST_DEBUG_LOC_AGAIN = 33,
+    LAGFX_AIR_INST_CALL          = 34,
+    LAGFX_AIR_INST_DEBUG_LOC     = 35,
+    LAGFX_AIR_INST_FENCE         = 36,
+    LAGFX_AIR_INST_GEP           = 43,
+    LAGFX_AIR_INST_STORE         = 44,
+    LAGFX_AIR_INST_CMPXCHG       = 46,
+    LAGFX_AIR_INST_UNOP          = 56,
+} lagfx_air_inst_code_t;
+
+/* One decoded instruction. The operand interpretation depends on
+ * `code` and is the responsibility of the consumer (Phase 3 semantic
+ * mapping). `ops` points into the function-body's own arena; valid
+ * until lagfx_air_function_body_free. */
+typedef struct {
+    lagfx_air_inst_code_t code;
+    uint32_t              raw_code;     /* original record code (in case it's a value we don't have an enum for) */
+    const uint64_t       *ops;
+    uint32_t              num_ops;
+} lagfx_air_inst_t;
+
+typedef struct lagfx_air_function_body lagfx_air_function_body_t;
+
+/* Decode one function body. `fn_idx` must reference a non-prototype
+ * function whose body_offset / body_length were stashed by
+ * lagfx_air_module_open (Phase 2 step 1).
+ *
+ * On success: *out_body owns the decoded instruction stream; caller
+ * must free with lagfx_air_function_body_free.
+ *
+ * Returns:
+ *   LAGFX_OK             — decoded; check num_instructions
+ *   LAGFX_ERR_INVALID_ARG— bad fn_idx or fn is a prototype
+ *   LAGFX_ERR_PROTOCOL   — bitstream malformed or Apple-custom abbrev
+ *                          we can't yet decode (Phase 2 evolves)
+ */
+lagfx_status_t lagfx_air_function_body_open(const lagfx_air_module_t   *module,
+                                              uint32_t                   fn_idx,
+                                              lagfx_air_function_body_t **out_body);
+
+void lagfx_air_function_body_free(lagfx_air_function_body_t *body);
+
+/* Number of basic blocks declared via the body's DECLAREBLOCKS
+ * record (zero if absent). */
+uint32_t lagfx_air_function_body_num_blocks(const lagfx_air_function_body_t *body);
+
+/* Decoded instructions in emission order. The pointer is into the
+ * body's arena; valid until lagfx_air_function_body_free. */
+const lagfx_air_inst_t *lagfx_air_function_body_instructions(
+    const lagfx_air_function_body_t *body, uint32_t *count);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

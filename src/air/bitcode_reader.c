@@ -92,6 +92,24 @@ typedef struct {
 struct lagfx_air_module {
     lagfx_arena_t arena;
 
+    /* Copy of the raw bitstream body (after the wrapper magic was
+     * stripped). Stored so Phase 2 / Phase 3 can decode FUNCTION_BLOCK
+     * bodies on demand without making the caller keep the original
+     * blob alive. Offset is into m->arena; length is in BYTES (matching
+     * what lagfx_bs_init expects). body_offset on lagfx_air_function_t
+     * is a BIT index into this buffer. */
+    uint32_t bitstream_arena_offset;
+    size_t   bitstream_len_bytes;
+
+    /* Persisted BLOCKINFO_BLOCK contents. ~2 MB; malloc'd out of band
+     * rather than placed on the module struct so the struct stays cheap
+     * to allocate, and not in the arena because arena_reserve grows the
+     * arena's base pointer which would invalidate the embedded abbrev
+     * pointers. Phase 2's lagfx_air_function_body_open() needs this so
+     * that FUNCTION_BLOCK-targeted DEFINE_ABBREVs from BLOCKINFO are
+     * installed when re-entering a function body. */
+    lagfx_blockinfo_t *blockinfo;
+
     /* Optional module-level strings (offsets into arena, 0 = absent). */
     uint32_t triple_offset;
     uint32_t datalayout_offset;
@@ -305,11 +323,32 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
         return LAGFX_ERR_OUT_OF_MEMORY;
     }
 
+    /* Step 2a: copy the bitstream body into the arena so Phase 2 / Phase 3
+     * decoders can use stashed body_offset/body_length values without
+     * the caller keeping `blob` alive. */
+    {
+        uint32_t bs_off = arena_reserve(&m->arena, body_len);
+        if (bs_off == 0u && body_len > 0u) {
+            lagfx_air_module_free(m);
+            return LAGFX_ERR_OUT_OF_MEMORY;
+        }
+        memcpy(m->arena.base + bs_off, blob + body_off, body_len);
+        m->bitstream_arena_offset = bs_off;
+        m->bitstream_len_bytes = body_len;
+    }
+
     /* Step 3: BLOCKINFO is the first thing in modules with shared
      * abbrev tables. We need to parse it BEFORE entering MODULE so we
-     * can install per-target-block-id abbrevs. */
-    lagfx_blockinfo_t blockinfo;
-    lagfx_blockinfo_init(&blockinfo);
+     * can install per-target-block-id abbrevs. The blockinfo struct is
+     * ~2 MB (32 block-IDs × 64 abbrevs × 64-op tables) so it's heap
+     * rather than stack, and persisted on the module so Phase 2 body
+     * decoders can also install BLOCKINFO-sourced abbrevs. */
+    m->blockinfo = (lagfx_blockinfo_t *)malloc(sizeof(*m->blockinfo));
+    if (!m->blockinfo) {
+        lagfx_air_module_free(m);
+        return LAGFX_ERR_OUT_OF_MEMORY;
+    }
+    lagfx_blockinfo_init(m->blockinfo);
 
     /* Step 3a: STRTAB schema selection.
      *
@@ -425,7 +464,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                                 if (target_block_id < LAGFX_BLOCKINFO_MAX_BLOCK_IDS &&
                                     bi.abbrevs.num_entries > 0u) {
                                     lagfx_abbrev_table_t *dst =
-                                        &blockinfo.per_block[target_block_id];
+                                        &m->blockinfo->per_block[target_block_id];
                                     if (dst->num_entries < LAGFX_ABBREV_MAX_PER_BLOCK) {
                                         dst->entries[dst->num_entries++] =
                                             bi.abbrevs.entries[bi.abbrevs.num_entries - 1u];
@@ -450,7 +489,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                          * constants; complex (AGGREGATE, DATA) constants
                          * collected as UNKNOWN with raw bytes for now. */
                         lagfx_block_t cb;
-                        if (!lagfx_block_enter(&bs, blk.abbrev_width, &blockinfo, &cb)) break;
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, m->blockinfo, &cb)) break;
                         const uint32_t MAX_CONSTS = 4096u;
                         uint32_t consts_off = arena_reserve(&m->arena,
                                                               sizeof(lagfx_air_constant_t) * MAX_CONSTS);
@@ -569,7 +608,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                          * consume metadata for the air.* intrinsic
                          * semantic mapping). For now we just walk past. */
                         lagfx_block_t mb;
-                        if (!lagfx_block_enter(&bs, blk.abbrev_width, &blockinfo, &mb)) break;
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, m->blockinfo, &mb)) break;
                         while (lagfx_bs_pos(&bs) < mb.end_pos) {
                             lagfx_record_t mrec = {0};
                             bool m_end = false, m_sub = false, m_da = false;
@@ -593,7 +632,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                          * Phase 1 stashes raw operand vectors; semantic
                          * decoding deferred. */
                         lagfx_block_t pg;
-                        if (!lagfx_block_enter(&bs, blk.abbrev_width, &blockinfo, &pg)) break;
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, m->blockinfo, &pg)) break;
                         const uint32_t MAX_GROUPS = 64u;
                         uint32_t groups_off = arena_reserve(&m->arena,
                                                               sizeof(lagfx_air_param_attr_group_t) * MAX_GROUPS);
@@ -638,7 +677,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                          * IDs (referenced by FUNCTION records via the
                          * paramattr_index field). Phase 1 just walks. */
                         lagfx_block_t pa;
-                        if (!lagfx_block_enter(&bs, blk.abbrev_width, &blockinfo, &pa)) break;
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, m->blockinfo, &pa)) break;
                         while (lagfx_bs_pos(&bs) < pa.end_pos) {
                             lagfx_record_t prec = {0};
                             bool p_end = false, p_sub = false, p_da = false;
@@ -660,7 +699,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                          * 'funclet' here. We collect raw strings into
                          * the arena for now; no public accessor yet. */
                         lagfx_block_t ob;
-                        if (!lagfx_block_enter(&bs, blk.abbrev_width, &blockinfo, &ob)) break;
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, m->blockinfo, &ob)) break;
                         while (lagfx_bs_pos(&bs) < ob.end_pos) {
                             lagfx_record_t orec = {0};
                             bool o_end = false, o_sub = false, o_da = false;
@@ -681,7 +720,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                     if (sub_id == LAGFX_BLK_TYPE) {
                         /* Decode TYPE_BLOCK into m->types[]. */
                         lagfx_block_t tb;
-                        if (!lagfx_block_enter(&bs, blk.abbrev_width, &blockinfo, &tb)) {
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, m->blockinfo, &tb)) {
                             LAGFX_ERR("air_bitcode_reader: failed to enter TYPE_BLOCK");
                             break;
                         }
@@ -960,6 +999,215 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
 void
 lagfx_air_module_free(lagfx_air_module_t *module) {
     if (!module) return;
+    free(module->blockinfo);
     arena_free(&module->arena);
     free(module);
+}
+
+/* =====================================================================
+ * Phase 2 — FUNCTION_BLOCK body decoder
+ *
+ * Walks one function body block (the bit-range stashed by Phase 2 step 1
+ * during MODULE_BLOCK traversal) and produces an in-memory list of
+ * lagfx_air_inst_t records. Nested CONSTANTS_BLOCK / METADATA_BLOCK /
+ * METADATA_ATTACHMENT_BLOCK sub-blocks are walked-past for now (their
+ * contents are function-local and Phase 3 work).
+ *
+ * Apple-custom abbreviations inside FUNCTION_BLOCK are the long pole
+ * here. Triangle's body uses the default LLVM abbrev set + a small
+ * number of in-block DEFINE_ABBREVs that our generic abbrev reader
+ * already handles; bcanalyzer agrees on 18 records (1 DECLAREBLOCKS +
+ * 17 instructions). Captured macOS bodies are expected to need
+ * Apple-specific abbrev decoding which lands in subsequent commits.
+ * ===================================================================== */
+
+struct lagfx_air_function_body {
+    lagfx_arena_t arena;
+    uint32_t      num_blocks;
+    lagfx_air_inst_t *instructions;
+    uint32_t      num_instructions;
+};
+
+/* Map a raw FUNC_CODE_* record code to our enum. Unknown codes get
+ * LAGFX_AIR_INST_UNKNOWN so the consumer can still inspect raw_code. */
+static lagfx_air_inst_code_t classify_inst(uint32_t raw) {
+    switch (raw) {
+        case 1:  return LAGFX_AIR_INST_DECLAREBLOCKS;
+        case 2:  return LAGFX_AIR_INST_BINOP;
+        case 3:  return LAGFX_AIR_INST_CAST;
+        case 4:  return LAGFX_AIR_INST_GEP_OLD;
+        case 5:  return LAGFX_AIR_INST_SELECT;
+        case 6:  return LAGFX_AIR_INST_EXTRACTELT;
+        case 7:  return LAGFX_AIR_INST_INSERTELT;
+        case 8:  return LAGFX_AIR_INST_SHUFFLEVEC;
+        case 9:  return LAGFX_AIR_INST_CMP;
+        case 10: return LAGFX_AIR_INST_RET;
+        case 11: return LAGFX_AIR_INST_BR;
+        case 12: return LAGFX_AIR_INST_SWITCH;
+        case 15: return LAGFX_AIR_INST_UNREACHABLE;
+        case 16: return LAGFX_AIR_INST_PHI;
+        case 19: return LAGFX_AIR_INST_ALLOCA;
+        case 20: return LAGFX_AIR_INST_LOAD;
+        case 24: return LAGFX_AIR_INST_STORE_OLD;
+        case 26: return LAGFX_AIR_INST_EXTRACTVAL;
+        case 27: return LAGFX_AIR_INST_INSERTVAL;
+        case 28: return LAGFX_AIR_INST_CMP2;
+        case 29: return LAGFX_AIR_INST_VSELECT;
+        case 31: return LAGFX_AIR_INST_INDIRECTBR;
+        case 33: return LAGFX_AIR_INST_DEBUG_LOC_AGAIN;
+        case 34: return LAGFX_AIR_INST_CALL;
+        case 35: return LAGFX_AIR_INST_DEBUG_LOC;
+        case 36: return LAGFX_AIR_INST_FENCE;
+        case 43: return LAGFX_AIR_INST_GEP;
+        case 44: return LAGFX_AIR_INST_STORE;
+        case 46: return LAGFX_AIR_INST_CMPXCHG;
+        case 56: return LAGFX_AIR_INST_UNOP;
+        default: return LAGFX_AIR_INST_UNKNOWN;
+    }
+}
+
+lagfx_status_t
+lagfx_air_function_body_open(const lagfx_air_module_t   *module,
+                              uint32_t                   fn_idx,
+                              lagfx_air_function_body_t **out_body) {
+    if (!module || !out_body) return LAGFX_ERR_INVALID_ARG;
+    *out_body = NULL;
+    if (fn_idx >= module->num_functions) return LAGFX_ERR_INVALID_ARG;
+    const lagfx_air_function_t *fn = &module->functions[fn_idx];
+    if (fn->is_proto || fn->body_offset == 0u || fn->body_length == 0u) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+
+    /* Allocate body + arena. */
+    lagfx_air_function_body_t *body =
+        (lagfx_air_function_body_t *)calloc(1, sizeof(*body));
+    if (!body) return LAGFX_ERR_OUT_OF_MEMORY;
+    if (!arena_init(&body->arena, 4u * 1024u)) {
+        free(body);
+        return LAGFX_ERR_OUT_OF_MEMORY;
+    }
+
+    /* Position a fresh bitstream at the start of the FUNCTION_BLOCK
+     * (the ENTER_SUBBLOCK abbrev code). The stashed body_offset is a
+     * bit position within module->bitstream copy. */
+    lagfx_bitstream_t bs;
+    lagfx_bs_init(&bs, module->arena.base + module->bitstream_arena_offset,
+                  module->bitstream_len_bytes);
+    if (!lagfx_bs_seek(&bs, fn->body_offset)) {
+        lagfx_air_function_body_free(body);
+        return LAGFX_ERR_PROTOCOL;
+    }
+
+    /* The parent block (MODULE) uses 3-bit abbrev codes. The stashed
+     * offset points at the ENTER_SUBBLOCK code itself, so we hand the
+     * parent width to block_enter. */
+    const uint32_t parent_abbrev_width = 3u;
+    lagfx_block_t fb;
+    if (!lagfx_block_enter(&bs, parent_abbrev_width, module->blockinfo, &fb)) {
+        LAGFX_ERR("function_body: failed to enter FUNCTION_BLOCK at bit %zu",
+                  fn->body_offset);
+        lagfx_air_function_body_free(body);
+        return LAGFX_ERR_PROTOCOL;
+    }
+    if (fb.block_id != LAGFX_BLK_FUNCTION) {
+        LAGFX_ERR("function_body: stashed offset doesn't point at FUNCTION_BLOCK (got id=%u)",
+                  fb.block_id);
+        lagfx_air_function_body_free(body);
+        return LAGFX_ERR_PROTOCOL;
+    }
+
+    /* Reserve an instruction array up front; we'll cap at MAX. */
+    const uint32_t MAX_INSTS = 4096u;
+    uint32_t insts_off = arena_reserve(&body->arena,
+                                        sizeof(lagfx_air_inst_t) * MAX_INSTS);
+    if (insts_off == 0u) {
+        lagfx_air_function_body_free(body);
+        return LAGFX_ERR_OUT_OF_MEMORY;
+    }
+    body->instructions = (lagfx_air_inst_t *)(body->arena.base + insts_off);
+    body->num_instructions = 0u;
+
+    uint64_t scratch_ops[LAGFX_RECORD_MAX_OPS];
+    while (lagfx_bs_pos(&bs) < fb.end_pos) {
+        lagfx_record_t rec = {0};
+        bool is_end = false, is_subblock = false, is_define_abbrev = false;
+        uint32_t sub_id = 0;
+        if (!lagfx_block_next_record(&fb, scratch_ops, &rec,
+                                       &is_end, &is_subblock,
+                                       &is_define_abbrev, &sub_id)) {
+            LAGFX_LOG("function_body: next_record failed at bit %zu (insts decoded so far=%u)",
+                      lagfx_bs_pos(&bs), body->num_instructions);
+            /* Bail; what we've decoded so far is still valid. */
+            break;
+        }
+        if (is_end) break;
+        if (is_subblock) {
+            /* Function-local CONSTANTS_BLOCK / METADATA_BLOCK /
+             * METADATA_ATTACHMENT_BLOCK / VALUE_SYMTAB. Skip for now;
+             * Phase 3 will mine these for per-instruction metadata. */
+            if (!lagfx_block_skip(&bs, fb.abbrev_width)) {
+                LAGFX_ERR("function_body: failed to skip nested sub-block id=%u", sub_id);
+                break;
+            }
+            continue;
+        }
+        if (is_define_abbrev) continue;
+
+        if (body->num_instructions >= MAX_INSTS) {
+            LAGFX_WARN("function_body: instruction cap (%u) reached; truncating", MAX_INSTS);
+            break;
+        }
+
+        /* Stash a copy of the record's operand vector in our arena so
+         * the caller can hold the body open after open() returns. */
+        uint32_t ops_off = 0u;
+        if (rec.num_ops > 0u) {
+            ops_off = arena_reserve(&body->arena, rec.num_ops * sizeof(uint64_t));
+            if (ops_off == 0u) {
+                lagfx_air_function_body_free(body);
+                return LAGFX_ERR_OUT_OF_MEMORY;
+            }
+            /* arena may have realloc'd; refresh instructions pointer. */
+            body->instructions = (lagfx_air_inst_t *)(body->arena.base + insts_off);
+            memcpy(body->arena.base + ops_off, rec.ops,
+                   rec.num_ops * sizeof(uint64_t));
+        }
+
+        lagfx_air_inst_t *inst = &body->instructions[body->num_instructions++];
+        inst->raw_code = rec.code;
+        inst->code     = classify_inst(rec.code);
+        inst->ops      = (ops_off == 0u)
+                            ? NULL
+                            : (const uint64_t *)(body->arena.base + ops_off);
+        inst->num_ops  = rec.num_ops;
+
+        /* DECLAREBLOCKS sets body->num_blocks. */
+        if (inst->code == LAGFX_AIR_INST_DECLAREBLOCKS && rec.num_ops >= 1u) {
+            body->num_blocks = (uint32_t)rec.ops[0];
+        }
+    }
+
+    LAGFX_TRACE("function_body: fn[%u] decoded %u instructions (%u basic blocks)",
+                fn_idx, body->num_instructions, body->num_blocks);
+    *out_body = body;
+    return LAGFX_OK;
+}
+
+void
+lagfx_air_function_body_free(lagfx_air_function_body_t *body) {
+    if (!body) return;
+    arena_free(&body->arena);
+    free(body);
+}
+
+uint32_t
+lagfx_air_function_body_num_blocks(const lagfx_air_function_body_t *body) {
+    return body ? body->num_blocks : 0u;
+}
+
+const lagfx_air_inst_t *
+lagfx_air_function_body_instructions(const lagfx_air_function_body_t *body,
+                                       uint32_t *count) {
+    if (count) *count = body ? body->num_instructions : 0u;
+    return body ? body->instructions : NULL;
 }
