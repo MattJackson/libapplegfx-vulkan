@@ -983,6 +983,68 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
     LAGFX_LOG("compute_inner: 0x74 SetRenderPipelineState ref=0x%x registry=%s type=%s",
               reference, registry_status, type_str);
 
+    /* Phase B step 4 (2026-05-18) — bytes-fetch diagnostic.
+     * Hypothesis from kext disasm (paravirt-re/library/phase_b_step{2,3}_*):
+     *   - task->heap_pfn comes from CmdSetResourceHeap (opcode 0x33).
+     *   - heap_gpa = heap_pfn << 12 is the GPA of an array of 12-byte slots.
+     *   - slot[reference] = { u8 type, u8[3] flags, u64 bytes_gpa }
+     *   - The metallib bytes live at bytes_gpa, starting with "MTLB" magic.
+     * This block reads the slot, dumps it, and reads the first 16 bytes
+     * at bytes_gpa to confirm/refute the hypothesis. Env-gated to avoid
+     * log explosion in normal deploys. */
+    if (getenv("LAGFX_PHASE_B_DUMP") != NULL && task->heap_pfn != 0u) {
+        static uint32_t dump_count = 0u;
+        if (dump_count < 20u) {  /* hard cap to avoid log explosion */
+            lagfx_device_t *dev_for_dma = (lagfx_device_t *)p->dev;
+            if (dev_for_dma != NULL && dev_for_dma->desc.shell.read_memory != NULL) {
+                uint64_t heap_gpa = (uint64_t)task->heap_pfn << 12;
+                uint64_t slot_gpa = heap_gpa + (uint64_t)reference * 12ull;
+                uint8_t  slot_bytes[12] = {0};
+                bool ok = dev_for_dma->desc.shell.read_memory(
+                    dev_for_dma->desc.shell.opaque, slot_gpa, 12, slot_bytes);
+                if (ok) {
+                    uint8_t  apv_type = slot_bytes[0];
+                    uint64_t bytes_gpa = lagfx_le64(slot_bytes + 4);
+                    LAGFX_LOG("Phase B step4 slot[ref=0x%x] gpa=0x%llx "
+                              "type=0x%02x flags=%02x%02x%02x bytes_gpa=0x%llx",
+                              reference, (unsigned long long)slot_gpa,
+                              apv_type, slot_bytes[1], slot_bytes[2], slot_bytes[3],
+                              (unsigned long long)bytes_gpa);
+                    if (apv_type != 0u && bytes_gpa != 0u) {
+                        uint8_t hdr[16] = {0};
+                        ok = dev_for_dma->desc.shell.read_memory(
+                            dev_for_dma->desc.shell.opaque, bytes_gpa, 16, hdr);
+                        if (ok) {
+                            LAGFX_LOG("Phase B step4 bytes[ref=0x%x] gpa=0x%llx hdr="
+                                      "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+                                      reference, (unsigned long long)bytes_gpa,
+                                      hdr[0], hdr[1], hdr[2], hdr[3],
+                                      hdr[4], hdr[5], hdr[6], hdr[7],
+                                      hdr[8], hdr[9], hdr[10], hdr[11],
+                                      hdr[12], hdr[13], hdr[14], hdr[15]);
+                            if (hdr[0] == 'M' && hdr[1] == 'T' &&
+                                hdr[2] == 'L' && hdr[3] == 'B') {
+                                /* metallib magic; per offline-pipeline-map-2026-05-16
+                                 * the 8-byte at offset +0x18 carries total length. */
+                                LAGFX_LOG("Phase B step4 *** MTLB HIT *** ref=0x%x "
+                                          "first16=%02x..%02x (hypothesis CONFIRMED)",
+                                          reference, hdr[0], hdr[15]);
+                            }
+                        } else {
+                            LAGFX_LOG("Phase B step4 bytes_gpa=0x%llx read failed",
+                                      (unsigned long long)bytes_gpa);
+                        }
+                    }
+                    dump_count++;
+                } else {
+                    LAGFX_LOG("Phase B step4 slot_gpa=0x%llx read failed (heap_pfn=0x%x)",
+                              (unsigned long long)slot_gpa, task->heap_pfn);
+                    dump_count++;
+                }
+            }
+        }
+    }
+
 #ifdef LAGFX_HAVE_VULKAN
     /* Stage 65d Option 3: substitute the device's bundled triangle
      * shaders for every render-pipeline reference. Real metallib
