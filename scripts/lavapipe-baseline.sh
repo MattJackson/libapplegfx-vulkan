@@ -107,8 +107,9 @@ log "Probing lavapipe ICD..."
 LAVAPIPE_ICD=""
 LAVAPIPE_VERSION="unknown"
 
-if vulkaninfo 2>&1 | grep -q "lvp"; then
+if vulkaninfo 2>&1 | grep -qE "lvp|llvmpipe|lavapipe"; then
   LAVAPIPE_ICD="/usr/share/vulkan/icd.d/lvp_icd.json"
+  export VK_ICD_FILENAMES="$LAVAPIPE_ICD"
 elif vulkaninfo 2>&1 | grep -qi "lavapipe\|llvmpipe"; then
   # Try common lavapipe ICD paths
   for i in /usr/share/vulkan/icd.d/lvp_icd.json \
