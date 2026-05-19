@@ -40,6 +40,7 @@
 #include "compute_inner_ops.h"
 #include "display.h"  /* Full lagfx_display_t definition with rt field */
 #include "task_translate.h"
+#include "protocol/object_resolver.h"
 
 #include "common/le.h"
 #include "common/log.h"
@@ -984,251 +985,20 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
     LAGFX_LOG("compute_inner: 0x74 SetRenderPipelineState ref=0x%x registry=%s type=%s",
               reference, registry_status, type_str);
 
-    /* Phase B step 5 V2 — bytes-fetch diagnostic via radix walk.
-     * V1 falsified 2026-05-18: heap_pfn=0x1 is a task-VA (page index 1),
-     * not a real physical PFN. To read the slot table we must walk the
-     * per-task radix tree: slot_va = (task->heap_pfn << 12) + reference*12.
-     *
-     * V2 algorithm:
-     *   1. Translate task-VA slot_va → GPA via lagfx_task_translate
-     *   2. Read 12 bytes at slot_gpa → parse (type, flags, bytes_va)
-     *   3. Translate task-VA bytes_va → GPA via same radix walker
-     *   4. Read first 16 bytes at bytes_gpa → check for "MTLB" magic
-     *
-     * Env-gated with LAGFX_PHASE_B_DUMP; hard cap of 20 dumps total. */
-    /* V2.3 — one-time sweep at first op_0x74 invocation: walk slot[0..127]
-     * and dump (slot_addr, type, bytes_va) for every live slot. Goal: find
-     * the slot type that holds metallib bytes (MTLB magic at bytes_va).
-     * Env-gated via LAGFX_PHASE_B_SWEEP. */
-    if (getenv("LAGFX_PHASE_B_SWEEP") != NULL && task->heap_pfn != 0u) {
-        static bool swept = false;
-        if (!swept) {
-            swept = true;
-            lagfx_device_t *sdev = (lagfx_device_t *)p->dev;
-            uint64_t heap_va = (uint64_t)task->heap_pfn << 12;
-            for (uint32_t i = 0; i < 128u; i++) {
-                uint64_t sv = heap_va + (uint64_t)i * 12ull;
-                uint64_t sg = 0;
-                if (!lagfx_task_translate(p, task, sv, &sg)) continue;
-                uint8_t s[12] = {0};
-                if (!sdev->desc.shell.read_memory(sdev->desc.shell.opaque, sg, 12, s)) continue;
-                if (s[0] == 0u) continue;  /* slot not live */
-                uint64_t bv = lagfx_le64(s + 4);
-                LAGFX_LOG("Phase B step5 V2.3 sweep[ref=0x%x] type=0x%02x flags=%02x%02x%02x bytes_va=0x%llx",
-                          i, s[0], s[1], s[2], s[3], (unsigned long long)bv);
-                if (bv != 0u) {
-                    uint64_t bg = 0;
-                    if (lagfx_task_translate(p, task, bv, &bg)) {
-                        uint8_t h[16] = {0};
-                        if (sdev->desc.shell.read_memory(sdev->desc.shell.opaque, bg, 16, h)) {
-                            LAGFX_LOG("Phase B step5 V2.3 sweep[ref=0x%x] bytes_gpa=0x%llx hdr=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x%s",
-                                      i, (unsigned long long)bg,
-                                      h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7],
-                                      h[8], h[9], h[10], h[11], h[12], h[13], h[14], h[15],
-                                      (h[0]=='M' && h[1]=='T' && h[2]=='L' && h[3]=='B') ? " *** MTLB ***" : "");
-                            /* V2.4 — for type=0x06 (suspected function-bytes/library), the
-                             * first u64 at bytes_va looks like a task-VA pointer to the actual
-                             * shader bytes. Walk one more level. */
-                            if (s[0] == 0x06u) {
-                                uint64_t next_va = lagfx_le64(h + 0);
-                                if (next_va != 0u) {
-                                    uint64_t next_gpa = 0;
-                                    if (lagfx_task_translate(p, task, next_va, &next_gpa)) {
-                                        uint8_t nh[32] = {0};
-                                        if (sdev->desc.shell.read_memory(sdev->desc.shell.opaque, next_gpa, 32, nh)) {
-                                            LAGFX_LOG("Phase B step5 V2.4 child[ref=0x%x type=0x06] next_va=0x%llx next_gpa=0x%llx first32=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x%s",
-                                                      i, (unsigned long long)next_va,
-                                                      (unsigned long long)next_gpa,
-                                                      nh[0], nh[1], nh[2], nh[3], nh[4], nh[5], nh[6], nh[7],
-                                                      nh[8], nh[9], nh[10], nh[11], nh[12], nh[13], nh[14], nh[15],
-                                                      nh[16], nh[17], nh[18], nh[19], nh[20], nh[21], nh[22], nh[23],
-                                                      nh[24], nh[25], nh[26], nh[27], nh[28], nh[29], nh[30], nh[31],
-                                                      (nh[0]=='M' && nh[1]=='T' && nh[2]=='L' && nh[3]=='B') ? " *** MTLB AT TYPE-6 ***" : "");
-                                        } else {
-                                            LAGFX_LOG("Phase B step5 V2.4 child[ref=0x%x] next_gpa=0x%llx read failed",
-                                                      i, (unsigned long long)next_gpa);
-                                        }
-                                    } else {
-                                        LAGFX_LOG("Phase B step5 V2.4 child[ref=0x%x] next_va=0x%llx translate failed",
-                                                  i, (unsigned long long)next_va);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (getenv("LAGFX_PHASE_B_DUMP") != NULL && task->heap_pfn != 0u) {
-        static uint32_t dump_count = 0u;
-        if (dump_count < 20u) {
-            lagfx_device_t *dev = (lagfx_device_t *)p->dev;
-            uint64_t heap_va = (uint64_t)task->heap_pfn << 12;
-            uint64_t slot_va = heap_va + (uint64_t)reference * 12ull;
-            uint64_t slot_gpa = 0;
-            if (lagfx_task_translate(p, task, slot_va, &slot_gpa)) {
-                uint8_t slot[12] = {0};
-                if (dev->desc.shell.read_memory(dev->desc.shell.opaque, slot_gpa, 12, slot)) {
-                    uint8_t apv_type = slot[0];
-                    uint64_t bytes_va = lagfx_le64(slot + 4);
-                    LAGFX_LOG("Phase B step5 V2 slot[ref=0x%x] slot_va=0x%llx slot_gpa=0x%llx "
-                              "type=0x%02x flags=%02x%02x%02x bytes_va=0x%llx",
-                              reference, (unsigned long long)slot_va,
-                              (unsigned long long)slot_gpa, apv_type,
-                              slot[1], slot[2], slot[3],
-                              (unsigned long long)bytes_va);
-                    if (apv_type != 0u && bytes_va != 0u) {
-                        uint64_t bytes_gpa = 0;
-                        if (lagfx_task_translate(p, task, bytes_va, &bytes_gpa)) {
-                            /* V2.1 — read 128 bytes (was 16); pipeline-state
-                             * descriptors are larger than MTLB headers. The
-                             * 2026-05-18 V2 deploy showed bytes[ref=0xd] starts
-                             * with `0e 00 00 00 3c 00 00 00 0d 00 00 00 29 00 00 00`
-                             * — a 16-byte TLV header with inner_type=0x0e,
-                             * inner_size=0x3c, ref=reference, payload_len=0x29.
-                             * Sub-objectIds for vertex/fragment funcs are
-                             * likely in the payload beyond +16. */
-                            uint8_t hdr[128] = {0};
-                            if (dev->desc.shell.read_memory(dev->desc.shell.opaque, bytes_gpa, 128, hdr)) {
-                                LAGFX_LOG("Phase B step5 V2.1 bytes[ref=0x%x] bytes_va=0x%llx "
-                                          "bytes_gpa=0x%llx first16=%02x%02x%02x%02x "
-                                          "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                                          reference, (unsigned long long)bytes_va,
-                                          (unsigned long long)bytes_gpa,
-                                          hdr[0], hdr[1], hdr[2], hdr[3],
-                                          hdr[4], hdr[5], hdr[6], hdr[7],
-                                          hdr[8], hdr[9], hdr[10], hdr[11],
-                                          hdr[12], hdr[13], hdr[14], hdr[15]);
-                                /* Parse TLV header per V2 observation:
-                                 *   u32 inner_type @ +0, u32 inner_size @ +4,
-                                 *   u32 ref @ +8, u32 payload_len @ +12 */
-                                uint32_t tlv_type = lagfx_le32(hdr + 0);
-                                uint32_t tlv_size = lagfx_le32(hdr + 4);
-                                uint32_t tlv_ref  = lagfx_le32(hdr + 8);
-                                uint32_t tlv_len  = lagfx_le32(hdr + 12);
-                                LAGFX_LOG("Phase B step5 V2.1 TLV: type=0x%x size=0x%x ref=0x%x len=0x%x",
-                                          tlv_type, tlv_size, tlv_ref, tlv_len);
-                                LAGFX_LOG("Phase B step5 V2.1 desc[ref=0x%x] +16..+63: "
-                                          "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x "
-                                          "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x "
-                                          "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                                          reference,
-                                          hdr[16], hdr[17], hdr[18], hdr[19],
-                                          hdr[20], hdr[21], hdr[22], hdr[23],
-                                          hdr[24], hdr[25], hdr[26], hdr[27],
-                                          hdr[28], hdr[29], hdr[30], hdr[31],
-                                          hdr[32], hdr[33], hdr[34], hdr[35],
-                                          hdr[36], hdr[37], hdr[38], hdr[39],
-                                          hdr[40], hdr[41], hdr[42], hdr[43],
-                                          hdr[44], hdr[45], hdr[46], hdr[47],
-                                          hdr[48], hdr[49], hdr[50], hdr[51],
-                                          hdr[52], hdr[53], hdr[54], hdr[55],
-                                          hdr[56], hdr[57], hdr[58], hdr[59],
-                                          hdr[60], hdr[61], hdr[62], hdr[63]);
-                                if (hdr[0] == 'M' && hdr[1] == 'T' &&
-                                    hdr[2] == 'L' && hdr[3] == 'B') {
-                                    LAGFX_LOG("Phase B step5 V2.1 *** MTLB HIT *** ref=0x%x", reference);
-                                }
-                                /* V2.2 — parse child function objectIds from
-                                 * the descriptor and walk slot[func_ref] to
-                                 * read THEIR bytes. Per V2.1 observation:
-                                 *   byte +30 = 0x04 (tag), byte +31 = vertex_func_ref
-                                 *   byte +36 = 0x04 (tag), byte +37 = fragment_func_ref
-                                 *   (for render pipelines whose desc starts +16:04 03)
-                                 *   Compute pipelines (desc starts +16:03 08) have
-                                 *   only the vertex slot used. */
-                                if (hdr[14] == 0x04u && hdr[15] != 0u) {
-                                    uint8_t func_ref = hdr[15];
-                                    uint64_t fslot_va = heap_va + (uint64_t)func_ref * 12ull;
-                                    uint64_t fslot_gpa = 0;
-                                    if (lagfx_task_translate(p, task, fslot_va, &fslot_gpa)) {
-                                        uint8_t fslot[12] = {0};
-                                        if (dev->desc.shell.read_memory(dev->desc.shell.opaque, fslot_gpa, 12, fslot)) {
-                                            uint8_t ftype = fslot[0];
-                                            uint64_t fbytes_va = lagfx_le64(fslot + 4);
-                                            LAGFX_LOG("Phase B step5 V2.2 child_slot[func_ref=0x%x] gpa=0x%llx type=0x%02x bytes_va=0x%llx",
-                                                      func_ref, (unsigned long long)fslot_gpa, ftype,
-                                                      (unsigned long long)fbytes_va);
-                                            if (ftype != 0u && fbytes_va != 0u) {
-                                                uint64_t fbytes_gpa = 0;
-                                                if (lagfx_task_translate(p, task, fbytes_va, &fbytes_gpa)) {
-                                                    uint8_t fhdr[32] = {0};
-                                                    if (dev->desc.shell.read_memory(dev->desc.shell.opaque, fbytes_gpa, 32, fhdr)) {
-                                                        LAGFX_LOG("Phase B step5 V2.2 child_bytes[func_ref=0x%x] gpa=0x%llx first32=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                                                                  func_ref, (unsigned long long)fbytes_gpa,
-                                                                  fhdr[0], fhdr[1], fhdr[2], fhdr[3],
-                                                                  fhdr[4], fhdr[5], fhdr[6], fhdr[7],
-                                                                  fhdr[8], fhdr[9], fhdr[10], fhdr[11],
-                                                                  fhdr[12], fhdr[13], fhdr[14], fhdr[15],
-                                                                  fhdr[16], fhdr[17], fhdr[18], fhdr[19],
-                                                                  fhdr[20], fhdr[21], fhdr[22], fhdr[23],
-                                                                  fhdr[24], fhdr[25], fhdr[26], fhdr[27],
-                                                                  fhdr[28], fhdr[29], fhdr[30], fhdr[31]);
-                                                        if (fhdr[0] == 'M' && fhdr[1] == 'T' &&
-                                                            fhdr[2] == 'L' && fhdr[3] == 'B') {
-                                                            LAGFX_LOG("Phase B step5 V2.2 *** MTLB HIT *** func_ref=0x%x pipeline_ref=0x%x", func_ref, reference);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                /* Also try byte +36 for fragment function (render pipelines). */
-                                if (hdr[20] == 0x04u && hdr[21] != 0u && hdr[21] != hdr[15]) {
-                                    uint8_t func_ref = hdr[21];
-                                    uint64_t fslot_va = heap_va + (uint64_t)func_ref * 12ull;
-                                    uint64_t fslot_gpa = 0;
-                                    if (lagfx_task_translate(p, task, fslot_va, &fslot_gpa)) {
-                                        uint8_t fslot[12] = {0};
-                                        if (dev->desc.shell.read_memory(dev->desc.shell.opaque, fslot_gpa, 12, fslot)) {
-                                            uint8_t ftype = fslot[0];
-                                            uint64_t fbytes_va = lagfx_le64(fslot + 4);
-                                            LAGFX_LOG("Phase B step5 V2.2 frag_slot[func_ref=0x%x] gpa=0x%llx type=0x%02x bytes_va=0x%llx",
-                                                      func_ref, (unsigned long long)fslot_gpa, ftype,
-                                                      (unsigned long long)fbytes_va);
-                                            if (ftype != 0u && fbytes_va != 0u) {
-                                                uint64_t fbytes_gpa = 0;
-                                                if (lagfx_task_translate(p, task, fbytes_va, &fbytes_gpa)) {
-                                                    uint8_t fhdr[32] = {0};
-                                                    if (dev->desc.shell.read_memory(dev->desc.shell.opaque, fbytes_gpa, 32, fhdr)) {
-                                                        LAGFX_LOG("Phase B step5 V2.2 frag_bytes[func_ref=0x%x] gpa=0x%llx first32=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                                                                  func_ref, (unsigned long long)fbytes_gpa,
-                                                                  fhdr[0], fhdr[1], fhdr[2], fhdr[3],
-                                                                  fhdr[4], fhdr[5], fhdr[6], fhdr[7],
-                                                                  fhdr[8], fhdr[9], fhdr[10], fhdr[11],
-                                                                  fhdr[12], fhdr[13], fhdr[14], fhdr[15],
-                                                                  fhdr[16], fhdr[17], fhdr[18], fhdr[19],
-                                                                  fhdr[20], fhdr[21], fhdr[22], fhdr[23],
-                                                                  fhdr[24], fhdr[25], fhdr[26], fhdr[27],
-                                                                  fhdr[28], fhdr[29], fhdr[30], fhdr[31]);
-                                                        if (fhdr[0] == 'M' && fhdr[1] == 'T' &&
-                                                            fhdr[2] == 'L' && fhdr[3] == 'B') {
-                                                            LAGFX_LOG("Phase B step5 V2.2 *** MTLB HIT (frag) *** func_ref=0x%x pipeline_ref=0x%x", func_ref, reference);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            LAGFX_LOG("Phase B step5 V2.1 bytes_va=0x%llx translate failed", (unsigned long long)bytes_va);
-                        }
-                    }
-                    dump_count++;
-                } else {
-                    LAGFX_LOG("Phase B step5 V2 slot_gpa=0x%llx read failed", (unsigned long long)slot_gpa);
-                    dump_count++;
-                }
-            } else {
-                LAGFX_LOG("Phase B step5 V2 slot_va=0x%llx translate failed (heap_pfn=0x%x root_pfn=0x%llx)",
-                          (unsigned long long)slot_va, task->heap_pfn,
-                          (unsigned long long)task->root_page_pfn);
-                dump_count++;
+    /* Phase B step 6/7: env-gated diagnostic using new object resolver helpers. */
+    if (getenv("LAGFX_PHASE_B_LOOKUP") != NULL && task->heap_pfn != 0u) {
+        static uint32_t lookup_count = 0u;
+        if (lookup_count < 20u) {
+            uint8_t vert_ref = 0, frag_ref = 0;
+            if (lagfx_lookup_pipeline_function_refs(p, task, reference, &vert_ref, &frag_ref)) {
+                uint64_t v_gpa = 0; uint32_t v_len = 0;
+                uint64_t f_gpa = 0; uint32_t f_len = 0;
+                bool got_v = lagfx_lookup_function_bytes(p, task, vert_ref, &v_gpa, &v_len);
+                bool got_f = (frag_ref != 0) ? lagfx_lookup_function_bytes(p, task, frag_ref, &f_gpa, &f_len) : false;
+                LAGFX_LOG("Phase B lookup pipeline_ref=0x%x vert=0x%x %s(gpa=0x%llx len=%u) frag=0x%x %s(gpa=0x%llx len=%u)",
+                          reference, vert_ref, got_v ? "OK" : "FAIL", (unsigned long long)v_gpa, v_len,
+                          frag_ref, got_f ? "OK" : (frag_ref == 0 ? "N/A" : "FAIL"), (unsigned long long)f_gpa, f_len);
+                lookup_count++;
             }
         }
     }

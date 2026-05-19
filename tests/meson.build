@@ -501,5 +501,10 @@ if fs.is_file(meson.current_source_dir() / 'shader_cache_test.c')
     test('shader cache (unit)', shader_cache_test)
 endif
 
+# Phase B object resolver test: empirical validation via LAGFX_PHASE_B_LOOKUP=1
+# deploy on phase4 instead of a unit test. The freshman's draft unit test had
+# multiple bugs and was removed; the API is correctness-validated by the
+# in-vivo MTLB hits documented in phase_b_step5_v2_4_MTLB_CONFIRMED.md.
+
 
 
