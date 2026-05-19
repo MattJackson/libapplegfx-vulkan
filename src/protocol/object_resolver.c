@@ -72,7 +72,7 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
 
     /* Step 1: heap must be published. Cites phase_b_step5_v2_4_MTLB_CONFIRMED.md line 9-10. */
     if (task->heap_pfn == 0u) {
-        LAGFX_LOG("lookup_function_bytes: task_id=%u has no heap_pfn", (unsigned)task->id);
+        LAGFX_TRACE("lookup_function_bytes: task_id=%u has no heap_pfn", (unsigned)task->id);
         return false;
     }
 
@@ -80,7 +80,7 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
     uint64_t slot_va = slot_va_for(task->heap_pfn, func_object_id);
     uint64_t slot_gpa = 0;
     if (!lagfx_task_translate(p, task, slot_va, &slot_gpa)) {
-        LAGFX_LOG("lookup_function_bytes: radix walk failed for slot_va=0x%llx",
+        LAGFX_TRACE("lookup_function_bytes: radix walk failed for slot_va=0x%llx",
                     (unsigned long long)slot_va);
         return false;
     }
@@ -89,14 +89,14 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
     uint8_t slot_type = 0;
     uint64_t bytes_va = 0;
     if (!read_slot_fields((const lagfx_device_descriptor_t *)&((lagfx_device_t *)p->dev)->desc, slot_gpa, &slot_type, &bytes_va)) {
-        LAGFX_LOG("lookup_function_bytes: failed to read slot at gpa=0x%llx",
+        LAGFX_TRACE("lookup_function_bytes: failed to read slot at gpa=0x%llx",
                     (unsigned long long)slot_gpa);
         return false;
     }
 
     /* Step 4: validate type == 0x06. */
     if (slot_type != LAGFX_APV_TYPE_FUNCTION) {
-        LAGFX_LOG("lookup_function_bytes: slot[0x%x] type=0x%02x (expected 0x06)",
+        LAGFX_TRACE("lookup_function_bytes: slot[0x%x] type=0x%02x (expected 0x06)",
                     (unsigned)func_object_id, (unsigned)slot_type);
         return false;
     }
@@ -104,7 +104,7 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
     /* Step 5: translate bytes_va to GPA. */
     uint64_t bytes_gpa = 0;
     if (!lagfx_task_translate(p, task, bytes_va, &bytes_gpa)) {
-        LAGFX_LOG("lookup_function_bytes: radix walk failed for bytes_va=0x%llx",
+        LAGFX_TRACE("lookup_function_bytes: radix walk failed for bytes_va=0x%llx",
                     (unsigned long long)bytes_va);
         return false;
     }
@@ -112,29 +112,29 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
     /* Step 6: read first u64 at bytes_gpa → next_va. Cites phase_b_step5_v2_4_MTLB_CONFIRMED.md line 18. */
     uint64_t next_va = 0;
     if (!read_u64_via_shell((const lagfx_device_descriptor_t *)&((lagfx_device_t *)p->dev)->desc, bytes_gpa, &next_va)) {
-        LAGFX_LOG("lookup_function_bytes: failed to read next_va at bytes_gpa=0x%llx",
+        LAGFX_TRACE("lookup_function_bytes: failed to read next_va at bytes_gpa=0x%llx",
                     (unsigned long long)bytes_gpa);
         return false;
     }
 
     if (next_va == 0u) {
-        LAGFX_LOG("lookup_function_bytes: next_va is zero");
+        LAGFX_TRACE("lookup_function_bytes: next_va is zero");
         return false;
     }
 
     /* Step 7: translate next_va to GPA. */
     uint64_t next_gpa = 0;
     if (!lagfx_task_translate(p, task, next_va, &next_gpa)) {
-        LAGFX_LOG("lookup_function_bytes: radix walk failed for next_va=0x%llx",
+        LAGFX_TRACE("lookup_function_bytes: radix walk failed for next_va=0x%llx",
                     (unsigned long long)next_va);
         return false;
     }
 
-    /* Step 8: read MTLB header (first 24 bytes). Check magic at +0, length at +20. */
+    /* Step 8: read MTLB header (first 24 bytes). Check magic at +0, length at +16. */
     uint8_t mtlb_header[24] = {0};
     lagfx_device_t *dev_for_dma = (lagfx_device_t *)p->dev;
     if (!dev_for_dma->desc.shell.read_memory(dev_for_dma->desc.shell.opaque, next_gpa, 24, mtlb_header)) {
-        LAGFX_LOG("lookup_function_bytes: failed to read MTLB header at gpa=0x%llx",
+        LAGFX_TRACE("lookup_function_bytes: failed to read MTLB header at gpa=0x%llx",
                     (unsigned long long)next_gpa);
         return false;
     }
@@ -142,7 +142,7 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
     /* Validate 'MTLB' magic. */
     if (mtlb_header[0] != 'M' || mtlb_header[1] != 'T' ||
         mtlb_header[2] != 'L' || mtlb_header[3] != 'B') {
-        LAGFX_LOG("lookup_function_bytes: missing MTLB magic at gpa=0x%llx",
+        LAGFX_TRACE("lookup_function_bytes: missing MTLB magic at gpa=0x%llx",
                     (unsigned long long)next_gpa);
         return false;
     }
@@ -152,14 +152,14 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
      * Length 0x22d4 = 8916 is at bytes +16..+19 (the 5th u32), not +20. */
     uint32_t mtlb_len = 0;
     if (!read_u32_via_shell((const lagfx_device_descriptor_t *)&((lagfx_device_t *)p->dev)->desc, next_gpa + 16, &mtlb_len)) {
-        LAGFX_LOG("lookup_function_bytes: failed to read length at gpa+16=0x%llx",
+        LAGFX_TRACE("lookup_function_bytes: failed to read length at gpa+16=0x%llx",
                     (unsigned long long)(next_gpa + 16));
         return false;
     }
 
     if (mtlb_len == 0 || mtlb_len > 16 * 1024 * 1024) {
         /* Sanity check: reject absurdly small or large metallibs. */
-        LAGFX_LOG("lookup_function_bytes: invalid MTLB length=%u", mtlb_len);
+        LAGFX_TRACE("lookup_function_bytes: invalid MTLB length=%u", mtlb_len);
         return false;
     }
 
