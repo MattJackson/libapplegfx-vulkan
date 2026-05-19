@@ -57,6 +57,11 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdlib.h>
 
 typedef int (*lagfx_compute_inner_op_fn)(lagfx_protocol_t *p,
                                             uint32_t          encoder_type,
@@ -999,6 +1004,122 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                           reference, vert_ref, got_v ? "OK" : "FAIL", (unsigned long long)v_gpa, v_len,
                           frag_ref, got_f ? "OK" : (frag_ref == 0 ? "N/A" : "FAIL"), (unsigned long long)f_gpa, f_len);
                 lookup_count++;
+            }
+        }
+    }
+
+    /* Phase C step 1: env-gated metallib bytes capture to disk. */
+    if (getenv("LAGFX_PHASE_C_CAPTURE") != NULL && task->heap_pfn != 0u) {
+        static uint32_t capture_count = 0u;
+        static bool dir_created = false;
+        if (capture_count < 20u) {
+            uint8_t vert_ref = 0, frag_ref = 0;
+            if (lagfx_lookup_pipeline_function_refs(p, task, reference, &vert_ref, &frag_ref)) {
+                /* Create output directory on first capture. */
+                if (!dir_created) {
+                    if (mkdir("/tmp/lagfx-metallibs", 0755) != 0 && errno != EEXIST) {
+                        LAGFX_WARN("Phase C: mkdir /tmp/lagfx-metallibs failed: %s", strerror(errno));
+                    } else {
+                        dir_created = true;
+                    }
+                }
+
+                if (dir_created) {
+                    /* Capture vertex metallib. */
+                    uint64_t vert_gpa = 0, frag_gpa = 0;
+                    uint32_t vert_len = 0, frag_len = 0;
+                    
+                    bool got_vert = lagfx_lookup_function_bytes(p, task, vert_ref, &vert_gpa, &vert_len);
+                    if (got_vert && vert_len > 0) {
+                        /* Allocate buffer on heap — metallibs are ~4-6 KB. */
+                        uint8_t *buf = (uint8_t *)malloc(vert_len);
+                        if (buf != NULL) {
+                            lagfx_device_t *dev_for_dma = (lagfx_device_t *)p->dev;
+                            bool ok_read = dev_for_dma->desc.shell.read_memory(
+                                dev_for_dma->desc.shell.opaque, vert_gpa, vert_len, buf);
+                            
+                            if (ok_read) {
+                                /* Build filename: task<TASK_ID>_pipeline<PIPELINE_REF>_vert_func<VERT_REF>_size<LEN>.metallib */
+                                char filename[256];
+                                int ret = snprintf(filename, sizeof(filename),
+                                    "/tmp/lagfx-metallibs/task%d_pipeline0x%x_vert_func0x%x_size%u.metallib",
+                                    (int)task->id, (int)reference, (int)vert_ref, (unsigned)vert_len);
+                                
+                                if (ret > 0 && ret < (int)sizeof(filename)) {
+                                    int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                                    if (fd >= 0) {
+                                        ssize_t written = write(fd, buf, vert_len);
+                                        close(fd);
+                                        if ((size_t)written == vert_len) {
+                                            LAGFX_LOG("Phase C: captured vertex metallib %s (%u bytes)", filename, (unsigned)vert_len);
+                                        } else {
+                                            LAGFX_WARN("Phase C: write failed for %s (wrote %zd/%u)", filename, written, (unsigned)vert_len);
+                                        }
+                                    } else {
+                                        LAGFX_WARN("Phase C: open failed for %s", filename);
+                                    }
+                                } else {
+                                    LAGFX_WARN("Phase C: filename truncation or overflow");
+                                }
+                            } else {
+                                LAGFX_WARN("Phase C: read_memory failed for vertex metallib gpa=0x%llx len=%u",
+                                           (unsigned long long)vert_gpa, vert_len);
+                            }
+                            free(buf);
+                        } else {
+                            LAGFX_WARN("Phase C: malloc(%u) failed for vertex metallib", vert_len);
+                        }
+                    }
+
+                    /* Capture fragment metallif if present. */
+                    bool got_frag = false;
+                    if (frag_ref != 0 && !got_vert) {
+                        got_frag = lagfx_lookup_function_bytes(p, task, frag_ref, &frag_gpa, &frag_len);
+                    } else if (frag_ref != 0) {
+                        got_frag = lagfx_lookup_function_bytes(p, task, frag_ref, &frag_gpa, &frag_len);
+                    }
+
+                    if (got_frag && frag_len > 0 && frag_ref != 0) {
+                        uint8_t *buf = (uint8_t *)malloc(frag_len);
+                        if (buf != NULL) {
+                            lagfx_device_t *dev_for_dma = (lagfx_device_t *)p->dev;
+                            bool ok_read = dev_for_dma->desc.shell.read_memory(
+                                dev_for_dma->desc.shell.opaque, frag_gpa, frag_len, buf);
+
+                            if (ok_read) {
+                                char filename[256];
+                                int ret = snprintf(filename, sizeof(filename),
+                                    "/tmp/lagfx-metallibs/task%d_pipeline0x%x_frag_func0x%x_size%u.metallib",
+                                    (int)task->id, (int)reference, (int)frag_ref, (unsigned)frag_len);
+
+                                if (ret > 0 && ret < (int)sizeof(filename)) {
+                                    int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                                    if (fd >= 0) {
+                                        ssize_t written = write(fd, buf, frag_len);
+                                        close(fd);
+                                        if ((size_t)written == frag_len) {
+                                            LAGFX_LOG("Phase C: captured fragment metallib %s (%u bytes)", filename, (unsigned)frag_len);
+                                        } else {
+                                            LAGFX_WARN("Phase C: write failed for %s (wrote %zd/%u)", filename, written, (unsigned)frag_len);
+                                        }
+                                    } else {
+                                        LAGFX_WARN("Phase C: open failed for %s", filename);
+                                    }
+                                } else {
+                                    LAGFX_WARN("Phase C: filename truncation or overflow");
+                                }
+                            } else {
+                                LAGFX_WARN("Phase C: read_memory failed for fragment metallib gpa=0x%llx len=%u",
+                                           (unsigned long long)frag_gpa, frag_len);
+                            }
+                            free(buf);
+                        } else {
+                            LAGFX_WARN("Phase C: malloc(%u) failed for fragment metallib", frag_len);
+                        }
+                    }
+
+                    capture_count++;
+                }
             }
         }
     }
