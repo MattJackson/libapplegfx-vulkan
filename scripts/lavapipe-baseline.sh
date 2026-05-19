@@ -107,10 +107,13 @@ log "Probing lavapipe ICD..."
 LAVAPIPE_ICD=""
 LAVAPIPE_VERSION="unknown"
 
-if vulkaninfo 2>&1 | grep -qE "lvp|llvmpipe|lavapipe"; then
+VI_OUTPUT=$(vulkaninfo 2>&1)
+if echo "$VI_OUTPUT" | grep -qE "lvp|llvmpipe|lavapipe"; then
   LAVAPIPE_ICD="/usr/share/vulkan/icd.d/lvp_icd.json"
   export VK_ICD_FILENAMES="$LAVAPIPE_ICD"
-elif vulkaninfo 2>&1 | grep -qi "lavapipe\|llvmpipe"; then
+  LAVAPIPE_VERSION=$(echo "$VI_OUTPUT" | grep "driverInfo" | head -1 || echo "unknown")
+  log "lavapipe ICD found: $LAVAPIPE_ICD"
+elif echo "$VI_OUTPUT" | grep -qi "lavapipe\|llvmpipe"; then
   # Try common lavapipe ICD paths
   for i in /usr/share/vulkan/icd.d/lvp_icd.json \
            /etc/vulkan/icd.d/lvp_icd.json \
