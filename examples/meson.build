@@ -26,3 +26,16 @@ if fs.is_file(meson.current_source_dir() / 'triangle' / 'spv_rewrite.c')
     build_by_default : true,
   )
 endif
+
+# Extract-only tool — reads a metallib and writes one .air.bc file per
+# function. No retargeting is performed; the AIR bitcode is written as-
+# found for offline analysis (e.g., intrinsic cataloguing). See
+# triangle/extract_only.c for details.
+if fs.is_file(meson.current_source_dir() / 'triangle' / 'extract_only.c')
+  executable('triangle-extract-only',
+    'triangle/extract_only.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : libapplegfx_vulkan_dep,
+    build_by_default : true,
+  )
+endif
