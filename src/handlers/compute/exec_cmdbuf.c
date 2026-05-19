@@ -53,10 +53,10 @@
  * case. The remaining low bits of dev_addr become the in-page offset
  * scaled to the level reached.
  */
-static bool task_translate(lagfx_protocol_t *p,
-                            const lagfx_task_entry_t *task,
-                            uint64_t dev_addr,
-                            uint64_t *out_gpa) {
+bool lagfx_task_translate(lagfx_protocol_t *p,
+                          const lagfx_task_entry_t *task,
+                          uint64_t dev_addr,
+                          uint64_t *out_gpa) {
     if (!task || task->root_page_pfn == 0u) {
         return false;
     }
@@ -238,7 +238,7 @@ static size_t inner_walk_segment(lagfx_protocol_t *p,
                 if (op16 >= 0x1c2u && op16 <= 0x1d0u) {
                     lagfx_info_dispatch(p, op16, body, body_len,
                                         outer_resources, resource_count,
-                                        task, task_translate);
+                                        task, lagfx_task_translate);
                 } else {
                     /* Real blit dispatch — 24-entry table at 0x12c..0x143
                      * plus extended low-range (0x001..0x07d). */
@@ -348,7 +348,7 @@ static void exec_walk_resource(lagfx_protocol_t *p,
         uint64_t cur_gpa = 0;
         bool translated = false;
         if (task) {
-            translated = task_translate(p, task, cur_va, &cur_gpa);
+            translated = lagfx_task_translate(p, task, cur_va, &cur_gpa);
         }
         if (!translated) {
             cur_gpa = cur_va;  /* fallback: VA == GPA */

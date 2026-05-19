@@ -26,6 +26,12 @@ typedef bool (*lagfx_info_translate_fn)(lagfx_protocol_t *p,
                                          uint64_t dev_addr,
                                          uint64_t *out_gpa);
 
+/* Forward declaration of the radix walker — promoted from static in exec_cmdbuf.c. */
+bool lagfx_task_translate(lagfx_protocol_t *p,
+                          const lagfx_task_entry_t *task,
+                          uint64_t dev_addr,
+                          uint64_t *out_gpa);
+
 /* Dispatch one inner-PGCmdHeader on the InfoDecoder path.
  *
  *   inner_opcode    = PGCmdHeader.opcode (already masked to low 32 bits

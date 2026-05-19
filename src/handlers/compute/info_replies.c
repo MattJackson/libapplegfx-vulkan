@@ -52,7 +52,7 @@
  *        length, u32 pad}). The host_gpu_addr is a task-virtual
  *        address.
  *
- *     3. Reply target GPA = task_translate(buffer_dev_addr +
+ *     3. Reply target GPA = lagfx_task_translate(buffer_dev_addr +
  *        reply_offset) via the per-task radix tree at task->root_page_pfn.
  *
  *     4. Write exactly reply_size bytes via shell.write_memory.
