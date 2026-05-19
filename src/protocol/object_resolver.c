@@ -147,11 +147,13 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
         return false;
     }
 
-    /* Read total length from +20. */
+    /* Read total length from +16 (LE u32). Per V2.4 dump for ref=0x1:
+     *   first32 = 4d544c42 01800200 08000081 0f000700 d4220000 00000000 ...
+     * Length 0x22d4 = 8916 is at bytes +16..+19 (the 5th u32), not +20. */
     uint32_t mtlb_len = 0;
-    if (!read_u32_via_shell((const lagfx_device_descriptor_t *)&((lagfx_device_t *)p->dev)->desc, next_gpa + 20, &mtlb_len)) {
-        LAGFX_LOG("lookup_function_bytes: failed to read length at gpa+20=0x%llx",
-                    (unsigned long long)(next_gpa + 20));
+    if (!read_u32_via_shell((const lagfx_device_descriptor_t *)&((lagfx_device_t *)p->dev)->desc, next_gpa + 16, &mtlb_len)) {
+        LAGFX_LOG("lookup_function_bytes: failed to read length at gpa+16=0x%llx",
+                    (unsigned long long)(next_gpa + 16));
         return false;
     }
 
