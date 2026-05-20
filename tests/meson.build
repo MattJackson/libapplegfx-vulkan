@@ -557,5 +557,22 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-vertex-id-emit-unit.c')
   test('air2spv vertex_id emit (unit)', air2spv_vid_test)
 endif
 
+# Phase 4 reference SPIR-V emitter — air.render_target (fragment stage).
+# Validates the fragment-stage pattern + OpExecutionMode + Location
+# decoration (vs BuiltIn for the other two emitters).
+if fs.is_file(meson.current_source_dir() / 'air2spv-render-target-emit-unit.c')
+  air2spv_rt_test_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_rt_test_deps += [vulkan_dep]
+  endif
+  air2spv_rt_test = executable('air2spv-render-target-emit-unit',
+    'air2spv-render-target-emit-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_rt_test_deps,
+    build_by_default : true,
+  )
+  test('air2spv render_target emit (unit)', air2spv_rt_test)
+endif
+
 
 

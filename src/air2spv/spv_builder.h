@@ -86,6 +86,12 @@ enum {
     LAGFX_SPV_EXECUTION_MODEL_FRAGMENT  = 4,
 };
 
+/* ExecutionMode — for OpExecutionMode. Fragment stages require
+ * OriginUpperLeft (Vulkan convention). */
+enum {
+    LAGFX_SPV_EXECUTION_MODE_ORIGIN_UPPER_LEFT = 7,
+};
+
 /* Storage classes for OpTypePointer / OpVariable. */
 enum {
     LAGFX_SPV_STORAGE_INPUT             = 1,
