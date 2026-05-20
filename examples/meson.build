@@ -39,3 +39,14 @@ if fs.is_file(meson.current_source_dir() / 'triangle' / 'extract_only.c')
     build_by_default : true,
   )
 endif
+
+# air-bcdump — bcanalyzer-like structural dump tool that exercises our
+# clean-room Phase 1 + Phase 2 decoders. Used by the Phase 2 regression
+# harness (paravirt-re/library/diag/air_reader_diff.py) and for ad-hoc
+# inspection of captured macOS metallib bodies.
+executable('air-bcdump',
+  'air-bcdump.c',
+  include_directories : [include_dir, internal_include_dir],
+  dependencies : libapplegfx_vulkan_dep,
+  build_by_default : true,
+)
