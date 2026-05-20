@@ -574,5 +574,22 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-render-target-emit-unit.c')
   test('air2spv render_target emit (unit)', air2spv_rt_test)
 endif
 
+# Phase 4 reference SPIR-V emitter — air.fragment_input (fragment input).
+# Validates fragment-stage INPUT variable with Location decoration +
+# OpCompositeExtract/OpCompositeConstruct pattern for vec2->vec4 conversion.
+if fs.is_file(meson.current_source_dir() / 'air2spv-fragment-input-emit-unit.c')
+  air2spv_fi_test_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_fi_test_deps += [vulkan_dep]
+  endif
+  air2spv_fi_test = executable('air2spv-fragment-input-emit-unit',
+    'air2spv-fragment-input-emit-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_fi_test_deps,
+    build_by_default : true,
+  )
+  test('air2spv fragment_input emit (unit)', air2spv_fi_test)
+endif
+
 
 

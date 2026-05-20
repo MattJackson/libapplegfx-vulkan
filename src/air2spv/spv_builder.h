@@ -63,6 +63,7 @@ enum {
     LAGFX_SPV_OP_LOAD                   = 61,
     LAGFX_SPV_OP_STORE                  = 62,
     LAGFX_SPV_OP_CONVERT_U_TO_F         = 112,
+    LAGFX_SPV_OP_COMPOSITE_EXTRACT      = 81,
     LAGFX_SPV_OP_COMPOSITE_CONSTRUCT    = 80,
     LAGFX_SPV_OP_DECORATE               = 71,
     LAGFX_SPV_OP_LABEL                  = 248,
