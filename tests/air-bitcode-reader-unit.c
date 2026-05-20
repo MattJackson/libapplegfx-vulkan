@@ -197,6 +197,13 @@ static int test_real_triangle_metallib(void) {
     (void)lagfx_air_module_constants(m, &num_consts);
     printf("       paramattr_groups=%u  constants=%u\n", num_pag, num_consts);
 
+    /* Print function names from VALUE_SYMTAB. */
+    for (uint32_t i = 0; i < num_funcs; i++) {
+        const char *name = lagfx_air_module_string(m, fns[i].name_offset);
+        printf("       fn[%u] name='%s' is_proto=%d body_offset=%zu\n",
+               i, name ? name : "(none)", (int)fns[i].is_proto, fns[i].body_offset);
+    }
+
     /* Phase 2 step 2: decode the one non-prototype function body and
      * verify the instruction count matches bcanalyzer's per-record
      * histogram for triangle_vertex.air.bc:
@@ -316,6 +323,14 @@ static int test_real_macos_metallib(void) {
     const lagfx_air_function_t *fns = lagfx_air_module_functions(m, &num_funcs);
     printf("PASS: captured macOS .air.bc parsed (triple='%s' num_types=%u num_funcs=%u from %s)\n",
            triple, num_types, num_funcs, used);
+
+    /* Print function names from VALUE_SYMTAB. */
+    for (uint32_t i = 0; i < num_funcs; i++) {
+        const char *name = lagfx_air_module_string(m, fns[i].name_offset);
+        printf("       fn[%u] name='%s' is_proto=%d body_offset=%zu\n",
+               i, name ? name : "(none)", (int)fns[i].is_proto, fns[i].body_offset);
+    }
+
     /* ViewportToNDC is a compiled shader: 1 FUNCTION declaration with a
      * body (no intrinsic prototypes — those would appear if the shader
      * called any air.* helpers). */

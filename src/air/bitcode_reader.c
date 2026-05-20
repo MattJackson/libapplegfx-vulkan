@@ -56,6 +56,14 @@ enum {
     LAGFX_TYPE_BFLOAT       = 23,
 };
 
+/* VALUE_SYMTAB_BLOCK record codes per llvm/Bitcode/LLVMBitCodes.h. */
+enum {
+    LAGFX_VST_CODE_ENTRY     = 1,  /* [valueid, namechar x N] */
+    LAGFX_VST_CODE_BBENTRY   = 2,  /* [bbid, namechar x N] — skip for Phase 1 */
+    LAGFX_VST_CODE_FNENTRY   = 3,  /* [valueid, body_offset, namechar x N] */
+    LAGFX_VST_CODE_COMBINED_ENTRY = 5,
+};
+
 /* Module record codes we care about for Phase 1.
  * Reference: llvm/include/llvm/Bitcode/LLVMBitCodes.h ModuleCodes enum. */
 enum {
@@ -88,6 +96,15 @@ typedef struct {
     size_t   capacity;
     size_t   used;
 } lagfx_arena_t;
+
+/* VALUE_SYMTAB_BLOCK entry — maps value_id -> name for functions/globals.
+ * Stored in module->symtab_entries[] during MODULE_BLOCK parsing, then
+ * linked to functions[] in a post-parse pass. */
+typedef struct {
+    uint32_t value_id;
+    uint32_t body_offset; /* only valid for FNENTRY (code=3) */
+    uint32_t name_offset; /* offset into arena, 0 = no name yet */
+} lagfx_symtab_entry_t;
 
 struct lagfx_air_module {
     lagfx_arena_t arena;
@@ -122,6 +139,14 @@ struct lagfx_air_module {
      * bundled triangle and captured macOS metallibs use this layout. */
     bool has_strtab;
 
+    /* STRTAB_BLOCK BLOB contents (raw bytes, no NUL terminators —
+     * names are length-delimited via the FUNCTION record's strtab_size
+     * operand). Populated when STRTAB_BLOCK is encountered at root.
+     * Post-MODULE pass resolves each function's strtab slice into a
+     * NUL-terminated arena copy under fn->name_offset. */
+    uint32_t strtab_arena_offset;
+    size_t   strtab_len_bytes;
+
     /* Parsed tables (pointers into arena, counts inline). Phase 1
      * populates incrementally; some may be empty for some modules. */
     lagfx_air_type_t            *types;
@@ -134,6 +159,12 @@ struct lagfx_air_module {
     uint32_t                     num_metadata;
     lagfx_air_param_attr_group_t*param_attr_groups;
     uint32_t                     num_param_attr_groups;
+
+    /* VALUE_SYMTAB_BLOCK entries. Maps value_id -> name_offset for
+     * functions/globals. Phase 1 decodes and stores here, then links
+     * to module->functions[] during a post-parse pass. */
+    lagfx_symtab_entry_t *symtab_entries;
+    uint32_t              num_symtab_entries;
 };
 
 /* === Arena management ============================================ */
@@ -386,19 +417,24 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
     /* Root abbrev width is 2 bits per LLVM Bitstream spec. */
     const uint32_t kRootAbbrevWidth = 2u;
 
-    /* Enter top-level block. Could be IDENTIFICATION_BLOCK first then
+   /* Enter top-level block. Could be IDENTIFICATION_BLOCK first then
      * MODULE_BLOCK — Apple's metallib bitcode starts with IDENT then
-     * MODULE. We scan blocks at the root level until we hit MODULE. */
+     * MODULE. We scan blocks at the root level until we hit MODULE or STRTB. */
     while (!lagfx_bs_at_end(&bs)) {
         bool err = false;
         size_t pos_before_code = lagfx_bs_pos(&bs);
         uint32_t code = lagfx_bs_read_bits(&bs, kRootAbbrevWidth, &err);
         if (err) break;
         if (code != LAGFX_ABBREV_ENTER_SUBBLOCK) {
-            /* Root level should only have ENTER_SUBBLOCK at top. */
-            LAGFX_ERR("air_bitcode_reader: unexpected root abbrev code %u", code);
-            lagfx_air_module_free(m);
-            return LAGFX_ERR_PROTOCOL;
+            /* Root level should only have ENTER_SUBBLOCK at top. Captured
+             * macOS metallibs do something funny past MODULE_BLOCK's
+             * declared end (related to the OPERAND_BUNDLE_TAGS
+             * Apple-flavored abbrev issue — Phase 2.4). Treat as
+             * end-of-stream rather than a hard error so the caller still
+             * gets the partial module. */
+            LAGFX_LOG("air_bitcode_reader: unexpected root abbrev code %u at bit %zu — treating as end-of-stream",
+                      code, pos_before_code);
+            break;
         }
         /* Seek back to re-enter via the helper. */
         if (!lagfx_bs_seek(&bs, pos_before_code)) {
@@ -412,14 +448,67 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
             return LAGFX_ERR_PROTOCOL;
         }
 
+        /* Parse STRTAB_BLOCK at root level. Stashes the BLOB bytes in
+         * the arena so the post-MODULE name-resolution pass can intern
+         * NUL-terminated copies for each function's
+         * (strtab_offset, strtab_size) pair into the function struct's
+         * name_offset.
+         *
+         * STRTAB_BLOCK has a single STRTAB_BLOB record (code=1) whose
+         * payload is the BLOB-encoded byte array. lagfx_block_next_record
+         * surfaces BLOBs via rec.blob_data + rec.blob_len when the
+         * decoded abbrev includes a BLOB operand. */
+        if (blk.block_id == LAGFX_BLK_STRTAB) {
+            /* The root walker already called lagfx_block_enter for blk;
+             * we iterate STRTAB's records using blk's own context. */
+            uint64_t st_scratch[LAGFX_RECORD_MAX_OPS];
+            while (lagfx_bs_pos(&bs) < blk.end_pos) {
+                lagfx_record_t srec = {0};
+                bool s_end = false, s_sub = false, s_da = false;
+                uint32_t s_sub_id = 0;
+                if (!lagfx_block_next_record(&blk, st_scratch, &srec,
+                                              &s_end, &s_sub, &s_da, &s_sub_id)) break;
+                if (s_end) break;
+                if (s_sub) { lagfx_block_skip(&bs, blk.abbrev_width); continue; }
+                if (s_da) continue;
+                /* The STRTAB_BLOB record (code 1) carries the whole table
+                 * as a BLOB. lagfx_block_next_record surfaces BLOBs via
+                 * srec.blob_data + srec.blob_len. Stash the bytes in the
+                 * arena and remember the offset for the post-pass that
+                 * resolves each function's strtab slice into a NUL-
+                 * terminated arena copy. */
+                if (srec.blob_data && srec.blob_len > 0u) {
+                    uint32_t off = arena_reserve(&m->arena, srec.blob_len);
+                    if (off == 0u) {
+                        lagfx_air_module_free(m);
+                        return LAGFX_ERR_OUT_OF_MEMORY;
+                    }
+                    memcpy(m->arena.base + off, srec.blob_data, srec.blob_len);
+                    m->strtab_arena_offset = off;
+                    m->strtab_len_bytes    = srec.blob_len;
+                    LAGFX_TRACE("air_bitcode_reader: STRTAB_BLOCK BLOB %u bytes @ arena+%u",
+                                (unsigned)srec.blob_len, off);
+                }
+            }
+            (void)lagfx_bs_seek(&bs, blk.end_pos);
+            continue;
+        }
+
         if (blk.block_id == LAGFX_BLK_MODULE) {
             /* Parse MODULE_BLOCK records + sub-blocks. */
             uint64_t scratch_ops[LAGFX_RECORD_MAX_OPS];
             /* Cursor into m->functions[] for body-offset assignment as
              * FUNCTION_BLOCK sub-blocks are encountered. LLVM emits one
-             * FUNCTION_BLOCK per non-prototype FUNCTION declaration in
+             * FUNCTION_BLOCK per non-prototype function in
              * declaration order; we walk both lists in lock-step. */
             uint32_t next_body_fn = 0u;
+            /* Did the MODULE walker exit cleanly (END_BLOCK seen OR cursor
+             * reached blk.end_pos)? If not, the inner-record reader bailed
+             * on something we don't yet decode (Apple-flavored abbrevs in
+             * captured macOS metallibs — Phase 2.4), and we should stop
+             * root-level parsing right after — there's nothing meaningful
+             * past the truncation point. */
+            bool module_clean_exit = false;
             while (lagfx_bs_pos(&bs) < blk.end_pos) {
                 lagfx_record_t rec = {0};
                 bool is_end = false, is_subblock = false, is_define_abbrev = false;
@@ -431,7 +520,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                               lagfx_bs_pos(&bs));
                     break;
                 }
-                if (is_end) break;
+                if (is_end) { module_clean_exit = true; break; }
                 if (is_subblock) {
                     if (sub_id == LAGFX_BLK_BLOCKINFO) {
                         /* Parse BLOCKINFO: SETBID records partition the
@@ -848,40 +937,125 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                     }
 
                     if (sub_id == LAGFX_BLK_FUNCTION) {
-                        /* FUNCTION_BLOCK: instruction stream for one
-                         * function body. Phase 2 will decode; Phase 1
-                         * just stashes the bit-offset + length on the
-                         * next unassigned non-prototype function. The
-                         * stashed offset points AT the ENTER_SUBBLOCK
-                         * abbrev code so a Phase 2 reader can position
-                         * its bitstream cursor there and call
-                         * lagfx_block_enter() directly. */
-                        size_t body_start = lagfx_bs_pos(&bs);
-                        if (!lagfx_block_skip(&bs, blk.abbrev_width)) {
-                            LAGFX_ERR("air_bitcode_reader: failed to skip FUNCTION_BLOCK");
-                            break;
-                        }
-                        size_t body_end = lagfx_bs_pos(&bs);
-                        /* Advance next_body_fn past any prototypes (no
-                         * body to attach). */
-                        while (next_body_fn < m->num_functions &&
-                               m->functions[next_body_fn].is_proto) {
-                            next_body_fn++;
-                        }
-                        if (next_body_fn < m->num_functions) {
-                            m->functions[next_body_fn].body_offset = body_start;
-                            m->functions[next_body_fn].body_length = body_end - body_start;
-                            LAGFX_TRACE("air_bitcode_reader: FUNCTION_BLOCK[%u] body @ bit %zu len %zu",
-                                        next_body_fn, body_start, body_end - body_start);
-                            next_body_fn++;
-                        } else {
-                            LAGFX_LOG("air_bitcode_reader: FUNCTION_BLOCK without a matching non-proto declaration (functions=%u)",
-                                      m->num_functions);
-                        }
-                        continue;
-                    }
+                         /* FUNCTION_BLOCK: instruction stream for one
+                          * function body. Phase 2 will decode; Phase 1
+                          * just stashes the bit-offset + length on the
+                          * next unassigned non-prototype function. The
+                          * stashed offset points AT the ENTER_SUBBLOCK
+                          * abbrev code so a Phase 2 reader can position
+                          * its bitstream cursor there and call
+                          * lagfx_block_enter() directly. */
+                         size_t body_start = lagfx_bs_pos(&bs);
+                         if (!lagfx_block_skip(&bs, blk.abbrev_width)) {
+                             LAGFX_ERR("air_bitcode_reader: failed to skip FUNCTION_BLOCK");
+                             break;
+                         }
+                         size_t body_end = lagfx_bs_pos(&bs);
+                         /* Advance next_body_fn past any prototypes (no
+                          * body to attach). */
+                         while (next_body_fn < m->num_functions &&
+                                m->functions[next_body_fn].is_proto) {
+                             next_body_fn++;
+                         }
+                         if (next_body_fn < m->num_functions) {
+                             m->functions[next_body_fn].body_offset = body_start;
+                             m->functions[next_body_fn].body_length = body_end - body_start;
+                             LAGFX_TRACE("air_bitcode_reader: FUNCTION_BLOCK[%u] body @ bit %zu len %zu",
+                                         next_body_fn, body_start, body_end - body_start);
+                             next_body_fn++;
+                         } else {
+                             LAGFX_LOG("air_bitcode_reader: FUNCTION_BLOCK without a matching non-proto declaration (functions=%u)",
+                                       m->num_functions);
+                         }
+                         continue;
+                     }
 
-                    /* Other sub-blocks: skip for now. */
+                     if (sub_id == LAGFX_BLK_VALUE_SYMTAB) {
+                         /* VALUE_SYMTAB_BLOCK: value symbol table with
+                          * function/global names. Records:
+                          *   VST_CODE_ENTRY(1): [valueid, namechar x N]
+                          *   VST_CODE_BBENTRY(2): [bbid, namechar x N] — skip
+                          *   VST_CODE_FNENTRY(3): [valueid, body_offset, namechar x N] */
+                         lagfx_block_t vs;
+                         if (!lagfx_block_enter(&bs, blk.abbrev_width, m->blockinfo, &vs)) {
+                             LAGFX_ERR("air_bitcode_reader: failed to enter VALUE_SYMTAB_BLOCK");
+                             break;
+                         }
+
+                         /* Reserve symtab entries buffer — hard cap at 4096 for now. */
+                         const uint32_t MAX_SYM_TAB = 4096u;
+                         uint32_t symtab_off = arena_reserve(&m->arena, sizeof(lagfx_symtab_entry_t) * MAX_SYM_TAB);
+                         if (symtab_off == 0u && MAX_SYM_TAB > 0u) {
+                             lagfx_air_module_free(m);
+                             return LAGFX_ERR_OUT_OF_MEMORY;
+                         }
+                         lagfx_symtab_entry_t *entries = (lagfx_symtab_entry_t *)(m->arena.base + symtab_off);
+                         uint32_t num_entries = 0u;
+
+                         while (lagfx_bs_pos(&bs) < vs.end_pos) {
+                             lagfx_record_t vrec = {0};
+                             bool v_end = false, v_sub = false, v_da = false;
+                             uint32_t v_sub_id = 0;
+                             if (!lagfx_block_next_record(&vs, scratch_ops, &vrec,
+                                                           &v_end, &v_sub, &v_da, &v_sub_id)) {
+                                 break;
+                             }
+                             if (v_end) break;
+                             if (v_sub || v_da) continue;
+
+                             /* Skip BBENTRY — basic block names not needed for Phase 1. */
+                             if (vrec.code == LAGFX_VST_CODE_BBENTRY) {
+                                 continue;
+                             }
+
+                             if (num_entries >= MAX_SYM_TAB) break;
+                             lagfx_symtab_entry_t *entry = &entries[num_entries];
+                             entry->value_id = 0u;
+                             entry->body_offset = 0u;
+                             entry->name_offset = 0u;
+
+                             if (vrec.code == LAGFX_VST_CODE_ENTRY) {
+                                 /* [valueid, namechar x N] */
+                                 if (vrec.num_ops >= 1u) {
+                                     entry->value_id = (uint32_t)vrec.ops[0];
+                                     size_t len = vrec.num_ops - 1u;
+                                     uint32_t off = arena_reserve(&m->arena, len + 1u);
+                                     if (off != 0u) {
+                                         for (size_t i = 0; i < len; i++) {
+                                             m->arena.base[off + i] = (uint8_t)(vrec.ops[i + 1u] & 0xFFu);
+                                         }
+                                         m->arena.base[off + len] = 0;
+                                         entry->name_offset = off;
+                                     }
+                                 }
+                             } else if (vrec.code == LAGFX_VST_CODE_FNENTRY) {
+                                 /* [valueid, body_offset, namechar x N] */
+                                 if (vrec.num_ops >= 2u) {
+                                     entry->value_id = (uint32_t)vrec.ops[0];
+                                     entry->body_offset = (uint32_t)vrec.ops[1];
+                                     size_t len = vrec.num_ops - 2u;
+                                     uint32_t off = arena_reserve(&m->arena, len + 1u);
+                                     if (off != 0u) {
+                                         for (size_t i = 0; i < len; i++) {
+                                             m->arena.base[off + i] = (uint8_t)(vrec.ops[i + 2u] & 0xFFu);
+                                         }
+                                         m->arena.base[off + len] = 0;
+                                         entry->name_offset = off;
+                                     }
+                                 }
+                             }
+
+                             num_entries++;
+                         }
+
+                         m->symtab_entries = entries;
+                         m->num_symtab_entries = num_entries;
+                         LAGFX_TRACE("air_bitcode_reader: VALUE_SYMTAB_BLOCK decoded %u entries", num_entries);
+                         (void)lagfx_bs_seek(&bs, vs.end_pos);
+                         continue;
+                     }
+
+                     /* Other sub-blocks: skip for now. */
                     if (!lagfx_block_skip(&bs, blk.abbrev_width)) {
                         LAGFX_ERR("air_bitcode_reader: failed to skip sub-block id=%u", sub_id);
                         break;
@@ -953,10 +1127,14 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                         lagfx_air_function_t *fn =
                             (lagfx_air_function_t *)(m->arena.base + blob_off);
                         /* For STRTAB modules: stash strtab_offset in
-                         * name_offset for now (resolved to a string later
-                         * when STRTAB BLOB is parsed). For non-STRTAB:
+                         * name_offset and strtab_size in name_length for
+                         * now. Post-MODULE pass will read the STRTAB
+                         * BLOB, copy the name bytes into an arena-NUL-
+                         * terminated string, and rewrite name_offset to
+                         * the interned location. For non-STRTAB modules:
                          * name comes from VALUE_SYMTAB and stays 0 here. */
                         fn->name_offset      = m->has_strtab ? (uint32_t)rec.ops[0] : 0u;
+                        fn->name_length      = m->has_strtab ? (uint32_t)rec.ops[1] : 0u;
                         fn->type_index       = (uint32_t)rec.ops[off_off + 0u];
                         /* off_off+1 is calling convention; not stored yet. */
                         fn->is_proto         = (rec.ops[off_off + 2u] != 0u);
@@ -977,17 +1155,117 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                         break;
                 }
             }
-            /* MODULE_BLOCK done. */
-            break;
+            /* MODULE_BLOCK done. ONLY fall back to VALUE_SYMTAB linking
+             * for non-STRTAB modules. STRTAB-bearing modules (both our
+             * fixtures, and all captured macOS metallibs to date) get
+             * their names from the STRTAB BLOB; the post-bs.at_end pass
+             * below resolves them. Running the VALUE_SYMTAB linking on
+             * a STRTAB module would clobber the strtab_offset stashed
+             * in name_offset (since the linker only checks
+             * `name_offset == 0` for its first non-proto function with
+             * strtab_offset 0). */
+            if (!m->has_strtab && m->symtab_entries != NULL &&
+                m->num_symtab_entries > 0u) {
+                for (uint32_t i = 0; i < m->num_symtab_entries; i++) {
+                    lagfx_symtab_entry_t *entry = &m->symtab_entries[i];
+                    if (entry->name_offset == 0u) continue;
+                    /* Match by value_id-equals-function-index. */
+                    for (uint32_t j = 0; j < m->num_functions; j++) {
+                        lagfx_air_function_t *fn = &m->functions[j];
+                        if (fn->name_offset != 0u) continue;
+                        if ((uint32_t)entry->value_id == j) {
+                            fn->name_offset = entry->name_offset;
+                            break;
+                        }
+                    }
+                }
+            }
+            /* Exit handling. Three paths the MODULE walker can have
+             * left in:
+             *
+             *   (a) END_BLOCK read cleanly (module_clean_exit==true).
+             *       block_reader applied a 32-bit alignment after the
+             *       END_BLOCK code; cursor is at the next root-level
+             *       record. Continue the root loop so STRTAB_BLOCK /
+             *       SYMTAB_BLOCK (which come AFTER MODULE in emission
+             *       order) are picked up.
+             *
+             *   (b) Loop-condition false (cursor caught up to declared
+             *       end_pos without END_BLOCK). Trust cursor; continue.
+             *
+             *   (c) Inner record reader bailed (module_clean_exit==false
+             *       AND cursor < end_pos). Apple-flavored abbrev hit —
+             *       captured macOS metallibs do this inside
+             *       OPERAND_BUNDLE_TAGS (Phase 2.4). The bytes past the
+             *       cursor are garbage from a root parser's view; stop
+             *       root walking. What we already decoded stays valid. */
+            if (!module_clean_exit && lagfx_bs_pos(&bs) < blk.end_pos) {
+                LAGFX_LOG("air_bitcode_reader: MODULE exited early at bit %zu (declared end %zu) — skipping post-MODULE root blocks",
+                          lagfx_bs_pos(&bs), blk.end_pos);
+                break;
+            }
+            continue;
         } else {
-            /* Non-MODULE block at root (e.g., IDENTIFICATION_BLOCK).
-             * Skip and continue. We already entered it; need to seek
-             * past its end. */
+             /* Non-MODULE block at root (e.g., IDENTIFICATION_BLOCK).
+              * Skip and continue. We already entered it; need to seek
+              * past its end. */
             if (!lagfx_bs_seek(&bs, blk.end_pos)) {
                 LAGFX_ERR("air_bitcode_reader: failed to seek past root sub-block id=%u",
                           blk.block_id);
                 lagfx_air_module_free(m);
                 return LAGFX_ERR_PROTOCOL;
+            }
+        }
+    }
+
+    /* STRTAB name-resolution post-pass.
+     *
+     * For STRTAB-bearing modules, each function's name_offset is still
+     * a STRTAB-relative offset (set during MODULE_CODE_FUNCTION parsing).
+     * Now that STRTAB_BLOCK's BLOB is in the arena, intern a NUL-
+     * terminated copy of each function's name slice and rewrite
+     * name_offset to point at the interned copy. This makes
+     * lagfx_air_module_string(fn->name_offset) return the function
+     * name directly.
+     *
+     * If a function's strtab slice is out of range (because STRTAB
+     * wasn't found or the offset is bogus), leave name_offset at 0 to
+     * signal "name unknown" — the public string accessor returns NULL
+     * for offset 0. */
+    if (m->has_strtab) {
+        if (m->strtab_arena_offset != 0u && m->strtab_len_bytes > 0u) {
+            const uint8_t *strtab_bytes = m->arena.base + m->strtab_arena_offset;
+            size_t strtab_len = m->strtab_len_bytes;
+            for (uint32_t i = 0; i < m->num_functions; i++) {
+                lagfx_air_function_t *fn = &m->functions[i];
+                uint32_t st_off = fn->name_offset;  /* currently STRTAB-relative */
+                uint32_t st_len = fn->name_length;
+                if (st_len == 0u || (size_t)st_off + (size_t)st_len > strtab_len) {
+                    fn->name_offset = 0u;
+                    continue;
+                }
+                uint32_t arena_off = arena_reserve(&m->arena, st_len + 1u);
+                if (arena_off == 0u) {
+                    lagfx_air_module_free(m);
+                    return LAGFX_ERR_OUT_OF_MEMORY;
+                }
+                /* Refresh strtab_bytes after arena_reserve (it may have realloc'd). */
+                strtab_bytes = m->arena.base + m->strtab_arena_offset;
+                memcpy(m->arena.base + arena_off, strtab_bytes + st_off, st_len);
+                m->arena.base[arena_off + st_len] = 0;
+                fn->name_offset = arena_off;
+                LAGFX_TRACE("air_bitcode_reader: STRTAB resolved fn[%u] '%.*s' (arena+%u, len=%u)",
+                            i, (int)st_len, (const char *)(m->arena.base + arena_off),
+                            arena_off, st_len);
+            }
+        } else {
+            /* STRTAB schema assumed but no STRTAB_BLOCK was loaded
+             * (captured macOS metallib whose MODULE walker bailed
+             * before reaching STRTAB at root). Clear name_offset on
+             * every function so callers don't dereference a stale
+             * STRTAB-relative offset as an arena offset. */
+            for (uint32_t i = 0; i < m->num_functions; i++) {
+                m->functions[i].name_offset = 0u;
             }
         }
     }

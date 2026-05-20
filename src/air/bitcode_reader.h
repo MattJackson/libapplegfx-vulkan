@@ -120,7 +120,8 @@ typedef struct {
 /* === Function declaration ======================================== */
 
 typedef struct {
-    uint32_t    name_offset;     /* into module string arena */
+    uint32_t    name_offset;     /* into module string arena (NUL-terminated string) */
+    uint32_t    name_length;     /* length in bytes (excluding NUL); 0 if name unknown */
     uint32_t    type_index;      /* into module->types[]; must be FUNCTION kind */
     uint32_t    param_attr_index;/* into module->param_attrs[]; 0 = none */
     uint32_t    linkage;         /* LLVM linkage code (raw) */
