@@ -7,4 +7,5 @@
 air2spv_sources = files(
   'spv_builder.c',
   'emit_position.c',
+  'emit_vertex_id.c',
 )

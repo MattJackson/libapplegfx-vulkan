@@ -523,8 +523,9 @@ if fs.is_file(meson.current_source_dir() / 'air-bitcode-reader-unit.c')
   test('air bitcode reader (unit)', air_reader_test)
 endif
 
-# Phase 4 skeleton SPIR-V emitter for air.position — validates the
-# spv_builder scaffolding produces a Vulkan-acceptable SPIR-V module.
+# Phase 4 reference SPIR-V emitter — air.position output side.
+# Validates the spv_builder scaffolding produces a Vulkan-acceptable
+# SPIR-V module with a BuiltIn Position output.
 if fs.is_file(meson.current_source_dir() / 'air2spv-position-emit-unit.c')
   air2spv_test_deps = [libapplegfx_vulkan_dep]
   if vulkan_dep.found()
@@ -537,6 +538,23 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-position-emit-unit.c')
     build_by_default : true,
   )
   test('air2spv position emit (unit)', air2spv_pos_test)
+endif
+
+# Phase 4 reference SPIR-V emitter — air.vertex_id input + Position
+# output. Validates the input-side builtin pattern + load/convert/
+# composite-construct ops.
+if fs.is_file(meson.current_source_dir() / 'air2spv-vertex-id-emit-unit.c')
+  air2spv_vid_test_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_vid_test_deps += [vulkan_dep]
+  endif
+  air2spv_vid_test = executable('air2spv-vertex-id-emit-unit',
+    'air2spv-vertex-id-emit-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_vid_test_deps,
+    build_by_default : true,
+  )
+  test('air2spv vertex_id emit (unit)', air2spv_vid_test)
 endif
 
 
