@@ -24,3 +24,5 @@ subdir('translate')
 subdir('air2spirv')
 subdir('air')             # Phase 1+ clean-room AIR bitcode reader
 lagfx_sources += air_sources
+subdir('air2spv')         # Phase 4+ clean-room AIR -> SPIR-V emitter
+lagfx_sources += air2spv_sources
