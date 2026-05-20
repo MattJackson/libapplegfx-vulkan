@@ -2,6 +2,10 @@
 build/
 builddir/
 _build/
+
+# Per-developer scratch space — captured Apple binaries, extracted .air.bc,
+# RE working dirs, etc. Operator-owned; never committed.
+scratch/
 *.o
 *.so
 *.so.*
