@@ -1237,12 +1237,15 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
         } else {
              /* Non-MODULE block at root (e.g., IDENTIFICATION_BLOCK).
               * Skip and continue. We already entered it; need to seek
-              * past its end. */
+              * past its end. If the seek fails (Apple-inflated
+              * block_size overshoots the actual buffer — same family
+              * as the MODULE truncation issue, see Phase 2.4 pickup
+              * notes), break out gracefully — what we've already
+              * decoded stays valid. */
             if (!lagfx_bs_seek(&bs, blk.end_pos)) {
-                LAGFX_ERR("air_bitcode_reader: failed to seek past root sub-block id=%u",
-                          blk.block_id);
-                lagfx_air_module_free(m);
-                return LAGFX_ERR_PROTOCOL;
+                LAGFX_LOG("air_bitcode_reader: cannot seek past root sub-block id=%u (declared end %zu past buffer) — treating as end-of-stream",
+                          blk.block_id, blk.end_pos);
+                break;
             }
         }
     }
