@@ -7,7 +7,9 @@
  */
 
 #include "abbrev.h"
+#include "../common/log.h"
 
+#include <stdio.h>
 #include <string.h>
 
 /* Map 6-bit char encoding back to ASCII per LLVM spec.
@@ -78,6 +80,30 @@ lagfx_abbrev_table_define(lagfx_abbrev_table_t *table,
         }
     }
     table->num_entries++;
+    /* Trace: dump the just-installed pattern. Helps Phase 2.4 RE see
+     * what shapes captured-macOS DEFINE_ABBREV records take. */
+    {
+        char pat[256]; size_t off = 0;
+        for (uint32_t pi = 0; pi < ab->num_ops && off < sizeof(pat) - 16; pi++) {
+            const char *k = "?";
+            switch (ab->ops[pi].kind) {
+                case LAGFX_ABBREV_OP_LITERAL: k = "LIT"; break;
+                case LAGFX_ABBREV_OP_FIXED:   k = "FIX"; break;
+                case LAGFX_ABBREV_OP_VBR:     k = "VBR"; break;
+                case LAGFX_ABBREV_OP_ARRAY:   k = "ARR"; break;
+                case LAGFX_ABBREV_OP_CHAR6:   k = "CH6"; break;
+                case LAGFX_ABBREV_OP_BLOB:    k = "BLB"; break;
+            }
+            int n = snprintf(pat + off, sizeof(pat) - off,
+                             "%s%s(%llu)", pi ? "," : "", k,
+                             (unsigned long long)ab->ops[pi].value_or_width);
+            if (n < 0) break;
+            off += (size_t)n;
+        }
+        LAGFX_TRACE("abbrev_define: abbrev_id=%u (slot=%u) ops=[%s]",
+                    4u + table->num_entries - 1u,
+                    table->num_entries - 1u, pat);
+    }
     return true;
 }
 
@@ -186,16 +212,25 @@ lagfx_abbrev_decode_record(const lagfx_abbrev_table_t *table,
         }
         if (op->kind == LAGFX_ABBREV_OP_BLOB) {
             bool err = false;
+            size_t pos_before_len = lagfx_bs_pos(bs);
             uint32_t length = lagfx_bs_read_vbr(bs, 6, &err);
             if (err) return false;
             lagfx_bs_align_32(bs);
-            size_t byte_off = lagfx_bs_pos(bs) >> 3;
-            if (byte_off + length > bs->buf_len) return false;
+            size_t pos_after_align = lagfx_bs_pos(bs);
+            size_t byte_off = pos_after_align >> 3;
+            if (byte_off + length > bs->buf_len) {
+                LAGFX_LOG("abbrev BLOB: length=%u at bit %zu (after align %zu) overflows buf_len=%zu",
+                          length, pos_before_len, pos_after_align, bs->buf_len);
+                return false;
+            }
             *out_blob_data = bs->buf + byte_off;
             *out_blob_len = length;
             /* Advance cursor: payload aligned bytes + align to 32 again. */
             bs->bit_pos += (size_t)length * 8u;
             lagfx_bs_align_32(bs);
+            LAGFX_TRACE("abbrev BLOB: vbr6@%zu length=%u align→%zu end→%zu",
+                        pos_before_len, length, pos_after_align,
+                        lagfx_bs_pos(bs));
             continue;
         }
         /* Scalar op: LITERAL / FIXED / VBR / CHAR6. */

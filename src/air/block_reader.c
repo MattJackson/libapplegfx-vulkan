@@ -7,6 +7,7 @@
  */
 
 #include "block_reader.h"
+#include "common/log.h"
 
 #include <stddef.h>
 
@@ -107,8 +108,12 @@ lagfx_block_next_record(lagfx_block_t  *block,
     }
 
     bool err = false;
+    size_t pos_before_code = lagfx_bs_pos(block->bs);
     uint32_t code = lagfx_bs_read_bits(block->bs, block->abbrev_width, &err);
     if (err) return false;
+    LAGFX_TRACE("block_next_record: blk_id=%u w=%u code=%u @bit %zu (end=%zu)",
+                block->block_id, block->abbrev_width, code,
+                pos_before_code, block->end_pos);
 
     if (code == LAGFX_ABBREV_END_BLOCK) {
         /* Align cursor up to 32 bits per spec. */
@@ -143,6 +148,8 @@ lagfx_block_next_record(lagfx_block_t  *block,
 
     if (code == LAGFX_ABBREV_DEFINE_ABBREV) {
         if (!lagfx_abbrev_table_define(&block->abbrevs, block->bs)) {
+            LAGFX_LOG("block_next_record: DEFINE_ABBREV decode failed at bit %zu (blk_id=%u, table now %u entries)",
+                      pos_before_code, block->block_id, block->abbrevs.num_entries);
             return false;
         }
         *out_is_define_abbrev = true;
@@ -152,13 +159,31 @@ lagfx_block_next_record(lagfx_block_t  *block,
     if (code == LAGFX_ABBREV_UNABBREV_RECORD) {
         /* Read record code:vbr6 + numOps:vbr6 + each op:vbr6. */
         uint32_t record_code = lagfx_bs_read_vbr(block->bs, 6, &err);
-        if (err) return false;
+        if (err) {
+            LAGFX_LOG("block_next_record: UNABBREV record_code vbr6 EOF at bit %zu (blk_id=%u)",
+                      pos_before_code, block->block_id);
+            return false;
+        }
         uint32_t num_ops = lagfx_bs_read_vbr(block->bs, 6, &err);
-        if (err) return false;
-        if (num_ops > LAGFX_RECORD_MAX_OPS) return false;
+        if (err) {
+            LAGFX_LOG("block_next_record: UNABBREV num_ops vbr6 EOF at bit %zu (blk_id=%u rec_code=%u)",
+                      pos_before_code, block->block_id, record_code);
+            return false;
+        }
+        if (num_ops > LAGFX_RECORD_MAX_OPS) {
+            LAGFX_LOG("block_next_record: UNABBREV num_ops=%u exceeds cap %u at bit %zu (blk_id=%u rec_code=%u)",
+                      num_ops, LAGFX_RECORD_MAX_OPS, pos_before_code,
+                      block->block_id, record_code);
+            return false;
+        }
         for (uint32_t i = 0; i < num_ops; i++) {
             scratch_ops[i] = lagfx_bs_read_vbr_64(block->bs, 6, &err);
-            if (err) return false;
+            if (err) {
+                LAGFX_LOG("block_next_record: UNABBREV op[%u]/%u vbr6 EOF at bit %zu (blk_id=%u rec_code=%u)",
+                          i, num_ops, lagfx_bs_pos(block->bs),
+                          block->block_id, record_code);
+                return false;
+            }
         }
         out_record->code = record_code;
         out_record->ops = scratch_ops;
@@ -179,6 +204,9 @@ lagfx_block_next_record(lagfx_block_t  *block,
                                      scratch_ops, LAGFX_RECORD_MAX_OPS,
                                      &record_code, &num_ops,
                                      &blob_data, &blob_len)) {
+        LAGFX_LOG("block_next_record: app-abbrev code=%u decode failed at bit %zu (blk_id=%u, abbrev_table has %u entries)",
+                  code, pos_before_code, block->block_id,
+                  block->abbrevs.num_entries);
         return false;
     }
     out_record->code = record_code;
