@@ -522,6 +522,8 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                 }
                 if (is_end) { module_clean_exit = true; break; }
                 if (is_subblock) {
+                    LAGFX_TRACE("MODULE walker: sub-block id=%u at bit %zu (MODULE end %zu)",
+                                sub_id, lagfx_bs_pos(&bs), blk.end_pos);
                     if (sub_id == LAGFX_BLK_BLOCKINFO) {
                         /* Parse BLOCKINFO: SETBID records partition the
                          * following DEFINE_ABBREVs by target block ID. */
@@ -555,8 +557,34 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                                     lagfx_abbrev_table_t *dst =
                                         &m->blockinfo->per_block[target_block_id];
                                     if (dst->num_entries < LAGFX_ABBREV_MAX_PER_BLOCK) {
-                                        dst->entries[dst->num_entries++] =
-                                            bi.abbrevs.entries[bi.abbrevs.num_entries - 1u];
+                                        const lagfx_abbrev_t *src_ab =
+                                            &bi.abbrevs.entries[bi.abbrevs.num_entries - 1u];
+                                        dst->entries[dst->num_entries] = *src_ab;
+                                        /* Debug-dump the abbrev pattern at trace level
+                                         * so Phase 2.4 OBT RE can compare triangle vs
+                                         * viewport per-block-id abbrev installs. */
+                                        char pat[256]; size_t off = 0;
+                                        for (uint32_t pi = 0; pi < src_ab->num_ops && off < sizeof(pat) - 16; pi++) {
+                                            const char *k = "?";
+                                            switch (src_ab->ops[pi].kind) {
+                                                case LAGFX_ABBREV_OP_LITERAL: k = "LIT"; break;
+                                                case LAGFX_ABBREV_OP_FIXED:   k = "FIX"; break;
+                                                case LAGFX_ABBREV_OP_VBR:     k = "VBR"; break;
+                                                case LAGFX_ABBREV_OP_ARRAY:   k = "ARR"; break;
+                                                case LAGFX_ABBREV_OP_CHAR6:   k = "CH6"; break;
+                                                case LAGFX_ABBREV_OP_BLOB:    k = "BLB"; break;
+                                            }
+                                            int n = snprintf(pat + off, sizeof(pat) - off,
+                                                             "%s%s(%llu)", pi ? "," : "", k,
+                                                             (unsigned long long)src_ab->ops[pi].value_or_width);
+                                            if (n < 0) break;
+                                            off += (size_t)n;
+                                        }
+                                        LAGFX_TRACE("BLOCKINFO: target_block=%u abbrev_id=%u (slot=%u) ops=[%s]",
+                                                    target_block_id,
+                                                    4u + dst->num_entries,
+                                                    dst->num_entries, pat);
+                                        dst->num_entries++;
                                     }
                                 }
                                 continue;
@@ -783,26 +811,27 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                     }
 
                     if (sub_id == LAGFX_BLK_OPERAND_BUNDLE_TAGS) {
-                        /* OPERAND_BUNDLE_TAGS: each record is a string
-                         * (one char per op). Triangle has 'deopt' and
-                         * 'funclet' here. We collect raw strings into
-                         * the arena for now; no public accessor yet. */
-                        lagfx_block_t ob;
-                        if (!lagfx_block_enter(&bs, blk.abbrev_width, m->blockinfo, &ob)) break;
-                        while (lagfx_bs_pos(&bs) < ob.end_pos) {
-                            lagfx_record_t orec = {0};
-                            bool o_end = false, o_sub = false, o_da = false;
-                            uint32_t o_sub_id = 0;
-                            if (!lagfx_block_next_record(&ob, scratch_ops, &orec,
-                                                          &o_end, &o_sub, &o_da, &o_sub_id)) break;
-                            if (o_end) break;
-                            if (o_sub) { lagfx_block_skip(&bs, ob.abbrev_width); continue; }
-                            if (o_da) continue;
-                            /* Just count for now. Phase 2 / Phase 3 can
-                             * surface the tags if needed for function-body
-                             * decoding. */
+                        /* OPERAND_BUNDLE_TAGS contains the standard 8
+                         * LLVM bundle tag names ('deopt', 'funclet',
+                         * 'gc-transition', etc.). Both fixtures we have
+                         * use the same 8 tags in the same order, BUT
+                         * Apple's runtime AIR emitter encodes some of
+                         * the later records with a per-record bit-
+                         * difference that defeats both our generic vbr6
+                         * reader AND llvm-bcanalyzer (Phase 2.4 pickup
+                         * doc traces the divergence to bit 11 of op 2
+                         * in record 3 — see phase2_step4_pickup).
+                         *
+                         * Phase 2 doesn't need the OBT contents — we
+                         * already know the standard tags by name. Skip
+                         * the block entirely so the MODULE walker
+                         * reaches FUNCTION_BLOCK on captured macOS
+                         * metallibs. When OBT decoding is fully RE'd,
+                         * swap this back to a record-walking handler. */
+                        if (!lagfx_block_skip(&bs, blk.abbrev_width)) {
+                            LAGFX_ERR("air_bitcode_reader: failed to skip OPERAND_BUNDLE_TAGS");
+                            break;
                         }
-                        (void)lagfx_bs_seek(&bs, ob.end_pos);
                         continue;
                     }
 
