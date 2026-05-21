@@ -674,5 +674,20 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-extinst-glsl-emit-unit.c')
   test('air2spv extinst_glsl emit (unit)', air2spv_ext_test)
 endif
 
+# Phase 4 reference SPIR-V emitter — Pattern H (OpVectorShuffle).
+if fs.is_file(meson.current_source_dir() / 'air2spv-vector-shuffle-emit-unit.c')
+  air2spv_sh_test_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_sh_test_deps += [vulkan_dep]
+  endif
+  air2spv_sh_test = executable('air2spv-vector-shuffle-emit-unit',
+    'air2spv-vector-shuffle-emit-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_sh_test_deps,
+    build_by_default : true,
+  )
+  test('air2spv vector_shuffle emit (unit)', air2spv_sh_test)
+endif
+
 
 
