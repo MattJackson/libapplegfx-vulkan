@@ -78,9 +78,12 @@ enum {
     LAGFX_SPV_OP_SAMPLED_IMAGE          = 86,
     LAGFX_SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD = 87,
     LAGFX_SPV_OP_CONVERT_U_TO_F         = 112,
+    LAGFX_SPV_OP_IADD                   = 128,
     LAGFX_SPV_OP_FMUL                   = 133,
+    LAGFX_SPV_OP_SLESS_THAN             = 177,
     LAGFX_SPV_OP_FORD_GREATER_THAN      = 184,
     LAGFX_SPV_OP_PHI                    = 245,
+    LAGFX_SPV_OP_LOOP_MERGE             = 246,
     LAGFX_SPV_OP_SELECTION_MERGE        = 247,
     LAGFX_SPV_OP_LABEL                  = 248,
     LAGFX_SPV_OP_BRANCH                 = 249,
@@ -155,6 +158,11 @@ enum {
 /* OpSelectionMerge `SelectionControl` mask — None is the default. */
 enum {
     LAGFX_SPV_SELECTION_CONTROL_NONE    = 0,
+};
+
+/* OpLoopMerge `LoopControl` mask — None is the default. */
+enum {
+    LAGFX_SPV_LOOP_CONTROL_NONE         = 0,
 };
 
 /* GLSL.std.450 extended-instruction-set numbers (subset). Use with
