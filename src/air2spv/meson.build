@@ -10,4 +10,5 @@ air2spv_sources = files(
   'emit_vertex_id.c',
   'emit_render_target.c',
   'emit_fragment_input.c',
+  'emit_buffer_load.c',
 )

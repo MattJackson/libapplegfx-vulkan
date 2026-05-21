@@ -53,6 +53,7 @@ enum {
     LAGFX_SPV_OP_TYPE_INT               = 21,
     LAGFX_SPV_OP_TYPE_FLOAT             = 22,
     LAGFX_SPV_OP_TYPE_VECTOR            = 23,
+    LAGFX_SPV_OP_TYPE_STRUCT            = 30,
     LAGFX_SPV_OP_TYPE_POINTER           = 32,
     LAGFX_SPV_OP_TYPE_FUNCTION          = 33,
     LAGFX_SPV_OP_CONSTANT               = 43,
@@ -62,10 +63,13 @@ enum {
     LAGFX_SPV_OP_VARIABLE               = 59,
     LAGFX_SPV_OP_LOAD                   = 61,
     LAGFX_SPV_OP_STORE                  = 62,
-    LAGFX_SPV_OP_CONVERT_U_TO_F         = 112,
-    LAGFX_SPV_OP_COMPOSITE_EXTRACT      = 81,
-    LAGFX_SPV_OP_COMPOSITE_CONSTRUCT    = 80,
+    LAGFX_SPV_OP_ACCESS_CHAIN           = 65,
     LAGFX_SPV_OP_DECORATE               = 71,
+    LAGFX_SPV_OP_MEMBER_DECORATE        = 72,
+    LAGFX_SPV_OP_COMPOSITE_CONSTRUCT    = 80,
+    LAGFX_SPV_OP_COMPOSITE_EXTRACT      = 81,
+    LAGFX_SPV_OP_CONVERT_U_TO_F         = 112,
+    LAGFX_SPV_OP_FMUL                   = 133,
     LAGFX_SPV_OP_LABEL                  = 248,
     LAGFX_SPV_OP_RETURN                 = 253,
 };
@@ -103,8 +107,12 @@ enum {
 
 /* Decorations. */
 enum {
+    LAGFX_SPV_DECORATION_BLOCK          = 2,
     LAGFX_SPV_DECORATION_BUILTIN        = 11,
     LAGFX_SPV_DECORATION_LOCATION       = 30,
+    LAGFX_SPV_DECORATION_BINDING        = 33,
+    LAGFX_SPV_DECORATION_DESCRIPTOR_SET = 34,
+    LAGFX_SPV_DECORATION_OFFSET         = 35,
 };
 
 /* BuiltIn variants — only the ones Phase 4 currently needs. */
