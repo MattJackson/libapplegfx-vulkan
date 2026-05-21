@@ -17,4 +17,5 @@ air2spv_sources = files(
   'emit_vector_shuffle.c',
   'emit_control_flow.c',
   'emit_loop.c',
+  'translate.c',
 )

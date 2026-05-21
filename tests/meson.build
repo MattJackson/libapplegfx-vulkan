@@ -721,5 +721,20 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-loop-emit-unit.c')
   test('air2spv loop emit (unit)', air2spv_lp_test)
 endif
 
+# Phase 5 — AIR module → SPIR-V translator skeleton.
+if fs.is_file(meson.current_source_dir() / 'air2spv-translate-module-unit.c')
+  air2spv_xl_test_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_xl_test_deps += [vulkan_dep]
+  endif
+  air2spv_xl_test = executable('air2spv-translate-module-unit',
+    'air2spv-translate-module-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_xl_test_deps,
+    build_by_default : true,
+  )
+  test('air2spv translate module (unit)', air2spv_xl_test)
+endif
+
 
 
