@@ -217,8 +217,44 @@ static int test_triangle_metadata(void) {
         return 1;
     }
 
+    /* === Helpers: named-metadata lookup + string-by-id ============= */
+
+    const lagfx_air_metadata_t *air_vertex_via_helper =
+        lagfx_air_module_named_metadata(m, "air.vertex");
+    if (air_vertex_via_helper != air_vertex_nn) {
+        printf("FAIL: lagfx_air_module_named_metadata('air.vertex') returned %p; want %p\n",
+               (const void *)air_vertex_via_helper, (const void *)air_vertex_nn);
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    if (lagfx_air_module_named_metadata(m, "definitely.not.here") != NULL) {
+        printf("FAIL: named_metadata('definitely.not.here') should be NULL\n");
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+
+    /* metadata-ID 14 is 'air.position' in triangle's strings pool. */
+    const char *air_pos = lagfx_air_module_metadata_string_by_id(m, 14);
+    if (!air_pos || strcmp(air_pos, "air.position") != 0) {
+        printf("FAIL: string_by_id(14) expected 'air.position', got '%s'\n",
+               air_pos ? air_pos : "(null)");
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+    /* metadata-ID >= num_strings should return NULL (it's a record). */
+    if (lagfx_air_module_metadata_string_by_id(m, nstr) != NULL) {
+        printf("FAIL: string_by_id(%u, == num_strings) should be NULL\n", nstr);
+        lagfx_air_module_free(m);
+        free(blob);
+        return 1;
+    }
+
     printf("PASS: triangle METADATA — %u strings, %u records (%u VALUE / %u NODE / %u NAMED_NODE) from %s\n",
            nstr, nmd, n_value, n_node, n_named, used);
+    printf("PASS: named-metadata + string-by-id helpers resolve correctly\n");
     lagfx_air_module_free(m);
     free(blob);
     return 0;

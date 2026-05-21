@@ -201,6 +201,23 @@ const lagfx_air_metadata_t   *lagfx_air_module_metadata(const lagfx_air_module_t
  * Returns NULL with *count=0 if no METADATA_STRINGS records were seen. */
 const char * const *lagfx_air_module_metadata_strings(const lagfx_air_module_t *m,
                                                        uint32_t *count);
+
+/* Resolve a global metadata-ID to its string contents, if the ID
+ * refers to a STRINGS-pool entry. Returns NULL if id is out of range
+ * or refers to a non-string record. Equivalent to:
+ *   id < num_metadata_strings ? metadata_strings[id] : NULL */
+const char *lagfx_air_module_metadata_string_by_id(const lagfx_air_module_t *m,
+                                                    uint32_t                  id);
+
+/* Find a NAMED_NODE record by its declared name (e.g. "air.vertex",
+ * "llvm.module.flags"). Returns NULL if no such named-node exists.
+ * The returned record points into module->metadata[]; operands are
+ * the metadata-IDs the named-node references (resolve via the global
+ * ID rules — strings pool below num_metadata_strings, records
+ * above). */
+const lagfx_air_metadata_t *
+lagfx_air_module_named_metadata(const lagfx_air_module_t *m,
+                                 const char               *name);
 const lagfx_air_param_attr_group_t *lagfx_air_module_param_attr_groups(const lagfx_air_module_t *m, uint32_t *count);
 
 /* Module-level strings. Returned pointer is into the module's arena;

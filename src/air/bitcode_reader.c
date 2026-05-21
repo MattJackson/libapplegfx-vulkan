@@ -271,6 +271,24 @@ lagfx_air_module_metadata_strings(const lagfx_air_module_t *m, uint32_t *count) 
     return m->metadata_strings;
 }
 
+const char *
+lagfx_air_module_metadata_string_by_id(const lagfx_air_module_t *m, uint32_t id) {
+    if (!m || id >= m->num_metadata_strings || !m->metadata_strings) return NULL;
+    return m->metadata_strings[id];
+}
+
+const lagfx_air_metadata_t *
+lagfx_air_module_named_metadata(const lagfx_air_module_t *m, const char *name) {
+    if (!m || !name || !m->metadata) return NULL;
+    for (uint32_t i = 0; i < m->num_metadata; i++) {
+        const lagfx_air_metadata_t *md = &m->metadata[i];
+        if (md->kind != LAGFX_AIR_MD_NAMED_NODE || md->name_offset == 0u) continue;
+        const char *md_name = (const char *)(m->arena.base + md->name_offset);
+        if (strcmp(md_name, name) == 0) return md;
+    }
+    return NULL;
+}
+
 const lagfx_air_param_attr_group_t *
 lagfx_air_module_param_attr_groups(const lagfx_air_module_t *m, uint32_t *count) {
     if (count) *count = m->num_param_attr_groups;
