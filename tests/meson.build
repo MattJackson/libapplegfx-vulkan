@@ -641,5 +641,22 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-constant-float-emit-unit.c')
   test('air2spv constant_float emit (unit)', air2spv_cf_test)
 endif
 
+# Phase 4 reference SPIR-V emitter — Pattern F (separate image +
+# sampler texture-sample). OpTypeImage / OpTypeSampler /
+# OpTypeSampledImage / OpSampledImage / OpImageSampleImplicitLod.
+if fs.is_file(meson.current_source_dir() / 'air2spv-texture-sample-emit-unit.c')
+  air2spv_ts_test_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_ts_test_deps += [vulkan_dep]
+  endif
+  air2spv_ts_test = executable('air2spv-texture-sample-emit-unit',
+    'air2spv-texture-sample-emit-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_ts_test_deps,
+    build_by_default : true,
+  )
+  test('air2spv texture_sample emit (unit)', air2spv_ts_test)
+endif
+
 
 

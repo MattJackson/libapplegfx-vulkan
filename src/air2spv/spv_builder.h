@@ -53,6 +53,9 @@ enum {
     LAGFX_SPV_OP_TYPE_INT               = 21,
     LAGFX_SPV_OP_TYPE_FLOAT             = 22,
     LAGFX_SPV_OP_TYPE_VECTOR            = 23,
+    LAGFX_SPV_OP_TYPE_IMAGE             = 25,
+    LAGFX_SPV_OP_TYPE_SAMPLER           = 26,
+    LAGFX_SPV_OP_TYPE_SAMPLED_IMAGE     = 27,
     LAGFX_SPV_OP_TYPE_STRUCT            = 30,
     LAGFX_SPV_OP_TYPE_POINTER           = 32,
     LAGFX_SPV_OP_TYPE_FUNCTION          = 33,
@@ -68,6 +71,8 @@ enum {
     LAGFX_SPV_OP_MEMBER_DECORATE        = 72,
     LAGFX_SPV_OP_COMPOSITE_CONSTRUCT    = 80,
     LAGFX_SPV_OP_COMPOSITE_EXTRACT      = 81,
+    LAGFX_SPV_OP_SAMPLED_IMAGE          = 86,
+    LAGFX_SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD = 87,
     LAGFX_SPV_OP_CONVERT_U_TO_F         = 112,
     LAGFX_SPV_OP_FMUL                   = 133,
     LAGFX_SPV_OP_LABEL                  = 248,
@@ -99,10 +104,22 @@ enum {
 
 /* Storage classes for OpTypePointer / OpVariable. */
 enum {
+    LAGFX_SPV_STORAGE_UNIFORM_CONSTANT  = 0,  /* opaque types: image / sampler */
     LAGFX_SPV_STORAGE_INPUT             = 1,
-    LAGFX_SPV_STORAGE_UNIFORM           = 2,
+    LAGFX_SPV_STORAGE_UNIFORM            = 2,
     LAGFX_SPV_STORAGE_OUTPUT            = 3,
     LAGFX_SPV_STORAGE_FUNCTION          = 7,
+};
+
+/* OpTypeImage `Dim` operand. */
+enum {
+    LAGFX_SPV_DIM_2D                    = 1,
+};
+
+/* OpTypeImage `ImageFormat` operand — Unknown = no storage-image
+ * binding format declared (sampled-only image). */
+enum {
+    LAGFX_SPV_IMAGE_FORMAT_UNKNOWN      = 0,
 };
 
 /* Decorations. */
