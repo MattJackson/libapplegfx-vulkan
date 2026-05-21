@@ -45,6 +45,8 @@ typedef struct lagfx_spv_builder lagfx_spv_builder_t;
 /* SPIR-V opcodes we actually emit. See spirv.h in SPIRV-Headers. */
 enum {
     LAGFX_SPV_OP_SOURCE                 = 3,
+    LAGFX_SPV_OP_EXT_INST_IMPORT        = 11,
+    LAGFX_SPV_OP_EXT_INST               = 12,
     LAGFX_SPV_OP_MEMORY_MODEL           = 14,
     LAGFX_SPV_OP_ENTRY_POINT            = 15,
     LAGFX_SPV_OP_EXECUTION_MODE         = 16,
@@ -141,6 +143,35 @@ enum {
 /* OpFunction `FunctionControl` mask — None is what we want for shaders. */
 enum {
     LAGFX_SPV_FUNCTION_CONTROL_NONE     = 0,
+};
+
+/* GLSL.std.450 extended-instruction-set numbers (subset). Use with
+ * OpExtInst after importing the "GLSL.std.450" extension. Full list:
+ * https://registry.khronos.org/SPIR-V/specs/unified1/GLSL.std.450.html */
+enum {
+    LAGFX_SPV_GLSL_ROUND                = 1,
+    LAGFX_SPV_GLSL_FABS                 = 4,
+    LAGFX_SPV_GLSL_FLOOR                = 8,
+    LAGFX_SPV_GLSL_CEIL                 = 9,
+    LAGFX_SPV_GLSL_FRACT                = 10,
+    LAGFX_SPV_GLSL_SIN                  = 13,
+    LAGFX_SPV_GLSL_COS                  = 14,
+    LAGFX_SPV_GLSL_POW                  = 26,
+    LAGFX_SPV_GLSL_EXP                  = 27,
+    LAGFX_SPV_GLSL_LOG                  = 28,
+    LAGFX_SPV_GLSL_SQRT                 = 31,
+    LAGFX_SPV_GLSL_INVERSE_SQRT         = 32,
+    LAGFX_SPV_GLSL_FMIN                 = 37,
+    LAGFX_SPV_GLSL_FMAX                 = 40,
+    LAGFX_SPV_GLSL_FCLAMP               = 43,
+    LAGFX_SPV_GLSL_FMIX                 = 46,
+    LAGFX_SPV_GLSL_STEP                 = 48,
+    LAGFX_SPV_GLSL_SMOOTH_STEP          = 49,
+    LAGFX_SPV_GLSL_LENGTH               = 66,
+    LAGFX_SPV_GLSL_DISTANCE             = 67,
+    LAGFX_SPV_GLSL_CROSS                = 68,
+    LAGFX_SPV_GLSL_NORMALIZE            = 69,
+    LAGFX_SPV_GLSL_REFLECT              = 71,
 };
 
 /* === Builder lifecycle ============================================= */
