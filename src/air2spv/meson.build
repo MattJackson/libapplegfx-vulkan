@@ -15,4 +15,5 @@ air2spv_sources = files(
   'emit_texture_sample.c',
   'emit_extinst_glsl.c',
   'emit_vector_shuffle.c',
+  'emit_control_flow.c',
 )

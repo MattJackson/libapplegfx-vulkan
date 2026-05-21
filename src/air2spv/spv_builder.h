@@ -53,6 +53,7 @@ enum {
     LAGFX_SPV_OP_CAPABILITY             = 17,
     LAGFX_SPV_OP_TYPE_VOID              = 19,
     LAGFX_SPV_OP_TYPE_INT               = 21,
+    LAGFX_SPV_OP_TYPE_BOOL              = 20,
     LAGFX_SPV_OP_TYPE_FLOAT             = 22,
     LAGFX_SPV_OP_TYPE_VECTOR            = 23,
     LAGFX_SPV_OP_TYPE_IMAGE             = 25,
@@ -78,7 +79,12 @@ enum {
     LAGFX_SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD = 87,
     LAGFX_SPV_OP_CONVERT_U_TO_F         = 112,
     LAGFX_SPV_OP_FMUL                   = 133,
+    LAGFX_SPV_OP_FORD_GREATER_THAN      = 184,
+    LAGFX_SPV_OP_PHI                    = 245,
+    LAGFX_SPV_OP_SELECTION_MERGE        = 247,
     LAGFX_SPV_OP_LABEL                  = 248,
+    LAGFX_SPV_OP_BRANCH                 = 249,
+    LAGFX_SPV_OP_BRANCH_CONDITIONAL     = 250,
     LAGFX_SPV_OP_RETURN                 = 253,
 };
 
@@ -144,6 +150,11 @@ enum {
 /* OpFunction `FunctionControl` mask — None is what we want for shaders. */
 enum {
     LAGFX_SPV_FUNCTION_CONTROL_NONE     = 0,
+};
+
+/* OpSelectionMerge `SelectionControl` mask — None is the default. */
+enum {
+    LAGFX_SPV_SELECTION_CONTROL_NONE    = 0,
 };
 
 /* GLSL.std.450 extended-instruction-set numbers (subset). Use with
