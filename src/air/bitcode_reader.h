@@ -133,19 +133,48 @@ typedef struct {
     size_t      body_length;
 } lagfx_air_function_t;
 
-/* === Metadata record (Phase 1: raw form) ========================= */
+/* === Metadata record =============================================
+ *
+ * LLVM metadata uses global "metadata IDs" assigned in emission order
+ * across all METADATA_BLOCK records. The METADATA_STRINGS record
+ * (code 23) contributes the first N IDs in a packed pool; subsequent
+ * METADATA_VALUE / METADATA_NODE / METADATA_NAMED_NODE records each
+ * take the next ID.
+ *
+ * Our module surfaces these as two separate accessors:
+ *
+ *   lagfx_air_module_metadata_strings(m, &n)  -> char *const *strings,
+ *                                                 indexed by metadata-ID
+ *                                                 0..n-1.
+ *   lagfx_air_module_metadata(m, &n)          -> lagfx_air_metadata_t *,
+ *                                                 indexed by metadata-ID
+ *                                                 minus num_strings (so
+ *                                                 metadata[i] has global
+ *                                                 ID `num_strings + i`).
+ *
+ * Operand IDs inside a NODE / NAMED_NODE / VALUE record reference these
+ * global metadata IDs. Resolve via:
+ *
+ *   if (id < num_strings)       -> strings[id]
+ *   else                        -> metadata[id - num_strings]
+ */
 
 typedef enum {
-    LAGFX_AIR_MD_STRING         = 0,   /* string operand */
-    LAGFX_AIR_MD_NODE           = 1,   /* tuple of metadata refs */
-    LAGFX_AIR_MD_NAMED_NODE     = 2,   /* named tuple */
-    LAGFX_AIR_MD_VALUE          = 3,   /* (type, value) pair */
-    LAGFX_AIR_MD_UNKNOWN        = 255,
+    LAGFX_AIR_MD_VALUE          = 0,   /* [type_index, value_id] */
+    LAGFX_AIR_MD_NODE           = 1,   /* tuple of metadata-IDs */
+    LAGFX_AIR_MD_NAMED_NODE     = 2,   /* named tuple; name_offset valid */
+    LAGFX_AIR_MD_UNKNOWN        = 255, /* unrecognized record code */
 } lagfx_air_md_kind_t;
 
 typedef struct {
     lagfx_air_md_kind_t kind;
-    uint32_t            name_offset;   /* for NAMED_NODE */
+    /* For NAMED_NODE only: arena offset of the NUL-terminated name from
+     * the preceding METADATA_NAME record. Zero for other kinds. Resolve
+     * via lagfx_air_module_string(). */
+    uint32_t            name_offset;
+    /* Operand vector. For NODE/NAMED_NODE each entry is a metadata-ID
+     * (use the strings-vs-records split documented above to resolve).
+     * For VALUE: operands[0]=type_index, operands[1]=value_id. */
     const uint32_t     *operands;
     uint32_t            num_operands;
 } lagfx_air_metadata_t;
@@ -167,6 +196,11 @@ const lagfx_air_type_t       *lagfx_air_module_types(const lagfx_air_module_t *m
 const lagfx_air_constant_t   *lagfx_air_module_constants(const lagfx_air_module_t *m, uint32_t *count);
 const lagfx_air_function_t   *lagfx_air_module_functions(const lagfx_air_module_t *m, uint32_t *count);
 const lagfx_air_metadata_t   *lagfx_air_module_metadata(const lagfx_air_module_t *m, uint32_t *count);
+/* Module-level metadata strings pool. Each entry is a NUL-terminated
+ * string in the module arena, ordered by LLVM metadata-ID (0..count-1).
+ * Returns NULL with *count=0 if no METADATA_STRINGS records were seen. */
+const char * const *lagfx_air_module_metadata_strings(const lagfx_air_module_t *m,
+                                                       uint32_t *count);
 const lagfx_air_param_attr_group_t *lagfx_air_module_param_attr_groups(const lagfx_air_module_t *m, uint32_t *count);
 
 /* Module-level strings. Returned pointer is into the module's arena;

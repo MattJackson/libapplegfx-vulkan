@@ -140,6 +140,46 @@ static void dump_module(const lagfx_air_module_t *m) {
                i, fns[i].type_index, (int)fns[i].is_proto, fns[i].linkage,
                fns[i].name_offset, fns[i].body_offset, fns[i].body_length);
     }
+
+    uint32_t nms = 0;
+    const char * const *mstrings = lagfx_air_module_metadata_strings(m, &nms);
+    uint32_t nmd = 0;
+    const lagfx_air_metadata_t *mds = lagfx_air_module_metadata(m, &nmd);
+    printf("\nModule-level METADATA:\n");
+    printf("  strings (%u):\n", nms);
+    for (uint32_t i = 0; i < nms && i < 64u; i++) {
+        printf("    [md#%u] '%s'\n", i, mstrings[i] ? mstrings[i] : "(null)");
+    }
+    if (nms > 64u) printf("    ... %u more\n", nms - 64u);
+
+    uint32_t n_value = 0, n_node = 0, n_named = 0, n_unknown = 0;
+    for (uint32_t i = 0; i < nmd; i++) {
+        switch (mds[i].kind) {
+            case LAGFX_AIR_MD_VALUE:      n_value++; break;
+            case LAGFX_AIR_MD_NODE:       n_node++; break;
+            case LAGFX_AIR_MD_NAMED_NODE: n_named++; break;
+            default:                      n_unknown++; break;
+        }
+    }
+    printf("  records (%u): %u VALUE, %u NODE, %u NAMED_NODE, %u UNKNOWN\n",
+           nmd, n_value, n_node, n_named, n_unknown);
+    for (uint32_t i = 0; i < nmd; i++) {
+        const lagfx_air_metadata_t *md = &mds[i];
+        const char *kind = (md->kind == LAGFX_AIR_MD_VALUE) ? "VALUE"
+                         : (md->kind == LAGFX_AIR_MD_NODE)  ? "NODE"
+                         : (md->kind == LAGFX_AIR_MD_NAMED_NODE) ? "NAMED_NODE"
+                         : "UNKNOWN";
+        uint32_t global_id = nms + i;
+        printf("    [md#%u] %-11s", global_id, kind);
+        if (md->kind == LAGFX_AIR_MD_NAMED_NODE && md->name_offset != 0u) {
+            printf(" name='%s'", lagfx_air_module_string(m, md->name_offset));
+        }
+        printf(" ops=");
+        for (uint32_t j = 0; j < md->num_operands && j < 8u; j++) {
+            printf("%s%u", j == 0u ? "[" : ",", md->operands[j]);
+        }
+        printf("%s\n", md->num_operands > 8u ? ",...]" : (md->num_operands ? "]" : "[]"));
+    }
 }
 
 static int dump_body(const lagfx_air_module_t *m, uint32_t fn_idx) {

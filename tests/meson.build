@@ -523,6 +523,22 @@ if fs.is_file(meson.current_source_dir() / 'air-bitcode-reader-unit.c')
   test('air bitcode reader (unit)', air_reader_test)
 endif
 
+# Phase 3 — METADATA_BLOCK walker. Asserts byte-exact counts +
+# specific records against `llvm-bcanalyzer --dump` on triangle.
+if fs.is_file(meson.current_source_dir() / 'air-bitcode-reader-metadata-unit.c')
+  air_md_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air_md_deps += [vulkan_dep]
+  endif
+  air_md_test = executable('air-bitcode-reader-metadata-unit',
+    'air-bitcode-reader-metadata-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air_md_deps,
+    build_by_default : true,
+  )
+  test('air bitcode reader metadata (unit)', air_md_test)
+endif
+
 # Phase 4 reference SPIR-V emitter — air.position output side.
 # Validates the spv_builder scaffolding produces a Vulkan-acceptable
 # SPIR-V module with a BuiltIn Position output.

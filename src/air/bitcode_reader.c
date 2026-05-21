@@ -157,6 +157,17 @@ struct lagfx_air_module {
     uint32_t                     num_functions;
     lagfx_air_metadata_t        *metadata;
     uint32_t                     num_metadata;
+    /* Metadata strings pool. Internally we keep arena OFFSETS for the
+     * per-string NUL-terminated byte arrays (offset 0 = absent), since
+     * arena_reserve calls may realloc the arena and invalidate raw
+     * pointers. After all parsing completes we materialize a parallel
+     * const char ** array (metadata_strings) that the public accessor
+     * returns; that pointer array is also arena-resident but is built
+     * AFTER all other arena_reserves so its pointers stay stable. */
+    uint32_t                     metadata_strings_offsets_arena;  /* offset of u32[] */
+    uint32_t                     metadata_records_arena;          /* offset of records[] */
+    const char                 **metadata_strings;                /* materialized at end */
+    uint32_t                     num_metadata_strings;
     lagfx_air_param_attr_group_t*param_attr_groups;
     uint32_t                     num_param_attr_groups;
 
@@ -252,6 +263,12 @@ const lagfx_air_metadata_t *
 lagfx_air_module_metadata(const lagfx_air_module_t *m, uint32_t *count) {
     if (count) *count = m->num_metadata;
     return m->metadata;
+}
+
+const char * const *
+lagfx_air_module_metadata_strings(const lagfx_air_module_t *m, uint32_t *count) {
+    if (count) *count = m->num_metadata_strings;
+    return m->metadata_strings;
 }
 
 const lagfx_air_param_attr_group_t *
@@ -715,15 +732,15 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                         continue;
                     }
 
-                    if (sub_id == LAGFX_BLK_METADATA ||
-                        sub_id == LAGFX_BLK_METADATA_KIND ||
+                    if (sub_id == LAGFX_BLK_METADATA_KIND ||
                         sub_id == LAGFX_BLK_METADATA_ATTACHMENT) {
-                        /* METADATA blocks: phase-1 stub. METADATA_BLOCK has
-                         * many record types (STRING, NAME, NAMED_NODE,
-                         * NODE, VALUE, KIND, GENERIC_DEBUG, ...). Full
-                         * decoding deferred to a follow-up (Phase 3 will
-                         * consume metadata for the air.* intrinsic
-                         * semantic mapping). For now we just walk past. */
+                        /* METADATA_KIND_BLOCK + METADATA_ATTACHMENT: walk
+                         * past for now. METADATA_KIND maps numeric kind
+                         * IDs to names ('dbg', 'tbaa', etc.) that our
+                         * translator doesn't yet need; METADATA_ATTACHMENT
+                         * binds metadata to instructions (debug info
+                         * mostly) which is also not on the Phase 4
+                         * critical path. */
                         lagfx_block_t mb;
                         if (!lagfx_block_enter(&bs, blk.abbrev_width, m->blockinfo, &mb)) break;
                         while (lagfx_bs_pos(&bs) < mb.end_pos) {
@@ -736,9 +753,310 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                             if (m_sub) { lagfx_block_skip(&bs, mb.abbrev_width); continue; }
                             if (m_da) continue;
                         }
-                        /* Recover from early-exit: seek to declared end so
-                         * the outer MODULE walker resumes cleanly even if
-                         * we hit an unknown abbrev mid-block. */
+                        (void)lagfx_bs_seek(&bs, mb.end_pos);
+                        continue;
+                    }
+
+                    if (sub_id == LAGFX_BLK_METADATA) {
+                        /* METADATA_BLOCK walker. Decodes the records we
+                         * need for the AIR semantic model:
+                         *   - METADATA_STRINGS (35): packed-VBR6 string
+                         *     pool. Each batch contributes a contiguous
+                         *     range of LLVM metadata IDs.
+                         *   - METADATA_STRING_OLD (1): legacy single
+                         *     string-as-char-array record.
+                         *   - METADATA_NAME (4): char array; names the
+                         *     NEXT NAMED_NODE record.
+                         *   - METADATA_VALUE (2): [type_idx, value_id].
+                         *   - METADATA_NODE (3) / DISTINCT_NODE (5) /
+                         *     OLD_NODE (8): tuple of metadata-IDs.
+                         *   - METADATA_NAMED_NODE (10): named tuple;
+                         *     takes its name from the preceding NAME.
+                         *   - METADATA_INDEX_OFFSET (38) /
+                         *     METADATA_INDEX (39): used by LLVM's lazy
+                         *     metadata loader; no semantic content,
+                         *     skipped.
+                         * Any other code lands in metadata[i].kind=UNKNOWN
+                         * with raw operands preserved.
+                         *
+                         * The STRINGS BLOB layout (paid for 2026-05-20
+                         * after the failed metadata_block_walker freshman
+                         * dispatch — see paravirt-re/library/diag/
+                         * metadata_strings_decoder.py for the pinned
+                         * encoding):
+                         *
+                         *   BLOB[0 : strings_offset]   = packed VBR6
+                         *                                size table
+                         *                                (one chunk per
+                         *                                string, LSB-first
+                         *                                bit-stream).
+                         *   BLOB[strings_offset:]      = concatenated raw
+                         *                                string bytes,
+                         *                                NO NUL
+                         *                                terminators —
+                         *                                lengths come
+                         *                                from the size
+                         *                                table.
+                         *
+                         * Don't be tempted to read the BLOB as
+                         * NUL-terminated bytes; that's the trap that
+                         * killed the 2026-05-20 freshman dispatch
+                         * (yields 0 strings on triangle).
+                         */
+                        lagfx_block_t mb;
+                        if (!lagfx_block_enter(&bs, blk.abbrev_width, m->blockinfo, &mb)) break;
+
+                        const uint32_t MAX_MD_STRINGS = 4096u;
+                        const uint32_t MAX_MD_RECORDS = 4096u;
+
+                        uint32_t str_offs_arena = arena_reserve(&m->arena,
+                                                     sizeof(uint32_t) * MAX_MD_STRINGS);
+                        if (str_offs_arena == 0u) {
+                            lagfx_air_module_free(m);
+                            return LAGFX_ERR_OUT_OF_MEMORY;
+                        }
+                        uint32_t md_arena = arena_reserve(&m->arena,
+                                                 sizeof(lagfx_air_metadata_t) * MAX_MD_RECORDS);
+                        if (md_arena == 0u) {
+                            lagfx_air_module_free(m);
+                            return LAGFX_ERR_OUT_OF_MEMORY;
+                        }
+                        uint32_t md_num_strings = 0u;
+                        uint32_t md_num_records = 0u;
+                        uint32_t pending_name_off = 0u;
+
+                        while (lagfx_bs_pos(&bs) < mb.end_pos) {
+                            lagfx_record_t mrec = {0};
+                            bool m_end = false, m_sub = false, m_da = false;
+                            uint32_t m_sub_id = 0;
+                            if (!lagfx_block_next_record(&mb, scratch_ops, &mrec,
+                                                          &m_end, &m_sub, &m_da, &m_sub_id)) break;
+                            if (m_end) break;
+                            if (m_sub) { lagfx_block_skip(&bs, mb.abbrev_width); continue; }
+                            if (m_da) continue;
+
+                            switch (mrec.code) {
+                                case 35u: {  /* METADATA_STRINGS */
+                                    if (mrec.num_ops < 2u || mrec.blob_data == NULL ||
+                                        mrec.blob_len == 0u) {
+                                        LAGFX_WARN("METADATA_STRINGS: malformed (num_ops=%u blob=%p len=%u)",
+                                                   mrec.num_ops, (const void *)mrec.blob_data,
+                                                   (unsigned)mrec.blob_len);
+                                        break;
+                                    }
+                                    uint32_t batch_num = (uint32_t)mrec.ops[0];
+                                    uint32_t size_table_bytes = (uint32_t)mrec.ops[1];
+                                    if (size_table_bytes > mrec.blob_len) {
+                                        LAGFX_WARN("METADATA_STRINGS: size_table_bytes=%u > blob_len=%u",
+                                                   size_table_bytes, (unsigned)mrec.blob_len);
+                                        break;
+                                    }
+                                    /* Copy the BLOB out of the bitstream
+                                     * buffer before arena_reserve calls
+                                     * potentially realloc the arena (the
+                                     * bitstream lives in the arena, so
+                                     * blob_data would dangle). */
+                                    uint8_t *blob_copy = (uint8_t *)malloc(mrec.blob_len);
+                                    if (!blob_copy) {
+                                        lagfx_air_module_free(m);
+                                        return LAGFX_ERR_OUT_OF_MEMORY;
+                                    }
+                                    memcpy(blob_copy, mrec.blob_data, mrec.blob_len);
+
+                                    const uint8_t *st = blob_copy;
+                                    const uint8_t *sd = blob_copy + size_table_bytes;
+                                    uint32_t sd_remaining = (uint32_t)mrec.blob_len - size_table_bytes;
+                                    size_t bit_pos = 0u;
+                                    size_t st_total_bits = (size_t)size_table_bytes * 8u;
+                                    bool decode_ok = true;
+
+                                    for (uint32_t i = 0; i < batch_num; i++) {
+                                        if (md_num_strings >= MAX_MD_STRINGS) {
+                                            LAGFX_WARN("METADATA_STRINGS: hit MAX_MD_STRINGS cap %u",
+                                                       MAX_MD_STRINGS);
+                                            decode_ok = false;
+                                            break;
+                                        }
+                                        /* VBR6: low 5 bits data, bit 5 = continuation. */
+                                        uint32_t v = 0u;
+                                        uint32_t shift = 0u;
+                                        bool overflow = false;
+                                        for (;;) {
+                                            if (bit_pos + 6u > st_total_bits) {
+                                                overflow = true;
+                                                break;
+                                            }
+                                            uint32_t chunk = 0u;
+                                            for (uint32_t bi = 0; bi < 6u; bi++) {
+                                                uint32_t bit = (uint32_t)((st[(bit_pos + bi) / 8u] >>
+                                                                            ((bit_pos + bi) % 8u)) & 1u);
+                                                chunk |= bit << bi;
+                                            }
+                                            v |= (chunk & 0x1Fu) << shift;
+                                            shift += 5u;
+                                            bit_pos += 6u;
+                                            if ((chunk & 0x20u) == 0u) break;
+                                        }
+                                        if (overflow) {
+                                            LAGFX_WARN("METADATA_STRINGS: size-table truncated at string %u/%u",
+                                                       i, batch_num);
+                                            decode_ok = false;
+                                            break;
+                                        }
+                                        uint32_t slen = v;
+                                        if (slen > sd_remaining) {
+                                            LAGFX_WARN("METADATA_STRINGS: string %u overruns data: len=%u remaining=%u",
+                                                       i, slen, sd_remaining);
+                                            decode_ok = false;
+                                            break;
+                                        }
+                                        uint32_t off = arena_reserve(&m->arena, (size_t)slen + 1u);
+                                        if (off == 0u) {
+                                            free(blob_copy);
+                                            lagfx_air_module_free(m);
+                                            return LAGFX_ERR_OUT_OF_MEMORY;
+                                        }
+                                        memcpy(m->arena.base + off, sd, slen);
+                                        m->arena.base[off + slen] = 0;
+                                        /* Refresh str-offsets array pointer after potential realloc. */
+                                        uint32_t *str_offs = (uint32_t *)(m->arena.base + str_offs_arena);
+                                        str_offs[md_num_strings++] = off;
+                                        sd += slen;
+                                        sd_remaining -= slen;
+                                    }
+                                    free(blob_copy);
+                                    LAGFX_TRACE("METADATA_STRINGS: +%u strings (total %u)%s",
+                                                batch_num, md_num_strings,
+                                                decode_ok ? "" : " [truncated]");
+                                    break;
+                                }
+
+                                case 1u: {  /* METADATA_STRING_OLD */
+                                    if (md_num_strings >= MAX_MD_STRINGS) break;
+                                    uint32_t slen = mrec.num_ops;
+                                    uint32_t off = arena_reserve(&m->arena, (size_t)slen + 1u);
+                                    if (off == 0u) {
+                                        lagfx_air_module_free(m);
+                                        return LAGFX_ERR_OUT_OF_MEMORY;
+                                    }
+                                    for (uint32_t i = 0; i < slen; i++) {
+                                        m->arena.base[off + i] = (uint8_t)(mrec.ops[i] & 0xFFu);
+                                    }
+                                    m->arena.base[off + slen] = 0;
+                                    uint32_t *str_offs = (uint32_t *)(m->arena.base + str_offs_arena);
+                                    str_offs[md_num_strings++] = off;
+                                    break;
+                                }
+
+                                case 4u: {  /* METADATA_NAME (char-array; names next NAMED_NODE) */
+                                    uint32_t slen = mrec.num_ops;
+                                    uint32_t off = arena_reserve(&m->arena, (size_t)slen + 1u);
+                                    if (off == 0u) {
+                                        lagfx_air_module_free(m);
+                                        return LAGFX_ERR_OUT_OF_MEMORY;
+                                    }
+                                    for (uint32_t i = 0; i < slen; i++) {
+                                        m->arena.base[off + i] = (uint8_t)(mrec.ops[i] & 0xFFu);
+                                    }
+                                    m->arena.base[off + slen] = 0;
+                                    pending_name_off = off;
+                                    break;
+                                }
+
+                                case 2u:    /* METADATA_VALUE */
+                                case 3u:    /* METADATA_NODE */
+                                case 5u:    /* METADATA_DISTINCT_NODE */
+                                case 8u:    /* METADATA_OLD_NODE (legacy) */
+                                case 10u: { /* METADATA_NAMED_NODE */
+                                    if (md_num_records >= MAX_MD_RECORDS) {
+                                        LAGFX_WARN("METADATA: hit MAX_MD_RECORDS cap %u", MAX_MD_RECORDS);
+                                        break;
+                                    }
+                                    uint32_t u32_buf[LAGFX_RECORD_MAX_OPS];
+                                    for (uint32_t i = 0; i < mrec.num_ops; i++) {
+                                        u32_buf[i] = (uint32_t)mrec.ops[i];
+                                    }
+                                    uint32_t op_off = (mrec.num_ops == 0u)
+                                        ? 0u
+                                        : arena_intern_u32_array(&m->arena, u32_buf, mrec.num_ops);
+                                    if (op_off == 0u && mrec.num_ops > 0u) {
+                                        lagfx_air_module_free(m);
+                                        return LAGFX_ERR_OUT_OF_MEMORY;
+                                    }
+                                    /* Refresh records array pointer after potential realloc. */
+                                    lagfx_air_metadata_t *md_arr =
+                                        (lagfx_air_metadata_t *)(m->arena.base + md_arena);
+                                    lagfx_air_metadata_t *md = &md_arr[md_num_records++];
+                                    md->name_offset = 0u;
+                                    md->operands = (op_off == 0u)
+                                        ? NULL
+                                        : (const uint32_t *)(m->arena.base + op_off);
+                                    md->num_operands = mrec.num_ops;
+                                    if (mrec.code == 2u) {
+                                        md->kind = LAGFX_AIR_MD_VALUE;
+                                    } else if (mrec.code == 10u) {
+                                        md->kind = LAGFX_AIR_MD_NAMED_NODE;
+                                        md->name_offset = pending_name_off;
+                                        pending_name_off = 0u;
+                                    } else {
+                                        md->kind = LAGFX_AIR_MD_NODE;
+                                    }
+                                    break;
+                                }
+
+                                case 38u:   /* METADATA_INDEX_OFFSET */
+                                case 39u:   /* METADATA_INDEX */
+                                    /* LLVM lazy-loader bookkeeping; no
+                                     * semantic content for our translator. */
+                                    break;
+
+                                default: {
+                                    /* Unknown record code — preserve raw
+                                     * operands under kind=UNKNOWN so
+                                     * callers can introspect rather than
+                                     * silently dropping. Captured-macOS
+                                     * metallibs may use Apple-specific
+                                     * codes we haven't mapped yet; the
+                                     * UNKNOWN bucket keeps record-id
+                                     * accounting honest. */
+                                    if (md_num_records >= MAX_MD_RECORDS) break;
+                                    uint32_t u32_buf[LAGFX_RECORD_MAX_OPS];
+                                    for (uint32_t i = 0; i < mrec.num_ops; i++) {
+                                        u32_buf[i] = (uint32_t)mrec.ops[i];
+                                    }
+                                    uint32_t op_off = (mrec.num_ops == 0u)
+                                        ? 0u
+                                        : arena_intern_u32_array(&m->arena, u32_buf, mrec.num_ops);
+                                    if (op_off == 0u && mrec.num_ops > 0u) {
+                                        lagfx_air_module_free(m);
+                                        return LAGFX_ERR_OUT_OF_MEMORY;
+                                    }
+                                    lagfx_air_metadata_t *md_arr =
+                                        (lagfx_air_metadata_t *)(m->arena.base + md_arena);
+                                    lagfx_air_metadata_t *md = &md_arr[md_num_records++];
+                                    md->kind = LAGFX_AIR_MD_UNKNOWN;
+                                    md->name_offset = 0u;
+                                    md->operands = (op_off == 0u)
+                                        ? NULL
+                                        : (const uint32_t *)(m->arena.base + op_off);
+                                    md->num_operands = mrec.num_ops;
+                                    LAGFX_TRACE("METADATA: unmapped record code %u (num_ops=%u)",
+                                                mrec.code, mrec.num_ops);
+                                    break;
+                                }
+                            }
+                        }
+
+                        m->metadata_strings_offsets_arena = str_offs_arena;
+                        m->metadata_records_arena         = md_arena;
+                        m->num_metadata_strings = md_num_strings;
+                        m->num_metadata         = md_num_records;
+                        /* m->metadata pointer is materialized at the end
+                         * of module_open (after STRTAB pass) so it picks
+                         * up the final arena base. metadata_strings
+                         * (const char **) is materialized there too. */
+                        LAGFX_TRACE("METADATA_BLOCK decoded: %u strings, %u records",
+                                    md_num_strings, md_num_records);
                         (void)lagfx_bs_seek(&bs, mb.end_pos);
                         continue;
                     }
@@ -1300,6 +1618,37 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                 m->functions[i].name_offset = 0u;
             }
         }
+    }
+
+    /* Materialize metadata pointers AFTER all arena_reserve calls so
+     * the pointer values are stable. Up to this point we've kept
+     * arena offsets only; now translate them into the public
+     * (const char **) / lagfx_air_metadata_t * surfaces. The metadata
+     * walker recorded m->metadata_strings_offsets_arena (offset of the
+     * u32[] of string offsets) and m->metadata_records_arena (offset
+     * of the records[] array). */
+    if (m->num_metadata > 0u) {
+        m->metadata = (lagfx_air_metadata_t *)(m->arena.base + m->metadata_records_arena);
+    }
+    if (m->num_metadata_strings > 0u) {
+        /* Allocate the const char ** pointer array in the arena; fill
+         * from the offsets table. The pointer array is appended to the
+         * arena AFTER STRTAB pass, so its slots stay valid for the
+         * module's lifetime (no further arena_reserve happens). */
+        size_t ptr_bytes = (size_t)m->num_metadata_strings * sizeof(const char *);
+        uint32_t ptr_off = arena_reserve(&m->arena, ptr_bytes);
+        if (ptr_off == 0u) {
+            lagfx_air_module_free(m);
+            return LAGFX_ERR_OUT_OF_MEMORY;
+        }
+        /* Refresh after potential realloc. */
+        const uint32_t *str_offs =
+            (const uint32_t *)(m->arena.base + m->metadata_strings_offsets_arena);
+        const char **ptrs = (const char **)(m->arena.base + ptr_off);
+        for (uint32_t i = 0; i < m->num_metadata_strings; i++) {
+            ptrs[i] = (const char *)(m->arena.base + str_offs[i]);
+        }
+        m->metadata_strings = ptrs;
     }
 
     *out_module = m;
