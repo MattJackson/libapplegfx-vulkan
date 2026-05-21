@@ -625,5 +625,21 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-buffer-load-emit-unit.c')
   test('air2spv buffer_load emit (unit)', air2spv_bl_test)
 endif
 
+# Phase 4 reference SPIR-V emitter — multi-distinct-float
+# OpConstantComposite (clear-color shape).
+if fs.is_file(meson.current_source_dir() / 'air2spv-constant-float-emit-unit.c')
+  air2spv_cf_test_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_cf_test_deps += [vulkan_dep]
+  endif
+  air2spv_cf_test = executable('air2spv-constant-float-emit-unit',
+    'air2spv-constant-float-emit-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_cf_test_deps,
+    build_by_default : true,
+  )
+  test('air2spv constant_float emit (unit)', air2spv_cf_test)
+endif
+
 
 

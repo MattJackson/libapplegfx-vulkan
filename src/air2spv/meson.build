@@ -11,4 +11,5 @@ air2spv_sources = files(
   'emit_render_target.c',
   'emit_fragment_input.c',
   'emit_buffer_load.c',
+  'emit_constant_float.c',
 )
