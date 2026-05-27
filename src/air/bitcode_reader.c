@@ -1703,6 +1703,13 @@ struct lagfx_air_function_body {
     uint32_t      num_blocks;
     lagfx_air_inst_t *instructions;
     uint32_t      num_instructions;
+    /* Function-local CONSTANTS_BLOCK contents. LLVM stores constants
+     * that are referenced only from within this function as a nested
+     * block at the start of the FUNCTION_BLOCK. They occupy value-IDs
+     * AFTER the function's arguments and BEFORE instruction results.
+     * See LLVMBitcodes.h / BitcodeReader::ParseFunctionBody. */
+    lagfx_air_constant_t *local_constants;
+    uint32_t              num_local_constants;
 };
 
 /* Map a raw FUNC_CODE_* record code to our enum. Unknown codes get
@@ -1819,9 +1826,123 @@ lagfx_air_function_body_open(const lagfx_air_module_t   *module,
         }
         if (is_end) break;
         if (is_subblock) {
-            /* Function-local CONSTANTS_BLOCK / METADATA_BLOCK /
-             * METADATA_ATTACHMENT_BLOCK / VALUE_SYMTAB. Skip for now;
-             * Phase 3 will mine these for per-instruction metadata. */
+            if (sub_id == LAGFX_BLK_CONSTANTS) {
+                /* Function-local CONSTANTS_BLOCK. Same SETTYPE +
+                 * record-code shape as the module-level CONSTANTS_BLOCK
+                 * (see module-parse path); duplicated here because we
+                 * need to write into body->arena, not m->arena, and the
+                 * constants populate the function-local value-id slice
+                 * (after args, before instruction results). */
+                lagfx_block_t cb;
+                if (!lagfx_block_enter(&bs, fb.abbrev_width, module->blockinfo, &cb)) {
+                    LAGFX_ERR("function_body: failed to enter local CONSTANTS_BLOCK");
+                    break;
+                }
+                const uint32_t MAX_LOCAL_CONSTS = 256u;
+                uint32_t lc_off = arena_reserve(&body->arena,
+                                                 sizeof(lagfx_air_constant_t) * MAX_LOCAL_CONSTS);
+                if (lc_off == 0u) {
+                    lagfx_air_function_body_free(body);
+                    return LAGFX_ERR_OUT_OF_MEMORY;
+                }
+                /* instructions pointer must be refreshed after any
+                 * arena_reserve since the arena may have realloc'd. */
+                body->instructions = (lagfx_air_inst_t *)(body->arena.base + insts_off);
+                lagfx_air_constant_t *lc =
+                    (lagfx_air_constant_t *)(body->arena.base + lc_off);
+                uint32_t lc_count = 0u;
+                uint32_t current_type = 0u;
+
+                while (lagfx_bs_pos(&bs) < cb.end_pos) {
+                    lagfx_record_t crec = {0};
+                    bool c_end = false, c_sub = false, c_da = false;
+                    uint32_t c_sub_id = 0;
+                    if (!lagfx_block_next_record(&cb, scratch_ops, &crec,
+                                                  &c_end, &c_sub, &c_da, &c_sub_id)) break;
+                    if (c_end) break;
+                    if (c_sub) { lagfx_block_skip(&bs, cb.abbrev_width); continue; }
+                    if (c_da) continue;
+                    if (lc_count >= MAX_LOCAL_CONSTS) break;
+
+                    if (crec.code == 1u) {
+                        /* CST_CODE_SETTYPE */
+                        if (crec.num_ops >= 1u) current_type = (uint32_t)crec.ops[0];
+                        continue;
+                    }
+                    lagfx_air_constant_t *c = &lc[lc_count];
+                    c->type_index = current_type;
+                    c->payload.bytes.offset = 0;
+                    c->payload.bytes.len = 0;
+                    switch (crec.code) {
+                        case 2u:  /* CST_CODE_NULL */
+                            c->kind = LAGFX_AIR_CONST_NULL; break;
+                        case 3u:  /* CST_CODE_UNDEF */
+                            c->kind = LAGFX_AIR_CONST_UNDEF; break;
+                        case 4u:  /* CST_CODE_INTEGER */
+                            c->kind = LAGFX_AIR_CONST_INTEGER;
+                            if (crec.num_ops >= 1) {
+                                uint64_t raw = crec.ops[0];
+                                int64_t v = (raw & 1) ? -(int64_t)(raw >> 1)
+                                                       : (int64_t)(raw >> 1);
+                                c->payload.i64 = v;
+                            }
+                            break;
+                        case 6u:  /* CST_CODE_FLOAT */
+                            c->kind = LAGFX_AIR_CONST_FLOAT;
+                            if (crec.num_ops >= 1) {
+                                union { uint64_t u; double f; } cv;
+                                cv.u = crec.ops[0];
+                                c->payload.f64 = cv.f;
+                            }
+                            break;
+                        case 22u: /* CST_CODE_DATA — vector-of-X literal */
+                            c->kind = LAGFX_AIR_CONST_DATA;
+                            {
+                                uint32_t u32_buf[LAGFX_RECORD_MAX_OPS];
+                                for (uint32_t i = 0; i < crec.num_ops; i++)
+                                    u32_buf[i] = (uint32_t)crec.ops[i];
+                                uint32_t off = arena_intern_u32_array(&body->arena,
+                                                                       u32_buf, crec.num_ops);
+                                /* Refresh both arrays after potential realloc. */
+                                body->instructions =
+                                    (lagfx_air_inst_t *)(body->arena.base + insts_off);
+                                lc = (lagfx_air_constant_t *)(body->arena.base + lc_off);
+                                c = &lc[lc_count];
+                                c->payload.bytes.offset = off;
+                                c->payload.bytes.len = crec.num_ops * sizeof(uint32_t);
+                            }
+                            break;
+                        case 7u:  /* CST_CODE_AGGREGATE */
+                            c->kind = LAGFX_AIR_CONST_AGGREGATE;
+                            {
+                                uint32_t u32_buf[LAGFX_RECORD_MAX_OPS];
+                                for (uint32_t i = 0; i < crec.num_ops; i++)
+                                    u32_buf[i] = (uint32_t)crec.ops[i];
+                                uint32_t off = arena_intern_u32_array(&body->arena,
+                                                                       u32_buf, crec.num_ops);
+                                body->instructions =
+                                    (lagfx_air_inst_t *)(body->arena.base + insts_off);
+                                lc = (lagfx_air_constant_t *)(body->arena.base + lc_off);
+                                c = &lc[lc_count];
+                                c->payload.bytes.offset = off;
+                                c->payload.bytes.len = crec.num_ops * sizeof(uint32_t);
+                            }
+                            break;
+                        default:
+                            c->kind = LAGFX_AIR_CONST_UNKNOWN;
+                            break;
+                    }
+                    lc_count++;
+                }
+                body->local_constants = lc;
+                body->num_local_constants = lc_count;
+                LAGFX_TRACE("function_body: local CONSTANTS_BLOCK decoded %u constants", lc_count);
+                (void)lagfx_bs_seek(&bs, cb.end_pos);
+                continue;
+            }
+            /* Other nested blocks (METADATA_BLOCK,
+             * METADATA_ATTACHMENT_BLOCK, VALUE_SYMTAB) — skip; Phase 3
+             * already mines what it needs from module-level. */
             if (!lagfx_block_skip(&bs, fb.abbrev_width)) {
                 LAGFX_ERR("function_body: failed to skip nested sub-block id=%u", sub_id);
                 break;
@@ -1887,4 +2008,19 @@ lagfx_air_function_body_instructions(const lagfx_air_function_body_t *body,
                                        uint32_t *count) {
     if (count) *count = body ? body->num_instructions : 0u;
     return body ? body->instructions : NULL;
+}
+
+const lagfx_air_constant_t *
+lagfx_air_function_body_local_constants(const lagfx_air_function_body_t *body,
+                                          uint32_t *count) {
+    if (count) *count = body ? body->num_local_constants : 0u;
+    return body ? body->local_constants : NULL;
+}
+
+const void *
+lagfx_air_function_body_payload_ptr(const lagfx_air_function_body_t *body,
+                                      uint32_t offset) {
+    if (!body || offset == 0u) return NULL;
+    if (offset >= body->arena.used) return NULL;
+    return (const void *)(body->arena.base + offset);
 }

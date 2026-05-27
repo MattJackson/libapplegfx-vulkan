@@ -20,6 +20,7 @@
 
 #include "common/log.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 
 typedef enum {
@@ -54,13 +55,15 @@ lagfx_air2spv_translate_module(const lagfx_air_module_t *m,
     lagfx_translate_stage_t stage = discover_stage(m);
     int rc = -1;
 
-    /* Phase 5 per-function body translator is opt-in via env until its
-     * output is spirv-val-clean for triangle. Default path stays on the
-     * legacy reference emitters so 35/40 existing tests don't regress.
-     * Set LAGFX_PHASE5_BODY=1 to exercise the new translate_function
-     * code path. */
+    /* Phase 5 per-function body translator is now the default path
+     * for modules with a non-prototype function. Triangle produces
+     * a spirv-val-clean SPIR-V module via this route. Set
+     * LAGFX_PHASE5_BODY=0 to fall back to the legacy reference
+     * emitters (useful if a regression surfaces while we extend
+     * coverage). */
     const char *phase5 = getenv("LAGFX_PHASE5_BODY");
-    if (phase5 && phase5[0] == '1') {
+    bool phase5_enabled = !(phase5 && phase5[0] == '0');
+    if (phase5_enabled) {
         uint32_t n_fns = 0;
         const lagfx_air_function_t *fns = lagfx_air_module_functions(m, &n_fns);
         uint32_t body_fn = (uint32_t)-1;

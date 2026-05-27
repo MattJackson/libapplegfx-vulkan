@@ -417,6 +417,10 @@ static uint32_t resolve_or_undef(xlate_ctx_t *c, uint32_t value_id,
     return emit_undef(c, fallback_spv_type);
 }
 
+/* Forward decl — inst_produces_value is defined further below but
+ * referenced from the prologue's ALLOCA pre-emission pass. */
+static bool inst_produces_value(const lagfx_air_inst_t *i);
+
 /* ===================================================================
  * Prologue
  * =================================================================== */
@@ -618,14 +622,26 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
     /* (GEP fallback indices use uint32 0 instead of i64 0 to avoid
      * requiring the Int64 capability for shaders that don't otherwise
      * need it.) */
-    /* Struct{vec4f} for INSERTVAL/RET in vertex stage; OpUndef of it
-     * for the case where INSERTVAL's aggregate is an unresolvable
-     * function-local undef. */
+    /* Struct{vec4f} for INSERTVAL/RET in vertex stage. Derive from
+     * the function's return type via emit_air_type so we share the
+     * id with any local-const pre-bind that already touched the same
+     * AIR type (avoids duplicate OpTypeStruct declarations, which
+     * spirv-val rejects). */
     {
-        uint32_t id_v4f = emit_type_vec4_f(c);
-        c->id_struct_v4f = lagfx_spv_builder_alloc_id(c->b);
-        uint32_t ops[] = { c->id_struct_v4f, id_v4f };
-        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_STRUCT, ops, 2);
+        uint32_t n_types_local = 0;
+        const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types_local);
+        uint32_t fn_ty = c->fn->type_index;
+        if (fn_ty < n_types_local && ts[fn_ty].kind == LAGFX_AIR_TYPE_FUNCTION &&
+            ts[fn_ty].num_op >= 2u) {
+            uint32_t ret_ty = ts[fn_ty].op[1];
+            c->id_struct_v4f = emit_air_type(c, ret_ty);
+        } else {
+            /* Fallback: synthesize a struct{vec4f}. */
+            uint32_t id_v4f = emit_type_vec4_f(c);
+            c->id_struct_v4f = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t ops[] = { c->id_struct_v4f, id_v4f };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_STRUCT, ops, 2);
+        }
         (void)emit_undef(c, c->id_struct_v4f);
     }
 
@@ -648,9 +664,35 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, ops, 1);
     }
 
+    /* SPIR-V §2.4: OpVariable instructions with Function storage MUST
+     * be the first instructions in the function's first block. Walk
+     * the body now and pre-emit OpVariable for each ALLOCA, binding
+     * the result value-id in the map. translate_body's ALLOCA handler
+     * skips re-emission when it sees a pre-bound value-id. */
+    {
+        uint32_t alloca_val_id = c->inst_id_base;
+        for (uint32_t i = 0; i < c->num_insts; i++) {
+            const lagfx_air_inst_t *inst = &c->insts[i];
+            bool produces = inst_produces_value(inst);
+            if (inst->code == LAGFX_AIR_INST_ALLOCA && inst->num_ops >= 1u) {
+                uint32_t alloc_air_ty = (uint32_t)inst->ops[0];
+                uint32_t alloc_spv   = emit_air_type(c, alloc_air_ty);
+                uint32_t ptr_spv     = emit_type_pointer(c, alloc_air_ty, alloc_spv,
+                                                          LAGFX_SPV_STORAGE_FUNCTION);
+                uint32_t result_id = lagfx_spv_builder_alloc_id(c->b);
+                uint32_t ops[] = { ptr_spv, result_id, LAGFX_SPV_STORAGE_FUNCTION };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, ops, 3);
+                bind_value_spv(c, alloca_val_id, result_id);
+                c->inst_result_air_type[i] = alloc_air_ty;
+            }
+            if (produces) alloca_val_id++;
+        }
+    }
+
     /* For the vertex arg %0 (vertex_id, i32): emit an OpLoad of the
      * VertexIndex input variable. The resulting SPIR-V id IS the
-     * argument's value, bound in the value-id map. */
+     * argument's value, bound in the value-id map. Must come AFTER
+     * all OpVariable instructions in the entry block. */
     if (c->stage == LAGFX_XLATE_STAGE_VERTEX && c->num_args >= 1u) {
         uint32_t id_uint = emit_type_int_w(c, 32u, 0u);
         uint32_t id_load = lagfx_spv_builder_alloc_id(c->b);
@@ -702,18 +744,12 @@ static bool inst_produces_value(const lagfx_air_inst_t *i) {
 static void emit_inst_alloca(xlate_ctx_t *c, uint32_t inst_idx,
                               const lagfx_air_inst_t *inst,
                               uint32_t result_value_id) {
-    /* ALLOCA op0=allocated_type op1=count_type op2=count_value op3=align/flags */
-    if (inst->num_ops < 3u) return;
-    uint32_t alloc_air_ty = (uint32_t)inst->ops[0];
-    uint32_t alloc_spv    = emit_air_type(c, alloc_air_ty);
-    uint32_t ptr_spv      = emit_type_pointer(c, alloc_air_ty, alloc_spv,
-                                                LAGFX_SPV_STORAGE_FUNCTION);
-
-    uint32_t result_id = lagfx_spv_builder_alloc_id(c->b);
-    uint32_t ops[] = { ptr_spv, result_id, LAGFX_SPV_STORAGE_FUNCTION };
-    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, ops, 3);
-    bind_value_spv(c, result_value_id, result_id);
-    c->inst_result_air_type[inst_idx] = alloc_air_ty;
+    /* ALLOCAs are pre-emitted as OpVariables at the top of the entry
+     * block by emit_module_vars_and_function (per SPIR-V §2.4: all
+     * Function-storage OpVariables must be the first instructions in
+     * the first block). The value-id map binding + inst_result_air_type
+     * were set then; nothing to do here. */
+    (void)c; (void)inst_idx; (void)inst; (void)result_value_id;
 }
 
 static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
@@ -881,10 +917,13 @@ static void emit_inst_store(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
 static void emit_inst_load(xlate_ctx_t *c, uint32_t inst_idx,
                             const lagfx_air_inst_t *inst,
                             uint32_t result_value_id, uint32_t next_val_id) {
-    /* INST_LOAD: [opty (result type, absolute), ptr_rel, align, vol] */
+    /* INST_LOAD abbreviated: [ptr_rel, result_type_id (absolute), align, vol].
+     * Bcanalyzer-confirmed format. The un-abbreviated LLVM form
+     * inserts a ptr-type id between ptr and result-type; the abbrev
+     * drops it (deducible from context). */
     if (inst->num_ops < 2u) return;
-    uint32_t result_ty_air = (uint32_t)inst->ops[0];
-    uint32_t ptr_rel       = (uint32_t)inst->ops[1];
+    uint32_t ptr_rel       = (uint32_t)inst->ops[0];
+    uint32_t result_ty_air = (uint32_t)inst->ops[1];
 
     uint32_t result_spv = emit_air_type(c, result_ty_air);
     uint32_t ptr_id     = resolve_relative(ptr_rel, next_val_id);
@@ -1189,8 +1228,13 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
     (void)lagfx_air_module_constants(m, &n_mod_consts);
     c.module_val_count = n_fns + n_mod_consts;
     c.arg_id_base      = c.module_val_count;
-    /* Function-local CONSTANTS_BLOCK not yet decoded — treat as 0. */
-    c.local_const_count = 0u;
+    /* Function-local CONSTANTS_BLOCK now decoded by body_open and
+     * exposed via lagfx_air_function_body_local_constants(). They
+     * occupy value-IDs immediately after args. */
+    uint32_t n_local_consts = 0;
+    const lagfx_air_constant_t *local_consts =
+        lagfx_air_function_body_local_constants(body, &n_local_consts);
+    c.local_const_count = n_local_consts;
     c.inst_id_base = c.arg_id_base + c.num_args + c.local_const_count;
 
     /* Value-id map. Sized to cover module values + args + local consts +
@@ -1274,6 +1318,160 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                 default:
                     /* AGGREGATE / DATA / STRING — defer; the operand
                      * will fall back to OpUndef of the expected type. */
+                    break;
+            }
+            if (spv_id) bind_value_spv(&c, vid, spv_id);
+        }
+    }
+
+    /* Pre-bind function-local constants at value-ids
+     * [arg_id_end, arg_id_end + n_local_consts). These are the
+     * vec2f data values, shufflevec masks, and other constants the
+     * function body references but the module-level constants table
+     * doesn't carry. See LLVM bitcode FUNCTION_BLOCK nested
+     * CONSTANTS_BLOCK. */
+    if (local_consts) {
+        uint32_t lc_base = c.arg_id_base + c.num_args;
+        uint32_t nn_types = 0;
+        const lagfx_air_type_t *ts = lagfx_air_module_types(m, &nn_types);
+        for (uint32_t i = 0; i < n_local_consts; i++) {
+            uint32_t vid = lc_base + i;
+            const lagfx_air_constant_t *k = &local_consts[i];
+            uint32_t spv_id = 0u;
+            uint32_t ty_air = k->type_index;
+            if (ty_air >= nn_types) continue;
+            const lagfx_air_type_t *t = &ts[ty_air];
+
+            switch (k->kind) {
+                case LAGFX_AIR_CONST_INTEGER: {
+                    /* Bind i32 constants; skip i8/i64 to keep the
+                     * module Int8/Int64-capability-free. */
+                    if (t->kind == LAGFX_AIR_TYPE_INTEGER) {
+                        uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
+                        if (w == 32u) {
+                            uint32_t ty_spv = emit_type_int_w(&c, 32u, 0u);
+                            spv_id = lagfx_spv_builder_alloc_id(c.b);
+                            uint32_t ops[] = { ty_spv, spv_id,
+                                                (uint32_t)(uint64_t)k->payload.i64 };
+                            lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 3);
+                        }
+                    }
+                    break;
+                }
+                case LAGFX_AIR_CONST_FLOAT: {
+                    /* Float constants: the parser stored the raw u64
+                     * op[0] bits via union with double. For f32 types,
+                     * extract the low 32 bits — they're the original
+                     * IEEE-754 binary32 pattern. */
+                    if (t->kind == LAGFX_AIR_TYPE_FLOAT) {
+                        uint32_t ty_spv = emit_type_float32(&c);
+                        uint32_t bits = (uint32_t)(uint64_t)k->payload.i64;
+                        spv_id = lagfx_spv_builder_alloc_id(c.b);
+                        uint32_t ops[] = { ty_spv, spv_id, bits };
+                        lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 3);
+                    }
+                    break;
+                }
+                case LAGFX_AIR_CONST_NULL: {
+                    uint32_t ty_spv = emit_air_type(&c, ty_air);
+                    spv_id = lagfx_spv_builder_alloc_id(c.b);
+                    uint32_t ops[] = { ty_spv, spv_id };
+                    lagfx_spv_builder_emit_op(c.b, 46 /* OpConstantNull */, ops, 2);
+                    break;
+                }
+                case LAGFX_AIR_CONST_UNDEF:
+                case LAGFX_AIR_CONST_UNKNOWN: {
+                    /* OpUndef of the constant's type. UNKNOWN covers
+                     * LLVM's POISON code (26) which we don't yet
+                     * decode distinctly; treat as undef for now. */
+                    uint32_t ty_spv = emit_air_type(&c, ty_air);
+                    spv_id = emit_undef(&c, ty_spv);
+                    break;
+                }
+                case LAGFX_AIR_CONST_DATA: {
+                    /* DATA records hold a packed array of literal
+                     * scalar values (raw u32 per lane). Used for
+                     * vector-of-int / vector-of-float constants.
+                     * Emit OpConstantComposite assembled from per-lane
+                     * OpConstants. */
+                    if (t->kind == LAGFX_AIR_TYPE_VECTOR && t->num_op >= 2u) {
+                        uint32_t lanes  = t->op[0];
+                        uint32_t elem_ai = t->op[1];
+                        const lagfx_air_type_t *et =
+                            (elem_ai < nn_types) ? &ts[elem_ai] : NULL;
+                        if (!et) break;
+                        const uint32_t *raw = (const uint32_t *)
+                            lagfx_air_function_body_payload_ptr(body, k->payload.bytes.offset);
+                        if (!raw) break;
+                        uint32_t n_words = k->payload.bytes.len / sizeof(uint32_t);
+                        if (n_words < lanes) break;
+                        uint32_t elem_spv = emit_air_type(&c, elem_ai);
+                        /* Emit per-lane constants. */
+                        uint32_t lane_ids[16];
+                        if (lanes > 16u) break;
+                        for (uint32_t l = 0; l < lanes; l++) {
+                            uint32_t lane_id = lagfx_spv_builder_alloc_id(c.b);
+                            uint32_t ops[] = { elem_spv, lane_id, raw[l] };
+                            lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 3);
+                            lane_ids[l] = lane_id;
+                        }
+                        /* OpConstantComposite vecN elem0 elem1 ... */
+                        uint32_t vec_spv = emit_air_type(&c, ty_air);
+                        spv_id = lagfx_spv_builder_alloc_id(c.b);
+                        uint32_t ops[1 + 1 + 16];
+                        ops[0] = vec_spv;
+                        ops[1] = spv_id;
+                        for (uint32_t l = 0; l < lanes; l++) ops[2u + l] = lane_ids[l];
+                        lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT_COMPOSITE,
+                                                    ops, 2u + lanes);
+                    }
+                    break;
+                }
+                case LAGFX_AIR_CONST_AGGREGATE: {
+                    /* AGGREGATE: payload bytes are a u32 array of
+                     * absolute value-IDs of the component constants.
+                     * For triangle: the shufflevec masks are
+                     * AGGREGATE(undef, c[1], lc[0], lc[0]) → resolves
+                     * each component via the value-id map. */
+                    const uint32_t *comps = (const uint32_t *)
+                        lagfx_air_function_body_payload_ptr(body, k->payload.bytes.offset);
+                    if (!comps) break;
+                    uint32_t ncomp = k->payload.bytes.len / sizeof(uint32_t);
+                    if (ncomp == 0u || ncomp > 16u) break;
+
+                    /* Result type — for vec / array / struct, just use
+                     * the constant's declared type. */
+                    uint32_t vec_spv = emit_air_type(&c, ty_air);
+
+                    /* Resolve each component to a SPIR-V id; if not
+                     * resolvable, substitute OpUndef of the element
+                     * type when known. */
+                    uint32_t elem_ai = 0u;
+                    if (t->kind == LAGFX_AIR_TYPE_VECTOR && t->num_op >= 2u) {
+                        elem_ai = t->op[1];
+                    } else if (t->kind == LAGFX_AIR_TYPE_ARRAY && t->num_op >= 2u) {
+                        elem_ai = t->op[1];
+                    }
+                    uint32_t elem_spv_fallback =
+                        elem_ai ? emit_air_type(&c, elem_ai)
+                                : emit_type_int_w(&c, 32u, 0u);
+
+                    uint32_t comp_ids[16];
+                    for (uint32_t j = 0; j < ncomp; j++) {
+                        uint32_t cid = resolve_value_spv(&c, comps[j]);
+                        if (!cid) cid = emit_undef(&c, elem_spv_fallback);
+                        comp_ids[j] = cid;
+                    }
+                    spv_id = lagfx_spv_builder_alloc_id(c.b);
+                    uint32_t ops[1 + 1 + 16];
+                    ops[0] = vec_spv;
+                    ops[1] = spv_id;
+                    for (uint32_t j = 0; j < ncomp; j++) ops[2u + j] = comp_ids[j];
+                    lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT_COMPOSITE,
+                                                ops, 2u + ncomp);
+                    break;
+                }
+                default:
                     break;
             }
             if (spv_id) bind_value_spv(&c, vid, spv_id);

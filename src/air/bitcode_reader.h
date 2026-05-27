@@ -348,6 +348,23 @@ uint32_t lagfx_air_function_body_num_blocks(const lagfx_air_function_body_t *bod
 const lagfx_air_inst_t *lagfx_air_function_body_instructions(
     const lagfx_air_function_body_t *body, uint32_t *count);
 
+/* Function-local constants. LLVM emits constants that are referenced
+ * only from within this function as a nested CONSTANTS_BLOCK at the
+ * start of the FUNCTION_BLOCK. They occupy value-IDs AFTER the
+ * function's arguments and BEFORE the first instruction result.
+ *
+ * Returns the array pointer + count via *count. Pointer is valid
+ * until lagfx_air_function_body_free. */
+const lagfx_air_constant_t *lagfx_air_function_body_local_constants(
+    const lagfx_air_function_body_t *body, uint32_t *count);
+
+/* Resolve a `payload.bytes.offset` (from a DATA / AGGREGATE / STRING
+ * function-local constant) to its arena pointer. Returns NULL if the
+ * body is NULL or the offset is zero. The returned pointer is valid
+ * until lagfx_air_function_body_free. */
+const void *lagfx_air_function_body_payload_ptr(
+    const lagfx_air_function_body_t *body, uint32_t offset);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
