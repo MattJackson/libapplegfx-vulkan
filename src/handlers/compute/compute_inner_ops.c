@@ -49,6 +49,9 @@
 #include "vulkan/iosurface.h"
 #include "vulkan/pipeline_build.h"
 #include "vulkan/draw_record.h"
+#include "air/bitcode_reader.h"
+#include "air2spv/translate.h"
+#include "air2spirv/metallib_extract.h"
 
 #ifdef LAGFX_HAVE_VULKAN
 #  include <vulkan/vulkan.h>
@@ -127,8 +130,8 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
                  * compiled by the AIR-to-SPIRV translator and use the
                  * function names from triangle.metal as entry points,
                  * not glslang's default "main". */
-                .vertex_entry_point   = "triangle_vertex",
-                .fragment_entry_point = "triangle_fragment",
+                .vertex_entry_point   = task->pending_pipeline.translated ? "main" : "triangle_vertex",
+                .fragment_entry_point = task->pending_pipeline.translated ? "main" : "triangle_fragment",
                 .color_format         = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
@@ -229,8 +232,8 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
                  * compiled by the AIR-to-SPIRV translator and use the
                  * function names from triangle.metal as entry points,
                  * not glslang's default "main". */
-                .vertex_entry_point   = "triangle_vertex",
-                .fragment_entry_point = "triangle_fragment",
+                .vertex_entry_point   = task->pending_pipeline.translated ? "main" : "triangle_vertex",
+                .fragment_entry_point = task->pending_pipeline.translated ? "main" : "triangle_fragment",
                 .color_format         = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
@@ -320,8 +323,8 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
                  * compiled by the AIR-to-SPIRV translator and use the
                  * function names from triangle.metal as entry points,
                  * not glslang's default "main". */
-                .vertex_entry_point   = "triangle_vertex",
-                .fragment_entry_point = "triangle_fragment",
+                .vertex_entry_point   = task->pending_pipeline.translated ? "main" : "triangle_vertex",
+                .fragment_entry_point = task->pending_pipeline.translated ? "main" : "triangle_fragment",
                 .color_format         = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
@@ -412,8 +415,8 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
                  * compiled by the AIR-to-SPIRV translator and use the
                  * function names from triangle.metal as entry points,
                  * not glslang's default "main". */
-                .vertex_entry_point   = "triangle_vertex",
-                .fragment_entry_point = "triangle_fragment",
+                .vertex_entry_point   = task->pending_pipeline.translated ? "main" : "triangle_vertex",
+                .fragment_entry_point = task->pending_pipeline.translated ? "main" : "triangle_fragment",
                 .color_format         = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
@@ -1125,20 +1128,190 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
     }
 
 #ifdef LAGFX_HAVE_VULKAN
-    /* Stage 65d Option 3: substitute the device's bundled triangle
-     * shaders for every render-pipeline reference. Real metallib
-     * capture rides Mach IPC (Session 63 finding); first-pixel work
-     * doesn't wait on that. */
     lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
-    if (dev_with_vk &&
+
+    /* Phase 6a: translate AIR → SPIR-V → VkShaderModule for real
+     * shaders. Env-gated via LAGFX_PHASE6_TRANSLATE=1 until proven on
+     * the boot path. On any failure we fall through to the Option 3
+     * substitute below so Stage 75 doesn't regress.
+     *
+     * Heap-VA-keyed pipeline-ref → (vert_func_ref, frag_func_ref) →
+     * metallib bytes per task already works (Phase B/C); we just hand
+     * the metallib bytes to lagfx_metallib_extract_functions +
+     * lagfx_air_module_open + lagfx_air2spv_translate_module.
+     *
+     * The full MTLRenderPipelineDescriptor TLV (vertex input layout,
+     * blend, depth) is NOT decoded here — see ENTRY-007. Phase 6a
+     * accepts that mismatch and reuses lagfx_pipeline_build's
+     * hardcoded defaults (matching the substitute path). Phase 6b
+     * will land the descriptor decoder. */
+    bool phase6_translated = false;
+    if (getenv("LAGFX_PHASE6_TRANSLATE") != NULL &&
+        dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized &&
+        task->heap_pfn != 0u) {
+
+        uint8_t vert_ref = 0, frag_ref = 0;
+        if (lagfx_lookup_pipeline_function_refs(p, task, reference, &vert_ref, &frag_ref)) {
+            VkDevice vk_device = dev_with_vk->vk->device;
+            VkShaderModule v_mod = VK_NULL_HANDLE, f_mod = VK_NULL_HANDLE;
+
+            /* Inline helper: read metallib at vert/frag ref → extract
+             * AIR for that stage → translate → vkCreateShaderModule.
+             * On failure returns VK_NULL_HANDLE. */
+            for (int stage = 0; stage < 2; stage++) {
+                uint8_t fn_ref = (stage == 0) ? vert_ref : frag_ref;
+                if (fn_ref == 0u) continue;
+
+                uint64_t mlib_gpa = 0; uint32_t mlib_len = 0;
+                if (!lagfx_lookup_function_bytes(p, task, fn_ref, &mlib_gpa, &mlib_len)) {
+                    LAGFX_WARN("op_0x74 P6a: lookup_function_bytes failed for %s ref=0x%x",
+                               stage == 0 ? "vert" : "frag", fn_ref);
+                    break;
+                }
+                if (mlib_len == 0u || mlib_len > (1u << 20)) {
+                    LAGFX_WARN("op_0x74 P6a: metallib len %u out of range", mlib_len);
+                    break;
+                }
+
+                uint8_t *mlib_buf = (uint8_t *)malloc(mlib_len);
+                if (!mlib_buf) break;
+                if (!dev_with_vk->desc.shell.read_memory(dev_with_vk->desc.shell.opaque,
+                                                          mlib_gpa, mlib_len, mlib_buf)) {
+                    LAGFX_WARN("op_0x74 P6a: read_memory failed gpa=0x%llx len=%u",
+                               (unsigned long long)mlib_gpa, mlib_len);
+                    free(mlib_buf);
+                    break;
+                }
+
+                /* Extract AIR bitcode for this stage from the MTLB
+                 * container. We probe with capacity=8 — Apple
+                 * metallibs we've seen carry ≤4 functions. */
+                lagfx_metallib_function_t fns[8] = {0};
+                size_t fn_count = 0;
+                lagfx_status_t ext_st = lagfx_metallib_extract_functions(
+                    mlib_buf, mlib_len, fns, 8, &fn_count);
+                if (ext_st != LAGFX_OK || fn_count == 0u) {
+                    LAGFX_WARN("op_0x74 P6a: metallib_extract failed (st=%d count=%zu)",
+                               (int)ext_st, fn_count);
+                    free(mlib_buf);
+                    break;
+                }
+
+                /* Pick the matching stage. Apple stores both vertex
+                 * and fragment in the SAME metallib for many
+                 * pipelines; per-fn_ref lookup may return the whole
+                 * blob and we filter here by stage_raw. */
+                lagfx_metallib_stage_t want =
+                    (stage == 0) ? LAGFX_METALLIB_STAGE_VERTEX
+                                 : LAGFX_METALLIB_STAGE_FRAGMENT;
+                const lagfx_metallib_function_t *fn = NULL;
+                for (size_t i = 0; i < fn_count && i < 8; i++) {
+                    if (fns[i].stage == want) { fn = &fns[i]; break; }
+                }
+                if (!fn || !fn->bitcode || fn->bitcode_len == 0u) {
+                    LAGFX_LOG("op_0x74 P6a: no %s function in metallib (count=%zu)",
+                              stage == 0 ? "vertex" : "fragment", fn_count);
+                    free(mlib_buf);
+                    break;
+                }
+
+                /* Parse AIR + translate to SPIR-V. */
+                lagfx_air_module_t *m = NULL;
+                lagfx_status_t open_st = lagfx_air_module_open(
+                    fn->bitcode, fn->bitcode_len, &m);
+                if (open_st != LAGFX_OK || !m) {
+                    LAGFX_WARN("op_0x74 P6a: air_module_open failed (st=%d)", (int)open_st);
+                    free(mlib_buf);
+                    break;
+                }
+
+                uint8_t *spv = NULL;
+                size_t   spv_sz = 0;
+                lagfx_status_t xl_st = lagfx_air2spv_translate_module(m, &spv, &spv_sz);
+                lagfx_air_module_free(m);
+                if (xl_st != LAGFX_OK || !spv || spv_sz == 0u) {
+                    LAGFX_WARN("op_0x74 P6a: translate_module failed (st=%d)", (int)xl_st);
+                    if (spv) free(spv);
+                    free(mlib_buf);
+                    break;
+                }
+
+                /* Hand SPIR-V to lavapipe. */
+                VkShaderModuleCreateInfo smci = {
+                    .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                    .codeSize = spv_sz,
+                    .pCode = (const uint32_t *)spv,
+                };
+                VkShaderModule mod = VK_NULL_HANDLE;
+                VkResult vr = vkCreateShaderModule(vk_device, &smci, NULL, &mod);
+                free(spv);
+                free(mlib_buf);
+                if (vr != VK_SUCCESS) {
+                    LAGFX_WARN("op_0x74 P6a: vkCreateShaderModule failed vr=%d", (int)vr);
+                    break;
+                }
+
+                if (stage == 0) v_mod = mod;
+                else            f_mod = mod;
+                LAGFX_LOG("op_0x74 P6a: translated %s shader → VkShaderModule=%p (spv=%zu B)",
+                          stage == 0 ? "vertex" : "fragment", (void *)mod, spv_sz);
+            }
+
+            /* Both stages successful → commit to pending_pipeline.
+             * If only one succeeded, destroy it and fall back. */
+            if (v_mod != VK_NULL_HANDLE && f_mod != VK_NULL_HANDLE) {
+                /* If we previously installed translated modules for
+                 * this task, free them. Substitute modules live on
+                 * the device and must not be freed. */
+                if (task->pending_pipeline.translated) {
+                    if (task->pending_pipeline.vertex_shader)
+                        vkDestroyShaderModule(vk_device,
+                                              (VkShaderModule)task->pending_pipeline.vertex_shader,
+                                              NULL);
+                    if (task->pending_pipeline.fragment_shader)
+                        vkDestroyShaderModule(vk_device,
+                                              (VkShaderModule)task->pending_pipeline.fragment_shader,
+                                              NULL);
+                }
+                task->pending_pipeline.valid           = true;
+                task->pending_pipeline.translated      = true;
+                task->pending_pipeline.vertex_shader   = (uintptr_t)v_mod;
+                task->pending_pipeline.fragment_shader = (uintptr_t)f_mod;
+                task->pending_pipeline.reference       = reference;
+                phase6_translated = true;
+                LAGFX_LOG("op_0x74 P6a: pipeline ref=0x%x using TRANSLATED shaders", reference);
+            } else {
+                if (v_mod != VK_NULL_HANDLE) vkDestroyShaderModule(vk_device, v_mod, NULL);
+                if (f_mod != VK_NULL_HANDLE) vkDestroyShaderModule(vk_device, f_mod, NULL);
+            }
+        }
+    }
+
+    /* Stage 65d Option 3: substitute path — fallback when Phase 6a is
+     * off or any translation step failed. Bundled triangle shaders. */
+    if (!phase6_translated &&
+        dev_with_vk &&
         dev_with_vk->triangle_vertex_module != VK_NULL_HANDLE &&
         dev_with_vk->triangle_fragment_module != VK_NULL_HANDLE) {
-        task->pending_pipeline.valid = true;
+        /* Free previous translated modules if we're switching back. */
+        if (task->pending_pipeline.translated) {
+            VkDevice vk_device = dev_with_vk->vk->device;
+            if (task->pending_pipeline.vertex_shader)
+                vkDestroyShaderModule(vk_device,
+                                      (VkShaderModule)task->pending_pipeline.vertex_shader,
+                                      NULL);
+            if (task->pending_pipeline.fragment_shader)
+                vkDestroyShaderModule(vk_device,
+                                      (VkShaderModule)task->pending_pipeline.fragment_shader,
+                                      NULL);
+        }
+        task->pending_pipeline.valid           = true;
+        task->pending_pipeline.translated      = false;
         task->pending_pipeline.vertex_shader   = (uintptr_t)dev_with_vk->triangle_vertex_module;
         task->pending_pipeline.fragment_shader = (uintptr_t)dev_with_vk->triangle_fragment_module;
         task->pending_pipeline.reference       = reference;
         LAGFX_LOG("op_0x74 Option 3: substituted triangle shaders for ref=0x%x", reference);
-    } else {
+    } else if (!phase6_translated) {
         LAGFX_LOG("op_0x74 Option 3: triangle modules not loaded (set LAGFX_TRIANGLE_*_SPV); ref=0x%x", reference);
     }
 #endif

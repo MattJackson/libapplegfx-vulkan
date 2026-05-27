@@ -184,6 +184,14 @@ typedef struct {
     uintptr_t  vertex_shader;    /* VkShaderModule, NULL if not set */
     uintptr_t  fragment_shader;  /* VkShaderModule, NULL if not set */
     uint32_t   reference;        /* SetRenderPipelineState ref value (debug) */
+    /* Phase 6a: when this pipeline came from translated AIR (vs the
+     * substitute triangle SPVs), the entry-point names differ. Our
+     * translator emits "main"; the substitute SPVs use
+     * "triangle_vertex" / "triangle_fragment". `translated == true`
+     * routes the draw site to the right pName, and signals that the
+     * shader_module handles need vkDestroyShaderModule on overwrite
+     * (substitute modules live on the device and must NOT be freed). */
+    bool       translated;
 } lagfx_pending_pipeline_t;
 
 /* === Task Entry ================================================== */
