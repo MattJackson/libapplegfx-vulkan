@@ -16,6 +16,7 @@
 #include "translate.h"
 #include "emit_position.h"
 #include "emit_render_target.h"
+#include "translate_function.h"
 
 #include "common/log.h"
 
@@ -52,6 +53,34 @@ lagfx_air2spv_translate_module(const lagfx_air_module_t *m,
 
     lagfx_translate_stage_t stage = discover_stage(m);
     int rc = -1;
+
+    /* Phase 5 per-function body translator is opt-in via env until its
+     * output is spirv-val-clean for triangle. Default path stays on the
+     * legacy reference emitters so 35/40 existing tests don't regress.
+     * Set LAGFX_PHASE5_BODY=1 to exercise the new translate_function
+     * code path. */
+    const char *phase5 = getenv("LAGFX_PHASE5_BODY");
+    if (phase5 && phase5[0] == '1') {
+        uint32_t n_fns = 0;
+        const lagfx_air_function_t *fns = lagfx_air_module_functions(m, &n_fns);
+        uint32_t body_fn = (uint32_t)-1;
+        for (uint32_t i = 0; i < n_fns; i++) {
+            if (!fns[i].is_proto && fns[i].body_offset != 0u) { body_fn = i; break; }
+        }
+        if (body_fn != (uint32_t)-1 && stage != LAGFX_TRANS_STAGE_UNKNOWN) {
+            lagfx_xlate_stage_t xs = (stage == LAGFX_TRANS_STAGE_VERTEX)
+                                       ? LAGFX_XLATE_STAGE_VERTEX
+                                       : LAGFX_XLATE_STAGE_FRAGMENT;
+            LAGFX_TRACE("air2spv: LAGFX_PHASE5_BODY=1 — translating fn[%u]", body_fn);
+            lagfx_status_t bst = lagfx_air2spv_translate_function(m, body_fn, xs,
+                                                                    out_blob, out_size_bytes);
+            if (bst == LAGFX_OK) return LAGFX_OK;
+            LAGFX_WARN("air2spv: translate_function failed (st=%d); falling back",
+                       (int)bst);
+            if (*out_blob) { free(*out_blob); *out_blob = NULL; *out_size_bytes = 0u; }
+        }
+    }
+
     switch (stage) {
         case LAGFX_TRANS_STAGE_VERTEX:
             LAGFX_TRACE("air2spv: detected vertex stage; emitting reference Position output");
