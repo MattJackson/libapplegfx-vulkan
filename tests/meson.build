@@ -609,21 +609,37 @@ endif
 
 # Phase 4 reference SPIR-V emitter — Pattern E (Uniform-storage-class
 # buffer load). Exercises OpAccessChain + OpLoad on a uniform-buffer
-# variable, OpFMul, OpTypeStruct + DescriptorSet/Binding/Block/Offset
-# decorations.
-if fs.is_file(meson.current_source_dir() / 'air2spv-buffer-load-emit-unit.c')
-  air2spv_bl_test_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    air2spv_bl_test_deps += [vulkan_dep]
-  endif
-  air2spv_bl_test = executable('air2spv-buffer-load-emit-unit',
-    'air2spv-buffer-load-emit-unit.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : air2spv_bl_test_deps,
-    build_by_default : true,
-  )
-  test('air2spv buffer_load emit (unit)', air2spv_bl_test)
-endif
+ # variable, OpFMul, OpTypeStruct + DescriptorSet/Binding/Block/Offset
+ # decorations.
+ if fs.is_file(meson.current_source_dir() / 'air2spv-buffer-load-emit-unit.c')
+   air2spv_bl_test_deps = [libapplegfx_vulkan_dep]
+   if vulkan_dep.found()
+     air2spv_bl_test_deps += [vulkan_dep]
+   endif
+   air2spv_bl_test = executable('air2spv-buffer-load-emit-unit',
+     'air2spv-buffer-load-emit-unit.c',
+     include_directories : [include_dir, internal_include_dir],
+     dependencies : air2spv_bl_test_deps,
+     build_by_default : true,
+   )
+   test('air2spv buffer_load emit (unit)', air2spv_bl_test)
+ endif
+
+ # Phase 4 reference SPIR-V emitter — binary ALU ops (OpFAdd, OpFSub, OpFDiv, OpDot).
+ # Exercises chained vec4 arithmetic plus scalar dot product.
+ if fs.is_file(meson.current_source_dir() / 'air2spv-alu-binops-emit-unit.c')
+   air2spv_ab_test_deps = [libapplegfx_vulkan_dep]
+   if vulkan_dep.found()
+     air2spv_ab_test_deps += [vulkan_dep]
+   endif
+   air2spv_ab_test = executable('air2spv-alu-binops-emit-unit',
+     'air2spv-alu-binops-emit-unit.c',
+     include_directories : [include_dir, internal_include_dir],
+     dependencies : air2spv_ab_test_deps,
+     build_by_default : true,
+   )
+   test('air2spv alu_binops emit (unit)', air2spv_ab_test)
+ endif
 
 # Phase 4 reference SPIR-V emitter — multi-distinct-float
 # OpConstantComposite (clear-color shape).
