@@ -85,13 +85,26 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                       (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);
             break;
-        case LAGFX_OP_SET_OBJECT_LIST:        /* 0x24 */
+        case LAGFX_OP_SET_OBJECT_LIST:        /* 0x24 CmdSetObjectList */
+            /* Stub. Payload per command-buffer-format.md:254 is
+             * `objectArray[], count`. Phase 6b will parse the
+             * objectArray (APVObjectEntry records) to register
+             * pipeline-state metallib bytes. Today: log+ack discards
+             * the payload. */
             LAGFX_LOG("compute: 0x24 CmdSetObjectList ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);
             break;
-        case LAGFX_OP_SET_OBJECT_PLACEMENT:   /* 0x25 */
-            LAGFX_LOG("compute: 0x25 CmdSetObjectPlacement ch=%u stamp=0x%08x payload_size=%u",
+        case LAGFX_OP_SET_OBJECT_PLACEMENT:   /* 0x25 CmdSetObjectAndPlacementList */
+            /* MISLABELED enum: 0x25 is `CmdSetObjectAndPlacementList`,
+             * NOT just "object placement" alone — it carries BOTH the
+             * objectArray AND the placementArray (command-buffer-
+             * format.md:255). This is the canonical path APVObjectEntry
+             * records arrive over (ENTRY-007). Stub today; Phase 6b
+             * will decode the dual-array payload + register the
+             * resulting object → metallib bindings in a per-task
+             * registry. */
+            LAGFX_LOG("compute: 0x25 CmdSetObjectAndPlacementList ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);
             break;
