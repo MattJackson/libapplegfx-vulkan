@@ -171,9 +171,75 @@ static int test_translate_rejects_no_stage(void) {
     return 0;
 }
 
+static int test_translate_vfx(void) {
+    /* Vfx is a captured macOS shader with a 4-instruction body — the
+     * second real-world fixture proving the translator handles more
+     * than just the bundled triangle. */
+    const char *candidates[] = {
+        "/Users/mjackson/Developer/libapplegfx-vulkan/scratch/phase2_4_diagnosis/air-bc/Vfx.air.bc",
+        NULL,
+    };
+    uint8_t *air_blob = NULL;
+    size_t   air_len  = 0;
+    const char *used = NULL;
+    for (int i = 0; candidates[i]; i++) {
+        air_blob = slurp(candidates[i], &air_len);
+        if (air_blob) { used = candidates[i]; break; }
+    }
+    if (!air_blob) {
+        printf("SKIP: Vfx .air.bc fixture not found\n");
+        return 0;
+    }
+
+    lagfx_air_module_t *m = NULL;
+    lagfx_status_t st = lagfx_air_module_open(air_blob, air_len, &m);
+    if (st != LAGFX_OK || !m) {
+        printf("FAIL: Vfx open st=%d (from %s)\n", (int)st, used);
+        free(air_blob);
+        return 1;
+    }
+
+    uint8_t *spv_blob = NULL;
+    size_t   spv_sz   = 0u;
+    st = lagfx_air2spv_translate_module(m, &spv_blob, &spv_sz);
+    if (st != LAGFX_OK || !spv_blob) {
+        printf("FAIL: Vfx translate st=%d\n", (int)st);
+        lagfx_air_module_free(m);
+        free(air_blob);
+        return 1;
+    }
+
+    uint32_t magic;
+    memcpy(&magic, spv_blob, sizeof(magic));
+    if (magic != SPV_MAGIC) {
+        printf("FAIL: Vfx bad SPIR-V magic 0x%08x\n", magic);
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+        return 1;
+    }
+
+    int val_rc = spirv_val(spv_blob, spv_sz);
+    if (val_rc < 0) {
+        printf("FAIL: Vfx spirv-val rejected translator output\n");
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+        return 1;
+    }
+    if (val_rc == 0) {
+        printf("PASS: Vfx translated to SPIR-V (%zu bytes); spirv-val SKIPPED (not on PATH)\n",
+               spv_sz);
+    } else {
+        printf("PASS: Vfx translated to SPIR-V (%zu bytes); spirv-val accepted\n", spv_sz);
+    }
+
+    free(spv_blob);
+    lagfx_air_module_free(m);
+    free(air_blob);
+    return 0;
+}
+
 int main(void) {
     int rc = 0;
     rc |= test_translate_triangle();
+    rc |= test_translate_vfx();
     rc |= test_translate_rejects_no_stage();
     return rc ? 1 : 0;
 }

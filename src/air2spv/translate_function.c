@@ -322,6 +322,50 @@ static uint32_t emit_air_type(xlate_ctx_t *c, uint32_t air_type_idx) {
     return out;
 }
 
+/* Returns true if `air_type_idx` recursively references a type SPIR-V
+ * can't represent without extra capabilities we don't want to declare
+ * (i8 / i64 today). Used to filter module-constant pre-bind so we
+ * don't drag in OpTypeInt 8 / OpTypeInt 64 just because a captured
+ * shader's null constant has a type that NESTS one. */
+static bool air_type_requires_extra_cap(xlate_ctx_t *c, uint32_t air_type_idx,
+                                          uint32_t depth) {
+    if (depth > 8u) return false; /* recursion guard */
+    if (air_type_idx >= c->num_air_types) return false;
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    const lagfx_air_type_t *t = &ts[air_type_idx];
+    switch (t->kind) {
+        case LAGFX_AIR_TYPE_INTEGER: {
+            uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
+            return (w != 32u);
+        }
+        case LAGFX_AIR_TYPE_VECTOR:
+        case LAGFX_AIR_TYPE_ARRAY:
+        case LAGFX_AIR_TYPE_POINTER: {
+            uint32_t inner = t->num_op >= 2u ? t->op[1] : 0u;
+            /* For ARRAY: also forbid length 0 (SPIR-V requires N > 0). */
+            if (t->kind == LAGFX_AIR_TYPE_ARRAY && t->num_op >= 1u && t->op[0] == 0u)
+                return true;
+            return air_type_requires_extra_cap(c, inner, depth + 1u);
+        }
+        case LAGFX_AIR_TYPE_STRUCT_ANON:
+        case LAGFX_AIR_TYPE_STRUCT_NAMED: {
+            uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
+            for (uint32_t i = 0; i < nfields; i++) {
+                if (air_type_requires_extra_cap(c, t->op[1u + i], depth + 1u))
+                    return true;
+            }
+            return false;
+        }
+        case LAGFX_AIR_TYPE_FUNCTION:
+        case LAGFX_AIR_TYPE_METADATA:
+        case LAGFX_AIR_TYPE_LABEL:
+            return false;
+        default:
+            return false;
+    }
+}
+
 /* ===================================================================
  * Helpers — constant emission
  * =================================================================== */
@@ -1295,23 +1339,18 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                     break;
                 }
                 case LAGFX_AIR_CONST_NULL: {
-                    /* Zero of the constant's type. Skip if type is i8
-                     * or i64 (would force Int8/Int64 capabilities);
-                     * referring operands will fall back to OpUndef. */
+                    /* Zero of the constant's type. Skip if the type
+                     * tree recursively contains i8 / i64 / 0-length
+                     * array — those would force Int8/Int64 caps or
+                     * fail SPIR-V validation. Referring operands then
+                     * fall back to OpUndef. */
                     uint32_t ty_air = k->type_index;
-                    if (ty_air < c.num_air_types) {
-                        const lagfx_air_type_t *t = &((const lagfx_air_type_t *)lagfx_air_module_types(m, &(uint32_t){0}))[ty_air];
-                        bool skip = false;
-                        if (t->kind == LAGFX_AIR_TYPE_INTEGER) {
-                            uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
-                            if (w != 32u) skip = true;
-                        }
-                        if (!skip) {
-                            uint32_t ty_spv = emit_air_type(&c, ty_air);
-                            spv_id = lagfx_spv_builder_alloc_id(c.b);
-                            uint32_t ops[] = { ty_spv, spv_id };
-                            lagfx_spv_builder_emit_op(c.b, 46 /* OpConstantNull */, ops, 2);
-                        }
+                    if (ty_air < c.num_air_types &&
+                        !air_type_requires_extra_cap(&c, ty_air, 0)) {
+                        uint32_t ty_spv = emit_air_type(&c, ty_air);
+                        spv_id = lagfx_spv_builder_alloc_id(c.b);
+                        uint32_t ops[] = { ty_spv, spv_id };
+                        lagfx_spv_builder_emit_op(c.b, 46 /* OpConstantNull */, ops, 2);
                     }
                     break;
                 }
@@ -1373,6 +1412,7 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                     break;
                 }
                 case LAGFX_AIR_CONST_NULL: {
+                    if (air_type_requires_extra_cap(&c, ty_air, 0)) break;
                     uint32_t ty_spv = emit_air_type(&c, ty_air);
                     spv_id = lagfx_spv_builder_alloc_id(c.b);
                     uint32_t ops[] = { ty_spv, spv_id };
@@ -1384,6 +1424,7 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                     /* OpUndef of the constant's type. UNKNOWN covers
                      * LLVM's POISON code (26) which we don't yet
                      * decode distinctly; treat as undef for now. */
+                    if (air_type_requires_extra_cap(&c, ty_air, 0)) break;
                     uint32_t ty_spv = emit_air_type(&c, ty_air);
                     spv_id = emit_undef(&c, ty_spv);
                     break;
