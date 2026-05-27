@@ -1146,12 +1146,26 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
      * hardcoded defaults (matching the substitute path). Phase 6b
      * will land the descriptor decoder. */
     bool phase6_translated = false;
-    if (getenv("LAGFX_PHASE6_TRANSLATE") != NULL &&
+    const char *p6_env = getenv("LAGFX_PHASE6_TRANSLATE");
+    /* Treat only "1" as enabled. Bare set-but-empty / "0" / anything
+     * else stays on the substitute path. compose.test.yml has
+     * `LAGFX_PHASE6_TRANSLATE=${LAGFX_PHASE6_TRANSLATE:-""}` which
+     * delivers an empty string when the host shell var is unset —
+     * `getenv != NULL` was true even in that case, making P6a
+     * silently always-on. */
+    bool p6_enabled = (p6_env && p6_env[0] == '1');
+    if (p6_enabled &&
         dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized &&
         task->heap_pfn != 0u) {
 
         uint8_t vert_ref = 0, frag_ref = 0;
-        if (lagfx_lookup_pipeline_function_refs(p, task, reference, &vert_ref, &frag_ref)) {
+        bool lookup_ok = lagfx_lookup_pipeline_function_refs(p, task, reference,
+                                                              &vert_ref, &frag_ref);
+        if (!lookup_ok) {
+            LAGFX_LOG("op_0x74 P6a: lookup_pipeline_function_refs failed for ref=0x%x (heap_pfn=0x%llx) — falling back",
+                      reference, (unsigned long long)task->heap_pfn);
+        }
+        if (lookup_ok) {
             VkDevice vk_device = dev_with_vk->vk->device;
             VkShaderModule v_mod = VK_NULL_HANDLE, f_mod = VK_NULL_HANDLE;
 
