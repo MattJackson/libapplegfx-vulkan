@@ -112,6 +112,7 @@ typedef struct {
     uint32_t                  id_uint;           /* OpTypeInt 32 0 */
     uint32_t                  id_int32;          /* OpTypeInt 32 1 — currently unused */
     uint32_t                  id_int64;          /* OpTypeInt 64 1 */
+    uint32_t                  id_ulong;          /* OpTypeInt 64 0 */
     uint32_t                  id_float32;
     uint32_t                  id_vec2_f;
     uint32_t                  id_vec4_f;
@@ -152,12 +153,14 @@ static uint32_t emit_type_int_w(xlate_ctx_t *c, uint32_t width, uint32_t sign) {
     if (width == 32u && sign == 0u && c->id_uint)    return c->id_uint;
     if (width == 32u && sign == 1u && c->id_int32)   return c->id_int32;
     if (width == 64u && sign == 1u && c->id_int64)   return c->id_int64;
+    if (width == 64u && sign == 0u && c->id_ulong)   return c->id_ulong;
     uint32_t id = lagfx_spv_builder_alloc_id(c->b);
     uint32_t ops[] = { id, width, sign };
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_INT, ops, 3);
     if (width == 32u && sign == 0u) c->id_uint = id;
     if (width == 32u && sign == 1u) c->id_int32 = id;
     if (width == 64u && sign == 1u) c->id_int64 = id;
+    if (width == 64u && sign == 0u) c->id_ulong = id;
     return id;
 }
 
@@ -337,7 +340,9 @@ static bool air_type_requires_extra_cap(xlate_ctx_t *c, uint32_t air_type_idx,
     switch (t->kind) {
         case LAGFX_AIR_TYPE_INTEGER: {
             uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
-            return (w != 32u);
+            /* i32 + i64 are first-class; only i1/i8/i16/i128 require
+             * extra caps we don't declare. */
+            return !(w == 32u || w == 64u);
         }
         case LAGFX_AIR_TYPE_VECTOR:
         case LAGFX_AIR_TYPE_ARRAY:
@@ -470,9 +475,19 @@ static bool inst_produces_value(const lagfx_air_inst_t *i);
  * =================================================================== */
 
 static void emit_prologue(xlate_ctx_t *c) {
-    /* 1. OpCapability Shader */
+    /* 1. OpCapability Shader + Int64 (LLVM/AIR uses i64 for GEP
+     *    indices, lifetime sizes, etc.; lavapipe supports shaderInt64
+     *    so declaring it is essentially free and unblocks real i64
+     *    constant binding instead of OpUndef fallback). Int8 stays
+     *    out — i8 only shows up in lifetime-intrinsic-pointer types
+     *    that we don't emit code for, and the cap-filter helper
+     *    suppresses those declarations. */
     {
         uint32_t ops[] = { LAGFX_SPV_CAPABILITY_SHADER };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, ops, 1);
+    }
+    {
+        uint32_t ops[] = { 11u /* Int64 */ };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, ops, 1);
     }
 
@@ -1310,10 +1325,10 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
             uint32_t spv_id = 0u;
             switch (k->kind) {
                 case LAGFX_AIR_CONST_INTEGER: {
-                    /* Bind integer constants when their AIR type is i32
-                     * (the common shader-index case). Skip i8 / i64
-                     * (would force Int8/Int64 capabilities); operands
-                     * referencing those will fall back to OpUndef. */
+                    /* Bind i32 and i64 integer constants. Other
+                     * widths (i1/i8/i16/i128) require extra
+                     * capabilities we don't declare; operands
+                     * referencing them fall back to OpUndef. */
                     uint32_t ty_air = k->type_index;
                     if (ty_air < c.num_air_types) {
                         const lagfx_air_type_t *t = &((const lagfx_air_type_t *)lagfx_air_module_types(m, &(uint32_t){0}))[ty_air];
@@ -1325,6 +1340,14 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                                 uint32_t ops[] = { ty_spv, spv_id,
                                                     (uint32_t)(uint64_t)k->payload.i64 };
                                 lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 3);
+                            } else if (w == 64u) {
+                                uint32_t ty_spv = emit_type_int_w(&c, 64u, 0u);
+                                spv_id = lagfx_spv_builder_alloc_id(c.b);
+                                uint64_t bits = (uint64_t)k->payload.i64;
+                                uint32_t ops[] = { ty_spv, spv_id,
+                                                    (uint32_t)(bits & 0xFFFFFFFFu),
+                                                    (uint32_t)(bits >> 32u) };
+                                lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 4);
                             }
                         }
                     }
@@ -1383,8 +1406,7 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
 
             switch (k->kind) {
                 case LAGFX_AIR_CONST_INTEGER: {
-                    /* Bind i32 constants; skip i8/i64 to keep the
-                     * module Int8/Int64-capability-free. */
+                    /* Bind i32 + i64 integer constants. */
                     if (t->kind == LAGFX_AIR_TYPE_INTEGER) {
                         uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
                         if (w == 32u) {
@@ -1393,6 +1415,14 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                             uint32_t ops[] = { ty_spv, spv_id,
                                                 (uint32_t)(uint64_t)k->payload.i64 };
                             lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 3);
+                        } else if (w == 64u) {
+                            uint32_t ty_spv = emit_type_int_w(&c, 64u, 0u);
+                            spv_id = lagfx_spv_builder_alloc_id(c.b);
+                            uint64_t bits = (uint64_t)k->payload.i64;
+                            uint32_t ops[] = { ty_spv, spv_id,
+                                                (uint32_t)(bits & 0xFFFFFFFFu),
+                                                (uint32_t)(bits >> 32u) };
+                            lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 4);
                         }
                     }
                     break;
