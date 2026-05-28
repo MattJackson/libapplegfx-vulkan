@@ -179,8 +179,94 @@ static int test_binop_unop_triangle(void) {
     return 0;
 }
 
+/* Vfx case: real captured shader with 3 UNOP records (raw=56, bitcode
+ * subcode 0 = FNeg). After the BINOP/UNOP dispatch lands correctly,
+ * the translated SPIR-V MUST contain OpFNegate; if not, the dispatch
+ * is silently dropping UNOP records — likely the IR-vs-bitcode-enum
+ * confusion that bit us 2026-05-28. */
+static int test_unop_vfx_emits_fnegate(void) {
+    const char *path =
+        "/Users/mjackson/Developer/libapplegfx-vulkan/scratch/phase2_4_diagnosis/air-bc/Vfx.air.bc";
+    size_t air_len = 0;
+    uint8_t *air_blob = slurp(path, &air_len);
+    if (!air_blob) {
+        printf("SKIP: Vfx fixture not found\n");
+        return 0;
+    }
+
+    lagfx_air_module_t *m = NULL;
+    if (lagfx_air_module_open(air_blob, air_len, &m) != LAGFX_OK || !m) {
+        printf("FAIL: Vfx open\n");
+        free(air_blob); return 1;
+    }
+
+    uint8_t *spv = NULL;
+    size_t   spv_sz = 0;
+    if (lagfx_air2spv_translate_module(m, &spv, &spv_sz) != LAGFX_OK || !spv) {
+        printf("FAIL: Vfx translate\n");
+        lagfx_air_module_free(m); free(air_blob); return 1;
+    }
+    /* spirv-val must accept. */
+    if (spirv_val(spv, spv_sz) < 0) {
+        printf("FAIL: Vfx spirv-val rejected\n");
+        free(spv); lagfx_air_module_free(m); free(air_blob); return 1;
+    }
+
+    /* Run spirv-dis and assert OpFNegate appears. If not, the
+     * BINOP/UNOP dispatch is silently dropping UNOP records. */
+    const char *spirv_dis_path = NULL;
+    const char *dis_candidates[] = {
+        "/opt/homebrew/bin/spirv-dis",
+        "/usr/local/bin/spirv-dis",
+        NULL,
+    };
+    for (int i = 0; dis_candidates[i]; i++) {
+        if (access(dis_candidates[i], X_OK) == 0) {
+            spirv_dis_path = dis_candidates[i];
+            break;
+        }
+    }
+    if (!spirv_dis_path) {
+        printf("SKIP: spirv-dis not on PATH; Vfx OpFNegate check inconclusive\n");
+        free(spv); lagfx_air_module_free(m); free(air_blob); return 0;
+    }
+
+    char tmpl[] = "/tmp/lagfx_vfx_unop_XXXXXX.spv";
+    int fd = mkstemps(tmpl, 4);
+    if (fd < 0) {
+        free(spv); lagfx_air_module_free(m); free(air_blob); return 1;
+    }
+    if ((size_t)write(fd, spv, spv_sz) != spv_sz) {
+        close(fd); unlink(tmpl);
+        free(spv); lagfx_air_module_free(m); free(air_blob); return 1;
+    }
+    close(fd);
+
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "%s %s", spirv_dis_path, tmpl);
+    FILE *fp = popen(cmd, "r");
+    int found_fnegate = 0;
+    if (fp) {
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), fp)) {
+            if (strstr(buf, "OpFNegate")) { found_fnegate = 1; break; }
+        }
+        pclose(fp);
+    }
+    unlink(tmpl);
+    free(spv); lagfx_air_module_free(m); free(air_blob);
+
+    if (!found_fnegate) {
+        printf("FAIL: Vfx has 3 UNOP records (raw=56, subcode 0 = FNeg) but translated SPIR-V contains no OpFNegate — UNOP dispatch is dropping records (likely IR-vs-bitcode enum confusion)\n");
+        return 1;
+    }
+    printf("PASS: Vfx translated SPIR-V contains OpFNegate (UNOP dispatch working)\n");
+    return 0;
+}
+
 int main(void) {
     int rc = 0;
     rc |= test_binop_unop_triangle();
+    rc |= test_unop_vfx_emits_fnegate();
     return rc ? 1 : 0;
 }

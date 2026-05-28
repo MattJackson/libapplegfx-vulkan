@@ -1235,36 +1235,35 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
         result_spv = lagfx_spv_builder_alloc_id(c->b);
     }
 
-    /* Map LLVM BinaryOps → SPIR-V opcode based on float vs int */
+    /* Map LLVM BITCODE BinaryOps subcode -> SPIR-V opcode.
+     *
+     * CRITICAL: these are the LLVM BITCODE subcodes (bitc::BINOP_*),
+     * NOT the IR-level Instruction::BinaryOps enum values. The
+     * bitcode reader's GetDecodedBinaryOpcode() maps the subcode
+     * below to IR-level FAdd vs Add based on operand TYPE — there is
+     * NO separate FAdd subcode in the bitcode stream. (Paid for
+     * 2026-05-28: a freshman session cited Instruction.def's IR
+     * enum (Add=14, FAdd=15, …) which never appears in bitcode; Vfx
+     * UNOPs at subcode 0 silently failed the != 13 check and got
+     * dropped.) Cite: llvm/include/llvm/Bitcode/LLVMBitCodes.h
+     * bitc::BINOP_ADD..BINOP_XOR = 0..12. */
     uint32_t spv_op = 0u;
     switch (llvm_binop) {
-        case 15: /* FAdd */  if (is_float) spv_op = LAGFX_SPV_OP_FADD;     break;
-        case 14: /* Add */   if (!is_float) spv_op = LAGFX_SPV_OP_IADD;    break;
-
-        case 17: /* FSub */  if (is_float) spv_op = LAGFX_SPV_OP_FSUB;     break;
-        case 16: /* Sub */   if (!is_float) spv_op = LAGFX_SPV_OP_ISUB;    break;
-
-        case 19: /* FMul */  if (is_float) spv_op = LAGFX_SPV_OP_FMUL;     break;
-        case 18: /* Mul */   if (!is_float) spv_op = LAGFX_SPV_OP_IMUL;    break;
-
-        case 22: /* FDiv */  if (is_float) spv_op = LAGFX_SPV_OP_FDIV;     break;
-        case 21: /* SDiv */  if (!is_float) spv_op = LAGFX_SPV_OP_SDIV;    break;
-        case 20: /* UDiv */  if (!is_float) spv_op = LAGFX_SPV_OP_UDIV;    break;
-
-        case 25: /* FRem */  if (is_float) spv_op = LAGFX_SPV_OP_FREM;     break;
-        case 24: /* SRem */  if (!is_float) spv_op = LAGFX_SPV_OP_SMOD;    break;
-        case 23: /* URem */  if (!is_float) spv_op = LAGFX_SPV_OP_UMOD;    break;
-
-        case 26: /* Shl */   if (!is_float) spv_op = LAGFX_SPV_OP_SHIFT_LEFT_LOGICAL; break;
-        case 27: /* LShr */  if (!is_float) spv_op = LAGFX_SPV_OP_SHIFT_RIGHT_LOGICAL; break;
-        case 28: /* AShr */  if (!is_float) spv_op = LAGFX_SPV_OP_SHIFT_RIGHT_ARITHMETIC; break;
-
-        case 29: /* And */   if (!is_float) spv_op = LAGFX_SPV_OP_BITWISE_AND; break;
-        case 30: /* Or */    if (!is_float) spv_op = LAGFX_SPV_OP_BITWISE_OR; break;
-        case 31: /* Xor */   if (!is_float) spv_op = LAGFX_SPV_OP_BITWISE_XOR; break;
-
+        case 0:  /* BINOP_ADD  → FAdd / IAdd  */ spv_op = is_float ? LAGFX_SPV_OP_FADD : LAGFX_SPV_OP_IADD; break;
+        case 1:  /* BINOP_SUB  → FSub / ISub  */ spv_op = is_float ? LAGFX_SPV_OP_FSUB : LAGFX_SPV_OP_ISUB; break;
+        case 2:  /* BINOP_MUL  → FMul / IMul  */ spv_op = is_float ? LAGFX_SPV_OP_FMUL : LAGFX_SPV_OP_IMUL; break;
+        case 3:  /* BINOP_UDIV → UDiv         */ spv_op = LAGFX_SPV_OP_UDIV; break;
+        case 4:  /* BINOP_SDIV → FDiv / SDiv  */ spv_op = is_float ? LAGFX_SPV_OP_FDIV : LAGFX_SPV_OP_SDIV; break;
+        case 5:  /* BINOP_UREM → UMod         */ spv_op = LAGFX_SPV_OP_UMOD; break;
+        case 6:  /* BINOP_SREM → FRem / SMod  */ spv_op = is_float ? LAGFX_SPV_OP_FREM : LAGFX_SPV_OP_SMOD; break;
+        case 7:  /* BINOP_SHL  → ShiftLeftLogical */     spv_op = LAGFX_SPV_OP_SHIFT_LEFT_LOGICAL; break;
+        case 8:  /* BINOP_LSHR → ShiftRightLogical */    spv_op = LAGFX_SPV_OP_SHIFT_RIGHT_LOGICAL; break;
+        case 9:  /* BINOP_ASHR → ShiftRightArithmetic */ spv_op = LAGFX_SPV_OP_SHIFT_RIGHT_ARITHMETIC; break;
+        case 10: /* BINOP_AND  → BitwiseAnd   */ spv_op = LAGFX_SPV_OP_BITWISE_AND; break;
+        case 11: /* BINOP_OR   → BitwiseOr    */ spv_op = LAGFX_SPV_OP_BITWISE_OR; break;
+        case 12: /* BINOP_XOR  → BitwiseXor   */ spv_op = LAGFX_SPV_OP_BITWISE_XOR; break;
         default:
-            /* Unrecognized LLVM opcode — drop */
+            /* Unrecognized bitcode BINOP subcode — drop */
             return;
     }
 
@@ -1300,10 +1299,12 @@ static void emit_inst_unop(xlate_ctx_t *c, uint32_t inst_idx,
     if (inst->num_ops < 2u) return;
 
     uint32_t opval_rel = (uint32_t)inst->ops[0];
-    /* LLVM UnaryOps enum value — only FNeg (13) in modern LLVM */
+    /* LLVM BITCODE UnaryOps subcode — `bitc::UNOP_FNEG = 0` per
+     * llvm/include/llvm/Bitcode/LLVMBitCodes.h. NOT the IR-level
+     * enum (where FNeg = 13). Paid for 2026-05-28. */
     int llvm_unop = (int)(inst->ops[1]);
 
-    if (llvm_unop != 13) {
+    if (llvm_unop != 0 /* UNOP_FNEG */) {
         /* Not FNeg — unsupported. Future: FAbs via GLSL.std.450 ExtInst. */
         return;
     }
