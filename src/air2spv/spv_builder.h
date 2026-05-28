@@ -70,6 +70,8 @@ enum {
     LAGFX_SPV_OP_LOAD                   = 61,
     LAGFX_SPV_OP_STORE                  = 62,
     LAGFX_SPV_OP_ACCESS_CHAIN           = 65,
+    LAGFX_SPV_OP_IMAGE_READ             = 98,
+    LAGFX_SPV_OP_IMAGE_WRITE            = 99,
     LAGFX_SPV_OP_DECORATE               = 71,
     LAGFX_SPV_OP_MEMBER_DECORATE        = 72,
     LAGFX_SPV_OP_VECTOR_SHUFFLE         = 79,
@@ -97,7 +99,15 @@ enum {
 
 /* Capabilities. */
 enum {
-    LAGFX_SPV_CAPABILITY_SHADER         = 1,
+    LAGFX_SPV_CAPABILITY_SHADER                     = 1,
+    /* NOTE: SPIR-V Capability ID 3 is `Tessellation`, NOT "Image" —
+     * basic image ops are covered by `Shader` and need no separate
+     * capability. (Paid for 2026-05-27: a freshman session erroneously
+     * declared `Capability::Image = 3`, which would have requested
+     * Tessellation. `StorageImageExtendedFormats` below is the only
+     * image-related capability we currently need, and only for storage
+     * images with concrete format like Rgba8.) */
+    LAGFX_SPV_CAPABILITY_STORAGE_IMAGE_EXTENDED_FORMATS = 49,
 };
 
 /* Addressing & memory model. */
@@ -108,22 +118,29 @@ enum {
 
 /* Execution models for OpEntryPoint. */
 enum {
-    LAGFX_SPV_EXECUTION_MODEL_VERTEX    = 0,
-    LAGFX_SPV_EXECUTION_MODEL_FRAGMENT  = 4,
+    LAGFX_SPV_EXECUTION_MODEL_VERTEX        = 0,
+    LAGFX_SPV_EXECUTION_MODEL_FRAGMENT      = 4,
+    LAGFX_SPV_EXECUTION_MODEL_GLCOMPUTE     = 5,
 };
 
 /* ExecutionMode — for OpExecutionMode. Fragment stages require
- * OriginUpperLeft (Vulkan convention). */
+ * OriginUpperLeft (Vulkan convention). Compute requires LocalSize. */
 enum {
     LAGFX_SPV_EXECUTION_MODE_ORIGIN_UPPER_LEFT = 7,
+    LAGFX_SPV_EXECUTION_MODE_LOCAL_SIZE      = 17,
 };
 
 /* Storage classes for OpTypePointer / OpVariable. */
 enum {
-    LAGFX_SPV_STORAGE_UNIFORM_CONSTANT  = 0,  /* opaque types: image / sampler */
+    LAGFX_SPV_STORAGE_UNIFORM_CONSTANT  = 0,  /* opaque types: image/sampler (sampled images) */
     LAGFX_SPV_STORAGE_INPUT             = 1,
     LAGFX_SPV_STORAGE_UNIFORM            = 2,
     LAGFX_SPV_STORAGE_OUTPUT            = 3,
+    /* NOTE: SPIR-V Storage Class ID 4 is `Workgroup`, NOT
+     * `StorageBuffer`. Storage images in Vulkan compute use
+     * `UniformConstant` (id 0); storage buffers use `Uniform` (id 2)
+     * pre-SPIR-V 1.3 or `StorageBuffer` (id 12) post-1.3 with the
+     * SpvCapabilityStorageBuffer capability. Paid for 2026-05-27. */
     LAGFX_SPV_STORAGE_FUNCTION          = 7,
 };
 
@@ -133,9 +150,11 @@ enum {
 };
 
 /* OpTypeImage `ImageFormat` operand — Unknown = no storage-image
- * binding format declared (sampled-only image). */
+ * binding format declared (sampled-only image). Concrete formats required
+ * for storage-image OpImageRead/OpImageWrite. */
 enum {
     LAGFX_SPV_IMAGE_FORMAT_UNKNOWN      = 0,
+    LAGFX_SPV_IMAGE_FORMAT_RGBA8        = 4,
 };
 
 /* Decorations. */
