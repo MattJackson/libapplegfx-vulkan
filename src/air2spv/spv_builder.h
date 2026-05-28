@@ -81,14 +81,30 @@ enum {
     LAGFX_SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD = 87,
     LAGFX_SPV_OP_CONVERT_U_TO_F         = 112,
     LAGFX_SPV_OP_IADD                   = 128,
-    LAGFX_SPV_OP_FADD                   = 129,
-    LAGFX_SPV_OP_FMUL                   = 133,
-    LAGFX_SPV_OP_FSUB                   = 131,
-    LAGFX_SPV_OP_FDIV                   = 136,
-    LAGFX_SPV_OP_SLESS_THAN             = 177,
-    LAGFX_SPV_OP_DOT                    = 148,
-    LAGFX_SPV_OP_FORD_GREATER_THAN      = 184,
-    LAGFX_SPV_OP_FNEGATE                = 127,
+    LAGFX_SPV_OP_ISUB                   = 130,   /* OpISub: integer subtraction (SPIR-V §3.32.2) */
+    LAGFX_SPV_OP_IMUL                   = 132,   /* OpIMul: integer multiplication (SPIR-V §3.32.2) */
+    /* SPIR-V §3.32.2 (Core 1.0) arithmetic/logic opcodes */
+    LAGFX_SPV_OP_FNEGATE                = 127,   /* OpFNegate: unary float negation */
+    LAGFX_SPV_OP_FADD                   = 129,   /* OpFAdd: floating-point addition */
+    LAGFX_SPV_OP_FSUB                   = 131,   /* OpFSub: floating-point subtraction */
+    LAGFX_SPV_OP_FMUL                   = 133,   /* OpFMul: floating-point multiplication */
+    LAGFX_SPV_OP_UDIV                   = 134,   /* OpUDiv: unsigned integer division */
+    LAGFX_SPV_OP_SDIV                   = 135,   /* OpSDiv: signed integer division */
+    LAGFX_SPV_OP_FDIV                   = 136,   /* OpFDiv: floating-point division */
+    LAGFX_SPV_OP_FREM                   = 137,   /* OpFRem: floating-point remainder */
+    LAGFX_SPV_OP_UMOD                   = 138,   /* OpUMod: unsigned integer modulo */
+    LAGFX_SPV_OP_SMOD                   = 139,   /* OpSMod: signed integer modulo */
+    LAGFX_SPV_OP_DOT                    = 148,   /* OpDot: vector dot product (scalar result) */
+    LAGFX_SPV_OP_SLESS_THAN             = 177,   /* OpSLessThan: signed less-than comparison */
+    LAGFX_SPV_OP_FORD_GREATER_THAN      = 184,   /* OpFOrdGreaterThan: float ordered greater-than */
+    /* Shift opcodes (SPIR-V §3.32.2) */
+    LAGFX_SPV_OP_SHIFT_LEFT_LOGICAL     = 194,   /* OpShiftLeftLogical */
+    LAGFX_SPV_OP_SHIFT_RIGHT_LOGICAL    = 195,   /* OpShiftRightLogical */
+    LAGFX_SPV_OP_SHIFT_RIGHT_ARITHMETIC = 196,   /* OpShiftRightArithmetic */
+    /* Bitwise opcodes (SPIR-V §3.32.2) */
+    LAGFX_SPV_OP_BITWISE_AND            = 199,   /* OpBitwiseAnd */
+    LAGFX_SPV_OP_BITWISE_OR             = 200,   /* OpBitwiseOr */
+    LAGFX_SPV_OP_BITWISE_XOR            = 201,   /* OpBitwiseXor */
     LAGFX_SPV_OP_PHI                    = 245,
     LAGFX_SPV_OP_LOOP_MERGE             = 246,
     LAGFX_SPV_OP_SELECTION_MERGE        = 247,

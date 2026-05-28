@@ -754,19 +754,34 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-loop-emit-unit.c')
 endif
 
 # Phase 5 — AIR module → SPIR-V translator skeleton.
-if fs.is_file(meson.current_source_dir() / 'air2spv-translate-module-unit.c')
-  air2spv_xl_test_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    air2spv_xl_test_deps += [vulkan_dep]
-  endif
-  air2spv_xl_test = executable('air2spv-translate-module-unit',
-    'air2spv-translate-module-unit.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : air2spv_xl_test_deps,
-    build_by_default : true,
-  )
-  test('air2spv translate module (unit)', air2spv_xl_test)
-endif
+ if fs.is_file(meson.current_source_dir() / 'air2spv-translate-module-unit.c')
+   air2spv_xl_test_deps = [libapplegfx_vulkan_dep]
+   if vulkan_dep.found()
+     air2spv_xl_test_deps += [vulkan_dep]
+   endif
+   air2spv_xl_test = executable('air2spv-translate-module-unit',
+     'air2spv-translate-module-unit.c',
+     include_directories : [include_dir, internal_include_dir],
+     dependencies : air2spv_xl_test_deps,
+     build_by_default : true,
+   )
+   test('air2spv translate module (unit)', air2spv_xl_test)
+ endif
+
+ # Phase 5 — AIR BINOP + UNOP dispatcher unit test.
+ if fs.is_file(meson.current_source_dir() / 'air2spv-translate-function-binop-unop-unit.c')
+   air2spv_binop_unop_deps = [libapplegfx_vulkan_dep]
+   if vulkan_dep.found()
+     air2spv_binop_unop_deps += [vulkan_dep]
+   endif
+   air2spv_binop_unop_test = executable('air2spv-translate-function-binop-unop-unit',
+     'air2spv-translate-function-binop-unop-unit.c',
+     include_directories : [include_dir, internal_include_dir],
+     dependencies : air2spv_binop_unop_deps,
+     build_by_default : true,
+   )
+   test('air2spv translate function binop unop (unit)', air2spv_binop_unop_test)
+ endif
 
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')

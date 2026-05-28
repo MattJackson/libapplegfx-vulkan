@@ -1084,7 +1084,7 @@ static void emit_inst_insertval(xlate_ctx_t *c, uint32_t inst_idx,
 }
 
 static void emit_inst_ret(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
-                           uint32_t next_val_id) {
+                            uint32_t next_val_id) {
     /* RET: [val_rel]   (or empty for void return)
      * For Vulkan vertex shader: the returned struct's first field is
      * the vec4 to store at the BuiltIn Position output. We extract it
@@ -1120,6 +1120,226 @@ static void emit_inst_ret(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
     }
 
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_RETURN, NULL, 0);
+}
+
+/* ===================================================================
+ * BINOP handler — LLVM BinaryOps → SPIR-V arithmetic/logic ops
+ *
+ * AIR BINOP operand layout: [lhs_rel, rhs_rel, opcode_subfield, ...flags...]
+ *
+ * LLVM BinaryOps enum (verified from llvm/IR/Instruction.def):
+ *   14=Add, 15=FAdd, 16=Sub, 17=FSub, 18=Mul, 19=FMul, 20=UDiv,
+ *   21=SDiv, 22=FDiv, 23=URem, 24=SRem, 25=FRem, 26=Shl,
+ *   27=LShr, 28=AShr, 29=And, 30=Or, 31=Xor
+ *
+ * AIR stores only the opcode subfield (opcode - BinaryOpsBegin) in ops[2].
+ * So we subtract 14 to get the LLVM BinaryOps enum value.
+ */
+static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
+                            const lagfx_air_inst_t *inst,
+                            uint32_t result_value_id, uint32_t next_val_id) {
+    if (inst->num_ops < 3u) return;
+
+    uint32_t lhs_rel = (uint32_t)inst->ops[0];
+    uint32_t rhs_rel = (uint32_t)inst->ops[1];
+    /* LLVM BinaryOps enum value */
+    int llvm_binop = (int)(inst->ops[2]);
+
+    /* Resolve operands. We need the LHS type to decide float vs int dispatch. */
+    uint32_t lhs_id  = resolve_relative(lhs_rel, next_val_id);
+    uint32_t rhs_id  = resolve_relative(rhs_rel, next_val_id);
+
+    /* Look up AIR types for both operands via inst_result_air_type[].
+     * For args/module-consts we fall back to deducing from the constant
+     * table or defaulting to float. */
+    uint32_t lhs_ty = 0u;
+    uint32_t rhs_ty = 0u;
+
+    /* LHS type: try inst_result_air_type first (for instruction results) */
+    if (lhs_id >= c->inst_id_base && lhs_id < c->value_id_capacity) {
+        int idx = (int)(lhs_id - c->inst_id_base);
+        if (idx >= 0 && (uint32_t)idx < c->num_insts) {
+            lhs_ty = c->inst_result_air_type[idx];
+        }
+    }
+    /* If still unknown, try arg types */
+    if (!lhs_ty && lhs_id >= c->arg_id_base) {
+        uint32_t arg_idx = lhs_id - c->arg_id_base;
+        if (arg_idx < c->num_args) {
+            lhs_ty = c->arg_air_type_ids[arg_idx];
+        }
+    }
+    /* If still unknown, try module const type */
+    if (!lhs_ty && lhs_id >= c->module_val_count) {
+        uint32_t n_consts = 0;
+        const lagfx_air_constant_t *consts =
+            lagfx_air_module_constants(c->m, &n_consts);
+        uint32_t const_idx = lhs_id - c->module_val_count;
+        if (const_idx < n_consts) {
+            lhs_ty = consts[const_idx].type_index;
+        }
+    }
+
+    /* RHS type: same logic */
+    if (!rhs_ty && rhs_id >= c->inst_id_base && rhs_id < c->value_id_capacity) {
+        int idx = (int)(rhs_id - c->inst_id_base);
+        if (idx >= 0 && (uint32_t)idx < c->num_insts) {
+            rhs_ty = c->inst_result_air_type[idx];
+        }
+    }
+    if (!rhs_ty && rhs_id >= c->arg_id_base) {
+        uint32_t arg_idx = rhs_id - c->arg_id_base;
+        if (arg_idx < c->num_args) {
+            rhs_ty = c->arg_air_type_ids[arg_idx];
+        }
+    }
+    if (!rhs_ty && rhs_id >= c->module_val_count) {
+        uint32_t n_consts = 0;
+        const lagfx_air_constant_t *consts =
+            lagfx_air_module_constants(c->m, &n_consts);
+        uint32_t const_idx = rhs_id - c->module_val_count;
+        if (const_idx < n_consts) {
+            rhs_ty = consts[const_idx].type_index;
+        }
+    }
+
+    /* Default to float if we can't resolve types */
+    bool is_float = true;
+    uint32_t result_ty_air = lhs_ty ? lhs_ty : 0u;
+    if (lhs_ty) {
+        const lagfx_air_type_t *t = NULL;
+        uint32_t n_types = 0;
+        const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+        if (lhs_ty < n_types) {
+            t = &ts[lhs_ty];
+            is_float = (t->kind == LAGFX_AIR_TYPE_FLOAT ||
+                        t->kind == LAGFX_AIR_TYPE_VECTOR);
+        }
+    }
+
+    /* Determine result SPIR-V type */
+    uint32_t result_spv_type;
+    if (result_ty_air) {
+        result_spv_type = emit_air_type(c, result_ty_air);
+    } else {
+        result_spv_type = is_float ? emit_type_vec4_f(c) : emit_type_int_w(c, 32u, 0u);
+    }
+
+    /* Resolve operands to SPIR-V ids; undef if unresolvable */
+    uint32_t lhs_spv = resolve_or_undef(c, lhs_id, result_spv_type);
+    uint32_t rhs_spv = resolve_or_undef(c, rhs_id, result_spv_type);
+
+    /* Determine result SPIR-V id (allocate if not pre-bound) */
+    uint32_t result_spv = resolve_value_spv(c, result_value_id);
+    if (!result_spv) {
+        result_spv = lagfx_spv_builder_alloc_id(c->b);
+    }
+
+    /* Map LLVM BinaryOps → SPIR-V opcode based on float vs int */
+    uint32_t spv_op = 0u;
+    switch (llvm_binop) {
+        case 15: /* FAdd */  if (is_float) spv_op = LAGFX_SPV_OP_FADD;     break;
+        case 14: /* Add */   if (!is_float) spv_op = LAGFX_SPV_OP_IADD;    break;
+
+        case 17: /* FSub */  if (is_float) spv_op = LAGFX_SPV_OP_FSUB;     break;
+        case 16: /* Sub */   if (!is_float) spv_op = LAGFX_SPV_OP_ISUB;    break;
+
+        case 19: /* FMul */  if (is_float) spv_op = LAGFX_SPV_OP_FMUL;     break;
+        case 18: /* Mul */   if (!is_float) spv_op = LAGFX_SPV_OP_IMUL;    break;
+
+        case 22: /* FDiv */  if (is_float) spv_op = LAGFX_SPV_OP_FDIV;     break;
+        case 21: /* SDiv */  if (!is_float) spv_op = LAGFX_SPV_OP_SDIV;    break;
+        case 20: /* UDiv */  if (!is_float) spv_op = LAGFX_SPV_OP_UDIV;    break;
+
+        case 25: /* FRem */  if (is_float) spv_op = LAGFX_SPV_OP_FREM;     break;
+        case 24: /* SRem */  if (!is_float) spv_op = LAGFX_SPV_OP_SMOD;    break;
+        case 23: /* URem */  if (!is_float) spv_op = LAGFX_SPV_OP_UMOD;    break;
+
+        case 26: /* Shl */   if (!is_float) spv_op = LAGFX_SPV_OP_SHIFT_LEFT_LOGICAL; break;
+        case 27: /* LShr */  if (!is_float) spv_op = LAGFX_SPV_OP_SHIFT_RIGHT_LOGICAL; break;
+        case 28: /* AShr */  if (!is_float) spv_op = LAGFX_SPV_OP_SHIFT_RIGHT_ARITHMETIC; break;
+
+        case 29: /* And */   if (!is_float) spv_op = LAGFX_SPV_OP_BITWISE_AND; break;
+        case 30: /* Or */    if (!is_float) spv_op = LAGFX_SPV_OP_BITWISE_OR; break;
+        case 31: /* Xor */   if (!is_float) spv_op = LAGFX_SPV_OP_BITWISE_XOR; break;
+
+        default:
+            /* Unrecognized LLVM opcode — drop */
+            return;
+    }
+
+    /* If we didn't find a mapping for this type, skip */
+    if (spv_op == 0u) return;
+
+    /* Emit the operation: [result_type, result_id, operand1, operand2] */
+    uint32_t ops[5];
+    ops[0] = result_spv_type;
+    ops[1] = result_spv;
+    ops[2] = lhs_spv;
+    ops[3] = rhs_spv;
+    lagfx_spv_builder_emit_op(c->b, spv_op, ops, 4);
+
+    /* Bind the result value-id */
+    bind_value_spv(c, result_value_id, result_spv);
+    c->inst_result_air_type[inst_idx] = result_ty_air;
+}
+
+/* ===================================================================
+ * UNOP handler — LLVM UnaryOps → SPIR-V unary float ops
+ *
+ * AIR UNOP operand layout: [opval_rel, opcode_subfield, ...flags...]
+ *
+ * LLVM UnaryOps enum (verified from llvm/IR/Instruction.def):
+ *   13 = FNeg (only entry in modern LLVM)
+ *
+ * SPIR-V op: OpFNegate (§3.32.2) — core SPIR-V unary float negation
+ */
+static void emit_inst_unop(xlate_ctx_t *c, uint32_t inst_idx,
+                           const lagfx_air_inst_t *inst,
+                           uint32_t result_value_id, uint32_t next_val_id) {
+    if (inst->num_ops < 2u) return;
+
+    uint32_t opval_rel = (uint32_t)inst->ops[0];
+    /* LLVM UnaryOps enum value — only FNeg (13) in modern LLVM */
+    int llvm_unop = (int)(inst->ops[1]);
+
+    if (llvm_unop != 13) {
+        /* Not FNeg — unsupported. Future: FAbs via GLSL.std.450 ExtInst. */
+        return;
+    }
+
+    /* Resolve operand */
+    uint32_t opval_id = resolve_relative(opval_rel, next_val_id);
+    uint32_t result_spv_type = emit_type_vec4_f(c); /* Assume vec4 for now */
+
+    /* Try to deduce actual type from inst_result_air_type or arg types */
+    if (opval_id >= c->inst_id_base && opval_id < c->value_id_capacity) {
+        int idx = (int)(opval_id - c->inst_id_base);
+        if (idx >= 0 && (uint32_t)idx < c->num_insts) {
+            uint32_t ty_air = c->inst_result_air_type[idx];
+            if (ty_air) result_spv_type = emit_air_type(c, ty_air);
+        }
+    }
+
+    /* Resolve operand to SPIR-V id; undef if unresolvable */
+    uint32_t opval_spv = resolve_or_undef(c, opval_id, result_spv_type);
+
+    /* Determine result SPIR-V id (allocate if not pre-bound) */
+    uint32_t result_spv = resolve_value_spv(c, result_value_id);
+    if (!result_spv) {
+        result_spv = lagfx_spv_builder_alloc_id(c->b);
+    }
+
+    /* Emit OpFNegate: [result_type, result_id, operand] */
+    uint32_t ops[4];
+    ops[0] = result_spv_type;
+    ops[1] = result_spv;
+    ops[2] = opval_spv;
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_FNEGATE, ops, 3);
+
+    /* Bind the result value-id */
+    bind_value_spv(c, result_value_id, result_spv);
+    c->inst_result_air_type[inst_idx] = result_spv_type ? 0u : 2u; /* float or unknown */
 }
 
 /* ===================================================================
@@ -1178,6 +1398,12 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
                 break;
             case LAGFX_AIR_INST_RET:
                 emit_inst_ret(c, inst, next_val_id);
+                break;
+            case LAGFX_AIR_INST_BINOP:
+                emit_inst_binop(c, i, inst, result_value_id, next_val_id);
+                break;
+            case LAGFX_AIR_INST_UNOP:
+                emit_inst_unop(c, i, inst, result_value_id, next_val_id);
                 break;
             case LAGFX_AIR_INST_DECLAREBLOCKS:
                 /* No-op; basic-block count was used during decode. */
