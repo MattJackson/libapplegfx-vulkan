@@ -33,6 +33,49 @@
 #include "handlers/iosurface/iosurface.h"
 
 #include <stddef.h>
+#include <stdlib.h>
+
+/* Phase 6b reconnaissance: env-gated hex-dump of 0x24/0x25 payload
+ * bytes. The current 0x24 (CmdSetObjectList) + 0x25
+ * (CmdSetObjectAndPlacementList) handlers are log+ack stubs; the
+ * wire format is OPEN (see paravirt-re/library/apv-object-entry-
+ * parser-scoping-2026-05-17.md). This helper writes the payload as
+ * hex to lagfx.log when LAGFX_PHASE_B2_CAPTURE is set, capped at 8
+ * captures total. Consumed by senior-side wire RE. */
+static void
+capture_object_list_payload_b2(uint16_t opcode, const lagfx_cmd_header_t *hdr) {
+    static uint32_t cap_count = 0u;
+    if (cap_count >= 8u) return;
+    const char *env = getenv("LAGFX_PHASE_B2_CAPTURE");
+    if (!env || env[0] == '0' || env[0] == '\0') return;
+    if (!hdr || !hdr->payload || hdr->payload_size == 0u) return;
+
+    uint16_t n = hdr->payload_size;
+    if (n > 256u) n = 256u;  /* clamp per-line; full payload may exceed */
+
+    /* Emit a single LAGFX_LOG line per 16-byte chunk. */
+    char hex[16 * 3 + 1];
+    uint16_t off = 0;
+    while (off < n) {
+        uint16_t chunk = (uint16_t)((n - off) < 16u ? (n - off) : 16u);
+        for (uint16_t i = 0; i < chunk; i++) {
+            static const char H[] = "0123456789abcdef";
+            uint8_t b = hdr->payload[off + i];
+            hex[i * 3 + 0] = H[(b >> 4) & 0xFu];
+            hex[i * 3 + 1] = H[b & 0xFu];
+            hex[i * 3 + 2] = ' ';
+        }
+        hex[chunk * 3] = '\0';
+        LAGFX_LOG("B2_CAPTURE op=0x%02x stamp=0x%08x +0x%03x: %s",
+                  opcode, hdr->stamp, off, hex);
+        off += chunk;
+    }
+    if (hdr->payload_size > n) {
+        LAGFX_LOG("B2_CAPTURE op=0x%02x stamp=0x%08x truncated (full %u)",
+                  opcode, hdr->stamp, (unsigned)hdr->payload_size);
+    }
+    cap_count++;
+}
 
 #define LAGFX_COMPUTE_DRAIN_MAX_CMDS 128u
 #define LAGFX_COMPUTE_MAX_CMD_BYTES  4096u
@@ -90,10 +133,12 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
              * `objectArray[], count`. Phase 6b will parse the
              * objectArray (APVObjectEntry records) to register
              * pipeline-state metallib bytes. Today: log+ack discards
-             * the payload. */
+             * the payload. With LAGFX_PHASE_B2_CAPTURE=1, the payload
+             * is hex-dumped to lagfx.log for offline RE. */
             LAGFX_LOG("compute: 0x24 CmdSetObjectList ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);
+            capture_object_list_payload_b2(0x24u, hdr);
             break;
         case LAGFX_OP_SET_OBJECT_PLACEMENT:   /* 0x25 CmdSetObjectAndPlacementList */
             /* MISLABELED enum: 0x25 is `CmdSetObjectAndPlacementList`,
@@ -103,10 +148,12 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
              * records arrive over (ENTRY-007). Stub today; Phase 6b
              * will decode the dual-array payload + register the
              * resulting object → metallib bindings in a per-task
-             * registry. */
+             * registry. With LAGFX_PHASE_B2_CAPTURE=1, the payload is
+             * hex-dumped to lagfx.log for offline RE. */
             LAGFX_LOG("compute: 0x25 CmdSetObjectAndPlacementList ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);
+            capture_object_list_payload_b2(0x25u, hdr);
             break;
         case LAGFX_OP_IOSURFACE_LOOKUP:       /* 0x28 */
             /* Live evidence shows 0x28 on compute channels too — route
