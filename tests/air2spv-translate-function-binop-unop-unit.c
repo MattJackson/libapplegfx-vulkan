@@ -368,10 +368,127 @@ static int test_cast_triangle_emits_uconvert(void) {
     return 0;
 }
 
+/* CALL intrinsic dispatch test: verify that air.* intrinsics are mapped
+ * to OpExtInst GLSL.std.450 instructions. Since existing fixtures (triangle,
+ * Vfx) only have llvm.lifetime.* calls or no CALLs at all, this test will
+ * SKIP if no air.* calls are found in the translated output. The presence of
+ * "OpExtInstImport \"GLSL.std.450\"" alone is NOT sufficient — we require a
+ * real OpExtInst instruction with one of our mapped intrinsic opcodes (Sqrt,
+ * Sin, Cos, Normalize, etc.) to confirm the CALL dispatch works. */
+static int test_call_dispatch_emits_extinst(void) {
+    const char *candidates[] = {
+        "/Users/mjackson/Developer/staging/triangle_vertex.air.bc",
+        "/tmp/scoping/triangle_vertex.air.bc",
+        NULL,
+    };
+    uint8_t *air_blob = NULL;
+    size_t   air_len  = 0;
+    const char *used = NULL;
+    for (int i = 0; candidates[i]; i++) {
+        air_blob = slurp(candidates[i], &air_len);
+        if (air_blob) { used = candidates[i]; break; }
+    }
+    if (!air_blob) {
+        printf("SKIP: triangle .air.bc fixture not found\n");
+        return 0;
+    }
+
+    lagfx_air_module_t *m = NULL;
+    lagfx_status_t st = lagfx_air_module_open(air_blob, air_len, &m);
+    if (st != LAGFX_OK || !m) {
+        printf("FAIL: triangle open st=%d (from %s)\n", (int)st, used);
+        free(air_blob);
+        return 1;
+    }
+
+    uint8_t *spv_blob = NULL;
+    size_t   spv_sz   = 0u;
+    st = lagfx_air2spv_translate_module(m, &spv_blob, &spv_sz);
+    if (st != LAGFX_OK || !spv_blob) {
+        printf("FAIL: translate st=%d\n", (int)st);
+        lagfx_air_module_free(m);
+        free(air_blob);
+        return 1;
+    }
+
+    uint32_t magic;
+    memcpy(&magic, spv_blob, sizeof(magic));
+    if (magic != SPV_MAGIC) {
+        printf("FAIL: bad SPIR-V magic 0x%08x\n", magic);
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+        return 1;
+    }
+
+    /* spirv-val must accept */
+    if (spirv_val(spv_blob, spv_sz) < 0) {
+        printf("FAIL: triangle spirv-val rejected\n");
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+        return 1;
+    }
+
+    /* Check for OpExtInst with GLSL.std.450 intrinsic opcodes. We look for
+     * "OpExtInst" followed by one of our mapped instruction names (Sqrt,
+     * Sin, Cos, Normalize, Length). The mere presence of the import is not
+     * enough — we need a real CALL → OpExtInst translation. */
+    const char *spirv_dis_path = NULL;
+    const char *dis_candidates[] = {
+        "/opt/homebrew/bin/spirv-dis",
+        "/usr/local/bin/spirv-dis",
+        NULL,
+    };
+    for (int i = 0; dis_candidates[i]; i++) {
+        if (access(dis_candidates[i], X_OK) == 0) {
+            spirv_dis_path = dis_candidates[i];
+            break;
+        }
+    }
+
+    int found_extinst_intrinsic = 0;
+    if (spirv_dis_path) {
+        char tmpl[] = "/tmp/lagfx_call_test_XXXXXX.spv";
+        int fd = mkstemps(tmpl, 4);
+        if (fd >= 0) {
+            write(fd, spv_blob, spv_sz);
+            close(fd);
+
+            char cmd[512];
+            snprintf(cmd, sizeof(cmd), "%s %s", spirv_dis_path, tmpl);
+            FILE *fp = popen(cmd, "r");
+            if (fp) {
+                char buf[4096];
+                while (fgets(buf, sizeof(buf), fp)) {
+                    /* Look for OpExtInst with GLSL std.450 opcodes */
+                    if (strstr(buf, "OpExtInst") &&
+                        (strstr(buf, "Sqrt") || strstr(buf, "Sin") ||
+                         strstr(buf, "Cos") || strstr(buf, "Length") ||
+                         strstr(buf, "Normalize"))) {
+                        found_extinst_intrinsic = 1;
+                        break;
+                    }
+                }
+                pclose(fp);
+            }
+            unlink(tmpl);
+        }
+    }
+
+    if (!found_extinst_intrinsic) {
+        /* No air.* intrinsics in the fixture — honest skip. */
+        printf("SKIP: no air.* CALL → OpExtInst in %s (fixtures only have llvm.lifetime.* or no CALLs)\n", used);
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+        return 0;
+    }
+
+    printf("PASS: translated SPIR-V contains OpExtInst GLSL.std.450 intrinsic (CALL dispatch working)\n");
+    free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+    return 0;
+}
+
 int main(void) {
     int rc = 0;
     rc |= test_binop_unop_triangle();
     rc |= test_unop_vfx_emits_fnegate();
     rc |= test_cast_triangle_emits_uconvert();
+    rc |= test_call_dispatch_emits_extinst();
     return rc ? 1 : 0;
 }

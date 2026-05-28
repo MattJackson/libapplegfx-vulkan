@@ -949,17 +949,146 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
 }
 
 static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
-                            const lagfx_air_inst_t *inst,
-                            uint32_t next_val_id) {
+                             const lagfx_air_inst_t *inst,
+                             uint32_t next_val_id) {
     /* CALL: [paramattrs, ccinfo, [calleety], callee, args...]
-     * For Phase 5 MVP: drop llvm.lifetime.* (and any other void
-     * intrinsic). Recognized calls can be promoted as we add per-
-     * intrinsic lowerings.
      *
-     * We don't currently dispatch on the callee's NAME (would need
-     * STRTAB resolution + air.* prefix check); the conservative
-     * default is to drop the call entirely. */
-    (void)c; (void)inst_idx; (void)inst; (void)next_val_id;
+     * Bitcode format per llvm/include/llvm/Bitcode/LLVMBitCodes.h:
+     *   FUNC_CODE_INST_CALL = 34, // CALL: [attr, cc, fnty, fnid, args...]
+     * where "cc" (calling convention info) has flags in the low bits.
+     * CALL_EXPLICIT_TYPE = 15 means bit 15 is set, indicating that
+     * the function type (fnty) operand is present before the callee id.
+     *
+     * Operand layout:
+     *   - ops[0]: paramattrs
+     *   - ops[1]: ccinfo (flags in low bits; bit 15 = explicit-type slot)
+     *   - ops[2]: calleety (only if ccinfo & 0x8000, i.e., CALL_EXPLICIT_TYPE)
+     *   - ops[3] or ops[2]: callee_rel (the function reference to resolve)
+     *   - ops[N+1..]: arguments (relative value-ids)
+     *
+     * Intrinsic dispatch: Resolve the callee name via STRTAB, match against
+     * air.* fast-math intrinsics (Apple uses air.fast.<x> and air.<x>
+     * interchangeably per paravirt-re/library/air_intrinsic_spec docs), emit
+     * OpExtInst with GLSL.std.450 extended instruction set. */
+
+    if (inst->num_ops < 2u) return;
+
+    uint32_t ccinfo = (uint32_t)inst->ops[1];
+    bool has_explicit_type = (ccinfo & 0x8000) != 0;
+
+    /* Determine callee_rel slot index. */
+    uint32_t callee_slot_idx = has_explicit_type ? 3u : 2u;
+    if (inst->num_ops <= callee_slot_idx) return;
+
+    uint64_t callee_rel_raw = inst->ops[callee_slot_idx];
+    uint32_t callee_rel = (uint32_t)callee_rel_raw;
+
+    /* Resolve callee to absolute value-id. */
+    uint32_t callee_id = resolve_relative(callee_rel, next_val_id);
+
+    /* Look up the function name via module-level functions table. */
+    uint32_t n_fns = 0;
+    const lagfx_air_function_t *fns = lagfx_air_module_functions(c->m, &n_fns);
+    if (callee_id >= n_fns) {
+        /* Not a function reference — drop the call. */
+        LAGFX_TRACE("call: callee_id=%u >= n_fns=%u — drop", callee_id, n_fns);
+        return;
+    }
+
+    const char *fn_name = lagfx_air_module_string(c->m, fns[callee_id].name_offset);
+    if (!fn_name) {
+        LAGFX_TRACE("call: no name for fn[%u] — drop", callee_id);
+        return;
+    }
+
+   /* Intrinsic dispatch table: air.* fast-math intrinsics → GLSL.std.450
+     * instruction numbers (from spv_builder.h LAGFX_SPV_GLSL_* constants).
+     * Apple uses air.fast.<x> and air.<x> interchangeably; we match by
+     * string prefix so "air.fast.sqrt.f32" matches the Sqrt row.
+     * Reference: paravirt-re/library/air_intrinsic_spec docs. */
+    static const struct {
+        const char *prefix;
+        uint32_t glsl_inst;
+    } intrinsic_table[] = {
+        {"air.fast.sqrt",      LAGFX_SPV_GLSL_SQRT},
+        {"air.fast.rsqrt",     LAGFX_SPV_GLSL_INVERSE_SQRT},
+        {"air.fast.exp",       LAGFX_SPV_GLSL_EXP},
+        {"air.fast.log",       LAGFX_SPV_GLSL_LOG},
+        {"air.fast.sin",       LAGFX_SPV_GLSL_SIN},
+        {"air.fast.cos",       LAGFX_SPV_GLSL_COS},
+        {"air.fast.normalize", LAGFX_SPV_GLSL_NORMALIZE},
+        {"air.fast.length",    LAGFX_SPV_GLSL_LENGTH},
+    };
+
+    uint32_t glsl_inst = 0u;
+    for (size_t i = 0; i < sizeof(intrinsic_table) / sizeof(intrinsic_table[0]); i++) {
+        if (strncmp(fn_name, intrinsic_table[i].prefix, strlen(intrinsic_table[i].prefix)) == 0) {
+            glsl_inst = intrinsic_table[i].glsl_inst;
+            break;
+        }
+    }
+
+    /* If not an air.* intrinsic we recognize, drop it. llvm.* intrinsics
+     * (lifetime, debug, etc.) fall through here and are silently dropped. */
+    if (!glsl_inst) {
+        LAGFX_TRACE("call: unrecognized intrinsic '%s' — drop", fn_name);
+        return;
+    }
+
+    /* We only handle unary intrinsics for now (all 8 listed above).
+     * The CALL operand layout after callee_rel is [args...], so we need
+     * at least one argument. */
+    uint32_t arg_slot_idx = callee_slot_idx + 1u;
+    if (inst->num_ops <= arg_slot_idx) {
+        LAGFX_TRACE("call: no args for '%s' — drop", fn_name);
+        return;
+    }
+
+    /* Resolve result type. If has_explicit_type, the explicit-type slot
+     * (ops[2]) is a FUNCTION type's AIR type-id; its op[1] is the return
+     * type. Fall back to vec4f if unresolvable. */
+    uint32_t result_ty_air = 0u;
+    if (has_explicit_type && inst->num_ops >= 3u) {
+        uint32_t fn_ty_idx = (uint32_t)inst->ops[2];
+        uint32_t n_types = 0;
+        const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+        if (fn_ty_idx < n_types && ts[fn_ty_idx].kind == LAGFX_AIR_TYPE_FUNCTION) {
+            result_ty_air = ts[fn_ty_idx].num_op >= 2u ? ts[fn_ty_idx].op[1] : 0u;
+        }
+    }
+
+    uint32_t result_spv_type;
+    if (result_ty_air) {
+        result_spv_type = emit_air_type(c, result_ty_air);
+    } else {
+        /* Default to vec4f as per task spec. */
+        result_spv_type = emit_type_vec4_f(c);
+    }
+
+    /* Resolve the single operand. */
+    uint32_t arg_rel = (uint32_t)inst->ops[arg_slot_idx];
+    uint32_t arg_id = resolve_relative(arg_rel, next_val_id);
+    uint32_t arg_spv = resolve_or_undef(c, arg_id, result_spv_type);
+
+    /* Allocate result SPIR-V id if not pre-bound. */
+    uint32_t result_value_id = c->inst_id_base + inst_idx;
+    uint32_t result_spv = resolve_value_spv(c, result_value_id);
+    if (!result_spv) {
+        result_spv = lagfx_spv_builder_alloc_id(c->b);
+    }
+
+    /* Emit OpExtInst: [result_type, result_id, ext_set(id_glsl), inst_num, arg] */
+    uint32_t ops[5];
+    ops[0] = result_spv_type;
+    ops[1] = result_spv;
+    ops[2] = c->id_glsl;
+    ops[3] = glsl_inst;
+    ops[4] = arg_spv;
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_EXT_INST, ops, 5);
+
+    /* Bind result and record AIR type for downstream ops. */
+    bind_value_spv(c, result_value_id, result_spv);
+    c->inst_result_air_type[inst_idx] = result_ty_air;
 }
 
 static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
