@@ -88,6 +88,7 @@ enum {
     LAGFX_SPV_OP_SLESS_THAN             = 177,
     LAGFX_SPV_OP_DOT                    = 148,
     LAGFX_SPV_OP_FORD_GREATER_THAN      = 184,
+    LAGFX_SPV_OP_FNEGATE                = 127,
     LAGFX_SPV_OP_PHI                    = 245,
     LAGFX_SPV_OP_LOOP_MERGE             = 246,
     LAGFX_SPV_OP_SELECTION_MERGE        = 247,

@@ -677,17 +677,33 @@ endif
 # Phase 4 reference SPIR-V emitter — Pattern G (OpExtInst GLSL.std.450).
 # Single emitter unlocks every air.* math intrinsic family.
 if fs.is_file(meson.current_source_dir() / 'air2spv-extinst-glsl-emit-unit.c')
-  air2spv_ext_test_deps = [libapplegfx_vulkan_dep]
-  if vulkan_dep.found()
-    air2spv_ext_test_deps += [vulkan_dep]
-  endif
-  air2spv_ext_test = executable('air2spv-extinst-glsl-emit-unit',
-    'air2spv-extinst-glsl-emit-unit.c',
-    include_directories : [include_dir, internal_include_dir],
-    dependencies : air2spv_ext_test_deps,
-    build_by_default : true,
-  )
-  test('air2spv extinst_glsl emit (unit)', air2spv_ext_test)
+   air2spv_ext_test_deps = [libapplegfx_vulkan_dep]
+   if vulkan_dep.found()
+     air2spv_ext_test_deps += [vulkan_dep]
+   endif
+   air2spv_ext_test = executable('air2spv-extinst-glsl-emit-unit',
+     'air2spv-extinst-glsl-emit-unit.c',
+     include_directories : [include_dir, internal_include_dir],
+     dependencies : air2spv_ext_test_deps,
+     build_by_default : true,
+   )
+   test('air2spv extinst_glsl emit (unit)', air2spv_ext_test)
+endif
+
+# Phase 4 reference SPIR-V emitter — unary float ops (OpFNegate + OpExtInst FAbs).
+# Demonstrates both core SPIR-V unary and GLSL.std.450 ExtInst patterns.
+if fs.is_file(meson.current_source_dir() / 'air2spv-unop-emit-unit.c')
+   air2spv_unop_test_deps = [libapplegfx_vulkan_dep]
+   if vulkan_dep.found()
+     air2spv_unop_test_deps += [vulkan_dep]
+   endif
+   air2spv_unop_test = executable('air2spv-unop-emit-unit',
+     'air2spv-unop-emit-unit.c',
+     include_directories : [include_dir, internal_include_dir],
+     dependencies : air2spv_unop_test_deps,
+     build_by_default : true,
+   )
+   test('air2spv unop emit (unit)', air2spv_unop_test)
 endif
 
 # Phase 4 reference SPIR-V emitter — Pattern H (OpVectorShuffle).
