@@ -35,6 +35,28 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+/* Phase 6b: Wire data captured 2026-05-28 showed 0x25
+ * CmdSetObjectAndPlacementList payload is `{count: u32, objectId: u32}`
+ * (see paravirt-re/library/apv-object-entry-parser-scoping-2026-05-17.md).
+ * Insert the objectId into the per-task active-objects registry so
+ * op_0x74 SetRenderPipelineState can query it before falling back to
+ * the heap-VA lookup. Idempotent — duplicate objectIds are a no-op. */
+static void
+register_active_object(lagfx_task_entry_t *task, uint32_t object_id) {
+    if (!task) return;
+    /* Linear scan for dedup. The bounded set (64 entries) is fine for
+     * Apple's observed traffic (~10s of unique objectIds per task). */
+    for (uint32_t i = 0; i < task->active_objects.count; i++) {
+        if (task->active_objects.object_ids[i] == object_id) return;
+    }
+    if (task->active_objects.count >= 64u) {
+        LAGFX_WARN("register_active_object: task=%u registry full (64); dropping objectId=0x%x",
+                   task->id, object_id);
+        return;
+    }
+    task->active_objects.object_ids[task->active_objects.count++] = object_id;
+}
+
 /* Phase 6b reconnaissance: env-gated hex-dump of 0x24/0x25 payload
  * bytes. The current 0x24 (CmdSetObjectList) + 0x25
  * (CmdSetObjectAndPlacementList) handlers are log+ack stubs; the
@@ -141,19 +163,42 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
             capture_object_list_payload_b2(0x24u, hdr);
             break;
         case LAGFX_OP_SET_OBJECT_PLACEMENT:   /* 0x25 CmdSetObjectAndPlacementList */
-            /* MISLABELED enum: 0x25 is `CmdSetObjectAndPlacementList`,
-             * NOT just "object placement" alone — it carries BOTH the
-             * objectArray AND the placementArray (command-buffer-
-             * format.md:255). This is the canonical path APVObjectEntry
-             * records arrive over (ENTRY-007). Stub today; Phase 6b
-             * will decode the dual-array payload + register the
-             * resulting object → metallib bindings in a per-task
-             * registry. With LAGFX_PHASE_B2_CAPTURE=1, the payload is
-             * hex-dumped to lagfx.log for offline RE. */
+            /* Phase 6b — wire data captured 2026-05-28 confirmed
+             * payload = `{count: u32, objectId: u32}` (NOT the dual-
+             * array TLV ENTRY-007 anticipated). Decode the objectId
+             * and register it in the per-task active-objects set so
+             * op_0x74 can query active membership before doing the
+             * heap-VA lookup. With LAGFX_PHASE_B2_CAPTURE=1, the
+             * payload is also hex-dumped for further RE.
+             *
+             * Mislabeled enum kept for backwards-compatibility —
+             * 0x25 carries object+placement together, not just
+             * placement (command-buffer-format.md:255). */
             LAGFX_LOG("compute: 0x25 CmdSetObjectAndPlacementList ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);
             capture_object_list_payload_b2(0x25u, hdr);
+            if (hdr->payload && hdr->payload_size >= 8u) {
+                uint32_t count     = lagfx_le32(hdr->payload + 0);
+                uint32_t object_id = lagfx_le32(hdr->payload + 4);
+                /* Channel ID was set when the dispatcher entered the
+                 * per-channel drain; we resolve task via the current
+                 * task association on the channel (or fall back to
+                 * task[0] if not yet bound, which matches the
+                 * observed early-boot pattern). */
+                lagfx_task_entry_t *task = NULL;
+                for (uint32_t ti = 0; ti < LAGFX_MAX_TASKS; ti++) {
+                    if (p->tasks[ti].live) { task = &p->tasks[ti]; break; }
+                }
+                if (task) {
+                    register_active_object(task, object_id);
+                    LAGFX_LOG("compute: 0x25 registered objectId=0x%x (count=%u) in task=%u (active=%u)",
+                              object_id, count, task->id,
+                              task->active_objects.count);
+                } else {
+                    LAGFX_WARN("compute: 0x25 no live task to register objectId=0x%x", object_id);
+                }
+            }
             break;
         case LAGFX_OP_IOSURFACE_LOOKUP:       /* 0x28 */
             /* Live evidence shows 0x28 on compute channels too — route

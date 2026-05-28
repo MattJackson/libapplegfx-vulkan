@@ -990,8 +990,23 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
         }
     }
 
-    LAGFX_LOG("compute_inner: 0x74 SetRenderPipelineState ref=0x%x registry=%s type=%s",
-              reference, registry_status, type_str);
+    /* Phase 6b — consult the per-task active-objects set populated
+     * by 0x25 CmdSetObjectAndPlacementList. The pipeline `reference`
+     * here is the same value space as the objectId the kext publishes
+     * via 0x25 — both ultimately map to the heap-VA resolver slots.
+     * If the reference appears in the active set, that's positive
+     * evidence the kext has finished registering the object and the
+     * heap-VA lookup should succeed. */
+    bool obj_active = false;
+    for (uint32_t i = 0; i < task->active_objects.count; i++) {
+        if (task->active_objects.object_ids[i] == reference) {
+            obj_active = true;
+            break;
+        }
+    }
+
+    LAGFX_LOG("compute_inner: 0x74 SetRenderPipelineState ref=0x%x registry=%s type=%s active=%s",
+              reference, registry_status, type_str, obj_active ? "yes" : "no");
 
     /* Phase B step 6/7: env-gated diagnostic using new object resolver helpers. */
     if (getenv("LAGFX_PHASE_B_LOOKUP") != NULL && task->heap_pfn != 0u) {

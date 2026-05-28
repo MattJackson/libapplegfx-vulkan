@@ -228,6 +228,22 @@ typedef struct {
     /* Stage 65d Option 3: shader modules selected for this task. */
     lagfx_pending_pipeline_t pending_pipeline;
 #endif
+
+    /* Phase 6b — active-object registry populated by 0x25
+     * CmdSetObjectAndPlacementList. Per the live wire data captured
+     * 2026-05-28 (see paravirt-re/library/apv-object-entry-parser-
+     * scoping-2026-05-17.md), 0x25's payload is 8 bytes:
+     * `{count: u32, objectId: u32}`. The kext publishes which
+     * objectIds are in the active set; op_0x74 SetRenderPipelineState
+     * later resolves these IDs to pipeline-state metallib bytes via
+     * the existing Phase B heap-VA resolver.
+     *
+     * Small bounded array — Apple boot path publishes ~10s of unique
+     * objectIds total per task in observed traffic. */
+    struct {
+        uint32_t object_ids[64];   /* dedup'd set of active objectIds */
+        uint32_t count;
+    } active_objects;
 } lagfx_task_entry_t;
 
 /* === FIFO Entry ================================================== */
