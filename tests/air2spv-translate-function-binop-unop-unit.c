@@ -264,9 +264,114 @@ static int test_unop_vfx_emits_fnegate(void) {
     return 0;
 }
 
+/* CAST dispatch test: triangle has two CAST records (BitCast at subcode 11,
+ * ZExt at subcode 1). Assert that OpUConvert appears in the translated
+ * SPIR-V output — this verifies we're using BITCODE subcodes (CAST_ZEXT=1)
+ * not IR-level enum values (ZExt=38). */
+static int test_cast_triangle_emits_uconvert(void) {
+    const char *candidates[] = {
+        "/Users/mjackson/Developer/staging/triangle_vertex.air.bc",
+        "/tmp/scoping/triangle_vertex.air.bc",
+        NULL,
+    };
+    uint8_t *air_blob = NULL;
+    size_t   air_len  = 0;
+    const char *used = NULL;
+    for (int i = 0; candidates[i]; i++) {
+        air_blob = slurp(candidates[i], &air_len);
+        if (air_blob) { used = candidates[i]; break; }
+    }
+    if (!air_blob) {
+        printf("SKIP: triangle .air.bc fixture not found\n");
+        return 0;
+    }
+
+    lagfx_air_module_t *m = NULL;
+    lagfx_status_t st = lagfx_air_module_open(air_blob, air_len, &m);
+    if (st != LAGFX_OK || !m) {
+        printf("FAIL: triangle open st=%d (from %s)\n", (int)st, used);
+        free(air_blob);
+        return 1;
+    }
+
+    uint8_t *spv_blob = NULL;
+    size_t   spv_sz   = 0u;
+    st = lagfx_air2spv_translate_module(m, &spv_blob, &spv_sz);
+    if (st != LAGFX_OK || !spv_blob) {
+        printf("FAIL: translate st=%d\n", (int)st);
+        lagfx_air_module_free(m);
+        free(air_blob);
+        return 1;
+    }
+
+    uint32_t magic;
+    memcpy(&magic, spv_blob, sizeof(magic));
+    if (magic != SPV_MAGIC) {
+        printf("FAIL: bad SPIR-V magic 0x%08x\n", magic);
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+        return 1;
+    }
+
+    /* spirv-val must accept */
+    if (spirv_val(spv_blob, spv_sz) < 0) {
+        printf("FAIL: triangle spirv-val rejected\n");
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+        return 1;
+    }
+
+    /* Run spirv-dis and assert OpUConvert appears (from the ZExt cast).
+     * If not, the CAST dispatch is silently aliasing all casts — likely
+     * the bitcode-vs-IR-enum confusion that bit us with UNOP. */
+    const char *spirv_dis_path = NULL;
+    const char *dis_candidates[] = {
+        "/opt/homebrew/bin/spirv-dis",
+        "/usr/local/bin/spirv-dis",
+        NULL,
+    };
+    for (int i = 0; dis_candidates[i]; i++) {
+        if (access(dis_candidates[i], X_OK) == 0) {
+            spirv_dis_path = dis_candidates[i];
+            break;
+        }
+    }
+
+    char tmpl[] = "/tmp/lagfx_cast_test_XXXXXX.spv";
+    int fd = mkstemps(tmpl, 4);
+    if (fd < 0) {
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob); return 1;
+    }
+    if ((size_t)write(fd, spv_blob, spv_sz) != spv_sz) {
+        close(fd); unlink(tmpl);
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob); return 1;
+    }
+    close(fd);
+
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "%s %s", spirv_dis_path ? spirv_dis_path : "spirv-dis", tmpl);
+    FILE *fp = popen(cmd, "r");
+    int found_uconvert = 0;
+    if (fp) {
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), fp)) {
+            if (strstr(buf, "OpUConvert")) { found_uconvert = 1; break; }
+        }
+        pclose(fp);
+    }
+    unlink(tmpl);
+    free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+
+    if (!found_uconvert) {
+        printf("FAIL: triangle has CAST_ZEXT (subcode 1 = ZExt → OpUConvert) but translated SPIR-V contains no OpUConvert — CAST dispatch is silently aliasing all casts (likely bitcode-vs-IR-enum confusion)\n");
+        return 1;
+    }
+    printf("PASS: triangle translated SPIR-V contains OpUConvert (ZExt → OpUConvert dispatch working)\n");
+    return 0;
+}
+
 int main(void) {
     int rc = 0;
     rc |= test_binop_unop_triangle();
     rc |= test_unop_vfx_emits_fnegate();
+    rc |= test_cast_triangle_emits_uconvert();
     return rc ? 1 : 0;
 }

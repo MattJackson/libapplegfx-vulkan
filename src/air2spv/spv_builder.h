@@ -79,7 +79,15 @@ enum {
     LAGFX_SPV_OP_COMPOSITE_EXTRACT      = 81,
     LAGFX_SPV_OP_SAMPLED_IMAGE          = 86,
     LAGFX_SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD = 87,
-    LAGFX_SPV_OP_CONVERT_U_TO_F         = 112,
+    /* Conversion instructions (SPIR-V §3.32.11) */
+    LAGFX_SPV_OP_CONVERT_F_TO_U         = 109,   /* OpConvertFToU: float→unsigned int (§3.32.11) */
+    LAGFX_SPV_OP_CONVERT_F_TO_S         = 110,   /* OpConvertFToS: float→signed int (§3.32.11) */
+    LAGFX_SPV_OP_CONVERT_S_TO_F         = 111,   /* OpConvertSToF: signed int→float (§3.32.11) */
+    LAGFX_SPV_OP_CONVERT_U_TO_F         = 112,   /* OpConvertUToF: unsigned int→float (§3.32.11) */
+    LAGFX_SPV_OP_UCONVERT               = 113,   /* OpUConvert: unsigned int conversion (§3.32.11) */
+    LAGFX_SPV_OP_SCONVERT               = 114,   /* OpSConvert: signed int conversion (§3.32.11) */
+    LAGFX_SPV_OP_F_CONVERT              = 115,   /* OpFConvert: float conversion (§3.32.11) */
+    LAGFX_SPV_OP_BITCAST                = 124,   /* OpBitcast: bit-width/pointer cast (§3.32.11) */
     LAGFX_SPV_OP_IADD                   = 128,
     LAGFX_SPV_OP_ISUB                   = 130,   /* OpISub: integer subtraction (SPIR-V §3.32.2) */
     LAGFX_SPV_OP_IMUL                   = 132,   /* OpIMul: integer multiplication (SPIR-V §3.32.2) */

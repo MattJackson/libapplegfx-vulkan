@@ -812,27 +812,139 @@ static void emit_inst_alloca(xlate_ctx_t *c, uint32_t inst_idx,
 }
 
 static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
-                            const lagfx_air_inst_t *inst,
-                            uint32_t result_value_id, uint32_t next_val_id) {
-    /* CAST op0=opval (relative) op1=dest_type (absolute) op2=opcode
+                             const lagfx_air_inst_t *inst,
+                             uint32_t result_value_id, uint32_t next_val_id) {
+    /* CAST operand layout: [opval_rel (relative), dest_type_abs (absolute), opcode_subfield]
      *
-     * MVP behavior: alias the source SSA id to the result value-id
-     * unconditionally. Real per-CastOp lowering (OpUConvert /
-     * OpConvertUToF / OpBitcast) lands after the function-local
-     * CONSTANTS_BLOCK decoder gives us proper operand resolution —
-     * until then, casts whose result we can't usefully type-narrow
-     * just propagate the source id, and the downstream consumer
-     * (typically a GEP with our placeholder uint32 0 index, or a CALL
-     * we drop) doesn't care. This also avoids requiring Int8/Int64
-     * capabilities for bitcasts to i8-ptr / zexts to i64. */
+     * LLVM BITCODE CastOpcodes per llvm/include/llvm/Bitcode/LLVMBitCodes.h
+     * bitc::CastOpcodes (verified 2026-05-27):
+     *   CAST_TRUNC=0, CAST_ZEXT=1, CAST_SEXT=2, CAST_FPTOUI=3, CAST_FPTOSI=4,
+     *   CAST_UITOFP=5, CAST_SITOFP=6, CAST_FPTRUNC=7, CAST_FPEXT=8,
+     *   CAST_PTRTOINT=9, CAST_INTTOPTR=10, CAST_BITCAST=11, CAST_ADDRSPACECAST=12
+     *
+     * These are BITCODE subcodes, NOT the IR-level Instruction::CastOps enum.
+     */
     if (inst->num_ops < 3u) return;
+
     uint32_t opval_rel = (uint32_t)inst->ops[0];
     uint32_t dest_ty   = (uint32_t)inst->ops[1];
+    int cast_op = (int)(inst->ops[2]);
 
+    /* Resolve source operand */
     uint32_t opval_id  = resolve_relative(opval_rel, next_val_id);
-    uint32_t opval_spv = resolve_or_undef(c, opval_id,
-                                           emit_type_int_w(c, 32u, 0u));
-    bind_value_spv(c, result_value_id, opval_spv);
+    
+    /* Resolve source to SPIR-V id; use a default type for undef fallback.
+     * We delay emitting the dest_ty_spv until we know which opcode path
+     * we're taking — this avoids runtime type emission that would violate
+     * SPIR-V ordering rules (types must be declared before variables). */
+    uint32_t opval_spv = resolve_or_undef(c, opval_id, emit_type_int_w(c, 32u, 0u));
+
+    /* Check if result is already bound (e.g., from pre-allocation).
+     * If not, allocate a new id. */
+    uint32_t result_spv = resolve_value_spv(c, result_value_id);
+    if (!result_spv) {
+        result_spv = lagfx_spv_builder_alloc_id(c->b);
+    }
+
+    /* Per-CastOp dispatch to SPIR-V conversion opcodes per SPIR-V §3.32.11 */
+    switch (cast_op) {
+        case 0:  /* CAST_TRUNC → OpUConvert (smaller width int) */
+            if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+            { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+              uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
+              lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_UCONVERT, ops, 3); }
+            break;
+
+        case 1:  /* CAST_ZEXT → OpUConvert (larger width int) */
+            if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+            { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+              uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
+              lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_UCONVERT, ops, 3); }
+            break;
+
+        case 2:  /* CAST_SEXT → OpSConvert (larger width int) */
+            if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+            { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+              uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
+              lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_SCONVERT, ops, 3); }
+            break;
+
+        case 3:  /* CAST_FPTOUI → OpConvertFToU (float→unsigned int) */
+            if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+            { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+              uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
+              lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CONVERT_F_TO_U, ops, 3); }
+            break;
+
+        case 4:  /* CAST_FPTOSI → OpConvertFToS (float→signed int) */
+            if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+            { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+              uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
+              lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CONVERT_F_TO_S, ops, 3); }
+            break;
+
+        case 5:  /* CAST_UITOFP → OpConvertUToF (unsigned int→float) */
+            if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+            { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+              uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
+              lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CONVERT_U_TO_F, ops, 3); }
+            break;
+
+        case 6:  /* CAST_SITOFP → OpConvertSToF (signed int→float) */
+            if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+            { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+              uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
+              lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CONVERT_S_TO_F, ops, 3); }
+            break;
+
+        case 7:  /* CAST_FPTRUNC → OpFConvert (smaller width float) */
+            if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+            { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+              uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
+              lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_F_CONVERT, ops, 3); }
+            break;
+
+        case 8:  /* CAST_FPEXT → OpFConvert (larger width float) */
+            if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+            { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+              uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
+              lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_F_CONVERT, ops, 3); }
+            break;
+
+        case 9:  /* CAST_PTRTOINT → alias (pointer→int not representable in SPIR-V) */
+            bind_value_spv(c, result_value_id, opval_spv);
+            c->inst_result_air_type[inst_idx] = dest_ty;
+            return;
+
+        case 10: /* CAST_INTTOPTR → alias (int→pointer not representable in SPIR-V) */
+            bind_value_spv(c, result_value_id, opval_spv);
+            c->inst_result_air_type[inst_idx] = dest_ty;
+            return;
+
+        case 11: /* CAST_BITCAST → always alias (avoid runtime type emission) */
+            /* BITCAST requires emitting the pointer type at runtime which
+             * would violate SPIR-V ordering rules (types must precede variables).
+             * Instead, we alias: the operand and result have identical bit
+             * representations so this is semantically correct. The downstream
+             * consumer will use the aliased id directly. */
+            bind_value_spv(c, result_value_id, opval_spv);
+            c->inst_result_air_type[inst_idx] = dest_ty;
+            return;
+
+        case 12: /* CAST_ADDRSPACECAST → alias for now */
+            bind_value_spv(c, result_value_id, opval_spv);
+            c->inst_result_air_type[inst_idx] = dest_ty;
+            return;
+
+        default:
+            /* Unknown cast opcode — fall back to aliasing */
+            bind_value_spv(c, result_value_id, opval_spv);
+            c->inst_result_air_type[inst_idx] = dest_ty;
+            return;
+    }
+
+    /* Bind the result value-id and record the AIR type for downstream ops */
+    bind_value_spv(c, result_value_id, result_spv);
     c->inst_result_air_type[inst_idx] = dest_ty;
 }
 
