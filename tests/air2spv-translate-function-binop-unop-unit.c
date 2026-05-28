@@ -484,11 +484,126 @@ static int test_call_dispatch_emits_extinst(void) {
     return 0;
 }
 
+
+/* SHUFFLEVEC mask resolution test: triangle's vertex shader has two
+ * SHUFFLEVEC instructions with real masks [0,1,poison,poison] and
+ * [0,1,6,7]. After resolving the AGGREGATE local-const components via
+ * the value_id_to_lit_i32 reverse-lookup, the translated SPIR-V should
+ * emit OpVectorShuffle with literal mask values including "6 7". */
+static int test_shufflevec_emits_real_mask(void) {
+    const char *candidates[] = {
+        "/Users/mjackson/Developer/staging/triangle_vertex.air.bc",
+        "/tmp/scoping/triangle_vertex.air.bc",
+        NULL,
+    };
+    uint8_t *air_blob = NULL;
+    size_t   air_len  = 0;
+    const char *used = NULL;
+    for (int i = 0; candidates[i]; i++) {
+        air_blob = slurp(candidates[i], &air_len);
+        if (air_blob) { used = candidates[i]; break; }
+    }
+    if (!air_blob) {
+        printf("SKIP: triangle .air.bc fixture not found\n");
+        return 0;
+    }
+
+    lagfx_air_module_t *m = NULL;
+    lagfx_status_t st = lagfx_air_module_open(air_blob, air_len, &m);
+    if (st != LAGFX_OK || !m) {
+        printf("FAIL: triangle open st=%d (from %s)\n", (int)st, used);
+        free(air_blob);
+        return 1;
+    }
+
+    uint8_t *spv_blob = NULL;
+    size_t   spv_sz   = 0u;
+    st = lagfx_air2spv_translate_module(m, &spv_blob, &spv_sz);
+    if (st != LAGFX_OK || !spv_blob) {
+        printf("FAIL: translate st=%d\n", (int)st);
+        lagfx_air_module_free(m);
+        free(air_blob);
+        return 1;
+    }
+
+    uint32_t magic;
+    memcpy(&magic, spv_blob, sizeof(magic));
+    if (magic != SPV_MAGIC) {
+        printf("FAIL: bad SPIR-V magic 0x%08x\n", magic);
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+        return 1;
+    }
+
+    /* spirv-val must accept */
+    if (spirv_val(spv_blob, spv_sz) < 0) {
+        printf("FAIL: triangle spirv-val rejected\n");
+        free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+        return 1;
+    }
+
+    /* Run spirv-dis and assert OpVectorShuffle with real mask values.
+     * Triangle's second SHUFFLEVEC uses mask [0,1,6,7], so we look for
+     * " 6 7" (with leading space) to avoid matching bare component IDs
+     * in OpConstantComposite lines. */
+    const char *spirv_dis_path = NULL;
+    const char *dis_candidates[] = {
+        "/opt/homebrew/bin/spirv-dis",
+        "/usr/local/bin/spirv-dis",
+        NULL,
+    };
+    for (int i = 0; dis_candidates[i]; i++) {
+        if (access(dis_candidates[i], X_OK) == 0) {
+            spirv_dis_path = dis_candidates[i];
+            break;
+        }
+    }
+
+    int found_shufflevec = 0;
+    int found_mask_67 = 0;
+    if (spirv_dis_path) {
+        char tmpl[] = "/tmp/lagfx_shufflevec_test_XXXXXX.spv";
+        int fd = mkstemps(tmpl, 4);
+        if (fd >= 0) {
+            write(fd, spv_blob, spv_sz);
+            close(fd);
+
+            char cmd[512];
+            snprintf(cmd, sizeof(cmd), "%s %s", spirv_dis_path, tmpl);
+            FILE *fp = popen(cmd, "r");
+            if (fp) {
+                char buf[4096];
+                while (fgets(buf, sizeof(buf), fp)) {
+                    if (strstr(buf, "OpVectorShuffle")) found_shufflevec = 1;
+                    /* Look for " 6 7" substring to avoid matching bare component IDs */
+                    if (strstr(buf, " 6 7")) found_mask_67 = 1;
+                }
+                pclose(fp);
+            }
+            unlink(tmpl);
+        }
+    }
+
+    free(spv_blob); lagfx_air_module_free(m); free(air_blob);
+
+    if (!found_shufflevec) {
+        printf("FAIL: translated SPIR-V contains no OpVectorShuffle — SHUFFLEVEC handler not emitting\n");
+        return 1;
+    }
+    if (!found_mask_67) {
+        printf("FAIL: SHUFFLEVEC dispatch is still emitting identity mask — the AGGREGATE-lookup path isn't reaching the OpVectorShuffle emission\n");
+        return 1;
+    }
+
+    printf("PASS: SHUFFLEVEC dispatch emits real mask (found \" 6 7\" in OpVectorShuffle)\n");
+    return 0;
+}
+
 int main(void) {
     int rc = 0;
     rc |= test_binop_unop_triangle();
     rc |= test_unop_vfx_emits_fnegate();
     rc |= test_cast_triangle_emits_uconvert();
     rc |= test_call_dispatch_emits_extinst();
+    rc |= test_shufflevec_emits_real_mask();
     return rc ? 1 : 0;
 }

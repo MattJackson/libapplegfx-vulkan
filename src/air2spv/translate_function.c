@@ -94,6 +94,10 @@ typedef struct {
     uint32_t                 *value_id_to_spv;
     uint32_t                  value_id_capacity;
 
+    /* Side-table: int32 literal reverse lookup for SHUFFLEVEC mask resolution. */
+    int32_t                  *value_id_to_lit_i32;
+    bool                     *value_id_lit_i32_valid;
+
     /* Per-instruction result type (AIR type-id) so downstream ops can
      * deduce element types (e.g., GEP+STORE val-type from the GEP
      * source). Indexed by INSTRUCTION INDEX into body, NOT value-id. */
@@ -451,6 +455,22 @@ static void bind_value_spv(xlate_ctx_t *c, uint32_t value_id, uint32_t spv_id) {
     if (value_id < c->value_id_capacity) {
         c->value_id_to_spv[value_id] = spv_id;
     }
+}
+
+/* Side-table helpers: int32 literal reverse lookup for SHUFFLEVEC mask resolution. */
+static void bind_value_lit_i32(xlate_ctx_t *c, uint32_t value_id, int32_t lit) {
+    if (value_id < c->value_id_capacity) {
+        c->value_id_to_lit_i32[value_id]    = lit;
+        c->value_id_lit_i32_valid[value_id] = true;
+    }
+}
+
+/* Returns true on hit (writes *out_lit); false on miss. */
+static bool resolve_value_lit_i32(const xlate_ctx_t *c, uint32_t value_id, int32_t *out_lit) {
+    if (value_id >= c->value_id_capacity) return false;
+    if (!c->value_id_lit_i32_valid[value_id]) return false;
+    *out_lit = c->value_id_to_lit_i32[value_id];
+    return true;
 }
 
 /* For a referenced value-id, return its SPIR-V id; if unresolvable,
@@ -1244,47 +1264,99 @@ static void emit_inst_load(xlate_ctx_t *c, uint32_t inst_idx,
 static void emit_inst_shufflevec(xlate_ctx_t *c, uint32_t inst_idx,
                                    const lagfx_air_inst_t *inst,
                                    uint32_t result_value_id, uint32_t next_val_id) {
-    /* SHUFFLEVEC: [vec1_rel, vec2_rel, mask_rel]
-     * Result type = same element type as inputs, lane count = mask
-     * length. For Phase 5 MVP without function-local CONSTANTS_BLOCK
-     * decoding, we don't have the mask vector's contents. We emit:
-     *   - Result type = vec4<f32> (triangle's mask produces a vec4)
-     *   - OpVectorShuffle with an identity mask of length 4
-     */
+    /* SHUFFLEVEC bitcode operand layout: [vec1_rel, vec2_rel, mask_rel].
+     *
+     * Result type: vec<N x elemtype> where N = mask vector lane count.
+     * Mask is a constant vec<N x i32> whose components encode the
+     * per-lane source index (or the special value 0xFFFFFFFF for
+     * "undefined").
+     *
+     * Resolve the mask via the new value-id → literal-i32 reverse
+     * lookup (senior infrastructure, value_id_to_lit_i32 side-table).
+     * If the mask resolves cleanly, emit OpVectorShuffle with the real
+     * lane indices. If not (mask not bound), fall back to identity. */
     if (inst->num_ops < 3u) return;
-    uint32_t v1_rel = (uint32_t)inst->ops[0];
-    uint32_t v2_rel = (uint32_t)inst->ops[1];
-    /* mask is a constant vector value-id; we don't resolve its contents. */
-    uint32_t v1_id  = resolve_relative(v1_rel, next_val_id);
-    uint32_t v2_id  = resolve_relative(v2_rel, next_val_id);
+    uint32_t v1_rel  = (uint32_t)inst->ops[0];
+    uint32_t v2_rel  = (uint32_t)inst->ops[1];
+    uint32_t msk_rel = (uint32_t)inst->ops[2];
 
-    uint32_t vec4_f = emit_type_vec4_f(c);
-    uint32_t v1_spv = resolve_or_undef(c, v1_id, emit_type_vec2_f(c));
+    uint32_t v1_id  = resolve_relative(v1_rel,  next_val_id);
+    uint32_t v2_id  = resolve_relative(v2_rel,  next_val_id);
+    uint32_t msk_id = resolve_relative(msk_rel, next_val_id);
+
+    uint32_t vec4_f      = emit_type_vec4_f(c);
+    uint32_t vec2_f      = emit_type_vec2_f(c);
+    uint32_t vec2_f_undef = emit_undef(c, vec2_f);
+    uint32_t vec4_f_undef = emit_undef(c, vec4_f);
+
+    uint32_t v1_spv = resolve_or_undef(c, v1_id, vec2_f);
     uint32_t v2_spv = resolve_or_undef(c, v2_id, vec4_f);
 
-    /* For OpVectorShuffle we need the operands to be VECTORS. If we
-     * substituted undef of vec2 for v1 and vec4 for v2, the result
-     * has 4 lanes (= the larger). SPIR-V OpVectorShuffle requires
-     * both operands have the SAME element type but can have different
-     * vector sizes — actually they must be the SAME vector type (per
-     * spec). To stay valid, pad v1 to vec4: emit a vec4 undef instead.
-     *
-     * Simplification: emit shuffle producing vec4 from two vec4
-     * sources, both undef where unresolvable.
-     */
-    if (v1_spv == emit_undef(c, emit_type_vec2_f(c))) {
-        v1_spv = emit_undef(c, vec4_f);
-    }
-    if (v2_spv == emit_undef(c, emit_type_vec2_f(c))) {
-        v2_spv = emit_undef(c, vec4_f);
+    /* OpVectorShuffle requires both source vectors to have the SAME
+     * vector type. If we substituted a vec2 undef for v1 (because the
+     * operand was unresolvable in this function-local context), pad
+     * to vec4 undef instead. */
+    if (v1_spv == vec2_f_undef) v1_spv = vec4_f_undef;
+    if (v2_spv == vec2_f_undef) v2_spv = vec4_f_undef;
+
+    /* Resolve the mask vector via the function-local AGGREGATE
+     * constants. Each AGGREGATE's payload is a u32 array of value-ids
+     * pointing at per-lane i32 constants which we bound via
+     * bind_value_lit_i32 at the INTEGER pre-bind site. */
+    uint32_t mask_lanes[4] = {0u, 1u, 2u, 3u};  /* identity fallback */
+
+    uint32_t n_lc = 0;
+    const lagfx_air_constant_t *lc =
+        lagfx_air_function_body_local_constants(c->body, &n_lc);
+    uint32_t lc_base = c->arg_id_base + c->num_args;
+    if (lc && msk_id >= lc_base && msk_id < lc_base + n_lc) {
+        const lagfx_air_constant_t *k = &lc[msk_id - lc_base];
+        if (k->kind == LAGFX_AIR_CONST_AGGREGATE) {
+            /* AGGREGATE: payload bytes are u32 value-ids of per-lane
+             * i32 constants. Resolve each via the lit_i32 side-table. */
+            const uint32_t *comps = (const uint32_t *)
+                lagfx_air_function_body_payload_ptr(c->body,
+                                                      k->payload.bytes.offset);
+            uint32_t ncomp = k->payload.bytes.len / sizeof(uint32_t);
+            if (comps && ncomp >= 1u) {
+                uint32_t n = ncomp < 4u ? ncomp : 4u;
+                for (uint32_t i = 0; i < n; i++) {
+                    int32_t lit;
+                    if (resolve_value_lit_i32(c, comps[i], &lit)) {
+                        mask_lanes[i] = (uint32_t)lit;
+                    } else {
+                        /* SPIR-V OpVectorShuffle: 0xFFFFFFFF in a
+                         * component means "undefined value in this
+                         * lane" — matches LLVM poison semantics. */
+                        mask_lanes[i] = 0xFFFFFFFFu;
+                    }
+                }
+            }
+        } else if (k->kind == LAGFX_AIR_CONST_DATA) {
+            /* DATA: payload bytes ARE the raw u32 literal values —
+             * no value-id indirection. Triangle's second SHUFFLEVEC
+             * mask `[0, 1, 6, 7]` is a DATA-kind vec4<i32> constant. */
+            const uint32_t *raw = (const uint32_t *)
+                lagfx_air_function_body_payload_ptr(c->body,
+                                                      k->payload.bytes.offset);
+            uint32_t ncomp = k->payload.bytes.len / sizeof(uint32_t);
+            if (raw && ncomp >= 1u) {
+                uint32_t n = ncomp < 4u ? ncomp : 4u;
+                for (uint32_t i = 0; i < n; i++) {
+                    mask_lanes[i] = raw[i];
+                }
+            }
+        }
     }
 
     uint32_t result_id = lagfx_spv_builder_alloc_id(c->b);
-    /* OpVectorShuffle %result_type %result %v1 %v2 mask_lit_words... */
-    uint32_t ops[] = { vec4_f, result_id, v1_spv, v2_spv, 0u, 1u, 2u, 3u };
+    uint32_t ops[8] = {
+        vec4_f, result_id, v1_spv, v2_spv,
+        mask_lanes[0], mask_lanes[1], mask_lanes[2], mask_lanes[3],
+    };
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VECTOR_SHUFFLE, ops, 8);
     bind_value_spv(c, result_value_id, result_id);
-    c->inst_result_air_type[inst_idx] = 0u; /* opaque AIR type; we just know it's vec4f */
+    c->inst_result_air_type[inst_idx] = 0u;
 }
 
 static void emit_inst_insertval(xlate_ctx_t *c, uint32_t inst_idx,
@@ -1770,6 +1842,11 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
     c.value_id_to_spv = (uint32_t *)calloc(c.value_id_capacity, sizeof(uint32_t));
     if (!c.value_id_to_spv) goto oom;
 
+    /* Side-table: int32 literal reverse lookup for SHUFFLEVEC mask resolution. */
+    c.value_id_to_lit_i32 = (int32_t *)calloc(c.value_id_capacity, sizeof(int32_t));
+    c.value_id_lit_i32_valid = (bool *)calloc(c.value_id_capacity, sizeof(bool));
+    if (!c.value_id_to_lit_i32 || !c.value_id_lit_i32_valid) goto oom;
+
     c.inst_result_air_type = (uint32_t *)calloc(n_insts + 1u, sizeof(uint32_t));
     if (!c.inst_result_air_type) goto oom;
 
@@ -1808,6 +1885,8 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                                 uint32_t ops[] = { ty_spv, spv_id,
                                                     (uint32_t)(uint64_t)k->payload.i64 };
                                 lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 3);
+                                /* Side-table: track int32 literal for SHUFFLEVEC reverse lookup. */
+                                bind_value_lit_i32(&c, vid, (int32_t)(uint64_t)k->payload.i64);
                             } else if (w == 64u) {
                                 uint32_t ty_spv = emit_type_int_w(&c, 64u, 0u);
                                 spv_id = lagfx_spv_builder_alloc_id(c.b);
@@ -1842,6 +1921,17 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                         spv_id = lagfx_spv_builder_alloc_id(c.b);
                         uint32_t ops[] = { ty_spv, spv_id };
                         lagfx_spv_builder_emit_op(c.b, 46 /* OpConstantNull */, ops, 2);
+                        /* NULL of an i32 type is the integer literal 0.
+                         * Bind the lit_i32 side-table so SHUFFLEVEC
+                         * mask resolution finds it when the mask
+                         * AGGREGATE references this NULL component. */
+                        if (ty_air < c.num_air_types) {
+                            const lagfx_air_type_t *tt = &((const lagfx_air_type_t *)lagfx_air_module_types(m, &(uint32_t){0}))[ty_air];
+                            if (tt->kind == LAGFX_AIR_TYPE_INTEGER &&
+                                tt->num_op >= 1u && tt->op[0] == 32u) {
+                                bind_value_lit_i32(&c, vid, 0);
+                            }
+                        }
                     }
                     break;
                 }
@@ -1892,6 +1982,10 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                                                 (uint32_t)(bits >> 32u) };
                             lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 4);
                         }
+                        /* Side-table: track int32 literal for SHUFFLEVEC reverse lookup. */
+                        if (w == 32u) {
+                            bind_value_lit_i32(&c, vid, (int32_t)(uint64_t)k->payload.i64);
+                    }
                     }
                     break;
                 }
@@ -1915,6 +2009,11 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                     spv_id = lagfx_spv_builder_alloc_id(c.b);
                     uint32_t ops[] = { ty_spv, spv_id };
                     lagfx_spv_builder_emit_op(c.b, 46 /* OpConstantNull */, ops, 2);
+                    /* NULL of i32 = lit 0 for SHUFFLEVEC mask resolution. */
+                    if (t->kind == LAGFX_AIR_TYPE_INTEGER &&
+                        t->num_op >= 1u && t->op[0] == 32u) {
+                        bind_value_lit_i32(&c, vid, 0);
+                    }
                     break;
                 }
                 case LAGFX_AIR_CONST_UNDEF:
