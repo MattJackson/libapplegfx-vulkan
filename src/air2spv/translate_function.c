@@ -27,6 +27,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Sentinel for "AIR type-index unknown / unresolved". MUST NOT be 0:
+ * AIR type index 0 is a LEGITIMATE type (it is `float` in the compositor
+ * shaders), and the translator historically conflated index 0 with
+ * "unknown" — so any float-typed value (type index 0) was treated as
+ * untyped, mis-dispatching CMP/SELECT/BINOP. inst_result_air_type[] is
+ * initialised to this value; value_air_type_idx and the operand-type
+ * resolvers return it when no type is found. UINT32_MAX can never be a
+ * real type index (type tables are tiny). */
+#define LAGFX_AIR_TYPE_NONE 0xFFFFFFFFu
+
 /* ===================================================================
  * Context
  * =================================================================== */
@@ -547,6 +557,7 @@ static void set_result_air_type(xlate_ctx_t *c, uint32_t result_value_id,
                                 uint32_t air_ty);
 static uint32_t call_return_air_type(const xlate_ctx_t *c,
                                      const lagfx_air_inst_t *i);
+static uint32_t value_air_type_idx(xlate_ctx_t *c, uint32_t value_id);
 
 /* ===================================================================
  * Prologue
@@ -1623,7 +1634,7 @@ static void emit_inst_shufflevec(xlate_ctx_t *c, uint32_t inst_idx,
     };
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VECTOR_SHUFFLE, ops, 8);
     bind_value_spv(c, result_value_id, result_id);
-    set_result_air_type(c, result_value_id, 0u);
+    set_result_air_type(c, result_value_id, LAGFX_AIR_TYPE_NONE);
 }
 
 static void emit_inst_insertval(xlate_ctx_t *c, uint32_t inst_idx,
@@ -1660,7 +1671,7 @@ static void emit_inst_insertval(xlate_ctx_t *c, uint32_t inst_idx,
     uint32_t ops[] = { struct_id, result_id, val_spv, agg_spv, field };
     lagfx_spv_builder_emit_op(c->b, 82 /* OpCompositeInsert */, ops, 5);
     bind_value_spv(c, result_value_id, result_id);
-    set_result_air_type(c, result_value_id, 0u);
+    set_result_air_type(c, result_value_id, LAGFX_AIR_TYPE_NONE);
 }
 
 static void emit_inst_ret(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
@@ -1729,77 +1740,29 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
     uint32_t lhs_id  = resolve_relative(lhs_rel, next_val_id);
     uint32_t rhs_id  = resolve_relative(rhs_rel, next_val_id);
 
-    /* Look up AIR types for both operands via inst_result_air_type[].
-     * For args/module-consts we fall back to deducing from the constant
-     * table or defaulting to float. */
-    uint32_t lhs_ty = 0u;
-    uint32_t rhs_ty = 0u;
+    /* Resolve the LHS operand's AIR type (NONE if unknown).
+     * value_air_type_idx covers inst results, args, function-local
+     * consts, and module consts in one place — including the local-const
+     * range that the old inline lookup missed (which mis-typed float
+     * literals as module constants). The RHS type isn't needed: SPIR-V
+     * arithmetic result type follows the LHS/result type. */
+    uint32_t lhs_ty = value_air_type_idx(c, lhs_id);
 
-    /* LHS type: try inst_result_air_type first (for instruction results) */
-    if (lhs_id >= c->inst_id_base && lhs_id < c->value_id_capacity) {
-        int idx = (int)(lhs_id - c->inst_id_base);
-        if (idx >= 0 && (uint32_t)idx < c->num_insts) {
-            lhs_ty = c->inst_result_air_type[idx];
-        }
-    }
-    /* If still unknown, try arg types */
-    if (!lhs_ty && lhs_id >= c->arg_id_base) {
-        uint32_t arg_idx = lhs_id - c->arg_id_base;
-        if (arg_idx < c->num_args) {
-            lhs_ty = c->arg_air_type_ids[arg_idx];
-        }
-    }
-    /* If still unknown, try module const type */
-    if (!lhs_ty && lhs_id >= c->module_val_count) {
-        uint32_t n_consts = 0;
-        const lagfx_air_constant_t *consts =
-            lagfx_air_module_constants(c->m, &n_consts);
-        uint32_t const_idx = lhs_id - c->module_val_count;
-        if (const_idx < n_consts) {
-            lhs_ty = consts[const_idx].type_index;
-        }
-    }
-
-    /* RHS type: same logic */
-    if (!rhs_ty && rhs_id >= c->inst_id_base && rhs_id < c->value_id_capacity) {
-        int idx = (int)(rhs_id - c->inst_id_base);
-        if (idx >= 0 && (uint32_t)idx < c->num_insts) {
-            rhs_ty = c->inst_result_air_type[idx];
-        }
-    }
-    if (!rhs_ty && rhs_id >= c->arg_id_base) {
-        uint32_t arg_idx = rhs_id - c->arg_id_base;
-        if (arg_idx < c->num_args) {
-            rhs_ty = c->arg_air_type_ids[arg_idx];
-        }
-    }
-    if (!rhs_ty && rhs_id >= c->module_val_count) {
-        uint32_t n_consts = 0;
-        const lagfx_air_constant_t *consts =
-            lagfx_air_module_constants(c->m, &n_consts);
-        uint32_t const_idx = rhs_id - c->module_val_count;
-        if (const_idx < n_consts) {
-            rhs_ty = consts[const_idx].type_index;
-        }
-    }
-
-    /* Default to float if we can't resolve types */
+    /* Default to float if we can't resolve the LHS type. */
     bool is_float = true;
-    uint32_t result_ty_air = lhs_ty ? lhs_ty : 0u;
-    if (lhs_ty) {
-        const lagfx_air_type_t *t = NULL;
+    uint32_t result_ty_air = lhs_ty;
+    if (lhs_ty != LAGFX_AIR_TYPE_NONE) {
         uint32_t n_types = 0;
         const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
         if (lhs_ty < n_types) {
-            t = &ts[lhs_ty];
-            is_float = (t->kind == LAGFX_AIR_TYPE_FLOAT ||
-                        t->kind == LAGFX_AIR_TYPE_VECTOR);
+            is_float = (ts[lhs_ty].kind == LAGFX_AIR_TYPE_FLOAT ||
+                        ts[lhs_ty].kind == LAGFX_AIR_TYPE_VECTOR);
         }
     }
 
     /* Determine result SPIR-V type */
     uint32_t result_spv_type;
-    if (result_ty_air) {
+    if (result_ty_air != LAGFX_AIR_TYPE_NONE) {
         result_spv_type = emit_air_type(c, result_ty_air);
     } else {
         result_spv_type = is_float ? emit_type_vec4_f(c) : emit_type_int_w(c, 32u, 0u);
@@ -1898,7 +1861,7 @@ static void emit_inst_unop(xlate_ctx_t *c, uint32_t inst_idx,
         int idx = (int)(opval_id - c->inst_id_base);
         if (idx >= 0 && (uint32_t)idx < c->num_insts) {
             uint32_t ty_air = c->inst_result_air_type[idx];
-            if (ty_air) result_spv_type = emit_air_type(c, ty_air);
+            if (ty_air != LAGFX_AIR_TYPE_NONE) result_spv_type = emit_air_type(c, ty_air);
         }
     }
 
@@ -1920,7 +1883,10 @@ static void emit_inst_unop(xlate_ctx_t *c, uint32_t inst_idx,
 
     /* Bind the result value-id */
     bind_value_spv(c, result_value_id, result_spv);
-    set_result_air_type(c, result_value_id, result_spv_type ? 0u : 2u); /* float or unknown */
+    /* UNOP result type isn't reliably known here (we negate as vec4f by
+     * default); record NONE = unknown so downstream resolves it like any
+     * other untyped value rather than mistaking it for type index 0. */
+    set_result_air_type(c, result_value_id, LAGFX_AIR_TYPE_NONE);
 }
 
 /* Best-effort AIR type index for a resolved value-id: instruction
@@ -1930,7 +1896,7 @@ static uint32_t value_air_type_idx(xlate_ctx_t *c, uint32_t value_id) {
     if (value_id >= c->inst_id_base && value_id < c->value_id_capacity) {
         int idx = (int)(value_id - c->inst_id_base);
         if (idx >= 0 && (uint32_t)idx < c->num_insts &&
-            c->inst_result_air_type[idx]) {
+            c->inst_result_air_type[idx] != LAGFX_AIR_TYPE_NONE) {
             return c->inst_result_air_type[idx];
         }
     }
@@ -1938,13 +1904,29 @@ static uint32_t value_air_type_idx(xlate_ctx_t *c, uint32_t value_id) {
         uint32_t a = value_id - c->arg_id_base;
         if (a < c->num_args) return c->arg_air_type_ids[a];
     }
+    /* Function-local constants occupy value-ids
+     * [arg_id_base + num_args, inst_id_base). This range OVERLAPS the
+     * module-const test below (arg_id_base == module_val_count), so it
+     * MUST be resolved first — otherwise a local-const operand is read as
+     * a module constant → wrong type. (The local FLOAT consts in
+     * clear/blit are type index 0 = float; before this, the overlap +
+     * the 0-is-unknown bug both hit, dropping/mis-typing the SELECT.) */
+    {
+        uint32_t lc_base = c->arg_id_base + c->num_args;
+        uint32_t n_lc = 0u;
+        const lagfx_air_constant_t *lc =
+            lagfx_air_function_body_local_constants(c->body, &n_lc);
+        if (lc && value_id >= lc_base && value_id < lc_base + n_lc) {
+            return lc[value_id - lc_base].type_index;
+        }
+    }
     if (value_id >= c->module_val_count) {
         uint32_t n = 0u;
         const lagfx_air_constant_t *consts = lagfx_air_module_constants(c->m, &n);
         uint32_t ci = value_id - c->module_val_count;
         if (ci < n) return consts[ci].type_index;
     }
-    return 0u;
+    return LAGFX_AIR_TYPE_NONE;
 }
 
 /* Map an LLVM CmpInst::Predicate to its SPIR-V relational opcode
@@ -2031,7 +2013,7 @@ static void emit_inst_cmp(xlate_ctx_t *c, uint32_t inst_idx,
     uint32_t bool_spv = emit_type_bool(c);
     uint32_t result_spv_type = bool_spv;
     uint32_t lhs_ty = value_air_type_idx(c, lhs_id);
-    if (lhs_ty) {
+    if (lhs_ty != LAGFX_AIR_TYPE_NONE) {
         uint32_t n_types = 0u;
         const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
         if (lhs_ty < n_types && ts[lhs_ty].kind == LAGFX_AIR_TYPE_VECTOR) {
@@ -2107,7 +2089,7 @@ static void emit_inst_extractval(xlate_ctx_t *c, uint32_t inst_idx,
     const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
     
     uint32_t agg_ty_air = value_air_type_idx(c, agg_id);
-    if (!agg_ty_air) {
+    if (agg_ty_air == LAGFX_AIR_TYPE_NONE) {
         LAGFX_WARN("extractval: couldn't resolve aggregate operand type — drop");
         return;
     }
@@ -2225,7 +2207,7 @@ static void emit_inst_extractelt(xlate_ctx_t *c, uint32_t inst_idx,
 
     /* Resolve the vector's AIR type to get its element type. */
     uint32_t vec_ty_air = value_air_type_idx(c, vector_id);
-    if (!vec_ty_air) {
+    if (vec_ty_air == LAGFX_AIR_TYPE_NONE) {
         LAGFX_WARN("extractelt: couldn't resolve vector operand type — drop");
         return;
     }
@@ -2288,7 +2270,7 @@ static void emit_inst_insertelt(xlate_ctx_t *c, uint32_t inst_idx,
 
     /* Resolve the vector's AIR type. */
     uint32_t vec_ty_air = value_air_type_idx(c, vector_id);
-    if (!vec_ty_air) {
+    if (vec_ty_air == LAGFX_AIR_TYPE_NONE) {
         LAGFX_WARN("insertelt: couldn't resolve vector operand type — drop");
         return;
     }
@@ -2365,8 +2347,12 @@ static void emit_inst_select(xlate_ctx_t *c, uint32_t inst_idx,
     /* Result type: same as the selected values (true/false share a type).
      * Resolve from TrueVal operand's AIR type via value_air_type_idx. */
     uint32_t result_ty_air = value_air_type_idx(c, true_id);
-    if (!result_ty_air) {
-        LAGFX_WARN("select: couldn't resolve true-operand type — drop");
+    if (result_ty_air == LAGFX_AIR_TYPE_NONE) {
+        /* Fall back to the false operand, then leave unresolved. */
+        result_ty_air = value_air_type_idx(c, false_id);
+    }
+    if (result_ty_air == LAGFX_AIR_TYPE_NONE) {
+        LAGFX_WARN("select: couldn't resolve operand type — drop");
         return;
     }
     uint32_t result_spv_type = emit_air_type(c, result_ty_air);
@@ -2608,6 +2594,10 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
 
     c.inst_result_air_type = (uint32_t *)calloc(n_insts + 1u, sizeof(uint32_t));
     if (!c.inst_result_air_type) goto oom;
+    /* Init to NONE, not 0: a zero slot would read as "type index 0"
+     * (= float), but an unwritten slot means "type unknown". */
+    for (uint32_t ti = 0; ti < n_insts + 1u; ti++)
+        c.inst_result_air_type[ti] = LAGFX_AIR_TYPE_NONE;
 
     /* === Emit ============================================================
      * SPIR-V module layout requires:

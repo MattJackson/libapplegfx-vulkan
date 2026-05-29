@@ -833,6 +833,25 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-type-section-ordering-unit.c
     workdir : meson.current_source_dir() / '..')
 endif
 
+# AIR-type-index-0-vs-unknown sentinel: float (type index 0) was read as
+# "unknown", mis-dispatching CMP/SELECT/BINOP. Real compositor shader
+# (clear vertex) must emit a typed OpSelect, not drop or mis-type it.
+if fs.is_file(meson.current_source_dir() / 'air2spv-local-const-type-unit.c')
+  air2spv_lconst_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_lconst_deps += [vulkan_dep]
+  endif
+  air2spv_lconst_test = executable('air2spv-local-const-type-unit',
+    'air2spv-local-const-type-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_lconst_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv local-const operand type (unit)', air2spv_lconst_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   air2spv_si_test_deps = [libapplegfx_vulkan_dep]
