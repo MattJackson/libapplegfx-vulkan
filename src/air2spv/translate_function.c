@@ -1863,6 +1863,130 @@ static void emit_inst_cmp2(xlate_ctx_t *c, uint32_t inst_idx,
 }
 
 /* ===================================================================
+ * EXTRACTVAL / INSERTVAL handlers — SPIR-V composite extract/insert
+ *
+ * EXTRACTVAL: [agg_rel (or agg_type for fresh undef agg), idx0, idx1, ...]
+ *   - ops[0] = aggregate value (relative-encoded)
+ *   - ops[1..N] = LITERAL constant indices (NOT relative-encoded!)
+ *   Result type = walk the aggregate AIR type by the literal indices.
+ *
+ * SPIR-V OpCompositeExtract: [result_type, result_id, Composite, <literal idx0>, ...]
+ * The indices are emitted as literal integer words, copied straight from inst->ops[1..].
+ *
+ * Result types:
+ *   - EXTRACTVAL result = the walked member type (from aggregate by indices)
+ *   - INSERTVAL result = the aggregate type itself
+ * =================================================================== */
+
+static void emit_inst_extractval(xlate_ctx_t *c, uint32_t inst_idx,
+                                  const lagfx_air_inst_t *inst,
+                                  uint32_t result_value_id, uint32_t next_val_id) {
+    if (inst->num_ops < 2u) return;
+
+    /* ops[0] = aggregate value ref (relative-encoded). */
+    uint32_t agg_rel = (uint32_t)inst->ops[0];
+    
+    /* ops[1..N] = LITERAL constant indices — DO NOT resolve_relative! */
+    uint32_t n_indices = inst->num_ops - 1u;
+    if (n_indices == 0u) return;
+
+    /* Resolve aggregate value-id. */
+    uint32_t agg_id = resolve_relative(agg_rel, next_val_id);
+
+    /* Walk the type by literal indices to get result type. */
+    uint32_t n_types = 0u;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    
+    uint32_t agg_ty_air = value_air_type_idx(c, agg_id);
+    if (!agg_ty_air) {
+        LAGFX_WARN("extractval: couldn't resolve aggregate operand type — drop");
+        return;
+    }
+
+    /* Bounds check the aggregate type. */
+    if (agg_ty_air >= n_types) {
+        LAGFX_WARN("extractval: aggregate type index out of bounds — drop");
+        return;
+    }
+
+    const lagfx_air_type_t *ty = &ts[agg_ty_air];
+    
+    /* Walk the type by each literal index. */
+    for (uint32_t i = 0u; i < n_indices; i++) {
+        uint32_t idx = (uint32_t)inst->ops[1u + i];
+
+        if (ty->kind == LAGFX_AIR_TYPE_STRUCT_ANON ||
+            ty->kind == LAGFX_AIR_TYPE_STRUCT_NAMED) {
+            /* STRUCT: op[0] = packed, op[1..N] = field type indices. */
+            if (idx >= ty->num_op - 1u) {
+                LAGFX_WARN("extractval: struct field index %u out of bounds (fields=%u) — drop",
+                           idx, ty->num_op - 1u);
+                return;
+            }
+            uint32_t field_ty = ty->op[1u + idx];
+            if (field_ty >= n_types) {
+                LAGFX_WARN("extractval: struct field type index out of bounds — drop");
+                return;
+            }
+            ty = &ts[field_ty];
+        } else if (ty->kind == LAGFX_AIR_TYPE_ARRAY ||
+                   ty->kind == LAGFX_AIR_TYPE_VECTOR) {
+            /* ARRAY/VECTOR: op[0] = length/lanes, op[1] = element type. */
+            if (ty->num_op < 2u) {
+                LAGFX_WARN("extractval: array/vector has no element type — drop");
+                return;
+            }
+            uint32_t elem_ty = ty->op[1];
+            if (elem_ty >= n_types) {
+                LAGFX_WARN("extractval: array/vector element type index out of bounds — drop");
+                return;
+            }
+            ty = &ts[elem_ty];
+        } else {
+            /* Non-aggregate type with indices is invalid. */
+            LAGFX_WARN("extractval: operand type %u is not a struct/array/vector — drop",
+                       ty->kind);
+            return;
+        }
+    }
+
+    uint32_t result_ty_air = (uint32_t)(ty - ts);
+    uint32_t result_spv_type = emit_air_type(c, result_ty_air);
+
+    /* Resolve aggregate to SPIR-V id. */
+    uint32_t agg_spv = resolve_or_undef(c, agg_id, emit_air_type(c, agg_ty_air));
+
+    /* Allocate result SPIR-V id. */
+    uint32_t result_spv = resolve_value_spv(c, result_value_id);
+    if (!result_spv) {
+        result_spv = lagfx_spv_builder_alloc_id(c->b);
+    }
+
+    /* Build OpCompositeExtract operands: [result_type, result_id, composite, idx0, ...] */
+    uint32_t ops[16];  /* Max 8 indices + 4 fixed words */
+    ops[0] = result_spv_type;
+    ops[1] = result_spv;
+    ops[2] = agg_spv;
+    
+    uint32_t n_ops = 3u;
+    for (uint32_t i = 0u; i < n_indices && i < 8u; i++) {
+        if (n_ops >= 16u) break;
+        ops[n_ops++] = (uint32_t)inst->ops[1u + i];
+    }
+    
+    if (n_indices > 8u) {
+        LAGFX_WARN("extractval: too many indices (%u > 8), capping — drop", n_indices);
+        return;
+    }
+
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_EXTRACT, ops, n_ops);
+
+    /* Bind the result value-id and record AIR type. */
+    bind_value_spv(c, result_value_id, result_spv);
+    c->inst_result_air_type[inst_idx] = result_ty_air;
+}
+
+/* ===================================================================
  * EXTRACTELT / INSERTELT handler — vector element access (SPIR-V §3.32.12)
  *
  * AIR record layout (verbatim bitcode record, USE_RELATIVE_IDS):
@@ -1879,8 +2003,8 @@ static void emit_inst_cmp2(xlate_ctx_t *c, uint32_t inst_idx,
  */
 
 static void emit_inst_extractelt(xlate_ctx_t *c, uint32_t inst_idx,
-                                  const lagfx_air_inst_t *inst,
-                                  uint32_t result_value_id, uint32_t next_val_id) {
+                                   const lagfx_air_inst_t *inst,
+                                   uint32_t result_value_id, uint32_t next_val_id) {
     if (inst->num_ops < 2u) return;
 
     /* Resolve operands. */
@@ -2135,6 +2259,9 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
             case LAGFX_AIR_INST_SELECT:
             case LAGFX_AIR_INST_VSELECT:
                 emit_inst_select(c, i, inst, result_value_id, next_val_id);
+                break;
+            case LAGFX_AIR_INST_EXTRACTVAL:
+                emit_inst_extractval(c, i, inst, result_value_id, next_val_id);
                 break;
             case LAGFX_AIR_INST_EXTRACTELT:
                 emit_inst_extractelt(c, i, inst, result_value_id, next_val_id);

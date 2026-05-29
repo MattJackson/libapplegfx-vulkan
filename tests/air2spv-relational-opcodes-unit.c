@@ -66,6 +66,9 @@ PIN(LAGFX_SPV_OP_BITWISE_AND, 199);
 /* Composite instructions (SPIR-V §3.32.16). */
 PIN(LAGFX_SPV_OP_SELECT, 169);
 
+/* Composite static index (SPIR-V §3.32.12). */
+PIN(LAGFX_SPV_OP_COMPOSITE_EXTRACT, 81);
+
 /* Composite dynamic index — SPIR-V §3.32.12. */
 PIN(LAGFX_SPV_OP_VECTOR_EXTRACT_DYNAMIC, 77);
 PIN(LAGFX_SPV_OP_VECTOR_INSERT_DYNAMIC,  78);
