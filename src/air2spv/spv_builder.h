@@ -280,6 +280,23 @@ enum {
     LAGFX_SPV_GLSL_CROSS                = 68,
     LAGFX_SPV_GLSL_NORMALIZE            = 69,
     LAGFX_SPV_GLSL_REFLECT              = 71,
+    /* Round 3: trig + misc (verified vs GLSL.std.450.h, §3.32 GLSL.std.450) */
+    LAGFX_SPV_GLSL_TRUNC                = 3,    /* GLSLstd450Trunc */
+    LAGFX_SPV_GLSL_FSIGN                = 6,    /* GLSLstd450FSign */
+    LAGFX_SPV_GLSL_RADIANS              = 11,   /* GLSLstd450Radians */
+    LAGFX_SPV_GLSL_DEGREES              = 12,   /* GLSLstd450Degrees */
+    LAGFX_SPV_GLSL_TAN                  = 15,   /* GLSLstd450Tan */
+    LAGFX_SPV_GLSL_ASIN                 = 16,   /* GLSLstd450Asin */
+    LAGFX_SPV_GLSL_ACOS                 = 17,   /* GLSLstd450Acos */
+    LAGFX_SPV_GLSL_ATAN                 = 18,   /* GLSLstd450Atan */
+    LAGFX_SPV_GLSL_SINH                 = 19,   /* GLSLstd450Sinh */
+    LAGFX_SPV_GLSL_COSH                 = 20,   /* GLSLstd450Cosh */
+    LAGFX_SPV_GLSL_TANH                 = 21,   /* GLSLstd450Tanh */
+    LAGFX_SPV_GLSL_ATAN2                = 25,   /* GLSLstd450Atan2 */
+    LAGFX_SPV_GLSL_EXP2                 = 29,   /* GLSLstd450Exp2 */
+    LAGFX_SPV_GLSL_LOG2                 = 30,   /* GLSLstd450Log2 */
+    LAGFX_SPV_GLSL_LDEXP                = 53,   /* GLSLstd450Ldexp */
+    LAGFX_SPV_GLSL_REFRACT              = 72,   /* GLSLstd450Refract */
 };
 
 /* === Builder lifecycle ============================================= */
