@@ -1857,9 +1857,74 @@ static void emit_inst_cmp(xlate_ctx_t *c, uint32_t inst_idx,
  * (LHS, RHS, predicate, optional fast-math flags). Forward to the
  * shared handler. */
 static void emit_inst_cmp2(xlate_ctx_t *c, uint32_t inst_idx,
-                           const lagfx_air_inst_t *inst,
-                           uint32_t result_value_id, uint32_t next_val_id) {
+                            const lagfx_air_inst_t *inst,
+                            uint32_t result_value_id, uint32_t next_val_id) {
     emit_inst_cmp(c, inst_idx, inst, result_value_id, next_val_id);
+}
+
+/* ===================================================================
+ * SELECT / VSELECT handler — LLVM select → SPIR-V OpSelect (§3.32.16)
+ *
+ * Record layout (verbatim bitcode record from lagfx_air_function_body_open):
+ *   ops[0] = TrueVal  (relative value ref)
+ *   ops[1] = FalseVal (relative value ref)
+ *   ops[2] = Cond     (relative value ref)
+ * No leading explicit-type slot in the common case; getValueTypePair
+ * consumes one operand for TrueVal.
+ *
+ * SPIR-V OpSelect (§3.32.16) operand order:
+ *   [result_type, result_id, Condition, Object_1(true), Object_2(false)]
+ *
+ * So we MUST reorder from AIR record order (true, false, cond):
+ * emit Cond(ops[2]) FIRST into SPIR-V slot 2, then TrueVal(ops[0]),
+ * then FalseVal(ops[1]). Do NOT pass them through in record order.
+ */
+static void emit_inst_select(xlate_ctx_t *c, uint32_t inst_idx,
+                              const lagfx_air_inst_t *inst,
+                              uint32_t result_value_id, uint32_t next_val_id) {
+    if (inst->num_ops < 3u) return;
+
+    uint32_t true_rel  = (uint32_t)inst->ops[0];
+    uint32_t false_rel = (uint32_t)inst->ops[1];
+    uint32_t cond_rel  = (uint32_t)inst->ops[2];
+
+    /* Resolve all three operands to absolute value-ids. */
+    uint32_t true_id  = resolve_relative(true_rel,  next_val_id);
+    uint32_t false_id = resolve_relative(false_rel, next_val_id);
+    uint32_t cond_id  = resolve_relative(cond_rel,  next_val_id);
+
+    /* Result type: same as the selected values (true/false share a type).
+     * Resolve from TrueVal operand's AIR type via value_air_type_idx. */
+    uint32_t result_ty_air = value_air_type_idx(c, true_id);
+    if (!result_ty_air) {
+        LAGFX_WARN("select: couldn't resolve true-operand type — drop");
+        return;
+    }
+    uint32_t result_spv_type = emit_air_type(c, result_ty_air);
+
+    /* Resolve operands to SPIR-V ids. */
+    uint32_t cond_spv   = resolve_or_undef(c, cond_id,  emit_type_bool(c));
+    uint32_t true_spv   = resolve_or_undef(c, true_id,  result_spv_type);
+    uint32_t false_spv  = resolve_or_undef(c, false_id, result_spv_type);
+
+    /* Allocate result SPIR-V id. */
+    uint32_t result_spv = resolve_value_spv(c, result_value_id);
+    if (!result_spv) {
+        result_spv = lagfx_spv_builder_alloc_id(c->b);
+    }
+
+    /* Emit OpSelect: [result_type, result_id, Condition, TrueVal, FalseVal] */
+    uint32_t ops[5];
+    ops[0] = result_spv_type;
+    ops[1] = result_spv;
+    ops[2] = cond_spv;
+    ops[3] = true_spv;
+    ops[4] = false_spv;
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_SELECT, ops, 5);
+
+    /* Bind the result value-id. */
+    bind_value_spv(c, result_value_id, result_spv);
+    c->inst_result_air_type[inst_idx] = result_ty_air;
 }
 
 /* ===================================================================
@@ -1930,6 +1995,10 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
                 break;
             case LAGFX_AIR_INST_CMP2:
                 emit_inst_cmp2(c, i, inst, result_value_id, next_val_id);
+                break;
+            case LAGFX_AIR_INST_SELECT:
+            case LAGFX_AIR_INST_VSELECT:
+                emit_inst_select(c, i, inst, result_value_id, next_val_id);
                 break;
             case LAGFX_AIR_INST_DECLAREBLOCKS:
                 /* No-op; basic-block count was used during decode. */

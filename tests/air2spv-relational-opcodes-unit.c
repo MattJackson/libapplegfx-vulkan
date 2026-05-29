@@ -63,9 +63,11 @@ PIN(LAGFX_SPV_OP_BITWISE_OR,  197);
 PIN(LAGFX_SPV_OP_BITWISE_XOR, 198);
 PIN(LAGFX_SPV_OP_BITWISE_AND, 199);
 
+/* Composite instructions (SPIR-V §3.32.16). */
+PIN(LAGFX_SPV_OP_SELECT, 169);
+
 /* An already-trusted neighbour, as a sanity anchor that the enum block
- * as a whole is on the right number line. (OpSelect=169 will join here
- * once the SELECT/VSELECT cycle lands its constant.) */
+ * as a whole is on the right number line. */
 PIN(LAGFX_SPV_OP_DOT, 148);
 
 int main(void) {
