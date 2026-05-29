@@ -50,3 +50,13 @@ executable('air-bcdump',
   dependencies : libapplegfx_vulkan_dep,
   build_by_default : true,
 )
+
+# air-translate — offline .air.bc → SPIR-V via the real translator
+# (per-instruction body walker + reference fallback). Used to test real
+# captured macOS shaders through our pipeline without a guest / noVNC.
+executable('air-translate',
+  'air-translate.c',
+  include_directories : [include_dir, internal_include_dir],
+  dependencies : libapplegfx_vulkan_dep,
+  build_by_default : true,
+)
