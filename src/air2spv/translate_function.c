@@ -1755,8 +1755,20 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
         uint32_t n_types = 0;
         const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
         if (lhs_ty < n_types) {
-            is_float = (ts[lhs_ty].kind == LAGFX_AIR_TYPE_FLOAT ||
-                        ts[lhs_ty].kind == LAGFX_AIR_TYPE_VECTOR);
+            const lagfx_air_type_t *t = &ts[lhs_ty];
+            if (t->kind == LAGFX_AIR_TYPE_FLOAT) {
+                is_float = true;
+            } else if (t->kind == LAGFX_AIR_TYPE_VECTOR) {
+                /* A vector is float iff its ELEMENT type is float. A uintN
+                 * vector is integer (e.g. `uint4 % 31` → OpUMod, not FMod);
+                 * the old code classified every VECTOR as float, emitting
+                 * integer ops with a float result type (spirv-val reject). */
+                uint32_t elem = t->num_op >= 2u ? t->op[1] : 0u;
+                is_float = (elem < n_types &&
+                            ts[elem].kind == LAGFX_AIR_TYPE_FLOAT);
+            } else {
+                is_float = false;
+            }
         }
     }
 

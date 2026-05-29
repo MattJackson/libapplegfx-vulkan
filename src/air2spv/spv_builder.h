@@ -99,9 +99,11 @@ enum {
     LAGFX_SPV_OP_UDIV                   = 134,   /* OpUDiv: unsigned integer division */
     LAGFX_SPV_OP_SDIV                   = 135,   /* OpSDiv: signed integer division */
     LAGFX_SPV_OP_FDIV                   = 136,   /* OpFDiv: floating-point division */
-    LAGFX_SPV_OP_FREM                   = 137,   /* OpFRem: floating-point remainder */
-    LAGFX_SPV_OP_UMOD                   = 138,   /* OpUMod: unsigned integer modulo */
+    LAGFX_SPV_OP_UMOD                   = 137,   /* OpUMod: unsigned integer modulo */
+    LAGFX_SPV_OP_SREM                   = 138,   /* OpSRem: signed integer remainder */
     LAGFX_SPV_OP_SMOD                   = 139,   /* OpSMod: signed integer modulo */
+    LAGFX_SPV_OP_FREM                   = 140,   /* OpFRem: floating-point remainder */
+    LAGFX_SPV_OP_FMOD                   = 141,   /* OpFMod: floating-point modulo */
     LAGFX_SPV_OP_DOT                    = 148,   /* OpDot: vector dot product (scalar result) */
     /* Relational/comparison opcodes (SPIR-V §3.32.15). Values are the
      * canonical SPIR-V core opcode numbers (verified against

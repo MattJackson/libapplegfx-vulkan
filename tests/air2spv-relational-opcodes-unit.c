@@ -106,6 +106,26 @@ PIN(LAGFX_SPV_GLSL_LOG2,     30);
 PIN(LAGFX_SPV_GLSL_LDEXP,    53);
 PIN(LAGFX_SPV_GLSL_REFRACT,  72);
 
+/* Arithmetic — SPIR-V §3.32.13. Added 2026-05-30 after a real macOS
+ * 15.7.5 fragment shader exposed FREM=137 (actually OpUMod) and
+ * UMOD=138 (actually OpSRem) — a fabricated-opcode regression that
+ * shipped because nothing pinned these and no fixture hit FRem/UMod.
+ * Values are SpvOp* from spirv/unified1/spirv.h. */
+PIN(LAGFX_SPV_OP_IADD, 128);
+PIN(LAGFX_SPV_OP_FADD, 129);
+PIN(LAGFX_SPV_OP_ISUB, 130);
+PIN(LAGFX_SPV_OP_FSUB, 131);
+PIN(LAGFX_SPV_OP_IMUL, 132);
+PIN(LAGFX_SPV_OP_FMUL, 133);
+PIN(LAGFX_SPV_OP_UDIV, 134);
+PIN(LAGFX_SPV_OP_SDIV, 135);
+PIN(LAGFX_SPV_OP_FDIV, 136);
+PIN(LAGFX_SPV_OP_UMOD, 137);
+PIN(LAGFX_SPV_OP_SREM, 138);
+PIN(LAGFX_SPV_OP_SMOD, 139);
+PIN(LAGFX_SPV_OP_FREM, 140);
+PIN(LAGFX_SPV_OP_FMOD, 141);
+
 /* An already-trusted neighbour, as a sanity anchor that the enum block
  * as a whole is on the right number line. */
 PIN(LAGFX_SPV_OP_DOT, 148);
