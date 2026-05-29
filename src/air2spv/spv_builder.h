@@ -230,6 +230,12 @@ enum {
 enum {
     LAGFX_SPV_BUILTIN_POSITION          = 0,
     LAGFX_SPV_BUILTIN_VERTEX_INDEX      = 42,
+
+    /* Freshman Task — BuiltIn enum constants (round 2) */
+    LAGFX_SPV_BUILTIN_FRAG_COORD        = 15,   /* SpvBuiltInFragCoord */
+    LAGFX_SPV_BUILTIN_LAYER             = 9,    /* SpvBuiltInLayer */
+    LAGFX_SPV_BUILTIN_VIEWPORT_INDEX    = 10,   /* SpvBuiltInViewportIndex */
+    LAGFX_SPV_BUILTIN_GLOBAL_INVOCATION_ID = 28,  /* SpvBuiltInGlobalInvocationId */
 };
 
 /* OpFunction `FunctionControl` mask — None is what we want for shaders. */

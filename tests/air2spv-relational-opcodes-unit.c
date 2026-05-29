@@ -76,6 +76,12 @@ PIN(LAGFX_SPV_OP_VECTOR_INSERT_DYNAMIC,  78);
 /* Memory (SPIR-V §3.32.8) */
 PIN(LAGFX_SPV_OP_ACCESS_CHAIN, 65);
 
+/* BuiltIn decorations (SPIR-V §3.21) */
+PIN(LAGFX_SPV_BUILTIN_FRAG_COORD,           15);
+PIN(LAGFX_SPV_BUILTIN_LAYER,                9);
+PIN(LAGFX_SPV_BUILTIN_VIEWPORT_INDEX,       10);
+PIN(LAGFX_SPV_BUILTIN_GLOBAL_INVOCATION_ID, 28);
+
 /* An already-trusted neighbour, as a sanity anchor that the enum block
  * as a whole is on the right number line. */
 PIN(LAGFX_SPV_OP_DOT, 148);
