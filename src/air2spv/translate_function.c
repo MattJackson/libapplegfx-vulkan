@@ -1216,12 +1216,23 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
             case LAGFX_AIR_TYPE_ARRAY:  if (t->num_op >= 2u) pointee = t->op[1]; break;
             case LAGFX_AIR_TYPE_VECTOR: if (t->num_op >= 2u) pointee = t->op[1]; break;
             case LAGFX_AIR_TYPE_STRUCT_ANON:
-            case LAGFX_AIR_TYPE_STRUCT_NAMED:
-                /* Need the field index, which is a constant operand.
-                 * For triangle's GEPs we don't index into structs at
-                 * this layer; defer struct handling. */
-                if (t->num_op >= 2u) pointee = t->op[1];
+            case LAGFX_AIR_TYPE_STRUCT_NAMED: {
+                /* Resolve the field index operand to a literal constant. */
+                uint32_t idx_rel = (uint32_t)inst->ops[3u + i];
+                uint32_t idx_id  = resolve_relative(idx_rel, next_val_id);
+                int32_t field    = 0;
+                if (!resolve_value_lit_i32(c, idx_id, &field) || field < 0) {
+                    LAGFX_WARN("gep: struct field index not a known constant — drop");
+                    return;
+                }
+                /* Bounds-check: field type lives at op[1 + field]. */
+                if ((uint32_t)(1 + field) >= t->num_op) {
+                    LAGFX_WARN("gep: struct field %d out of bounds — drop", field);
+                    return;
+                }
+                pointee = t->op[1u + (uint32_t)field];
                 break;
+            }
             default: break;
         }
     }

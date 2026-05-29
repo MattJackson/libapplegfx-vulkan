@@ -73,6 +73,9 @@ PIN(LAGFX_SPV_OP_COMPOSITE_EXTRACT, 81);
 PIN(LAGFX_SPV_OP_VECTOR_EXTRACT_DYNAMIC, 77);
 PIN(LAGFX_SPV_OP_VECTOR_INSERT_DYNAMIC,  78);
 
+/* Memory (SPIR-V §3.32.8) */
+PIN(LAGFX_SPV_OP_ACCESS_CHAIN, 65);
+
 /* An already-trusted neighbour, as a sanity anchor that the enum block
  * as a whole is on the right number line. */
 PIN(LAGFX_SPV_OP_DOT, 148);
