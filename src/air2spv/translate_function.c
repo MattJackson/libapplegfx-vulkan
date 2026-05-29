@@ -1857,9 +1857,145 @@ static void emit_inst_cmp(xlate_ctx_t *c, uint32_t inst_idx,
  * (LHS, RHS, predicate, optional fast-math flags). Forward to the
  * shared handler. */
 static void emit_inst_cmp2(xlate_ctx_t *c, uint32_t inst_idx,
-                            const lagfx_air_inst_t *inst,
-                            uint32_t result_value_id, uint32_t next_val_id) {
+                             const lagfx_air_inst_t *inst,
+                             uint32_t result_value_id, uint32_t next_val_id) {
     emit_inst_cmp(c, inst_idx, inst, result_value_id, next_val_id);
+}
+
+/* ===================================================================
+ * EXTRACTELT / INSERTELT handler — vector element access (SPIR-V §3.32.12)
+ *
+ * AIR record layout (verbatim bitcode record, USE_RELATIVE_IDS):
+ *   EXTRACTELT (raw=6): ops[0] = Vector (rel),  ops[1] = Index (rel)        ; guard num_ops < 2
+ *   INSERTELT  (raw=7): ops[0] = Vector (rel),  ops[1] = Element (rel),
+ *                       ops[2] = Index (rel)                                 ; guard num_ops < 3
+ *
+ * SPIR-V OpVectorExtractDynamic (§3.32.12): [result_type(elem), result_id, Vector, Index]
+ * SPIR-V OpVectorInsertDynamic (§3.32.12):  [result_type(vec),  result_id, Vector, Element, Index]
+ *
+ * Result types:
+ *   - EXTRACTELT result = the vector's ELEMENT type (ts[vec_ty].op[1])
+ *   - INSERTELT result = the VECTOR type itself
+ */
+
+static void emit_inst_extractelt(xlate_ctx_t *c, uint32_t inst_idx,
+                                  const lagfx_air_inst_t *inst,
+                                  uint32_t result_value_id, uint32_t next_val_id) {
+    if (inst->num_ops < 2u) return;
+
+    /* Resolve operands. */
+    uint32_t vector_rel = (uint32_t)inst->ops[0];
+    uint32_t index_rel  = (uint32_t)inst->ops[1];
+
+    uint32_t vector_id = resolve_relative(vector_rel, next_val_id);
+    uint32_t index_id  = resolve_relative(index_rel, next_val_id);
+
+    /* Resolve the vector's AIR type to get its element type. */
+    uint32_t vec_ty_air = value_air_type_idx(c, vector_id);
+    if (!vec_ty_air) {
+        LAGFX_WARN("extractelt: couldn't resolve vector operand type — drop");
+        return;
+    }
+
+    /* Check that it's actually a VECTOR type. */
+    uint32_t n_types = 0u;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    if (vec_ty_air >= n_types || ts[vec_ty_air].kind != LAGFX_AIR_TYPE_VECTOR) {
+        LAGFX_WARN("extractelt: vector operand type is not a VECTOR — drop");
+        return;
+    }
+
+    /* Element AIR type = vec_ty.op[1] (lanes are op[0], element is op[1]). */
+    uint32_t elem_ty_air = ts[vec_ty_air].num_op >= 2u ? ts[vec_ty_air].op[1] : 0u;
+    if (!elem_ty_air) {
+        LAGFX_WARN("extractelt: vector has no element type — drop");
+        return;
+    }
+
+    /* Emit SPIR-V types. */
+    uint32_t elem_spv_type = emit_air_type(c, elem_ty_air);
+    uint32_t index_spv_type = emit_type_int_w(c, 32u, 0u); /* Index is i32. */
+
+    /* Resolve operands to SPIR-V ids. */
+    uint32_t vector_spv = resolve_or_undef(c, vector_id, elem_ty_air ? elem_spv_type : index_spv_type);
+    uint32_t index_spv  = resolve_or_undef(c, index_id, index_spv_type);
+
+    /* Allocate result SPIR-V id. */
+    uint32_t result_spv = resolve_value_spv(c, result_value_id);
+    if (!result_spv) {
+        result_spv = lagfx_spv_builder_alloc_id(c->b);
+    }
+
+    /* Emit OpVectorExtractDynamic: [result_type(elem), result_id, Vector, Index] */
+    uint32_t ops[4];
+    ops[0] = elem_spv_type;
+    ops[1] = result_spv;
+    ops[2] = vector_spv;
+    ops[3] = index_spv;
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VECTOR_EXTRACT_DYNAMIC, ops, 4);
+
+    /* Bind the result value-id and record AIR type (element type). */
+    bind_value_spv(c, result_value_id, result_spv);
+    c->inst_result_air_type[inst_idx] = elem_ty_air;
+}
+
+static void emit_inst_insertelt(xlate_ctx_t *c, uint32_t inst_idx,
+                                 const lagfx_air_inst_t *inst,
+                                 uint32_t result_value_id, uint32_t next_val_id) {
+    if (inst->num_ops < 3u) return;
+
+    /* Resolve operands. */
+    uint32_t vector_rel = (uint32_t)inst->ops[0];
+    uint32_t elem_rel   = (uint32_t)inst->ops[1];
+    uint32_t index_rel  = (uint32_t)inst->ops[2];
+
+    uint32_t vector_id = resolve_relative(vector_rel, next_val_id);
+    uint32_t elem_id   = resolve_relative(elem_rel, next_val_id);
+    uint32_t index_id  = resolve_relative(index_rel, next_val_id);
+
+    /* Resolve the vector's AIR type. */
+    uint32_t vec_ty_air = value_air_type_idx(c, vector_id);
+    if (!vec_ty_air) {
+        LAGFX_WARN("insertelt: couldn't resolve vector operand type — drop");
+        return;
+    }
+
+    /* Check that it's actually a VECTOR type. */
+    uint32_t n_types = 0u;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    if (vec_ty_air >= n_types || ts[vec_ty_air].kind != LAGFX_AIR_TYPE_VECTOR) {
+        LAGFX_WARN("insertelt: vector operand type is not a VECTOR — drop");
+        return;
+    }
+
+    /* Emit SPIR-V types. */
+    uint32_t vec_spv_type = emit_air_type(c, vec_ty_air);
+    uint32_t elem_spv_type = emit_air_type(c, ts[vec_ty_air].num_op >= 2u ? ts[vec_ty_air].op[1] : 0u);
+    uint32_t index_spv_type = emit_type_int_w(c, 32u, 0u); /* Index is i32. */
+
+    /* Resolve operands to SPIR-V ids. */
+    uint32_t vector_spv = resolve_or_undef(c, vector_id, vec_spv_type);
+    uint32_t elem_spv   = resolve_or_undef(c, elem_id, elem_spv_type);
+    uint32_t index_spv  = resolve_or_undef(c, index_id, index_spv_type);
+
+    /* Allocate result SPIR-V id. */
+    uint32_t result_spv = resolve_value_spv(c, result_value_id);
+    if (!result_spv) {
+        result_spv = lagfx_spv_builder_alloc_id(c->b);
+    }
+
+    /* Emit OpVectorInsertDynamic: [result_type(vec), result_id, Vector, Element, Index] */
+    uint32_t ops[5];
+    ops[0] = vec_spv_type;
+    ops[1] = result_spv;
+    ops[2] = vector_spv;
+    ops[3] = elem_spv;
+    ops[4] = index_spv;
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VECTOR_INSERT_DYNAMIC, ops, 5);
+
+    /* Bind the result value-id and record AIR type (vector type). */
+    bind_value_spv(c, result_value_id, result_spv);
+    c->inst_result_air_type[inst_idx] = vec_ty_air;
 }
 
 /* ===================================================================
@@ -1999,6 +2135,12 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
             case LAGFX_AIR_INST_SELECT:
             case LAGFX_AIR_INST_VSELECT:
                 emit_inst_select(c, i, inst, result_value_id, next_val_id);
+                break;
+            case LAGFX_AIR_INST_EXTRACTELT:
+                emit_inst_extractelt(c, i, inst, result_value_id, next_val_id);
+                break;
+            case LAGFX_AIR_INST_INSERTELT:
+                emit_inst_insertelt(c, i, inst, result_value_id, next_val_id);
                 break;
             case LAGFX_AIR_INST_DECLAREBLOCKS:
                 /* No-op; basic-block count was used during decode. */

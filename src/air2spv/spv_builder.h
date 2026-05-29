@@ -133,6 +133,9 @@ enum {
     LAGFX_SPV_OP_FORD_GREATER_EQUAL     = 190,   /* OpFOrdGreaterThanEqual (§3.32.15) */
     LAGFX_SPV_OP_FUNORD_GREATER_EQUAL   = 191,   /* OpFUnordGreaterThanEqual (§3.32.15) */
     LAGFX_SPV_OP_SELECT                 = 169,   /* OpSelect (§3.32.16) */
+    /* Composite instructions (SPIR-V §3.32.12). */
+    LAGFX_SPV_OP_VECTOR_EXTRACT_DYNAMIC = 77,  /* OpVectorExtractDynamic (§3.32.12) */
+    LAGFX_SPV_OP_VECTOR_INSERT_DYNAMIC  = 78,  /* OpVectorInsertDynamic (§3.32.12) */
     /* Shift opcodes (SPIR-V §3.32.14). Canonical SPIR-V numbers:
      * ShiftRightLogical=194, ShiftRightArithmetic=195, ShiftLeftLogical=196.
      * (Pre-2026-05-29 these were rotated-wrong — shl emitted ShiftRightLogical.) */
