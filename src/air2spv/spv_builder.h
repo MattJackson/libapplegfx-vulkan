@@ -103,8 +103,30 @@ enum {
     LAGFX_SPV_OP_UMOD                   = 138,   /* OpUMod: unsigned integer modulo */
     LAGFX_SPV_OP_SMOD                   = 139,   /* OpSMod: signed integer modulo */
     LAGFX_SPV_OP_DOT                    = 148,   /* OpDot: vector dot product (scalar result) */
-    LAGFX_SPV_OP_SLESS_THAN             = 177,   /* OpSLessThan: signed less-than comparison */
-    LAGFX_SPV_OP_FORD_GREATER_THAN      = 184,   /* OpFOrdGreaterThan: float ordered greater-than */
+    LAGFX_SPV_OP_SLESS_THAN             = 177,   /* OpSLessThan: signed less-than comparison (§3.32.15) */
+    LAGFX_SPV_OP_FORD_GREATER_THAN      = 184,   /* OpFOrdGreaterThan: float ordered greater-than (§3.32.15) */
+    LAGFX_SPV_OP_FORD_EQUAL             = 179,   /* OpFOrdEqual: float ordered equal (§3.32.15) */
+    LAGFX_SPV_OP_FORD_NOT_EQUAL         = 180,   /* OpFOrdNotEqual: float ordered not-equal (§3.32.15) */
+    LAGFX_SPV_OP_FORD_LESS_THAN         = 182,   /* OpFOrdLessThan: float ordered less-than (§3.32.15) */
+    LAGFX_SPV_OP_FORD_GREATER_EQUAL     = 183,   /* OpFOrdGreaterThanEqual: float ordered >= (§3.32.15) */
+    LAGFX_SPV_OP_FORD_LESS_EQUAL        = 185,   /* OpFOrdLessThanEqual: float ordered <= (§3.32.15) */
+    LAGFX_SPV_OP_FUNORD_EQUAL           = 186,   /* OpFUnordEqual: float unordered equal (§3.32.15) */
+    LAGFX_SPV_OP_FUNORD_NOT_EQUAL       = 187,   /* OpFUnordNotEqual: float unordered != (§3.32.15) */
+    LAGFX_SPV_OP_FUNORD_LESS_THAN       = 188,   /* OpFUnordLessThan: float unordered < (§3.32.15) */
+    LAGFX_SPV_OP_FUNORD_GREATER_THAN    = 189,   /* OpFUnordGreaterThan: float unordered > (§3.32.15) */
+    LAGFX_SPV_OP_FUNORD_LESS_EQUAL      = 190,   /* OpFUnordLessThanEqual: float unordered <= (§3.32.15) */
+    LAGFX_SPV_OP_FUNORD_GREATER_EQUAL   = 191,   /* OpFUnordGreaterThanEqual: float unordered >= (§3.32.15) */
+    LAGFX_SPV_OP_ORDERED                = 192,   /* OpOrdered: float ordered predicate (§3.32.15) */
+    LAGFX_SPV_OP_UNORDERED              = 193,   /* OpUnordered: float unordered predicate (§3.32.15) */
+    LAGFX_SPV_OP_IEQUAL                 = 178,   /* OpIEqual: integer equal (§3.32.15) */
+    LAGFX_SPV_OP_INOT_EQUAL             = 197,   /* OpINotEqual: integer not-equal (§3.32.15) */
+    LAGFX_SPV_OP_SGREATER_THAN          = 158,   /* OpSGreaterThan: signed int > (§3.32.15) */
+    LAGFX_SPV_OP_SGREATER_EQUAL         = 159,   /* OpSGreaterThanEqual: signed int >= (§3.32.15) */
+    LAGFX_SPV_OP_SLess_than_equal       = 181,   /* OpSLessThanEqual: signed int <= (§3.32.15) */
+    LAGFX_SPV_OP_UGREATER_THAN          = 160,   /* OpUGreaterThan: unsigned int > (§3.32.15) */
+    LAGFX_SPV_OP_UGREATER_EQUAL         = 161,   /* OpUGreaterThanEqual: unsigned int >= (§3.32.15) */
+    LAGFX_SPV_OP_ULESS_THAN             = 162,   /* OpULessThan: unsigned int < (§3.32.15) */
+    LAGFX_SPV_OP_ULESS_EQUAL            = 163,   /* OpULessThanEqual: unsigned int <= (§3.32.15) */
     /* Shift opcodes (SPIR-V §3.32.2) */
     LAGFX_SPV_OP_SHIFT_LEFT_LOGICAL     = 194,   /* OpShiftLeftLogical */
     LAGFX_SPV_OP_SHIFT_RIGHT_LOGICAL    = 195,   /* OpShiftRightLogical */

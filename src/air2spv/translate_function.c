@@ -1655,8 +1655,8 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
  * SPIR-V op: OpFNegate (§3.32.2) — core SPIR-V unary float negation
  */
 static void emit_inst_unop(xlate_ctx_t *c, uint32_t inst_idx,
-                           const lagfx_air_inst_t *inst,
-                           uint32_t result_value_id, uint32_t next_val_id) {
+                            const lagfx_air_inst_t *inst,
+                            uint32_t result_value_id, uint32_t next_val_id) {
     if (inst->num_ops < 2u) return;
 
     uint32_t opval_rel = (uint32_t)inst->ops[0];
@@ -1702,6 +1702,241 @@ static void emit_inst_unop(xlate_ctx_t *c, uint32_t inst_idx,
     /* Bind the result value-id */
     bind_value_spv(c, result_value_id, result_spv);
     c->inst_result_air_type[inst_idx] = result_spv_type ? 0u : 2u; /* float or unknown */
+}
+
+/* ===================================================================
+ * CMP handler — LLVM CmpInst (legacy) → SPIR-V relational ops
+ *
+ * AIR CMP operand layout: [opty_abs, opval_rel_lhs, opval_rel_rhs, pred]
+ *
+ * Verified from LLVM bitcode reader (BitcodeReader.cpp FUNC_CODE_INST_CMP):
+ *   - Record[0]: opty (result type index)
+ *   - Record[1..2]: LHS/RHS value-ids via getValueTypePair / popValue
+ *   - Record[3]: predicate (CmpInst::Predicate enum value, passed through unchanged)
+ *
+ * CmpInst::Predicate values are the IR enum values directly on the wire.
+ * Verify llvm/IR/InstrTypes.h `enum Predicate`:
+ *   FCMP_FALSE=0, FCMP_OEQ=1, FCMP_OGT=2, FCMP_OGE=3, FCMP_OLT=4,
+ *   FCMP_OLE=5, FCMP_ONE=6, FCMP_ORD=7, FCMP_UNO=8, FCMP_UEQ=9,
+ *   FCMP_UGT=10, FCMP_UGE=11, FCMP_ULT=12, FCMP_ULE=13, FCMP_UNE=14,
+ *   FCMP_TRUE=15, ICMP_EQ=32, ICMP_NE=33, ICMP_UGT=34, ICMP_UGE=35,
+ *   ICMP_ULT=36, ICMP_ULE=37, ICMP_SGT=38, ICMP_SGE=39, ICMP_SLT=40,
+ *   ICMP_SLE=41.
+ */
+static void emit_inst_cmp(xlate_ctx_t *c, uint32_t inst_idx,
+                           const lagfx_air_inst_t *inst,
+                           uint32_t result_value_id, uint32_t next_val_id) {
+    if (inst->num_ops < 4u) return;
+
+    /* operands: [opty_abs, lhs_rel, rhs_rel, pred] */
+    uint32_t opty_idx = (uint32_t)inst->ops[0];   /* result type index */
+    uint32_t lhs_rel  = (uint32_t)inst->ops[1];   /* LHS value-id (relative) */
+    uint32_t rhs_rel  = (uint32_t)inst->ops[2];   /* RHS value-id (relative) */
+    int pred          = (int)(inst->ops[3]);      /* CmpInst::Predicate enum */
+
+    /* Resolve operands to absolute value-ids, then SPIR-V ids. */
+    uint32_t lhs_id  = resolve_relative(lhs_rel, next_val_id);
+    uint32_t rhs_id  = resolve_relative(rhs_rel, next_val_id);
+    uint32_t lhs_spv = resolve_value_spv(c, lhs_id);
+    uint32_t rhs_spv = resolve_value_spv(c, rhs_id);
+
+    /* Determine result type (OpTypeBool or vector of bool). */
+    uint32_t result_ty_air = opty_idx;
+    uint32_t result_spv_type = emit_air_type(c, result_ty_air);
+
+    /* If we couldn't resolve it as a bool type, check if it's a vector. */
+    if (result_spv_type == 0u) {
+        /* Fallback: assume scalar bool. */
+        result_spv_type = emit_type_int_w(c, 32u, 0u); /* uint placeholder */
+    }
+
+    /* Resolve operands to SPIR-V ids; undef if unresolvable. */
+    if (!lhs_spv) lhs_spv = resolve_or_undef(c, lhs_id, result_spv_type);
+    if (!rhs_spv) rhs_spv = resolve_or_undef(c, rhs_id, result_spv_type);
+
+    /* Determine result SPIR-V id (allocate if not pre-bound). */
+    uint32_t result_spv = resolve_value_spv(c, result_value_id);
+    if (!result_spv) {
+        result_spv = lagfx_spv_builder_alloc_id(c->b);
+    }
+
+    /* Map LLVM CmpInst::Predicate → SPIR-V relational op (§3.32.15). */
+    uint32_t spv_op = 0u;
+    bool is_float = false;
+    {
+        /* Check operand types to determine float vs integer comparison. */
+        if (lhs_id >= c->inst_id_base && lhs_id < c->value_id_capacity) {
+            int idx = (int)(lhs_id - c->inst_id_base);
+            if (idx >= 0 && (uint32_t)idx < c->num_insts) {
+                uint32_t ty_air = c->inst_result_air_type[idx];
+                if (ty_air < c->num_air_types) {
+                    const lagfx_air_type_t *t = &((const lagfx_air_type_t *)lagfx_air_module_types(c->m, &(uint32_t){0}))[ty_air];
+                    is_float = (t->kind == LAGFX_AIR_TYPE_FLOAT || t->kind == LAGFX_AIR_TYPE_VECTOR);
+                }
+            }
+        }
+    }
+
+    switch (pred) {
+        /* Float ordered comparisons. */
+        case 1:  /* FCMP_OEQ → OpFOrdEqual (§3.32.15) */      spv_op = LAGFX_SPV_OP_FORD_EQUAL;       break;
+        case 2:  /* FCMP_OGT → OpFOrdGreaterThan (§3.32.15) */ spv_op = LAGFX_SPV_OP_FORD_GREATER_THAN; break;
+        case 3:  /* FCMP_OGE → OpFOrdGreaterThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_FORD_GREATER_EQUAL; break;
+        case 4:  /* FCMP_OLT → OpFOrdLessThan (§3.32.15) */    spv_op = LAGFX_SPV_OP_FORD_LESS_THAN;  break;
+        case 5:  /* FCMP_OLE → OpFOrdLessThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_FORD_LESS_EQUAL;   break;
+        case 6:  /* FCMP_ONE → OpFOrdNotEqual (§3.32.15) */    spv_op = LAGFX_SPV_OP_FORD_NOT_EQUAL;   break;
+        case 7:  /* FCMP_ORD → OpOrdered (§3.32.15) */         spv_op = LAGFX_SPV_OP_ORDERED;          break;
+        case 8:  /* FCMP_UNO → OpUnordered (§3.32.15) */       spv_op = LAGFX_SPV_OP_UNORDERED;        break;
+
+        /* Float unordered comparisons. */
+        case 9:   /* FCMP_UEQ → OpFUnordEqual (§3.32.15) */     spv_op = LAGFX_SPV_OP_FUNORD_EQUAL;      break;
+        case 10:  /* FCMP_UGT → OpFUnordGreaterThan (§3.32.15) */ spv_op = LAGFX_SPV_OP_FUNORD_GREATER_THAN; break;
+        case 11:  /* FCMP_UGE → OpFUnordGreaterThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_FUNORD_GREATER_EQUAL; break;
+        case 12:  /* FCMP_ULT → OpFUnordLessThan (§3.32.15) */   spv_op = LAGFX_SPV_OP_FUNORD_LESS_THAN;    break;
+        case 13:  /* FCMP_ULE → OpFUnordLessThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_FUNORD_LESS_EQUAL;   break;
+        case 14:  /* FCMP_UNE → OpFUnordNotEqual (§3.32.15) */   spv_op = LAGFX_SPV_OP_FUNORD_NOT_EQUAL;    break;
+
+        /* Integer comparisons (signed). */
+        case 32: /* ICMP_EQ  → OpIEqual (§3.32.15) */          spv_op = LAGFX_SPV_OP_IEQUAL;             break;
+        case 33: /* ICMP_NE  → OpINotEqual (§3.32.15) */        spv_op = LAGFX_SPV_OP_INOT_EQUAL;         break;
+        case 38: /* ICMP_SGT → OpSGreaterThan (§3.32.15) */     spv_op = LAGFX_SPV_OP_SGREATER_THAN;      break;
+        case 39: /* ICMP_SGE → OpSGreaterThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_SGREATER_EQUAL;     break;
+        case 40: /* ICMP_SLT → OpSLessThan (§3.32.15) */        spv_op = LAGFX_SPV_OP_SLESS_THAN;         break;
+        case 41: /* ICMP_SLE → OpSLessThanEqual (§3.32.15) */   spv_op = LAGFX_SPV_OP_SLess_than_equal;   break;
+
+        /* Integer comparisons (unsigned). */
+        case 34: /* ICMP_UGT → OpUGreaterThan (§3.32.15) */     spv_op = LAGFX_SPV_OP_UGREATER_THAN;      break;
+        case 35: /* ICMP_UGE → OpUGreaterThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_UGREATER_EQUAL;     break;
+        case 36: /* ICMP_ULT → OpULessThan (§3.32.15) */        spv_op = LAGFX_SPV_OP_ULESS_THAN;            break;
+        case 37: /* ICMP_ULE → OpULessThanEqual (§3.32.15) */   spv_op = LAGFX_SPV_OP_ULESS_EQUAL;           break;
+
+        default:
+            /* Unknown predicate or FCMP_FALSE/FCMP_TRUE (0/15). */
+            return;
+    }
+
+    if (spv_op == 0u) return;
+
+    /* Emit the comparison: [result_type, result_id, operand1, operand2] */
+    uint32_t ops[5];
+    ops[0] = result_spv_type;
+    ops[1] = result_spv;
+    ops[2] = lhs_spv;
+    ops[3] = rhs_spv;
+    lagfx_spv_builder_emit_op(c->b, spv_op, ops, 4);
+
+    /* Bind the result value-id and record AIR type for downstream. */
+    bind_value_spv(c, result_value_id, result_spv);
+    c->inst_result_air_type[inst_idx] = result_ty_air;
+}
+
+/* ===================================================================
+ * CMP2 handler — LLVM CmpInst (modern) → SPIR-V relational ops
+ *
+ * AIR CMP2 operand layout: [opty_abs, opval_rel_lhs, opval_rel_rhs, pred[, fastmath]]
+ *
+ * Verified from LLVM bitcode reader (BitcodeReader.cpp FUNC_CODE_INST_CMP2):
+ *   - Same as CMP but modern variant; fastmath flags optionally present for FP.
+ *   - Record layout: [opty, LHS, RHS, pred, (optional) FMF]
+ */
+static void emit_inst_cmp2(xlate_ctx_t *c, uint32_t inst_idx,
+                            const lagfx_air_inst_t *inst,
+                            uint32_t result_value_id, uint32_t next_val_id) {
+    if (inst->num_ops < 4u) return;
+
+    /* operands: [opty_abs, lhs_rel, rhs_rel, pred[, fastmath]] */
+    uint32_t opty_idx = (uint32_t)inst->ops[0];   /* result type index */
+    uint32_t lhs_rel  = (uint32_t)inst->ops[1];   /* LHS value-id (relative) */
+    uint32_t rhs_rel  = (uint32_t)inst->ops[2];   /* RHS value-id (relative) */
+    int pred          = (int)(inst->ops[3]);      /* CmpInst::Predicate enum */
+
+    (void)opty_idx;     /* result type already computed via emit_air_type below */
+    (void)inst_idx;     /* for inst_result_air_type binding */
+
+    /* Resolve operands to absolute value-ids, then SPIR-V ids. */
+    uint32_t lhs_id  = resolve_relative(lhs_rel, next_val_id);
+    uint32_t rhs_id  = resolve_relative(rhs_rel, next_val_id);
+    uint32_t lhs_spv = resolve_value_spv(c, lhs_id);
+    uint32_t rhs_spv = resolve_value_spv(c, rhs_id);
+
+    /* Determine result type (OpTypeBool or vector of bool). */
+    /* CMP2: opty is still the first operand but we need to deduce from LHS/RHS types. */
+    uint32_t result_spv_type = 0u;
+    if (lhs_id >= c->inst_id_base && lhs_id < c->value_id_capacity) {
+        int idx = (int)(lhs_id - c->inst_id_base);
+        if (idx >= 0 && (uint32_t)idx < c->num_insts) {
+            uint32_t ty_air = c->inst_result_air_type[idx];
+            if (ty_air) result_spv_type = emit_air_type(c, ty_air);
+        }
+    }
+
+    /* If we couldn't deduce it, default to uint placeholder. */
+    if (result_spv_type == 0u) {
+        result_spv_type = emit_type_int_w(c, 32u, 0u);
+    }
+
+    /* Resolve operands to SPIR-V ids; undef if unresolvable. */
+    if (!lhs_spv) lhs_spv = resolve_or_undef(c, lhs_id, result_spv_type);
+    if (!rhs_spv) rhs_spv = resolve_or_undef(c, rhs_id, result_spv_type);
+
+    /* Determine result SPIR-V id (allocate if not pre-bound). */
+    uint32_t result_spv = resolve_value_spv(c, result_value_id);
+    if (!result_spv) {
+        result_spv = lagfx_spv_builder_alloc_id(c->b);
+    }
+
+    /* Map LLVM CmpInst::Predicate → SPIR-V relational op (§3.32.15). */
+    uint32_t spv_op = 0u;
+    switch (pred) {
+        /* Float ordered comparisons. */
+        case 1:  /* FCMP_OEQ → OpFOrdEqual (§3.32.15) */      spv_op = LAGFX_SPV_OP_FORD_EQUAL;       break;
+        case 2:  /* FCMP_OGT → OpFOrdGreaterThan (§3.32.15) */ spv_op = LAGFX_SPV_OP_FORD_GREATER_THAN; break;
+        case 3:  /* FCMP_OGE → OpFOrdGreaterThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_FORD_GREATER_EQUAL; break;
+        case 4:  /* FCMP_OLT → OpFOrdLessThan (§3.32.15) */    spv_op = LAGFX_SPV_OP_FORD_LESS_THAN;  break;
+        case 5:  /* FCMP_OLE → OpFOrdLessThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_FORD_LESS_EQUAL;   break;
+        case 6:  /* FCMP_ONE → OpFOrdNotEqual (§3.32.15) */    spv_op = LAGFX_SPV_OP_FORD_NOT_EQUAL;   break;
+        case 7:  /* FCMP_ORD → OpOrdered (§3.32.15) */         spv_op = LAGFX_SPV_OP_ORDERED;          break;
+        case 8:  /* FCMP_UNO → OpUnordered (§3.32.15) */       spv_op = LAGFX_SPV_OP_UNORDERED;        break;
+
+        /* Float unordered comparisons. */
+        case 9:   /* FCMP_UEQ → OpFUnordEqual (§3.32.15) */     spv_op = LAGFX_SPV_OP_FUNORD_EQUAL;      break;
+        case 10:  /* FCMP_UGT → OpFUnordGreaterThan (§3.32.15) */ spv_op = LAGFX_SPV_OP_FUNORD_GREATER_THAN; break;
+        case 11:  /* FCMP_UGE → OpFUnordGreaterThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_FUNORD_GREATER_EQUAL; break;
+        case 12:  /* FCMP_ULT → OpFUnordLessThan (§3.32.15) */   spv_op = LAGFX_SPV_OP_FUNORD_LESS_THAN;    break;
+        case 13:  /* FCMP_ULE → OpFUnordLessThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_FUNORD_LESS_EQUAL;   break;
+        case 14:  /* FCMP_UNE → OpFUnordNotEqual (§3.32.15) */   spv_op = LAGFX_SPV_OP_FUNORD_NOT_EQUAL;    break;
+
+        /* Integer comparisons (signed). */
+        case 32: /* ICMP_EQ  → OpIEqual (§3.32.15) */          spv_op = LAGFX_SPV_OP_IEQUAL;             break;
+        case 33: /* ICMP_NE  → OpINotEqual (§3.32.15) */        spv_op = LAGFX_SPV_OP_INOT_EQUAL;         break;
+        case 38: /* ICMP_SGT → OpSGreaterThan (§3.32.15) */     spv_op = LAGFX_SPV_OP_SGREATER_THAN;      break;
+        case 39: /* ICMP_SGE → OpSGreaterThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_SGREATER_EQUAL;     break;
+        case 40: /* ICMP_SLT → OpSLessThan (§3.32.15) */        spv_op = LAGFX_SPV_OP_SLESS_THAN;         break;
+        case 41: /* ICMP_SLE → OpSLessThanEqual (§3.32.15) */   spv_op = LAGFX_SPV_OP_SLess_than_equal;   break;
+
+        /* Integer comparisons (unsigned). */
+        case 34: /* ICMP_UGT → OpUGreaterThan (§3.32.15) */     spv_op = LAGFX_SPV_OP_UGREATER_THAN;      break;
+        case 35: /* ICMP_UGE → OpUGreaterThanEqual (§3.32.15) */ spv_op = LAGFX_SPV_OP_UGREATER_EQUAL;     break;
+        case 36: /* ICMP_ULT → OpULessThan (§3.32.15) */        spv_op = LAGFX_SPV_OP_ULESS_THAN;            break;
+        case 37: /* ICMP_ULE → OpULessThanEqual (§3.32.15) */   spv_op = LAGFX_SPV_OP_ULESS_EQUAL;           break;
+
+        default:
+            /* Unknown predicate or FCMP_FALSE/FCMP_TRUE (0/15). */
+            return;
+    }
+
+    if (spv_op == 0u) return;
+
+    /* Emit the comparison: [result_type, result_id, operand1, operand2] */
+    uint32_t ops[5];
+    ops[0] = result_spv_type;
+    ops[1] = result_spv;
+    ops[2] = lhs_spv;
+    ops[3] = rhs_spv;
+    lagfx_spv_builder_emit_op(c->b, spv_op, ops, 4);
+
+    /* Bind the result value-id. */
+    bind_value_spv(c, result_value_id, result_spv);
 }
 
 /* ===================================================================
@@ -1766,6 +2001,12 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
                 break;
             case LAGFX_AIR_INST_UNOP:
                 emit_inst_unop(c, i, inst, result_value_id, next_val_id);
+                break;
+            case LAGFX_AIR_INST_CMP:
+                emit_inst_cmp(c, i, inst, result_value_id, next_val_id);
+                break;
+            case LAGFX_AIR_INST_CMP2:
+                emit_inst_cmp2(c, i, inst, result_value_id, next_val_id);
                 break;
             case LAGFX_AIR_INST_DECLAREBLOCKS:
                 /* No-op; basic-block count was used during decode. */
