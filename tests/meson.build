@@ -783,6 +783,17 @@ endif
    test('air2spv translate function binop unop (unit)', air2spv_binop_unop_test)
  endif
 
+# Compile-time opcode pinning — guards the §3.32.15 relational + §3.32.14
+# shift/bitwise opcode constants against the canonical SPIR-V numbers.
+if fs.is_file(meson.current_source_dir() / 'air2spv-relational-opcodes-unit.c')
+  air2spv_relop_test = executable('air2spv-relational-opcodes-unit',
+    'air2spv-relational-opcodes-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    build_by_default : true,
+  )
+  test('air2spv relational opcode pinning (unit)', air2spv_relop_test)
+endif
+
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   air2spv_si_test_deps = [libapplegfx_vulkan_dep]
