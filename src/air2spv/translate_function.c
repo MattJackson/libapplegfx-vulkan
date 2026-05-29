@@ -118,6 +118,7 @@ typedef struct {
     uint32_t                  id_int64;          /* OpTypeInt 64 1 */
     uint32_t                  id_ulong;          /* OpTypeInt 64 0 */
     uint32_t                  id_float32;
+    uint32_t                  id_half;           /* OpTypeFloat 16 (half) */
     uint32_t                  id_bool;           /* OpTypeBool — comparison results */
     uint32_t                  id_vec2_f;
     uint32_t                  id_vec4_f;
@@ -151,6 +152,15 @@ static uint32_t emit_type_float32(xlate_ctx_t *c) {
     uint32_t ops[] = { c->id_float32, 32u };
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_FLOAT, ops, 2);
     return c->id_float32;
+}
+
+/* Emit OpTypeFloat 16 (half). */
+static uint32_t emit_type_half(xlate_ctx_t *c) {
+    if (c->id_half) return c->id_half;
+    c->id_half = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t ops[] = { c->id_half, 16u };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_FLOAT, ops, 2);
+    return c->id_half;
 }
 
 /* Emit OpTypeInt with the given width + signedness (0=unsigned, 1=signed). */

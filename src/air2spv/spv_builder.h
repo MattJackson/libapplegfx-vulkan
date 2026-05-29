@@ -167,6 +167,12 @@ enum {
      * image-related capability we currently need, and only for storage
      * images with concrete format like Rgba8.) */
     LAGFX_SPV_CAPABILITY_STORAGE_IMAGE_EXTENDED_FORMATS = 49,
+
+    /* Float16 / Int16 / Int8 support (Metal shaders use `half` + i16/i8). */
+    LAGFX_SPV_CAPABILITY_FLOAT16   = 9,
+    LAGFX_SPV_CAPABILITY_INT64     = 11,
+    LAGFX_SPV_CAPABILITY_INT16     = 22,
+    LAGFX_SPV_CAPABILITY_INT8      = 39,
 };
 
 /* Addressing & memory model. */
