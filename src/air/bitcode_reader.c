@@ -155,6 +155,17 @@ struct lagfx_air_module {
     uint32_t                     num_constants;
     lagfx_air_function_t        *functions;
     uint32_t                     num_functions;
+    /* Arena OFFSETS for the three tables above (0 = unset). The table
+     * pointers are raw arena addresses and a later arena_reserve() may
+     * realloc the arena out from under them (e.g. a CONSTANTS block
+     * growing the arena after the function table was cached → stale
+     * pointer → use-after-free). We re-derive the pointers from these
+     * offsets at each internal mid-parse use and once at finalization
+     * (see derive_table_ptrs), mirroring the metadata-strings scheme. */
+    uint32_t                     types_off;
+    uint32_t                     constants_off;
+    uint32_t                     functions_off;
+    uint32_t                     param_attr_groups_off;
     lagfx_air_metadata_t        *metadata;
     uint32_t                     num_metadata;
     /* Metadata strings pool. Internally we keep arena OFFSETS for the
@@ -197,12 +208,50 @@ static void arena_free(lagfx_arena_t *a) {
     a->capacity = a->used = 0u;
 }
 
+/* Re-derive the table pointers from their stored arena offsets. MUST be
+ * called after any arena_reserve() that could have realloc'd the arena
+ * if a table pointer is about to be dereferenced (the raw pointers go
+ * stale on realloc → use-after-free). Offset 0 means "table unset", so
+ * the corresponding pointer is left as-is. */
+static void derive_table_ptrs(lagfx_air_module_t *m) {
+    if (m->types_off) {
+        m->types = (lagfx_air_type_t *)(m->arena.base + m->types_off);
+        /* Each type's `op` is itself a raw arena pointer — re-derive it
+         * from the stored op_offset too (interior staleness). */
+        for (uint32_t i = 0; i < m->num_types; i++) {
+            m->types[i].op = m->types[i].op_offset
+                ? (const uint32_t *)(m->arena.base + m->types[i].op_offset)
+                : NULL;
+        }
+    }
+    if (m->constants_off)
+        m->constants = (lagfx_air_constant_t *)(m->arena.base + m->constants_off);
+    if (m->functions_off)
+        m->functions = (lagfx_air_function_t *)(m->arena.base + m->functions_off);
+    if (m->param_attr_groups_off) {
+        m->param_attr_groups =
+            (lagfx_air_param_attr_group_t *)(m->arena.base + m->param_attr_groups_off);
+        for (uint32_t i = 0; i < m->num_param_attr_groups; i++) {
+            m->param_attr_groups[i].raw = m->param_attr_groups[i].raw_offset
+                ? (const uint32_t *)(m->arena.base + m->param_attr_groups[i].raw_offset)
+                : NULL;
+        }
+    }
+}
+
 /* Reserve `n` bytes of arena space + align to 4 bytes. Returns the
  * byte offset (always >= 1; 0 reserved for "absent"). Returns 0 on
  * out-of-memory (caller checks). */
 static uint32_t arena_reserve(lagfx_arena_t *a, size_t n) {
-    /* Align used to 4 bytes for safe pointer-typed reads. */
-    size_t aligned = (a->used + 3u) & ~(size_t)3u;
+    /* Align used to 8 bytes. The arena backs structs with pointer
+     * members (e.g. lagfx_air_param_attr_group_t::raw), which require
+     * 8-byte alignment; a 4-byte alignment let those land on a
+     * 4-but-not-8 offset and tripped UBSan ("misaligned address ...
+     * requires 8 byte alignment") + SIGSEGV on Linux when a shader with
+     * a PARAMATTR_GROUP block was parsed. base is malloc-aligned (>=8),
+     * so an 8-multiple offset yields an 8-aligned pointer; u32-array
+     * reservations stay 4-aligned (8 is a multiple of 4). */
+    size_t aligned = (a->used + 7u) & ~(size_t)7u;
     if (aligned + n > a->capacity) {
         /* Grow geometric. */
         size_t new_cap = a->capacity * 2u;
@@ -744,6 +793,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                             num_consts++;
                         }
                         m->constants = consts;
+                        m->constants_off = consts_off;
                         m->num_constants = num_consts;
                         LAGFX_TRACE("air_bitcode_reader: CONSTANTS_BLOCK decoded %u constants", num_consts);
                         (void)lagfx_bs_seek(&bs, cb.end_pos);
@@ -1115,10 +1165,12 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                             groups = (lagfx_air_param_attr_group_t *)(m->arena.base + groups_off);
                             groups[num_groups].group_id = (prec.num_ops > 0) ? (uint32_t)prec.ops[0] : 0u;
                             groups[num_groups].raw = (off == 0u) ? NULL : (const uint32_t *)(m->arena.base + off);
+                            groups[num_groups].raw_offset = off;
                             groups[num_groups].num_raw = prec.num_ops;
                             num_groups++;
                         }
                         m->param_attr_groups = groups;
+                        m->param_attr_groups_off = groups_off;
                         m->num_param_attr_groups = num_groups;
                         LAGFX_TRACE("air_bitcode_reader: PARAMATTR_GROUP decoded %u groups", num_groups);
                         (void)lagfx_bs_seek(&bs, pg.end_pos);
@@ -1218,6 +1270,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                             lagfx_air_type_t *t = &types[num_types];
                             t->op = NULL;
                             t->num_op = 0u;
+                            t->op_offset = 0u;
                             t->name_offset = 0u;
 
                             switch (trec.code) {
@@ -1262,6 +1315,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                                     types = (lagfx_air_type_t *)(m->arena.base + types_off);
                                     t = &types[num_types];
                                     t->op = (off == 0u) ? NULL : (const uint32_t *)(m->arena.base + off);
+                                    t->op_offset = off;
                                     t->num_op = trec.num_ops;
                                     if (trec.code == LAGFX_TYPE_STRUCT_NAMED) {
                                         t->name_offset = pending_name_offset;
@@ -1294,6 +1348,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                         }
 
                         m->types = types;
+                        m->types_off = types_off;
                         m->num_types = num_types;
                         LAGFX_TRACE("air_bitcode_reader: TYPE_BLOCK decoded %u entries",
                                     num_types);
@@ -1316,6 +1371,11 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                              break;
                          }
                          size_t body_end = lagfx_bs_pos(&bs);
+                         /* m->functions may be stale here: earlier blocks
+                          * (constants, metadata, types, …) ran
+                          * arena_reserve and could have realloc'd the
+                          * arena since the function table was cached. */
+                         derive_table_ptrs(m);
                          /* Advance next_body_fn past any prototypes (no
                           * body to attach). */
                          while (next_body_fn < m->num_functions &&
@@ -1488,6 +1548,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                         }
                         if (m->num_functions == 0u) {
                             m->functions = (lagfx_air_function_t *)(m->arena.base + blob_off);
+                            m->functions_off = blob_off;
                         }
                         lagfx_air_function_t *fn =
                             (lagfx_air_function_t *)(m->arena.base + blob_off);
@@ -1531,6 +1592,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
              * strtab_offset 0). */
             if (!m->has_strtab && m->symtab_entries != NULL &&
                 m->num_symtab_entries > 0u) {
+                derive_table_ptrs(m);  /* tables may be stale post-realloc */
                 for (uint32_t i = 0; i < m->num_symtab_entries; i++) {
                     lagfx_symtab_entry_t *entry = &m->symtab_entries[i];
                     if (entry->name_offset == 0u) continue;
@@ -1604,6 +1666,7 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
         if (m->strtab_arena_offset != 0u && m->strtab_len_bytes > 0u) {
             const uint8_t *strtab_bytes = m->arena.base + m->strtab_arena_offset;
             size_t strtab_len = m->strtab_len_bytes;
+            derive_table_ptrs(m);  /* m->functions may be stale post-walk */
             for (uint32_t i = 0; i < m->num_functions; i++) {
                 lagfx_air_function_t *fn = &m->functions[i];
                 uint32_t st_off = fn->name_offset;  /* currently STRTAB-relative */
@@ -1617,11 +1680,13 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                     lagfx_air_module_free(m);
                     return LAGFX_ERR_OUT_OF_MEMORY;
                 }
-                /* Refresh strtab_bytes after arena_reserve (it may have realloc'd). */
+                /* arena_reserve may have realloc'd: refresh strtab_bytes
+                 * AND re-derive the function table (fn would be stale). */
                 strtab_bytes = m->arena.base + m->strtab_arena_offset;
+                derive_table_ptrs(m);
                 memcpy(m->arena.base + arena_off, strtab_bytes + st_off, st_len);
                 m->arena.base[arena_off + st_len] = 0;
-                fn->name_offset = arena_off;
+                m->functions[i].name_offset = arena_off;
                 LAGFX_TRACE("air_bitcode_reader: STRTAB resolved fn[%u] '%.*s' (arena+%u, len=%u)",
                             i, (int)st_len, (const char *)(m->arena.base + arena_off),
                             arena_off, st_len);
@@ -1667,6 +1732,16 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
             ptrs[i] = (const char *)(m->arena.base + str_offs[i]);
         }
         m->metadata_strings = ptrs;
+    }
+
+    /* Final re-derivation before handing the module to the caller: the
+     * metadata-strings pointer-array reserve (and the STRTAB pass) may
+     * have realloc'd the arena after the table/metadata pointers were
+     * cached, so refresh them all. (m->metadata_strings and its slots
+     * were written after the last reserve, so they stay valid.) */
+    derive_table_ptrs(m);
+    if (m->num_metadata > 0u) {
+        m->metadata = (lagfx_air_metadata_t *)(m->arena.base + m->metadata_records_arena);
     }
 
     *out_module = m;

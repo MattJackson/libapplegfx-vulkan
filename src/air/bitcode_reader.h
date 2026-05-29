@@ -88,6 +88,11 @@ typedef struct {
     uint32_t        num_op;
     /* For STRUCT_NAMED: offset into module string arena; for others: 0. */
     uint32_t        name_offset;
+    /* Arena offset backing `op` (0 = no operands). `op` is a raw arena
+     * pointer that a later arena_reserve() realloc can invalidate; the
+     * reader re-derives `op = arena.base + op_offset` at finalization.
+     * Reader-internal; consumers read `op`/`num_op`. */
+    uint32_t        op_offset;
 } lagfx_air_type_t;
 
 /* === Constant table (subset for Phase 1) ========================= */
@@ -185,6 +190,7 @@ typedef struct {
     uint32_t            group_id;
     const uint32_t     *raw;            /* raw record operands; semantic decoding deferred */
     uint32_t            num_raw;
+    uint32_t            raw_offset;     /* arena offset backing `raw` (re-derived post-realloc) */
 } lagfx_air_param_attr_group_t;
 
 /* === Top-level module ============================================ */
