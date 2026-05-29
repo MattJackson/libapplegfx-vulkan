@@ -814,6 +814,25 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-nonvoid-call-valuenumber-uni
     workdir : meson.current_source_dir() / '..')
 endif
 
+# SPIR-V §2.4 section-ordering invariant: no OpType*/OpConstant* may
+# follow the first OpFunction. Guards against handlers (CMP/SELECT,
+# non-void CALL, …) emitting a stray type/constant mid-body.
+if fs.is_file(meson.current_source_dir() / 'air2spv-type-section-ordering-unit.c')
+  air2spv_secord_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_secord_deps += [vulkan_dep]
+  endif
+  air2spv_secord_test = executable('air2spv-type-section-ordering-unit',
+    'air2spv-type-section-ordering-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_secord_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv type/constant section ordering (unit)', air2spv_secord_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   air2spv_si_test_deps = [libapplegfx_vulkan_dep]

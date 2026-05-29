@@ -776,6 +776,20 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
                 }
                 break;
             }
+            case LAGFX_AIR_INST_CMP:
+            case LAGFX_AIR_INST_CMP2:
+            case LAGFX_AIR_INST_SELECT:
+            case LAGFX_AIR_INST_VSELECT: {
+                /* Comparisons produce a bool result and OpSelect takes a
+                 * bool condition. The CMP/SELECT handlers call
+                 * emit_type_bool() mid-body, which would emit OpTypeBool
+                 * into the function body — SPIR-V requires it before
+                 * OpFunction ("OpTypeBool cannot appear in the graph
+                 * definitions section"). Pre-emit it here (cached, so the
+                 * body call is a no-op). */
+                (void)emit_type_bool(c);
+                break;
+            }
             default:
                 break;
         }
