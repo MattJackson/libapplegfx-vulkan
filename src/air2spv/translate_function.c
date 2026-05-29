@@ -395,6 +395,39 @@ static bool air_type_requires_extra_cap(xlate_ctx_t *c, uint32_t air_type_idx,
     }
 }
 
+/* Recursively: does this AIR type reference an integer of the given bit
+ * width anywhere in its structure? Used to decide whether to declare the
+ * Int8 / Int16 capabilities for CALL result types we pre-emit (e.g. a
+ * texture sample returns struct{vec4<float>, i8} — the i8 is a dead
+ * sparse-residency field but its OpTypeInt 8 still needs Int8). */
+static bool air_type_uses_int_width(const xlate_ctx_t *c, uint32_t ty_idx,
+                                    uint32_t width, uint32_t depth) {
+    if (depth > 8u || ty_idx >= c->num_air_types) return false;
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    const lagfx_air_type_t *t = &ts[ty_idx];
+    switch (t->kind) {
+        case LAGFX_AIR_TYPE_INTEGER:
+            return (t->num_op >= 1u ? t->op[0] : 32u) == width;
+        case LAGFX_AIR_TYPE_VECTOR:
+        case LAGFX_AIR_TYPE_ARRAY:
+        case LAGFX_AIR_TYPE_POINTER:
+            return air_type_uses_int_width(c, t->num_op >= 2u ? t->op[1] : 0u,
+                                           width, depth + 1u);
+        case LAGFX_AIR_TYPE_STRUCT_ANON:
+        case LAGFX_AIR_TYPE_STRUCT_NAMED: {
+            uint32_t nf = t->num_op > 1u ? t->num_op - 1u : 0u;
+            for (uint32_t i = 0; i < nf; i++) {
+                if (air_type_uses_int_width(c, t->op[1u + i], width, depth + 1u))
+                    return true;
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
 /* ===================================================================
  * Helpers — constant emission
  * =================================================================== */
@@ -506,9 +539,14 @@ static uint32_t resolve_or_undef(xlate_ctx_t *c, uint32_t value_id,
     return emit_undef(c, fallback_spv_type);
 }
 
-/* Forward decl — inst_produces_value is defined further below but
- * referenced from the prologue's ALLOCA pre-emission pass. */
-static bool inst_produces_value(const lagfx_air_inst_t *i);
+/* Forward decls — defined further below but referenced from the
+ * prologue's ALLOCA pre-emission pass. */
+static bool inst_produces_value(const xlate_ctx_t *c,
+                                const lagfx_air_inst_t *i);
+static void set_result_air_type(xlate_ctx_t *c, uint32_t result_value_id,
+                                uint32_t air_ty);
+static uint32_t call_return_air_type(const xlate_ctx_t *c,
+                                     const lagfx_air_inst_t *i);
 
 /* ===================================================================
  * Prologue
@@ -529,6 +567,34 @@ static void emit_prologue(xlate_ctx_t *c) {
     {
         uint32_t ops[] = { 11u /* Int64 */ };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, ops, 1);
+    }
+
+    /* Conditionally declare Int8 / Int16 if a non-void CALL result type
+     * we pre-emit references those widths (e.g. a texture sample →
+     * struct{vec4<float>, i8}). The builder is a flat append-only stream,
+     * so capabilities MUST be decided here, in the capability section,
+     * before any OpType* is emitted. We only scan CALL results because
+     * that is the only path that pre-emits an aggregate narrow-int type;
+     * other handlers alias narrow ints away (see the CAST pre-emit note). */
+    {
+        bool need_i8 = false, need_i16 = false;
+        for (uint32_t i = 0; i < c->num_insts; i++) {
+            const lagfx_air_inst_t *inst = &c->insts[i];
+            if (inst->code != LAGFX_AIR_INST_CALL) continue;
+            if (!inst_produces_value(c, inst)) continue;
+            uint32_t rt = call_return_air_type(c, inst);
+            if (rt == 0u) continue;
+            if (air_type_uses_int_width(c, rt, 8u, 0u))  need_i8 = true;
+            if (air_type_uses_int_width(c, rt, 16u, 0u)) need_i16 = true;
+        }
+        if (need_i16) {
+            uint32_t ops[] = { LAGFX_SPV_CAPABILITY_INT16 };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, ops, 1);
+        }
+        if (need_i8) {
+            uint32_t ops[] = { LAGFX_SPV_CAPABILITY_INT8 };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, ops, 1);
+        }
     }
 
     /* 2. OpExtInstImport %glsl "GLSL.std.450" */
@@ -668,6 +734,18 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
                  * that we'd never actually reference. */
                 break;
             }
+            case LAGFX_AIR_INST_CALL: {
+                /* Non-void CALL we don't lower yet (e.g. a texture
+                 * sample → struct{vec4,...}): the body binds a typed
+                 * OpUndef placeholder, so its result type MUST be
+                 * declared here, before OpFunction (SPIR-V layout: all
+                 * type and constant decls precede the first function). */
+                if (inst_produces_value(c, inst)) {
+                    uint32_t ret_ty = call_return_air_type(c, inst);
+                    if (ret_ty != 0u) (void)emit_air_type(c, ret_ty);
+                }
+                break;
+            }
             case LAGFX_AIR_INST_GEP:
             case LAGFX_AIR_INST_GEP_OLD: {
                 if (inst->num_ops >= 2u) {
@@ -772,7 +850,7 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
         uint32_t alloca_val_id = c->inst_id_base;
         for (uint32_t i = 0; i < c->num_insts; i++) {
             const lagfx_air_inst_t *inst = &c->insts[i];
-            bool produces = inst_produces_value(inst);
+            bool produces = inst_produces_value(c, inst);
             if (inst->code == LAGFX_AIR_INST_ALLOCA && inst->num_ops >= 1u) {
                 uint32_t alloc_air_ty = (uint32_t)inst->ops[0];
                 uint32_t alloc_spv   = emit_air_type(c, alloc_air_ty);
@@ -782,7 +860,7 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
                 uint32_t ops[] = { ptr_spv, result_id, LAGFX_SPV_STORAGE_FUNCTION };
                 lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, ops, 3);
                 bind_value_spv(c, alloca_val_id, result_id);
-                c->inst_result_air_type[i] = alloc_air_ty;
+                set_result_air_type(c, alloca_val_id, alloc_air_ty);
             }
             if (produces) alloca_val_id++;
         }
@@ -815,7 +893,51 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
  * leave spv_id = 0 in the value map.
  * =================================================================== */
 
-static bool inst_produces_value(const lagfx_air_inst_t *i) {
+/* Resolve a CALL's return AIR type-index (0 if void / no explicit-type
+ * slot / unresolvable). Mirrors emit_inst_call's explicit-type-slot
+ * parsing: CALL = [attr, ccinfo, (fnty if ccinfo & 0x8000), callee,
+ * args...]; the function type's op[1] is the return type-index. */
+static uint32_t call_return_air_type(const xlate_ctx_t *c,
+                                     const lagfx_air_inst_t *i) {
+    if (i->num_ops < 3u) return 0u;
+    uint32_t ccinfo = (uint32_t)i->ops[1];
+    if (!(ccinfo & 0x8000)) return 0u;            /* no explicit fnty slot */
+    uint32_t fn_ty_idx = (uint32_t)i->ops[2];
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    if (fn_ty_idx >= n_types ||
+        ts[fn_ty_idx].kind != LAGFX_AIR_TYPE_FUNCTION ||
+        ts[fn_ty_idx].num_op < 2u) {
+        return 0u;
+    }
+    return (uint32_t)ts[fn_ty_idx].op[1];          /* return-type index */
+}
+
+/* True iff the AIR type-index denotes void (or is unresolvable). */
+static bool air_type_is_void(const xlate_ctx_t *c, uint32_t ty_idx) {
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    if (ty_idx >= n_types) return true;
+    return ts[ty_idx].kind == LAGFX_AIR_TYPE_VOID;
+}
+
+/* Record a value-producing instruction's result AIR type, keyed by
+ * VALUE-NUMBER offset (result_value_id - inst_id_base) — the SAME index
+ * space the operand-type lookups read with. (Blocker A: the array was
+ * WRITTEN by inst_idx but READ by value-number; the two diverge as soon
+ * as a non-value-producing inst — e.g. a void CALL — sits between
+ * producers, so an operand-type lookup read the wrong inst's type. A
+ * non-void CALL desynced it the other way: its result took no value-id
+ * at all. Keying both sides by value-number makes them agree.) */
+static void set_result_air_type(xlate_ctx_t *c, uint32_t result_value_id,
+                                uint32_t air_ty) {
+    if (result_value_id < c->inst_id_base) return;
+    uint32_t idx = result_value_id - c->inst_id_base;
+    if (idx < c->num_insts) c->inst_result_air_type[idx] = air_ty;
+}
+
+static bool inst_produces_value(const xlate_ctx_t *c,
+                                const lagfx_air_inst_t *i) {
     switch (i->code) {
         case LAGFX_AIR_INST_DECLAREBLOCKS:
         case LAGFX_AIR_INST_STORE:
@@ -825,12 +947,15 @@ static bool inst_produces_value(const lagfx_air_inst_t *i) {
         case LAGFX_AIR_INST_SWITCH:
         case LAGFX_AIR_INST_UNREACHABLE:
             return false;
-        case LAGFX_AIR_INST_CALL:
-            /* Conservatively assume void-return for triangle's
-             * llvm.lifetime.* calls. A more general check would inspect
-             * the callee's return type via the function-type table.
-             * For Phase 5 MVP this is sufficient. */
-            return false;
+        case LAGFX_AIR_INST_CALL: {
+            /* Non-void CALLs (e.g. a texture sample → vec4) ARE value
+             * producers in LLVM's relative value numbering, so they MUST
+             * consume a value-id here or every downstream relative ref
+             * desyncs (blocker A). Void calls (llvm.lifetime.*, and any
+             * call with no resolvable explicit return type) do not. */
+            uint32_t ret = call_return_air_type(c, i);
+            return ret != 0u && !air_type_is_void(c, ret);
+        }
         default:
             return true;
     }
@@ -953,12 +1078,12 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
 
         case 9:  /* CAST_PTRTOINT → alias (pointer→int not representable in SPIR-V) */
             bind_value_spv(c, result_value_id, opval_spv);
-            c->inst_result_air_type[inst_idx] = dest_ty;
+            set_result_air_type(c, result_value_id, dest_ty);
             return;
 
         case 10: /* CAST_INTTOPTR → alias (int→pointer not representable in SPIR-V) */
             bind_value_spv(c, result_value_id, opval_spv);
-            c->inst_result_air_type[inst_idx] = dest_ty;
+            set_result_air_type(c, result_value_id, dest_ty);
             return;
 
         case 11: /* CAST_BITCAST → always alias (avoid runtime type emission) */
@@ -968,29 +1093,30 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
              * representations so this is semantically correct. The downstream
              * consumer will use the aliased id directly. */
             bind_value_spv(c, result_value_id, opval_spv);
-            c->inst_result_air_type[inst_idx] = dest_ty;
+            set_result_air_type(c, result_value_id, dest_ty);
             return;
 
         case 12: /* CAST_ADDRSPACECAST → alias for now */
             bind_value_spv(c, result_value_id, opval_spv);
-            c->inst_result_air_type[inst_idx] = dest_ty;
+            set_result_air_type(c, result_value_id, dest_ty);
             return;
 
         default:
             /* Unknown cast opcode — fall back to aliasing */
             bind_value_spv(c, result_value_id, opval_spv);
-            c->inst_result_air_type[inst_idx] = dest_ty;
+            set_result_air_type(c, result_value_id, dest_ty);
             return;
     }
 
     /* Bind the result value-id and record the AIR type for downstream ops */
     bind_value_spv(c, result_value_id, result_spv);
-    c->inst_result_air_type[inst_idx] = dest_ty;
+    set_result_air_type(c, result_value_id, dest_ty);
 }
 
 static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
                              const lagfx_air_inst_t *inst,
-                             uint32_t next_val_id) {
+                             uint32_t result_value_id, uint32_t next_val_id) {
+    (void)inst_idx;
     /* CALL: [paramattrs, ccinfo, [calleety], callee, args...]
      *
      * Bitcode format per llvm/include/llvm/Bitcode/LLVMBitCodes.h:
@@ -1040,6 +1166,13 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         LAGFX_TRACE("call: no name for fn[%u] — drop", callee_id);
         return;
     }
+
+    /* Resolve the CALL's result AIR type once, up front. The explicit-type
+     * slot (ops[2], present when ccinfo & 0x8000) is a FUNCTION type whose
+     * op[1] is the return type. We need this BEFORE the intrinsic dispatch
+     * so the unrecognized-call path (texture sample etc.) can bind a
+     * correctly-typed placeholder for downstream value-numbering. */
+    uint32_t result_ty_air = call_return_air_type(c, inst);
 
    /* Intrinsic dispatch table: air.* fast-math intrinsics → GLSL.std.450
      * instruction numbers (from spv_builder.h LAGFX_SPV_GLSL_* constants).
@@ -1139,10 +1272,29 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         }
     }
 
-    /* If not an air.* intrinsic we recognize, drop it. llvm.* intrinsics
-     * (lifetime, debug, etc.) fall through here and are silently dropped. */
+    /* Not an air.* GLSL intrinsic we recognize. Two sub-cases:
+     *   - Void calls (llvm.lifetime/debug, and anything inst_produces_value
+     *     classified non-producing → result_value_id == 0): drop silently;
+     *     they consume no value-id, so downstream numbering is unaffected.
+     *   - Non-void calls we don't lower yet (e.g. a texture sample → vec4):
+     *     these DID consume a value-id (result_value_id != 0), so we MUST
+     *     bind something of the right type or every later relative ref
+     *     desyncs (blocker A). Emit a typed OpUndef placeholder. The result
+     *     isn't visually correct (no real sample yet) but it is
+     *     structurally + type correct, which is what downstream BINOP/etc.
+     *     type resolution needs. Real image-op lowering is separate. */
     if (!glsl_inst) {
-        LAGFX_TRACE("call: unrecognized intrinsic '%s' — drop", fn_name);
+        if (result_value_id != 0u && !air_type_is_void(c, result_ty_air)) {
+            uint32_t ph_ty = result_ty_air ? emit_air_type(c, result_ty_air)
+                                            : emit_type_vec4_f(c);
+            uint32_t ph = emit_undef(c, ph_ty);
+            bind_value_spv(c, result_value_id, ph);
+            set_result_air_type(c, result_value_id, result_ty_air);
+            LAGFX_TRACE("call: unrecognized non-void '%s' — typed undef "
+                        "placeholder (value-id %u)", fn_name, result_value_id);
+        } else {
+            LAGFX_TRACE("call: unrecognized void intrinsic '%s' — drop", fn_name);
+        }
         return;
     }
 
@@ -1163,19 +1315,8 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         return;
     }
 
-    /* Resolve result type. If has_explicit_type, the explicit-type slot
-     * (ops[2]) is a FUNCTION type's AIR type-id; its op[1] is the return
-     * type. Fall back to vec4f if unresolvable. */
-    uint32_t result_ty_air = 0u;
-    if (has_explicit_type && inst->num_ops >= 3u) {
-        uint32_t fn_ty_idx = (uint32_t)inst->ops[2];
-        uint32_t n_types = 0;
-        const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
-        if (fn_ty_idx < n_types && ts[fn_ty_idx].kind == LAGFX_AIR_TYPE_FUNCTION) {
-            result_ty_air = ts[fn_ty_idx].num_op >= 2u ? ts[fn_ty_idx].op[1] : 0u;
-        }
-    }
-
+    /* result_ty_air was resolved up front. Emit its SPIR-V type (or vec4f
+     * if the return type was unresolvable). */
     uint32_t result_spv_type;
     if (result_ty_air) {
         result_spv_type = emit_air_type(c, result_ty_air);
@@ -1184,8 +1325,8 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         result_spv_type = emit_type_vec4_f(c);
     }
 
-    /* Allocate result SPIR-V id if not pre-bound. */
-    uint32_t result_value_id = c->inst_id_base + inst_idx;
+    /* Result is bound by value-NUMBER (result_value_id from translate_body,
+     * = LLVM NextValueNo), not inst_id_base+inst_idx. */
     uint32_t result_spv = resolve_value_spv(c, result_value_id);
     if (!result_spv) {
         result_spv = lagfx_spv_builder_alloc_id(c->b);
@@ -1207,9 +1348,9 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
     }
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_EXT_INST, ops, n_ops);
 
-    /* Bind result and record AIR type for downstream ops. */
+    /* Bind result and record AIR type for downstream ops (value-number keyed). */
     bind_value_spv(c, result_value_id, result_spv);
-    c->inst_result_air_type[inst_idx] = result_ty_air;
+    set_result_air_type(c, result_value_id, result_ty_air);
 }
 
 static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
@@ -1242,7 +1383,7 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
         uint32_t fallback_ptr = emit_type_pointer(c, source_ty, fallback_ty,
                                                     LAGFX_SPV_STORAGE_FUNCTION);
         bind_value_spv(c, result_value_id, emit_undef(c, fallback_ptr));
-        c->inst_result_air_type[inst_idx] = source_ty;
+        set_result_air_type(c, result_value_id, source_ty);
         return;
     }
 
@@ -1308,13 +1449,13 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
      * OpAccessChain isn't strictly needed — just alias. */
     if (op_count == 3u) {
         bind_value_spv(c, result_value_id, ptr_spv);
-        c->inst_result_air_type[inst_idx] = pointee;
+        set_result_air_type(c, result_value_id, pointee);
         return;
     }
 
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_ACCESS_CHAIN, ops, op_count);
     bind_value_spv(c, result_value_id, result_id);
-    c->inst_result_air_type[inst_idx] = pointee;
+    set_result_air_type(c, result_value_id, pointee);
 }
 
 static void emit_inst_store(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
@@ -1363,14 +1504,14 @@ static void emit_inst_load(xlate_ctx_t *c, uint32_t inst_idx,
     if (!ptr_spv) {
         /* Bind undef. */
         bind_value_spv(c, result_value_id, emit_undef(c, result_spv));
-        c->inst_result_air_type[inst_idx] = result_ty_air;
+        set_result_air_type(c, result_value_id, result_ty_air);
         return;
     }
     uint32_t result_id = lagfx_spv_builder_alloc_id(c->b);
     uint32_t ops[] = { result_spv, result_id, ptr_spv };
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, ops, 3);
     bind_value_spv(c, result_value_id, result_id);
-    c->inst_result_air_type[inst_idx] = result_ty_air;
+    set_result_air_type(c, result_value_id, result_ty_air);
 }
 
 static void emit_inst_shufflevec(xlate_ctx_t *c, uint32_t inst_idx,
@@ -1468,7 +1609,7 @@ static void emit_inst_shufflevec(xlate_ctx_t *c, uint32_t inst_idx,
     };
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VECTOR_SHUFFLE, ops, 8);
     bind_value_spv(c, result_value_id, result_id);
-    c->inst_result_air_type[inst_idx] = 0u;
+    set_result_air_type(c, result_value_id, 0u);
 }
 
 static void emit_inst_insertval(xlate_ctx_t *c, uint32_t inst_idx,
@@ -1505,7 +1646,7 @@ static void emit_inst_insertval(xlate_ctx_t *c, uint32_t inst_idx,
     uint32_t ops[] = { struct_id, result_id, val_spv, agg_spv, field };
     lagfx_spv_builder_emit_op(c->b, 82 /* OpCompositeInsert */, ops, 5);
     bind_value_spv(c, result_value_id, result_id);
-    c->inst_result_air_type[inst_idx] = 0u;
+    set_result_air_type(c, result_value_id, 0u);
 }
 
 static void emit_inst_ret(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
@@ -1705,7 +1846,7 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
 
     /* Bind the result value-id */
     bind_value_spv(c, result_value_id, result_spv);
-    c->inst_result_air_type[inst_idx] = result_ty_air;
+    set_result_air_type(c, result_value_id, result_ty_air);
 }
 
 /* ===================================================================
@@ -1765,7 +1906,7 @@ static void emit_inst_unop(xlate_ctx_t *c, uint32_t inst_idx,
 
     /* Bind the result value-id */
     bind_value_spv(c, result_value_id, result_spv);
-    c->inst_result_air_type[inst_idx] = result_spv_type ? 0u : 2u; /* float or unknown */
+    set_result_air_type(c, result_value_id, result_spv_type ? 0u : 2u); /* float or unknown */
 }
 
 /* Best-effort AIR type index for a resolved value-id: instruction
@@ -1904,7 +2045,7 @@ static void emit_inst_cmp(xlate_ctx_t *c, uint32_t inst_idx,
     bind_value_spv(c, result_value_id, result_spv);
     /* Result AIR type is "unknown" (2): there is no AIR bool type index,
      * and downstream consumers (Select) read the SPIR-V id, not this. */
-    c->inst_result_air_type[inst_idx] = 2u;
+    set_result_air_type(c, result_value_id, 2u);
 }
 
 /* CMP2 (code 28, modern) shares CMP's record layout for our purposes
@@ -2037,7 +2178,7 @@ static void emit_inst_extractval(xlate_ctx_t *c, uint32_t inst_idx,
 
     /* Bind the result value-id and record AIR type. */
     bind_value_spv(c, result_value_id, result_spv);
-    c->inst_result_air_type[inst_idx] = result_ty_air;
+    set_result_air_type(c, result_value_id, result_ty_air);
 }
 
 /* ===================================================================
@@ -2114,7 +2255,7 @@ static void emit_inst_extractelt(xlate_ctx_t *c, uint32_t inst_idx,
 
     /* Bind the result value-id and record AIR type (element type). */
     bind_value_spv(c, result_value_id, result_spv);
-    c->inst_result_air_type[inst_idx] = elem_ty_air;
+    set_result_air_type(c, result_value_id, elem_ty_air);
 }
 
 static void emit_inst_insertelt(xlate_ctx_t *c, uint32_t inst_idx,
@@ -2173,7 +2314,7 @@ static void emit_inst_insertelt(xlate_ctx_t *c, uint32_t inst_idx,
 
     /* Bind the result value-id and record AIR type (vector type). */
     bind_value_spv(c, result_value_id, result_spv);
-    c->inst_result_air_type[inst_idx] = vec_ty_air;
+    set_result_air_type(c, result_value_id, vec_ty_air);
 }
 
 /* ===================================================================
@@ -2238,7 +2379,7 @@ static void emit_inst_select(xlate_ctx_t *c, uint32_t inst_idx,
 
     /* Bind the result value-id. */
     bind_value_spv(c, result_value_id, result_spv);
-    c->inst_result_air_type[inst_idx] = result_ty_air;
+    set_result_air_type(c, result_value_id, result_ty_air);
 }
 
 /* ===================================================================
@@ -2251,7 +2392,7 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
     uint32_t next_val_id = c->inst_id_base;
     for (uint32_t i = 0; i < c->num_insts; i++) {
         const lagfx_air_inst_t *inst = &c->insts[i];
-        if (inst_produces_value(inst)) {
+        if (inst_produces_value(c, inst)) {
             /* SPIR-V ids for instruction results are allocated in
              * emit_inst_* themselves (so the order of OpVariable /
              * OpAccessChain / OpLoad / ... ids matches the emission
@@ -2265,7 +2406,7 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
     next_val_id = c->inst_id_base;
     for (uint32_t i = 0; i < c->num_insts; i++) {
         const lagfx_air_inst_t *inst = &c->insts[i];
-        bool produces = inst_produces_value(inst);
+        bool produces = inst_produces_value(c, inst);
         uint32_t result_value_id = produces ? next_val_id : 0u;
 
         switch (inst->code) {
@@ -2276,7 +2417,7 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
                 emit_inst_cast(c, i, inst, result_value_id, next_val_id);
                 break;
             case LAGFX_AIR_INST_CALL:
-                emit_inst_call(c, i, inst, next_val_id);
+                emit_inst_call(c, i, inst, result_value_id, next_val_id);
                 break;
             case LAGFX_AIR_INST_GEP:
             case LAGFX_AIR_INST_GEP_OLD:

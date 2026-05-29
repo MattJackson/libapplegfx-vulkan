@@ -794,6 +794,26 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-relational-opcodes-unit.c')
   test('air2spv relational opcode pinning (unit)', air2spv_relop_test)
 endif
 
+# Blocker A regression: a non-void CALL (texture sample) must be counted
+# as a value producer so the downstream FADD resolves float types and
+# emits OpFAdd, not OpIAdd. Feeds a real compiled fragment shader fixture
+# through the translator and asserts the opcode + spirv-val cleanliness.
+if fs.is_file(meson.current_source_dir() / 'air2spv-nonvoid-call-valuenumber-unit.c')
+  air2spv_nvcall_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_nvcall_deps += [vulkan_dep]
+  endif
+  air2spv_nvcall_test = executable('air2spv-nonvoid-call-valuenumber-unit',
+    'air2spv-nonvoid-call-valuenumber-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_nvcall_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv non-void CALL value-numbering (unit)', air2spv_nvcall_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   air2spv_si_test_deps = [libapplegfx_vulkan_dep]
