@@ -1028,29 +1028,54 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
      * Reference: paravirt-re/library/air_intrinsic_spec docs. */
     static const struct {
         const char *prefix;
-        uint32_t glsl_inst;
+        uint32_t    glsl_inst;
+        uint8_t     num_args;
     } intrinsic_table[] = {
-        {"air.fast.sqrt",      LAGFX_SPV_GLSL_SQRT},
-        {"air.fast.rsqrt",     LAGFX_SPV_GLSL_INVERSE_SQRT},
-        {"air.fast.exp",       LAGFX_SPV_GLSL_EXP},
-        {"air.fast.log",       LAGFX_SPV_GLSL_LOG},
-        {"air.fast.sin",       LAGFX_SPV_GLSL_SIN},
-        {"air.fast.cos",       LAGFX_SPV_GLSL_COS},
-        {"air.fast.normalize", LAGFX_SPV_GLSL_NORMALIZE},
-        {"air.fast.length",    LAGFX_SPV_GLSL_LENGTH},
-        {"air.fast.fabs",      LAGFX_SPV_GLSL_FABS},
-        {"air.fast.floor",     LAGFX_SPV_GLSL_FLOOR},
-        {"air.fast.ceil",      LAGFX_SPV_GLSL_CEIL},
-        {"air.fast.round",     LAGFX_SPV_GLSL_ROUND},
-        {"air.fast.fract",     LAGFX_SPV_GLSL_FRACT},
-        {"air.precise.sqrt",   LAGFX_SPV_GLSL_SQRT},
-        {"air.precise.rsqrt",  LAGFX_SPV_GLSL_INVERSE_SQRT},
-        {"air.precise.exp",    LAGFX_SPV_GLSL_EXP},
-        {"air.precise.log",    LAGFX_SPV_GLSL_LOG},
-        {"air.precise.sin",    LAGFX_SPV_GLSL_SIN},
-        {"air.precise.cos",    LAGFX_SPV_GLSL_COS},
-        {"air.precise.normalize", LAGFX_SPV_GLSL_NORMALIZE},
-        {"air.precise.length", LAGFX_SPV_GLSL_LENGTH},
+        /* Unary intrinsics (num_args=1) */
+        {"air.fast.sqrt",      LAGFX_SPV_GLSL_SQRT,         1},
+        {"air.fast.rsqrt",     LAGFX_SPV_GLSL_INVERSE_SQRT, 1},
+        {"air.fast.exp",       LAGFX_SPV_GLSL_EXP,          1},
+        {"air.fast.log",       LAGFX_SPV_GLSL_LOG,          1},
+        {"air.fast.sin",       LAGFX_SPV_GLSL_SIN,          1},
+        {"air.fast.cos",       LAGFX_SPV_GLSL_COS,          1},
+        {"air.fast.normalize", LAGFX_SPV_GLSL_NORMALIZE,    1},
+        {"air.fast.length",    LAGFX_SPV_GLSL_LENGTH,       1},
+        {"air.fast.fabs",      LAGFX_SPV_GLSL_FABS,         1},
+        {"air.fast.floor",     LAGFX_SPV_GLSL_FLOOR,        1},
+        {"air.fast.ceil",      LAGFX_SPV_GLSL_CEIL,         1},
+        {"air.fast.round",     LAGFX_SPV_GLSL_ROUND,        1},
+        {"air.fast.fract",     LAGFX_SPV_GLSL_FRACT,        1},
+        /* air.precise.* variants (same GLSL insts, num_args=1) */
+        {"air.precise.sqrt",   LAGFX_SPV_GLSL_SQRT,         1},
+        {"air.precise.rsqrt",  LAGFX_SPV_GLSL_INVERSE_SQRT, 1},
+        {"air.precise.exp",    LAGFX_SPV_GLSL_EXP,          1},
+        {"air.precise.log",    LAGFX_SPV_GLSL_LOG,          1},
+        {"air.precise.sin",    LAGFX_SPV_GLSL_SIN,          1},
+        {"air.precise.cos",    LAGFX_SPV_GLSL_COS,          1},
+        {"air.precise.normalize", LAGFX_SPV_GLSL_NORMALIZE, 1},
+        {"air.precise.length", LAGFX_SPV_GLSL_LENGTH,       1},
+        /* Multi-operand intrinsics */
+        {"air.fast.fmin",      LAGFX_SPV_GLSL_FMIN,         2},
+        {"air.fast.fmax",      LAGFX_SPV_GLSL_FMAX,         2},
+        {"air.fast.pow",       LAGFX_SPV_GLSL_POW,          2},
+        {"air.fast.distance",  LAGFX_SPV_GLSL_DISTANCE,     2},
+        {"air.fast.reflect",   LAGFX_SPV_GLSL_REFLECT,      2},
+        {"air.fast.cross",     LAGFX_SPV_GLSL_CROSS,        2},
+        {"air.fast.fclamp",    LAGFX_SPV_GLSL_FCLAMP,       3},
+        {"air.fast.fmix",      LAGFX_SPV_GLSL_FMIX,         3},
+        {"air.fast.step",      LAGFX_SPV_GLSL_STEP,         2},
+        {"air.fast.smoothstep", LAGFX_SPV_GLSL_SMOOTH_STEP, 3},
+        /* air.precise.* variants for multi-operand intrinsics */
+        {"air.precise.fmin",      LAGFX_SPV_GLSL_FMIN,         2},
+        {"air.precise.fmax",      LAGFX_SPV_GLSL_FMAX,         2},
+        {"air.precise.pow",       LAGFX_SPV_GLSL_POW,          2},
+        {"air.precise.distance",  LAGFX_SPV_GLSL_DISTANCE,     2},
+        {"air.precise.reflect",   LAGFX_SPV_GLSL_REFLECT,      2},
+        {"air.precise.cross",     LAGFX_SPV_GLSL_CROSS,        2},
+        {"air.precise.fclamp",    LAGFX_SPV_GLSL_FCLAMP,       3},
+        {"air.precise.fmix",      LAGFX_SPV_GLSL_FMIX,         3},
+        {"air.precise.step",      LAGFX_SPV_GLSL_STEP,         2},
+        {"air.precise.smoothstep", LAGFX_SPV_GLSL_SMOOTH_STEP, 3},
     };
 
     uint32_t glsl_inst = 0u;
@@ -1068,11 +1093,19 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         return;
     }
 
-    /* We only handle unary intrinsics for now (all 8 listed above).
-     * The CALL operand layout after callee_rel is [args...], so we need
+    /* Find the table entry to get num_args. */
+    uint32_t entry_num_args = 0u;
+    for (size_t i = 0; i < sizeof(intrinsic_table) / sizeof(intrinsic_table[0]); i++) {
+        if (strncmp(fn_name, intrinsic_table[i].prefix, strlen(intrinsic_table[i].prefix)) == 0) {
+            entry_num_args = intrinsic_table[i].num_args;
+            break;
+        }
+    }
+
+    /* The CALL operand layout after callee_rel is [args...], so we need
      * at least one argument. */
     uint32_t arg_slot_idx = callee_slot_idx + 1u;
-    if (inst->num_ops <= arg_slot_idx) {
+    if (inst->num_ops <= arg_slot_idx || entry_num_args == 0u) {
         LAGFX_TRACE("call: no args for '%s' — drop", fn_name);
         return;
     }
@@ -1098,11 +1131,6 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         result_spv_type = emit_type_vec4_f(c);
     }
 
-    /* Resolve the single operand. */
-    uint32_t arg_rel = (uint32_t)inst->ops[arg_slot_idx];
-    uint32_t arg_id = resolve_relative(arg_rel, next_val_id);
-    uint32_t arg_spv = resolve_or_undef(c, arg_id, result_spv_type);
-
     /* Allocate result SPIR-V id if not pre-bound. */
     uint32_t result_value_id = c->inst_id_base + inst_idx;
     uint32_t result_spv = resolve_value_spv(c, result_value_id);
@@ -1110,14 +1138,21 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         result_spv = lagfx_spv_builder_alloc_id(c->b);
     }
 
-    /* Emit OpExtInst: [result_type, result_id, ext_set(id_glsl), inst_num, arg] */
-    uint32_t ops[5];
+    /* Emit OpExtInst: [result_type, result_id, ext_set(id_glsl), inst_num, arg1, [arg2, [arg3]]] */
+    uint32_t ops[8];  /* up to 3 args + 4 fixed = 7 words; 8 for safety */
     ops[0] = result_spv_type;
     ops[1] = result_spv;
     ops[2] = c->id_glsl;
     ops[3] = glsl_inst;
-    ops[4] = arg_spv;
-    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_EXT_INST, ops, 5);
+    uint32_t n_ops = 4u;
+    for (uint8_t a = 0; a < entry_num_args; a++) {
+        if (arg_slot_idx + a >= inst->num_ops) break;
+        uint32_t arg_rel = (uint32_t)inst->ops[arg_slot_idx + a];
+        uint32_t arg_id  = resolve_relative(arg_rel, next_val_id);
+        uint32_t arg_spv = resolve_or_undef(c, arg_id, result_spv_type);
+        ops[n_ops++] = arg_spv;
+    }
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_EXT_INST, ops, n_ops);
 
     /* Bind result and record AIR type for downstream ops. */
     bind_value_spv(c, result_value_id, result_spv);
