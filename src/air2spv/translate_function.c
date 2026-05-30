@@ -824,6 +824,55 @@ static uint32_t buffer_arg_struct_ty(const xlate_ctx_t *c, uint32_t arg_idx) {
                ? ts[aty].op[0] : 0u;
 }
 
+/* Recursively emit std430 layout decorations for every aggregate REACHABLE
+ * from a Block struct member: member Offset on nested structs, ArrayStride
+ * on arrays (and arrays-of-structs / structs-of-arrays, to any depth). The
+ * top-level Block struct's own Block + member Offsets are emitted by the
+ * caller (it owns a locally-allocated sid not in the emit_air_type cache);
+ * this walks INTO the field types, whose SPIR-V ids ARE the cached
+ * emit_air_type ids. SPIR-V requires that every struct transitively used
+ * in a laid-out (StorageBuffer/Uniform) Block carry Offset decorations and
+ * every array an ArrayStride, else spirv-val rejects with "Structure ...
+ * decorated as Block must be explicitly laid out with Offset decorations."
+ * Dedup by AIR type id (a struct shared across members is decorated once;
+ * duplicate decorations are legal but noisy). */
+static void decorate_nested_layout(xlate_ctx_t *c, uint32_t air_ty,
+                                   uint32_t *visited, uint32_t *nvisited) {
+    uint32_t n = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
+    if (air_ty >= n) return;
+    for (uint32_t i = 0; i < *nvisited; i++)
+        if (visited[i] == air_ty) return;
+    if (*nvisited < 64u) visited[(*nvisited)++] = air_ty;
+    const lagfx_air_type_t *t = &ts[air_ty];
+    if (t->kind == LAGFX_AIR_TYPE_STRUCT_ANON ||
+        t->kind == LAGFX_AIR_TYPE_STRUCT_NAMED) {
+        uint32_t sid = emit_air_type(c, air_ty);  /* cached id */
+        uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
+        uint32_t off = 0u;
+        for (uint32_t i = 0; i < nfields; i++) {
+            uint32_t fty = t->op[1u + i];
+            uint32_t ms, ma;
+            if (!air_type_size_align(c, fty, &ms, &ma)) return;
+            off = lagfx_round_up(off, ma);
+            uint32_t md[] = { sid, i, LAGFX_SPV_DECORATION_OFFSET, off };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_MEMBER_DECORATE, md, 4);
+            off += ms;
+            decorate_nested_layout(c, fty, visited, nvisited);
+        }
+    } else if (t->kind == LAGFX_AIR_TYPE_ARRAY && t->num_op >= 2u) {
+        uint32_t elem = t->op[1];
+        uint32_t es, ea;
+        if (air_type_size_align(c, elem, &es, &ea)) {
+            uint32_t aid = emit_air_type(c, air_ty);  /* cached array id */
+            uint32_t stride = lagfx_round_up(es, ea);
+            uint32_t as[] = { aid, LAGFX_SPV_DECORATION_ARRAY_STRIDE, stride };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, as, 3);
+        }
+        decorate_nested_layout(c, elem, visited, nvisited);
+    }
+}
+
 /* Emit a std430 Block struct for a [[buffer(n)]] arg: OpTypeStruct + Block /
  * member-Offset / ArrayStride decorations + StorageBuffer pointers to the
  * field (and array-element) types for the body GEP/AccessChain. The
@@ -861,21 +910,22 @@ static uint32_t emit_type_struct_block(xlate_ctx_t *c, uint32_t struct_ty) {
 
     { uint32_t d[] = { sid, LAGFX_SPV_DECORATION_BLOCK };
       lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d, 2); }
+    /* Nested-layout dedup set, seeded with the top-level struct so a
+     * member that (cyclically) references it isn't re-decorated. */
+    uint32_t laid_out[64]; uint32_t n_laid_out = 0;
+    if (n_laid_out < 64u) laid_out[n_laid_out++] = struct_ty;
     for (uint32_t i = 0; i < nfields; i++) {
         uint32_t md[] = { sid, i, LAGFX_SPV_DECORATION_OFFSET, offsets[i] };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_MEMBER_DECORATE, md, 4);
         uint32_t fty = t->op[1u + i];
         /* StorageBuffer pointer to the field (GEP-to-field result). */
         (void)emit_type_pointer(c, fty, member_spv[i], LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+        /* Recursively lay out nested structs / arrays (member Offset +
+         * ArrayStride to any depth), incl. this field if it's an array. */
+        decorate_nested_layout(c, fty, laid_out, &n_laid_out);
         if (fty < n && ts[fty].kind == LAGFX_AIR_TYPE_ARRAY && ts[fty].num_op >= 2u) {
-            uint32_t elem = ts[fty].op[1];
-            uint32_t es, ea;
-            if (air_type_size_align(c, elem, &es, &ea)) {
-                uint32_t stride = lagfx_round_up(es, ea);
-                uint32_t as[] = { member_spv[i], LAGFX_SPV_DECORATION_ARRAY_STRIDE, stride };
-                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, as, 3);
-            }
             /* StorageBuffer pointer to the array element (GEP-into-array). */
+            uint32_t elem = ts[fty].op[1];
             (void)emit_type_pointer(c, elem, emit_air_type(c, elem),
                                     LAGFX_SPV_STORAGE_STORAGE_BUFFER);
         }
