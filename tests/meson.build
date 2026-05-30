@@ -871,6 +871,25 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-vertex-attribute-input-unit.
     workdir : meson.current_source_dir() / '..')
 endif
 
+# CALL_FMF (fast-math-flags) operand skip + type-index-0 return type. A
+# fast-math conversion CALL must propagate its float result type so a
+# downstream float multiply dispatches as OpFMul, not OpIMul.
+if fs.is_file(meson.current_source_dir() / 'air2spv-call-fmf-unit.c')
+  air2spv_fmf_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_fmf_deps += [vulkan_dep]
+  endif
+  air2spv_fmf_test = executable('air2spv-call-fmf-unit',
+    'air2spv-call-fmf-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_fmf_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv CALL_FMF operand skip (unit)', air2spv_fmf_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   air2spv_si_test_deps = [libapplegfx_vulkan_dep]

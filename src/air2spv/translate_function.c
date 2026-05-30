@@ -996,18 +996,27 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
  * args...]; the function type's op[1] is the return type-index. */
 static uint32_t call_return_air_type(const xlate_ctx_t *c,
                                      const lagfx_air_inst_t *i) {
-    if (i->num_ops < 3u) return 0u;
+    /* Returns LAGFX_AIR_TYPE_NONE on failure (NOT 0 — type index 0 is a
+     * valid return type, e.g. float; conflating it with "no type" dropped
+     * non-void calls whose return type is index 0). */
+    if (i->num_ops < 3u) return LAGFX_AIR_TYPE_NONE;
     uint32_t ccinfo = (uint32_t)i->ops[1];
-    if (!(ccinfo & 0x8000)) return 0u;            /* no explicit fnty slot */
-    uint32_t fn_ty_idx = (uint32_t)i->ops[2];
+    if (!(ccinfo & 0x8000)) return LAGFX_AIR_TYPE_NONE;  /* no explicit fnty slot */
+    /* CALL_FMF (cc bit 17) inserts a fast-math-flags operand BEFORE the
+     * fnty/callee/args (llvm::CallMarkersFlags). Skip it or every slot is
+     * off by one. fnty then sits at ops[2 + has_fmf]. */
+    uint32_t has_fmf = (ccinfo & (1u << 17)) ? 1u : 0u;
+    uint32_t fnty_slot = 2u + has_fmf;
+    if (i->num_ops <= fnty_slot) return LAGFX_AIR_TYPE_NONE;
+    uint32_t fn_ty_idx = (uint32_t)i->ops[fnty_slot];
     uint32_t n_types = 0;
     const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
     if (fn_ty_idx >= n_types ||
         ts[fn_ty_idx].kind != LAGFX_AIR_TYPE_FUNCTION ||
         ts[fn_ty_idx].num_op < 2u) {
-        return 0u;
+        return LAGFX_AIR_TYPE_NONE;
     }
-    return (uint32_t)ts[fn_ty_idx].op[1];          /* return-type index */
+    return (uint32_t)ts[fn_ty_idx].op[1];          /* return-type index (may be 0) */
 }
 
 /* True iff the AIR type-index denotes void (or is unresolvable). */
@@ -1051,7 +1060,7 @@ static bool inst_produces_value(const xlate_ctx_t *c,
              * desyncs (blocker A). Void calls (llvm.lifetime.*, and any
              * call with no resolvable explicit return type) do not. */
             uint32_t ret = call_return_air_type(c, i);
-            return ret != 0u && !air_type_is_void(c, ret);
+            return ret != LAGFX_AIR_TYPE_NONE && !air_type_is_void(c, ret);
         }
         default:
             return true;
@@ -1238,9 +1247,16 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
 
     uint32_t ccinfo = (uint32_t)inst->ops[1];
     bool has_explicit_type = (ccinfo & 0x8000) != 0;
+    /* CALL_FMF (cc bit 17, llvm::CallMarkersFlags) inserts a fast-math-
+     * flags operand BEFORE fnty/callee/args. Skip it or the callee + every
+     * arg slot is off by one (→ callee resolves to a bogus value-id and the
+     * whole call gets dropped, breaking downstream type propagation).
+     * Metal emits fast-math on nearly every op, so this is the common path. */
+    uint32_t has_fmf = (ccinfo & (1u << 17)) ? 1u : 0u;
 
-    /* Determine callee_rel slot index. */
-    uint32_t callee_slot_idx = has_explicit_type ? 3u : 2u;
+    /* Determine callee_rel slot index:
+     *   [paramattrs, cc, (FMF if bit17), (fnty if bit15), callee, args...] */
+    uint32_t callee_slot_idx = 2u + has_fmf + (has_explicit_type ? 1u : 0u);
     if (inst->num_ops <= callee_slot_idx) return;
 
     uint64_t callee_rel_raw = inst->ops[callee_slot_idx];
@@ -1382,8 +1398,9 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
      *     type resolution needs. Real image-op lowering is separate. */
     if (!glsl_inst) {
         if (result_value_id != 0u && !air_type_is_void(c, result_ty_air)) {
-            uint32_t ph_ty = result_ty_air ? emit_air_type(c, result_ty_air)
-                                            : emit_type_vec4_f(c);
+            uint32_t ph_ty = (result_ty_air != LAGFX_AIR_TYPE_NONE)
+                                ? emit_air_type(c, result_ty_air)
+                                : emit_type_vec4_f(c);
             uint32_t ph = emit_undef(c, ph_ty);
             bind_value_spv(c, result_value_id, ph);
             set_result_air_type(c, result_value_id, result_ty_air);
@@ -1415,7 +1432,7 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
     /* result_ty_air was resolved up front. Emit its SPIR-V type (or vec4f
      * if the return type was unresolvable). */
     uint32_t result_spv_type;
-    if (result_ty_air) {
+    if (result_ty_air != LAGFX_AIR_TYPE_NONE) {
         result_spv_type = emit_air_type(c, result_ty_air);
     } else {
         /* Default to vec4f as per task spec. */
