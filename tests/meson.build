@@ -941,6 +941,23 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-air-math-intrinsics-unit.c')
     workdir : meson.current_source_dir() / '..')
 endif
 
+# Vector result-type consistency (composite-extract / shuffle-width / binop-type).
+if fs.is_file(meson.current_source_dir() / 'air2spv-vector-typing-unit.c')
+  air2spv_vty_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_vty_deps += [vulkan_dep]
+  endif
+  air2spv_vty_test = executable('air2spv-vector-typing-unit',
+    'air2spv-vector-typing-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_vty_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv vector result-type consistency (unit)', air2spv_vty_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   air2spv_si_test_deps = [libapplegfx_vulkan_dep]

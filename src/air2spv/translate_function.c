@@ -138,6 +138,7 @@ typedef struct {
     uint32_t                  id_half;           /* OpTypeFloat 16 (half) */
     uint32_t                  id_bool;           /* OpTypeBool — comparison results */
     uint32_t                  id_vec2_f;
+    uint32_t                  id_vec3_f;
     uint32_t                  id_vec4_f;
     uint32_t                  id_fn_void;
     uint32_t                  id_main;
@@ -226,6 +227,12 @@ static uint32_t emit_type_vec2_f(xlate_ctx_t *c) {
     return c->id_vec2_f;
 }
 
+static uint32_t emit_type_vec3_f(xlate_ctx_t *c) {
+    if (c->id_vec3_f) return c->id_vec3_f;
+    c->id_vec3_f = emit_type_vec(c, emit_type_float32(c), 3u);
+    return c->id_vec3_f;
+}
+
 static uint32_t emit_type_void(xlate_ctx_t *c) {
     if (c->id_void) return c->id_void;
     c->id_void = lagfx_spv_builder_alloc_id(c->b);
@@ -302,11 +309,14 @@ static uint32_t emit_air_type(xlate_ctx_t *c, uint32_t air_type_idx) {
              * duplicate OpTypeVector declarations (spirv-val rejects). */
             if (lanes == 2u && elem_spv == c->id_float32 && c->id_vec2_f) {
                 out = c->id_vec2_f;
+            } else if (lanes == 3u && elem_spv == c->id_float32 && c->id_vec3_f) {
+                out = c->id_vec3_f;
             } else if (lanes == 4u && elem_spv == c->id_float32 && c->id_vec4_f) {
                 out = c->id_vec4_f;
             } else {
                 out = emit_type_vec(c, elem_spv, lanes);
                 if (lanes == 2u && elem_spv == c->id_float32) c->id_vec2_f = out;
+                if (lanes == 3u && elem_spv == c->id_float32) c->id_vec3_f = out;
                 if (lanes == 4u && elem_spv == c->id_float32) c->id_vec4_f = out;
             }
             break;
@@ -876,6 +886,7 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
      * them in unused declarations (which would force Int8/Int64
      * capabilities). */
     (void)emit_type_vec2_f(c);
+    (void)emit_type_vec3_f(c);
     (void)emit_type_vec4_f(c);
     /* Pre-warm common constants + OpUndefs the body fallbacks may want.
      * All OpConstant / OpUndef emissions must precede OpFunction per
@@ -1749,6 +1760,24 @@ static void emit_inst_load(xlate_ctx_t *c, uint32_t inst_idx,
     set_result_air_type(c, result_value_id, result_ty_air);
 }
 
+/* Find a module AIR type index for a float vector of `lanes` components.
+ * Returns LAGFX_AIR_TYPE_NONE if the module declares no such type. Used to
+ * give shuffle/other results a concrete vector AIR type so downstream
+ * BINOP/etc. result-type inference doesn't default to vec4. */
+static uint32_t find_air_float_vec_type(xlate_ctx_t *c, uint32_t lanes) {
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    for (uint32_t i = 0; i < n_types; i++) {
+        if (ts[i].kind == LAGFX_AIR_TYPE_VECTOR && ts[i].num_op >= 2u
+            && ts[i].op[0] == lanes) {
+            uint32_t elem = ts[i].op[1];
+            if (elem < n_types && ts[elem].kind == LAGFX_AIR_TYPE_FLOAT)
+                return i;
+        }
+    }
+    return LAGFX_AIR_TYPE_NONE;
+}
+
 static void emit_inst_shufflevec(xlate_ctx_t *c, uint32_t inst_idx,
                                    const lagfx_air_inst_t *inst,
                                    uint32_t result_value_id, uint32_t next_val_id) {
@@ -1792,6 +1821,13 @@ static void emit_inst_shufflevec(xlate_ctx_t *c, uint32_t inst_idx,
      * pointing at per-lane i32 constants which we bound via
      * bind_value_lit_i32 at the INTEGER pre-bind site. */
     uint32_t mask_lanes[4] = {0u, 1u, 2u, 3u};  /* identity fallback */
+    /* Result width = number of mask lanes. The mask is a <N x i32>
+     * constant, so its component count IS the result vector width. The
+     * old code hardcoded 4 lanes / vec4 result, so a 3-lane shuffle (e.g.
+     * the scalar->vec3 splat Apple emits for mix(v3,v3,scalar)) produced
+     * a v4 that then mismatched the v3 intrinsic operand (spirv-val
+     * reject). Default 4 only when the mask is unresolvable. */
+    uint32_t shuf_n = 4u;
 
     uint32_t n_lc = 0;
     const lagfx_air_constant_t *lc =
@@ -1808,6 +1844,7 @@ static void emit_inst_shufflevec(xlate_ctx_t *c, uint32_t inst_idx,
             uint32_t ncomp = k->payload.bytes.len / sizeof(uint32_t);
             if (comps && ncomp >= 1u) {
                 uint32_t n = ncomp < 4u ? ncomp : 4u;
+                shuf_n = n;
                 for (uint32_t i = 0; i < n; i++) {
                     int32_t lit;
                     if (resolve_value_lit_i32(c, comps[i], &lit)) {
@@ -1830,21 +1867,42 @@ static void emit_inst_shufflevec(xlate_ctx_t *c, uint32_t inst_idx,
             uint32_t ncomp = k->payload.bytes.len / sizeof(uint32_t);
             if (raw && ncomp >= 1u) {
                 uint32_t n = ncomp < 4u ? ncomp : 4u;
+                shuf_n = n;
                 for (uint32_t i = 0; i < n; i++) {
                     mask_lanes[i] = raw[i];
                 }
             }
+        } else if (k->kind == LAGFX_AIR_CONST_NULL) {
+            /* zeroinitializer mask (e.g. <N x i32> splat-to-lane-0). The
+             * NULL const doesn't carry a width, so derive N from the AIR
+             * value type if available; lanes are all 0. */
+            uint32_t mty = value_air_type_idx(c, msk_id);
+            uint32_t n_types = 0;
+            const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+            if (mty < n_types && ts[mty].kind == LAGFX_AIR_TYPE_VECTOR
+                && ts[mty].num_op >= 1u) {
+                uint32_t n = ts[mty].op[0];
+                shuf_n = (n >= 2u && n <= 4u) ? n : 4u;
+            }
+            for (uint32_t i = 0; i < 4u; i++) mask_lanes[i] = 0u;
         }
     }
 
+    /* Result vector type matches the mask lane count. */
+    uint32_t result_ty = (shuf_n == 2u) ? vec2_f
+                       : (shuf_n == 3u) ? emit_type_vec3_f(c)
+                       : vec4_f;
     uint32_t result_id = lagfx_spv_builder_alloc_id(c->b);
     uint32_t ops[8] = {
-        vec4_f, result_id, v1_spv, v2_spv,
+        result_ty, result_id, v1_spv, v2_spv,
         mask_lanes[0], mask_lanes[1], mask_lanes[2], mask_lanes[3],
     };
-    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VECTOR_SHUFFLE, ops, 8);
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VECTOR_SHUFFLE, ops, 4u + shuf_n);
     bind_value_spv(c, result_value_id, result_id);
-    set_result_air_type(c, result_value_id, LAGFX_AIR_TYPE_NONE);
+    /* Record the result's vector AIR type (float vecN) so a downstream
+     * BINOP (e.g. the `v3 * splat` in normalize()) infers the right result
+     * width instead of defaulting to vec4. */
+    set_result_air_type(c, result_value_id, find_air_float_vec_type(c, shuf_n));
 }
 
 static void emit_inst_insertval(xlate_ctx_t *c, uint32_t inst_idx,
@@ -1897,26 +1955,42 @@ static void emit_inst_ret(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
         uint32_t vec4_f  = emit_type_vec4_f(c);
         uint32_t val_spv = resolve_or_undef(c, val_id, vec4_f);
 
-        /* Extract field 0 of the returned struct (the vec4). If the
-         * value we have is ALREADY a vec4 (e.g., a shufflevec result),
-         * OpCompositeExtract from a vec4 with index 0 would yield a
-         * scalar — that's wrong. So we only extract if the source
-         * type is a struct.
-         *
-         * Heuristic: if the bound SPIR-V id came from an INSERTVAL,
-         * it's the struct type; extract field 0 to get the vec4.
-         * Otherwise (e.g., if RET took a vec4 directly), use as-is.
-         *
-         * Implementation: just try OpCompositeExtract %v4f %extract
-         * %val 0; if val is a vec4 OpUndef, the extract would be a
-         * scalar — but for triangle the val IS a struct. We trust the
-         * INSERTVAL chain.
-         */
-        uint32_t extract_id = lagfx_spv_builder_alloc_id(c->b);
-        uint32_t op_ex[] = { vec4_f, extract_id, val_spv, 0u };
-        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_EXTRACT, op_ex, 4);
+        /* A Metal vertex returns either a bare `float4` (`vertex float4
+         * f()`) or a struct whose first field is the `[[position]]` vec4
+         * (`struct VOut { float4 position [[position]]; ... }`). The
+         * former arrives as a vec4 value (insertelement chain), the
+         * latter as a struct value (insertvalue chain). We must store the
+         * vec4 directly in the bare case but OpCompositeExtract field 0
+         * in the struct case — extracting field 0 of a bare vec4 yields a
+         * SCALAR typed as v4float (spirv-val reject; the scalarmath
+         * black-box bug). Decide by the FUNCTION's declared return type
+         * (authoritative — the RET operand's tracked type can be NONE,
+         * e.g. the demo's untracked insertvalue result). */
+        bool is_struct = false;
+        {
+            uint32_t n_types = 0;
+            const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+            uint32_t fn_ty = c->fn ? c->fn->type_index : LAGFX_AIR_TYPE_NONE;
+            if (fn_ty < n_types && ts[fn_ty].kind == LAGFX_AIR_TYPE_FUNCTION &&
+                ts[fn_ty].num_op >= 2u) {
+                uint32_t ret_ty = ts[fn_ty].op[1];
+                if (ret_ty < n_types &&
+                    (ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_ANON ||
+                     ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_NAMED)) {
+                    is_struct = true;
+                }
+            }
+        }
 
-        uint32_t op_st[] = { c->id_position_var, extract_id };
+        uint32_t store_src = val_spv;
+        if (is_struct) {
+            uint32_t extract_id = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t op_ex[] = { vec4_f, extract_id, val_spv, 0u };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_EXTRACT, op_ex, 4);
+            store_src = extract_id;
+        }
+
+        uint32_t op_st[] = { c->id_position_var, store_src };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, op_st, 2);
     }
 
