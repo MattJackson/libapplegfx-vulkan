@@ -1385,6 +1385,69 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         }
     }
 
+    /* === air.convert.* numeric conversions (core SPIR-V, NOT GLSL.std.450) ===
+     *
+     * Apple lowers Metal scalar/vector numeric casts to a CALL of an
+     * `air.convert.<dstkind>.<dsttype>.<srckind>.<srctype>` intrinsic
+     * rather than an LLVM `uitofp`/`sitofp`/CAST instruction. E.g.
+     * `float2(uint x, uint y)` emits two
+     * `air.convert.f.f32.u.i32(i32) -> float` calls. These map to core
+     * SPIR-V conversion opcodes, not to OpExtInst GLSL.std.450 — so they
+     * must be handled here, BEFORE the unrecognized-call OpUndef fallback
+     * (which would otherwise drop the conversion and feed an undefined
+     * scalar into the consuming insertelement → garbage gl_Position →
+     * triangle not rasterised on strict drivers; the Stage-80 black-screen
+     * bug, isolated 2026-05-29). The `kind` field is a single char:
+     * 'f'=float, 'u'=unsigned int, 's'=signed int.
+     *
+     *   dst  src  → opcode
+     *    f    u   → OpConvertUToF      f    s   → OpConvertSToF
+     *    u    f   → OpConvertFToU      s    f   → OpConvertFToS
+     *    f    f   → OpFConvert (f16<->f32)
+     *    u/s  u/s → OpUConvert / OpSConvert (int width change)
+     */
+    if (strncmp(fn_name, "air.convert.", 12u) == 0) {
+        const char *q = fn_name + 12u;          /* "<dstkind>.<dsttype>.<srckind>.<srctype>" */
+        char dstkind = q[0];
+        /* Advance past the dstkind + dsttype fields (two '.') to srckind. */
+        const char *r = q;
+        int dots = 0;
+        while (*r && dots < 2) { if (*r == '.') dots++; r++; }
+        char srckind = *r;
+
+        uint32_t conv_op = 0u;
+        if      (dstkind == 'f' && srckind == 'u') conv_op = LAGFX_SPV_OP_CONVERT_U_TO_F;
+        else if (dstkind == 'f' && srckind == 's') conv_op = LAGFX_SPV_OP_CONVERT_S_TO_F;
+        else if (dstkind == 'u' && srckind == 'f') conv_op = LAGFX_SPV_OP_CONVERT_F_TO_U;
+        else if (dstkind == 's' && srckind == 'f') conv_op = LAGFX_SPV_OP_CONVERT_F_TO_S;
+        else if (dstkind == 'f' && srckind == 'f') conv_op = LAGFX_SPV_OP_F_CONVERT;
+        else if (dstkind == 'u')                   conv_op = LAGFX_SPV_OP_UCONVERT;
+        else if (dstkind == 's')                   conv_op = LAGFX_SPV_OP_SCONVERT;
+
+        uint32_t cvt_arg_slot = callee_slot_idx + 1u;
+        if (conv_op != 0u && inst->num_ops > cvt_arg_slot &&
+            result_value_id != 0u) {
+            uint32_t dst_ty_spv = (result_ty_air != LAGFX_AIR_TYPE_NONE)
+                                    ? emit_air_type(c, result_ty_air)
+                                    : emit_type_float32(c);
+            uint32_t a_rel  = (uint32_t)inst->ops[cvt_arg_slot];
+            uint32_t a_id   = resolve_relative(a_rel, next_val_id);
+            uint32_t a_spv  = resolve_or_undef(c, a_id, emit_type_int_w(c, 32u, 0u));
+            uint32_t res    = resolve_value_spv(c, result_value_id);
+            if (!res) res = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t cops[] = { dst_ty_spv, res, a_spv };
+            lagfx_spv_builder_emit_op(c->b, conv_op, cops, 3);
+            bind_value_spv(c, result_value_id, res);
+            set_result_air_type(c, result_value_id, result_ty_air);
+            LAGFX_TRACE("call: air.convert '%s' dst=%c src=%c → conv_op=%u "
+                        "(value-id %u)", fn_name, dstkind, srckind, conv_op,
+                        result_value_id);
+            return;
+        }
+        /* Unhandled convert shape — fall through to the typed-undef path
+         * so downstream value-numbering still stays in sync. */
+    }
+
     /* Not an air.* GLSL intrinsic we recognize. Two sub-cases:
      *   - Void calls (llvm.lifetime/debug, and anything inst_produces_value
      *     classified non-producing → result_value_id == 0): drop silently;
