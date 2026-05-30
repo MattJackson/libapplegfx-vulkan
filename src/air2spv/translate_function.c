@@ -2965,9 +2965,17 @@ static void emit_inst_cmp(xlate_ctx_t *c, uint32_t inst_idx,
      * becomes OpUndef %bool and the OpIEqual gets a bool operand
      * (spirv-val: "operands must be int"). Derive it from the LHS AIR type
      * when known. */
-    uint32_t operand_spv_type = (lhs_ty != LAGFX_AIR_TYPE_NONE)
-                                  ? emit_air_type(c, lhs_ty)
-                                  : result_spv_type;
+    uint32_t operand_spv_type;
+    if (lhs_ty != LAGFX_AIR_TYPE_NONE) {
+        operand_spv_type = emit_air_type(c, lhs_ty);
+    } else {
+        /* LHS type unknown: default by the comparison KIND, not bool. LLVM
+         * FCmp predicates are 0..15, ICmp 32..41 — a float compare needs
+         * float operands (FOrdEqual etc.), an int compare needs int. */
+        operand_spv_type = (pred < 32)
+                             ? emit_type_float32(c)
+                             : emit_type_int_w(c, 32u, 0u);
+    }
     uint32_t lhs_spv = resolve_or_undef(c, lhs_id, operand_spv_type);
     uint32_t rhs_spv = resolve_or_undef(c, rhs_id, operand_spv_type);
 
