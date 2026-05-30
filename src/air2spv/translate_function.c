@@ -1799,6 +1799,24 @@ static void emit_inst_ret(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, op_st, 2);
     }
 
+    /* Fragment shader: the returned value IS the colour. A Metal
+     * `fragment float4 f()` returns a bare vec4 directly (no struct
+     * wrapper), so store the resolved RET operand straight to the
+     * Location-0 colour output. Without this the colour output is
+     * never written → undefined fragment colour → the geometry
+     * renders blank (paid for: triangle_fragment emitted an empty
+     * body and the centre pixel stayed the clear colour). */
+    if (c->stage == LAGFX_XLATE_STAGE_FRAGMENT && inst->num_ops >= 1u &&
+        c->id_color_var) {
+        uint32_t val_rel = (uint32_t)inst->ops[0];
+        uint32_t val_id  = resolve_relative(val_rel, next_val_id);
+        uint32_t vec4_f  = emit_type_vec4_f(c);
+        uint32_t val_spv = resolve_or_undef(c, val_id, vec4_f);
+
+        uint32_t op_st[] = { c->id_color_var, val_spv };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, op_st, 2);
+    }
+
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_RETURN, NULL, 0);
 }
 

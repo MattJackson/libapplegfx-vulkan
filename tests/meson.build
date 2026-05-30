@@ -890,6 +890,23 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-call-fmf-unit.c')
     workdir : meson.current_source_dir() / '..')
 endif
 
+# Fragment RET → Location-0 colour-output store regression guard.
+if fs.is_file(meson.current_source_dir() / 'air2spv-fragment-color-store-unit.c')
+  air2spv_fcs_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_fcs_deps += [vulkan_dep]
+  endif
+  air2spv_fcs_test = executable('air2spv-fragment-color-store-unit',
+    'air2spv-fragment-color-store-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_fcs_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv fragment colour-output store (unit)', air2spv_fcs_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   air2spv_si_test_deps = [libapplegfx_vulkan_dep]
