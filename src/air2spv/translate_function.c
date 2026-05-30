@@ -640,11 +640,13 @@ static lagfx_varg_kind_t vertex_arg_kind(const xlate_ctx_t *c, uint32_t arg_idx)
  *   0 = neither.
  *
  * Address space ALONE is ambiguous: a `sampler [[sampler(n)]]` and a
- * `constant T* [[buffer(n)]]` are BOTH addrspace 2. The disambiguator
- * (verified against our reader's type table on real SkyLight shaders) is
- * the POINTEE kind — a texture/sampler points at an opaque/unknown type,
- * a buffer points at a real STRUCT with members. Textures live in
- * addrspace 1, samplers in addrspace 2; buffers in either. */
+ * `constant T* [[buffer(n)]]` are BOTH addrspace 2. And Apple represents
+ * an opaque resource type in TWO ways: an opaque pointee, OR a NAMED struct
+ * (`_texture_2d_t`, `_sampler_t`, `_depth_2d_t`, ...). So we disambiguate by
+ * the pointee STRUCT NAME first (leading-underscore resource types ->
+ * texture/sampler), then fall back to address space for opaque pointees.
+ * A pointee struct with a non-resource name (or anonymous, with real data
+ * members) is a buffer. */
 static int frag_resource_kind(const xlate_ctx_t *c, uint32_t arg_idx) {
     if (arg_idx >= c->num_args) return 0;
     uint32_t ty = c->arg_air_type_ids[arg_idx];
@@ -654,9 +656,19 @@ static int frag_resource_kind(const xlate_ctx_t *c, uint32_t arg_idx) {
         return 0;
     uint32_t pointee   = ts[ty].op[0];
     uint32_t addrspace = ts[ty].op[1];
-    if (pointee < n && (ts[pointee].kind == LAGFX_AIR_TYPE_STRUCT_ANON ||
-                        ts[pointee].kind == LAGFX_AIR_TYPE_STRUCT_NAMED))
-        return 3;                    /* buffer (data struct) */
+    if (pointee < n && ts[pointee].kind == LAGFX_AIR_TYPE_STRUCT_NAMED) {
+        const char *nm = lagfx_air_module_string(c->m, ts[pointee].name_offset);
+        if (nm) {
+            /* Apple's opaque resource structs (strip a "struct." prefix). */
+            const char *p = nm;
+            if (strncmp(p, "struct.", 7u) == 0) p += 7u;
+            if (strstr(p, "_texture") || strstr(p, "_depth")) return 1; /* texture */
+            if (strstr(p, "_sampler")) return 2;                        /* sampler */
+        }
+        return 3;                    /* named data struct -> buffer */
+    }
+    if (pointee < n && ts[pointee].kind == LAGFX_AIR_TYPE_STRUCT_ANON)
+        return 3;                    /* anonymous data struct -> buffer */
     if (addrspace == 1u) return 1;   /* texture (opaque) */
     if (addrspace == 2u) return 2;   /* sampler (opaque) */
     return 0;
