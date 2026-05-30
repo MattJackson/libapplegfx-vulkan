@@ -507,6 +507,20 @@ static uint32_t emit_const_uint32(xlate_ctx_t *c, uint32_t val) {
     return id;
 }
 
+/* OpConstant of a 32-bit float (cached by bit pattern). Must precede
+ * OpFunction per SPIR-V layout — pre-warm in the prologue before body use. */
+static uint32_t emit_const_float32(xlate_ctx_t *c, float val) {
+    uint32_t bits; memcpy(&bits, &val, sizeof(bits));
+    uint32_t ty = emit_type_float32(c);
+    uint32_t cached = cache_lookup_const(c, 1, ty, (uint64_t)bits);
+    if (cached) return cached;
+    uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t ops[] = { ty, id, bits };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CONSTANT, ops, 3);
+    cache_store_const(c, 1, ty, (uint64_t)bits, id);
+    return id;
+}
+
 /* OpUndef per SPIR-V type. Used as a placeholder for unresolvable
  * operands (function-local constants pending Phase 5.5 decode). */
 static uint32_t emit_undef(xlate_ctx_t *c, uint32_t spv_type) {
@@ -1044,6 +1058,9 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
      * All OpConstant / OpUndef emissions must precede OpFunction per
      * SPIR-V §2.4. */
     (void)emit_const_uint32(c, 0u);
+    /* 0.0 / 1.0 float constants for air.fast_saturate -> FClamp(x,0,1). */
+    (void)emit_const_float32(c, 0.0f);
+    (void)emit_const_float32(c, 1.0f);
     (void)emit_undef(c, emit_type_int_w(c, 32u, 0u));
     (void)emit_undef(c, emit_type_vec2_f(c));
     (void)emit_undef(c, emit_type_vec4_f(c));
@@ -1666,6 +1683,53 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
             set_result_air_type(c, result_value_id, result_ty_air);
             LAGFX_TRACE("call: air.dot '%s' → OpDot (value-id %u)",
                         fn_name, result_value_id);
+            return;
+        }
+    }
+
+    /* === air.fast_saturate.<ty> → OpExtInst FClamp(x, 0, 1) ===
+     * saturate(x) clamps to [0,1]. Not a GLSL ext-inst by itself; lower to
+     * FClamp with synthesized 0/1. For a vector result, splat the scalar
+     * 0/1 constants to the result width via OpCompositeConstruct (a body
+     * instruction; the scalar constants are pre-warmed in the prologue). */
+    if ((strncmp(fn_name, "air.fast_saturate", 17u) == 0 ||
+         strncmp(fn_name, "air.precise_saturate", 20u) == 0) &&
+        result_value_id != 0u && result_ty_air != LAGFX_AIR_TYPE_NONE) {
+        uint32_t arg_slot = callee_slot_idx + 1u;
+        if (inst->num_ops > arg_slot) {
+            uint32_t rty = emit_air_type(c, result_ty_air);
+            uint32_t x = resolve_or_undef(c,
+                resolve_relative((uint32_t)inst->ops[arg_slot], next_val_id), rty);
+            uint32_t c0 = emit_const_float32(c, 0.0f);
+            uint32_t c1 = emit_const_float32(c, 1.0f);
+            /* If the result is a float vector, splat 0/1 to its width. */
+            uint32_t n_types = 0;
+            const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+            uint32_t lo = c0, hi = c1;
+            if (result_ty_air < n_types &&
+                ts[result_ty_air].kind == LAGFX_AIR_TYPE_VECTOR &&
+                ts[result_ty_air].num_op >= 1u) {
+                uint32_t lanes = ts[result_ty_air].op[0];
+                if (lanes >= 2u && lanes <= 4u) {
+                    uint32_t lo_ops[6], hi_ops[6];
+                    lo_ops[0] = rty; hi_ops[0] = rty;
+                    uint32_t lo_id = lagfx_spv_builder_alloc_id(c->b);
+                    uint32_t hi_id = lagfx_spv_builder_alloc_id(c->b);
+                    lo_ops[1] = lo_id; hi_ops[1] = hi_id;
+                    for (uint32_t k = 0; k < lanes; k++) { lo_ops[2+k]=c0; hi_ops[2+k]=c1; }
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, lo_ops, 2u+lanes);
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, hi_ops, 2u+lanes);
+                    lo = lo_id; hi = hi_id;
+                }
+            }
+            uint32_t res = resolve_value_spv(c, result_value_id);
+            if (!res) res = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t o[] = { rty, res, c->id_glsl, LAGFX_SPV_GLSL_FCLAMP, x, lo, hi };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_EXT_INST, o, 7);
+            bind_value_spv(c, result_value_id, res);
+            set_result_air_type(c, result_value_id, result_ty_air);
+            LAGFX_TRACE("call: air.fast_saturate → FClamp(x,0,1) (value-id %u)",
+                        result_value_id);
             return;
         }
     }
