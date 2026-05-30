@@ -116,11 +116,11 @@ lagfx_air2spv_emit_buffer_load_stub(uint8_t **out_blob, size_t *out_size) {
      * vulkan1.0. */
     {
         uint32_t prefix[]  = { LAGFX_SPV_EXECUTION_MODEL_VERTEX, id_main };
-        uint32_t suffix[]  = { id_pos };
+        uint32_t suffix[]  = { id_ubo_var, id_pos };
         if (!lagfx_spv_builder_emit_op_string(b, LAGFX_SPV_OP_ENTRY_POINT,
                                               prefix, 2,
                                               "main",
-                                              suffix, 1)) goto oom;
+                                              suffix, 2)) goto oom;
     }
 
     /* 4. Decorations.

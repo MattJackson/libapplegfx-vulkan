@@ -9,7 +9,7 @@
  * emitter at src/air2spv/emit_buffer_load.c.
  *
  * Asserts: SPIR-V header is correct; if spirv-val is on PATH, the
- * emitted module passes validation under `--target-env vulkan1.0`.
+ * emitted module passes validation under `--target-env vulkan1.2`.
  */
 
 #include "air2spv/emit_buffer_load.h"
@@ -100,7 +100,7 @@ static int test_spirv_val(void) {
     }
     if (pid == 0) {
         execl(spirv_val, "spirv-val",
-              "--target-env", "vulkan1.0",
+              "--target-env", "vulkan1.2",
               tmpl, (char *)NULL);
         _exit(127);
     }
@@ -114,7 +114,7 @@ static int test_spirv_val(void) {
                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
         return 1;
     }
-    printf("PASS: spirv-val accepted the module (%s, vulkan1.0)\n", spirv_val);
+    printf("PASS: spirv-val accepted the module (%s, vulkan1.2)\n", spirv_val);
     return 0;
 }
 

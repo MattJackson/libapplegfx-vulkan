@@ -595,7 +595,12 @@ static lagfx_varg_kind_t vertex_arg_kind(const xlate_ctx_t *c, uint32_t arg_idx)
     const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
     if (ty >= n) return LAGFX_VARG_SKIP;
     switch (ts[ty].kind) {
-        case LAGFX_AIR_TYPE_INTEGER: return LAGFX_VARG_VID;
+        case LAGFX_AIR_TYPE_INTEGER:
+            /* Only the vertex stage maps an integer scalar arg to the
+             * BuiltIn VertexIndex. A fragment integer input would need a
+             * Flat-decorated Location input (not modelled yet) → SKIP. */
+            return (c->stage == LAGFX_XLATE_STAGE_VERTEX)
+                       ? LAGFX_VARG_VID : LAGFX_VARG_SKIP;
         case LAGFX_AIR_TYPE_FLOAT:
         case LAGFX_AIR_TYPE_VECTOR:  return LAGFX_VARG_ATTR;
         default:                     return LAGFX_VARG_SKIP;
@@ -720,10 +725,30 @@ static void emit_prologue(xlate_ctx_t *c) {
         }
     } else /* fragment */ {
         c->id_color_var = lagfx_spv_builder_alloc_id(c->b);
+
+        /* Stage-in inputs: each float/vector fragment arg becomes a
+         * Location-decorated Input variable (mirrors the vertex ATTR path).
+         * Without this, reads of an interpolated input (`in.uv`) resolve to
+         * a mistyped OpUndef and break downstream ops (the branch_fragment
+         * `FOrdGreaterThan` on an undef-bool). The `[[position]]` arg is
+         * modelled as a plain Location input for now rather than BuiltIn
+         * FragCoord — correct enough to validate and to read user inputs;
+         * FragCoord + metadata-driven location matching is a refinement. */
+        uint32_t n_fa = c->num_args < LAGFX_MAX_VERTEX_ARGS
+                            ? c->num_args : LAGFX_MAX_VERTEX_ARGS;
+        for (uint32_t i = 0; i < n_fa; i++) {
+            if (vertex_arg_kind(c, i) == LAGFX_VARG_ATTR)
+                c->arg_input_var_ids[i] = lagfx_spv_builder_alloc_id(c->b);
+        }
+
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_FRAGMENT, c->id_main };
-        uint32_t suffix[] = { c->id_color_var };
+        uint32_t suffix[1u + LAGFX_MAX_VERTEX_ARGS];
+        uint32_t n_iface = 0u;
+        suffix[n_iface++] = c->id_color_var;
+        for (uint32_t i = 0; i < n_fa; i++)
+            if (c->arg_input_var_ids[i]) suffix[n_iface++] = c->arg_input_var_ids[i];
         lagfx_spv_builder_emit_op_string(c->b, LAGFX_SPV_OP_ENTRY_POINT,
-                                          prefix, 2, "main", suffix, 1);
+                                          prefix, 2, "main", suffix, n_iface);
 
         /* OpExecutionMode %main OriginUpperLeft */
         {
@@ -733,6 +758,15 @@ static void emit_prologue(xlate_ctx_t *c) {
         /* OpDecorate %color Location 0 */
         {
             uint32_t ops[] = { c->id_color_var, LAGFX_SPV_DECORATION_LOCATION, 0u };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
+        }
+        /* OpDecorate each stage-in Input %arg Location N (input Location
+         * space is separate from the output color's). */
+        uint32_t loc = 0u;
+        for (uint32_t i = 0; i < n_fa; i++) {
+            if (!c->arg_input_var_ids[i]) continue;
+            uint32_t ops[] = { c->arg_input_var_ids[i],
+                                LAGFX_SPV_DECORATION_LOCATION, loc++ };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
         }
     }
@@ -784,6 +818,23 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, op_pt, 3);
         uint32_t op_var[] = { id_ptr_out, c->id_color_var, LAGFX_SPV_STORAGE_OUTPUT };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, op_var, 3);
+
+        /* One Input OpVariable per stage-in (ATTR) fragment arg, typed to
+         * the arg's own float/vector type. The Location decoration was
+         * emitted in the prologue; the OpLoad that reads it into the arg
+         * value-id is emitted in the entry block (below). */
+        uint32_t n_fa = c->num_args < LAGFX_MAX_VERTEX_ARGS
+                            ? c->num_args : LAGFX_MAX_VERTEX_ARGS;
+        for (uint32_t i = 0; i < n_fa; i++) {
+            if (vertex_arg_kind(c, i) != LAGFX_VARG_ATTR) continue;
+            uint32_t elem_spv = emit_air_type(c, c->arg_air_type_ids[i]);
+            uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_INPUT, elem_spv };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, pt_ops, 3);
+            uint32_t var_ops[] = { ptr_id, c->arg_input_var_ids[i],
+                                    LAGFX_SPV_STORAGE_INPUT };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
+        }
     }
 
     /* Pre-emit all AIR types likely to be referenced by the body
@@ -970,12 +1021,13 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
      * value-id. The loaded SPIR-V id IS the argument's value (a uint for
      * vertex_id, or the attribute's vec/float type). Must come AFTER all
      * OpVariable instructions in the entry block. */
-    if (c->stage == LAGFX_XLATE_STAGE_VERTEX) {
+    {
         uint32_t n_va = c->num_args < LAGFX_MAX_VERTEX_ARGS
                             ? c->num_args : LAGFX_MAX_VERTEX_ARGS;
         for (uint32_t i = 0; i < n_va; i++) {
             lagfx_varg_kind_t k = vertex_arg_kind(c, i);
             if (k == LAGFX_VARG_SKIP) continue;  /* no Input var to load */
+            if (!c->arg_input_var_ids[i]) continue;
             uint32_t elem_spv = (k == LAGFX_VARG_VID)
                                   ? emit_type_int_w(c, 32u, 0u)
                                   : emit_air_type(c, c->arg_air_type_ids[i]);
@@ -2575,10 +2627,18 @@ static void emit_inst_extractelt(xlate_ctx_t *c, uint32_t inst_idx,
         return;
     }
 
-    /* Element AIR type = vec_ty.op[1] (lanes are op[0], element is op[1]). */
-    uint32_t elem_ty_air = ts[vec_ty_air].num_op >= 2u ? ts[vec_ty_air].op[1] : 0u;
-    if (!elem_ty_air) {
-        LAGFX_WARN("extractelt: vector has no element type — drop");
+    /* Element AIR type = vec_ty.op[1] (lanes are op[0], element is op[1]).
+     * NOTE: type INDEX 0 is valid (float is commonly type 0) — do NOT use a
+     * truthiness check here, or a vec<float> arg drops (the branch_fragment
+     * `in.uv.x` extractelement, which left the comparison reading an
+     * undef-typed-bool). Validate by bounds, not by != 0. */
+    if (ts[vec_ty_air].num_op < 2u) {
+        LAGFX_WARN("extractelt: vector type missing element operand — drop");
+        return;
+    }
+    uint32_t elem_ty_air = ts[vec_ty_air].op[1];
+    if (elem_ty_air >= n_types) {
+        LAGFX_WARN("extractelt: element type index out of range — drop");
         return;
     }
 

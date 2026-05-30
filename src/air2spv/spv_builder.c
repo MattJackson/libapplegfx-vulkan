@@ -13,6 +13,12 @@
 
 #define LAGFX_SPV_MAGIC      0x07230203u
 #define LAGFX_SPV_VERSION_10 0x00010000u  /* version 1.0 */
+/* SPIR-V 1.4: enables scalar-bool OpSelect over vector operands (Metal's
+ * `cond ? vec : vec` ternary), avoiding a bool-vector splat. Backward
+ * compatible with 1.0 constructs; the only globals we emit are Input/Output
+ * (already listed in OpEntryPoint, satisfying the stricter 1.4 interface
+ * rule). The deploy target (container llvmpipe, Vulkan 1.3) accepts <=1.6. */
+#define LAGFX_SPV_VERSION_14 0x00010400u  /* version 1.4 */
 #define LAGFX_SPV_GENERATOR  0u           /* unregistered generator id */
 #define LAGFX_SPV_SCHEMA     0u
 
@@ -132,7 +138,7 @@ lagfx_spv_builder_finish(const lagfx_spv_builder_t *b, size_t *out_size_bytes) {
     if (!out) return NULL;
     uint32_t *p = (uint32_t *)out;
     p[0] = LAGFX_SPV_MAGIC;
-    p[1] = LAGFX_SPV_VERSION_10;
+    p[1] = LAGFX_SPV_VERSION_14;
     p[2] = LAGFX_SPV_GENERATOR;
     p[3] = bound;
     p[4] = LAGFX_SPV_SCHEMA;

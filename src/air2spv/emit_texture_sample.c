@@ -104,14 +104,17 @@ lagfx_air2spv_emit_texture_sample_stub(uint8_t **out_blob, size_t *out_size) {
     uint32_t id_sampled     = lagfx_spv_builder_alloc_id(b);
     uint32_t id_rgba        = lagfx_spv_builder_alloc_id(b);
 
-    /* 3. OpEntryPoint Fragment %main "main" %uv_in %color_out */
+    /* 3. OpEntryPoint Fragment %main "main" %uv_in %color_out %tex %samp.
+     * SPIR-V 1.4+ requires EVERY global variable statically used by the
+     * entry point — including UniformConstant image/sampler — to appear in
+     * the interface list (1.0-1.3 only required Input/Output). */
     {
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_FRAGMENT, id_main };
-        uint32_t suffix[] = { id_uv_in, id_color_out };
+        uint32_t suffix[] = { id_uv_in, id_color_out, id_tex, id_samp };
         if (!lagfx_spv_builder_emit_op_string(b, LAGFX_SPV_OP_ENTRY_POINT,
                                               prefix, 2,
                                               "main",
-                                              suffix, 2)) goto oom;
+                                              suffix, 4)) goto oom;
     }
 
     /* 4. OpExecutionMode OriginUpperLeft (fragment, Vulkan convention). */

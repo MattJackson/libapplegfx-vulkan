@@ -98,19 +98,19 @@ lagfx_air2spv_emit_storage_image_stub(uint8_t **out_blob, size_t *out_size) {
     uint32_t id_texel       = lagfx_spv_builder_alloc_id(b);   /* OpImageRead result */
     uint32_t id_out_img_val = lagfx_spv_builder_alloc_id(b);   /* loaded output image */
 
-    /* 6. OpEntryPoint GLCompute %main "main"
-     *    NOTE: SPIR-V <= 1.3 (we emit 1.0) requires the OpEntryPoint
-     *    interface list to contain ONLY Input/Output variables. Storage
-     *    images are UniformConstant, so they don't go in the interface
-     *    list — descriptor-set + binding decorations are how the
-     *    pipeline finds them. SPIR-V 1.4+ relaxes this; we'd add them
-     *    back when bumping the SPIR-V version. */
+    /* 6. OpEntryPoint GLCompute %main "main" %in_img %out_img
+     *    SPIR-V 1.4+ (we now emit 1.4) requires the OpEntryPoint interface
+     *    list to contain EVERY global statically used by the entry point,
+     *    including UniformConstant storage images (1.0-1.3 listed only
+     *    Input/Output). Descriptor-set + binding decorations still locate
+     *    them in the pipeline. */
     {
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_GLCOMPUTE, id_main };
+        uint32_t suffix[] = { id_in_img, id_out_img };
         if (!lagfx_spv_builder_emit_op_string(b, LAGFX_SPV_OP_ENTRY_POINT,
                                               prefix, 2,
                                               "main",
-                                              NULL, 0)) goto oom;
+                                              suffix, 2)) goto oom;
     }
 
     /* 7. OpExecutionMode LocalSize 1 1 1 */
