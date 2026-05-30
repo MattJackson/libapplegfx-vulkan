@@ -201,6 +201,12 @@ typedef struct lagfx_air_module lagfx_air_module_t;
 const lagfx_air_type_t       *lagfx_air_module_types(const lagfx_air_module_t *m, uint32_t *count);
 const lagfx_air_constant_t   *lagfx_air_module_constants(const lagfx_air_module_t *m, uint32_t *count);
 const lagfx_air_function_t   *lagfx_air_module_functions(const lagfx_air_module_t *m, uint32_t *count);
+/* Count of module-level GLOBALVAR records. These occupy value-ids
+ * ahead of functions/constants in LLVM's value enumeration; consumers
+ * that resolve ABSOLUTE value-id operands (CST_CODE_AGGREGATE
+ * constituents, module-constant references) must add this to their
+ * module-value base. Relative-encoded operands are unaffected. */
+uint32_t                      lagfx_air_module_num_globalvars(const lagfx_air_module_t *m);
 const lagfx_air_metadata_t   *lagfx_air_module_metadata(const lagfx_air_module_t *m, uint32_t *count);
 /* Module-level metadata strings pool. Each entry is a NUL-terminated
  * string in the module arena, ordered by LLVM metadata-ID (0..count-1).

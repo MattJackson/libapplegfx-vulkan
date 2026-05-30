@@ -155,6 +155,18 @@ struct lagfx_air_module {
     uint32_t                     num_constants;
     lagfx_air_function_t        *functions;
     uint32_t                     num_functions;
+    /* Count of module-level GLOBALVAR records. We don't model the
+     * globals themselves (Phase 1 ignores their bodies), but LLVM's
+     * value enumeration assigns them value-ids BEFORE functions and
+     * module constants. Absolute value-id operands in the bitcode
+     * (e.g. CST_CODE_AGGREGATE constituents, which are NOT relative-
+     * encoded) are numbered in that full space, so consumers must
+     * offset their module-value base by this count or every absolute
+     * module-constant reference is shifted (off-by-num_globalvars).
+     * Paid for by the SkyLight shuffle-mask AGGREGATE bug: a
+     * <4 x i32> <0,1,2,undef> mask resolved its constituents to the
+     * wrong constants when this was assumed zero. */
+    uint32_t                     num_globalvars;
     /* Arena OFFSETS for the three tables above (0 = unset). The table
      * pointers are raw arena addresses and a later arena_reserve() may
      * realloc the arena out from under them (e.g. a CONSTANTS block
@@ -306,6 +318,11 @@ const lagfx_air_function_t *
 lagfx_air_module_functions(const lagfx_air_module_t *m, uint32_t *count) {
     if (count) *count = m->num_functions;
     return m->functions;
+}
+
+uint32_t
+lagfx_air_module_num_globalvars(const lagfx_air_module_t *m) {
+    return m->num_globalvars;
 }
 
 const lagfx_air_metadata_t *
@@ -1575,8 +1592,16 @@ lagfx_air_module_open(const uint8_t *blob, size_t blob_len,
                         m->num_functions++;
                         break;
                     }
+                    case LAGFX_MOD_CODE_GLOBALVAR:  /* = 7 */
+                        /* We don't model the global's contents, but it
+                         * DOES occupy a value-id (assigned before
+                         * functions in LLVM's enumeration). Count it so
+                         * the absolute-value-id base lines up — see
+                         * num_globalvars doc comment. */
+                        m->num_globalvars++;
+                        break;
                     default:
-                        /* Other module-level records (GLOBALVAR, ALIAS,
+                        /* Other module-level records (ALIAS, IFUNC,
                          * VSTOFFSET, etc.) — Phase 1 ignores. */
                         break;
                 }

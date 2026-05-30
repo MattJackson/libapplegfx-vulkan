@@ -3517,7 +3517,16 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
      * decls/defs first, then module constants. */
     uint32_t n_mod_consts = 0;
     (void)lagfx_air_module_constants(m, &n_mod_consts);
-    c.module_val_count = n_fns + n_mod_consts;
+    /* LLVM's value enumeration assigns ids to global variables BEFORE
+     * functions, then module constants. Our absolute value-id space must
+     * mirror that exactly, because bitcode operands that are NOT
+     * relative-encoded (CST_CODE_AGGREGATE constituents, module-const
+     * references) index that full list. Omitting globalvars shifts every
+     * absolute module reference by num_globalvars — the SkyLight
+     * <4 x i32> <0,1,2,undef> shuffle-mask AGGREGATE bug. */
+    uint32_t n_globalvars = lagfx_air_module_num_globalvars(m);
+    uint32_t mod_val_base = n_globalvars + n_fns;
+    c.module_val_count = mod_val_base + n_mod_consts;
     c.arg_id_base      = c.module_val_count;
     /* Function-local CONSTANTS_BLOCK now decoded by body_open and
      * exposed via lagfx_air_function_body_local_constants(). They
@@ -3561,7 +3570,7 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
     {
         const lagfx_air_constant_t *cs = lagfx_air_module_constants(m, &n_mod_consts);
         for (uint32_t i = 0; i < n_mod_consts; i++) {
-            uint32_t vid = n_fns + i;
+            uint32_t vid = mod_val_base + i;
             const lagfx_air_constant_t *k = &cs[i];
             uint32_t spv_id = 0u;
             switch (k->kind) {
