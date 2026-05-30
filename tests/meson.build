@@ -1045,6 +1045,23 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-call-globalvar-base-unit.c')
     workdir : meson.current_source_dir() / '..')
 endif
 
+# Multi-render-target struct-return fragment (SkyLight ColorFillYCbCr).
+if fs.is_file(meson.current_source_dir() / 'air2spv-multi-render-target-unit.c')
+  air2spv_mrt_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_mrt_deps += [vulkan_dep]
+  endif
+  air2spv_mrt_test = executable('air2spv-multi-render-target-unit',
+    'air2spv-multi-render-target-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_mrt_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv multi render target (unit)', air2spv_mrt_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   air2spv_si_test_deps = [libapplegfx_vulkan_dep]

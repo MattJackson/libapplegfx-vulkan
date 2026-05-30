@@ -124,7 +124,7 @@ typedef struct {
     uint32_t                  id_position_ptr;   /* OpTypePointer Output v4float */
     uint32_t                  id_vid_var;        /* vertex: BuiltIn VertexIndex input */
     uint32_t                  id_vid_ptr;        /* OpTypePointer Input uint */
-    uint32_t                  id_color_var;      /* fragment: Location 0 output */
+    uint32_t                  id_color_var;      /* fragment: Location 0 output (== id_color_vars[0]) */
 
     /* Per-vertex-arg Input variables. A vertex arg is either the
      * vertex_id builtin (integer-typed param) or a stage-in attribute
@@ -132,6 +132,12 @@ typedef struct {
      * by arg index; capped at LAGFX_MAX_VERTEX_ARGS. */
 #define LAGFX_MAX_VERTEX_ARGS 8u
     uint32_t                  arg_input_var_ids[LAGFX_MAX_VERTEX_ARGS];
+
+    /* Fragment colour outputs. A `fragment float4 f()` has one (Location 0);
+     * a struct-returning fragment writes one Location-N Output per struct
+     * member (multiple render targets, e.g. YCbCr plane_y/plane_uv). */
+    uint32_t                  id_color_vars[LAGFX_MAX_VERTEX_ARGS];
+    uint32_t                  num_color_outputs;
 
     /* Fragment/compute resource args: a texture (pointer addrspace 1) or a
      * sampler (pointer addrspace 2) is declared as a UniformConstant
@@ -428,28 +434,66 @@ static uint32_t emit_air_type(xlate_ctx_t *c, uint32_t air_type_idx) {
     return out;
 }
 
-/* SPIR-V type id for a fragment's Location-0 colour output. A Metal
- * fragment can return `float4`, but real SkyLight fragments also return
- * `float2` (SimpleTextureFragmentUV) or scalar `float`
- * (ColorFillYCbCr_ChromaOnly). The output variable AND the RET store must
- * match the FUNCTION's declared return type, else spirv-val rejects the
- * store with a type mismatch (it previously hardcoded v4float). A struct
- * return (multiple [[color(n)]] targets) isn't modelled yet -> fall back to
- * v4float. Returns 0 only if no float result type can be derived. */
-static uint32_t fragment_output_type_spv(xlate_ctx_t *c) {
+/* The fragment function's declared return AIR type (LAGFX_AIR_TYPE_NONE if
+ * not derivable). */
+static uint32_t fragment_return_air_type(xlate_ctx_t *c) {
     uint32_t n_types = 0;
     const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
     uint32_t fn_ty = c->fn ? c->fn->type_index : LAGFX_AIR_TYPE_NONE;
     if (fn_ty < n_types && ts[fn_ty].kind == LAGFX_AIR_TYPE_FUNCTION &&
-        ts[fn_ty].num_op >= 2u) {
-        uint32_t ret_ty = ts[fn_ty].op[1];
-        if (ret_ty < n_types) {
-            lagfx_air_type_kind_t k = ts[ret_ty].kind;
-            /* Bare float / float-vector return -> use it directly. A struct
-             * (multi-target) or anything else keeps the v4float default. */
-            if (k == LAGFX_AIR_TYPE_FLOAT || k == LAGFX_AIR_TYPE_VECTOR)
-                return emit_air_type(c, ret_ty);
-        }
+        ts[fn_ty].num_op >= 2u)
+        return ts[fn_ty].op[1];
+    return LAGFX_AIR_TYPE_NONE;
+}
+
+/* Number of fragment colour outputs (render targets). A struct return is one
+ * Location-N Output per member (YCbCr plane_y/plane_uv); anything else is a
+ * single output. */
+static uint32_t fragment_output_count(xlate_ctx_t *c) {
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    uint32_t ret_ty = fragment_return_air_type(c);
+    if (ret_ty < n_types &&
+        (ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_ANON ||
+         ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_NAMED)) {
+        uint32_t nf = ts[ret_ty].num_op > 1u ? ts[ret_ty].num_op - 1u : 0u;
+        if (nf == 0u) nf = 1u;
+        if (nf > LAGFX_MAX_VERTEX_ARGS) nf = LAGFX_MAX_VERTEX_ARGS;
+        return nf;
+    }
+    return 1u;
+}
+
+/* AIR type of colour output `idx`: a struct member type for multi-target, or
+ * the whole return type for a single output. */
+static uint32_t fragment_output_member_air_type(xlate_ctx_t *c, uint32_t idx) {
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    uint32_t ret_ty = fragment_return_air_type(c);
+    if (ret_ty < n_types &&
+        (ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_ANON ||
+         ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_NAMED)) {
+        uint32_t nf = ts[ret_ty].num_op > 1u ? ts[ret_ty].num_op - 1u : 0u;
+        if (idx < nf) return ts[ret_ty].op[1u + idx];
+    }
+    return ret_ty;
+}
+
+/* SPIR-V type id for fragment colour output `idx`. A Metal fragment can
+ * return `float4`, but real SkyLight fragments also return `float2`
+ * (SimpleTextureFragmentUV), scalar `float` (ColorFillYCbCr_ChromaOnly), or
+ * a struct of those (ColorFillYCbCr: {float, float2} -> two render targets).
+ * The output OpVariable AND the RET store must match this, else spirv-val
+ * rejects the store with a type mismatch (it previously hardcoded v4float).
+ * Falls back to v4float for any non-float result. */
+static uint32_t fragment_output_type_spv_idx(xlate_ctx_t *c, uint32_t idx) {
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    uint32_t mty = fragment_output_member_air_type(c, idx);
+    if (mty < n_types) {
+        lagfx_air_type_kind_t k = ts[mty].kind;
+        if (k == LAGFX_AIR_TYPE_FLOAT || k == LAGFX_AIR_TYPE_VECTOR)
+            return emit_air_type(c, mty);
     }
     return emit_type_vec4_f(c);
 }
@@ -1085,7 +1129,12 @@ static void emit_prologue(xlate_ctx_t *c) {
             }
         }
     } else /* fragment */ {
-        c->id_color_var = lagfx_spv_builder_alloc_id(c->b);
+        /* One Output variable per colour render target (1 for a bare
+         * float/float4 return, N for a struct-of-members multi-target). */
+        c->num_color_outputs = fragment_output_count(c);
+        for (uint32_t k = 0; k < c->num_color_outputs; k++)
+            c->id_color_vars[k] = lagfx_spv_builder_alloc_id(c->b);
+        c->id_color_var = c->id_color_vars[0];
 
         /* Stage-in inputs: each float/vector fragment arg becomes a
          * Location-decorated Input variable (mirrors the vertex ATTR path).
@@ -1120,9 +1169,10 @@ static void emit_prologue(xlate_ctx_t *c) {
             c->id_default_sampler_var = lagfx_spv_builder_alloc_id(c->b);
 
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_FRAGMENT, c->id_main };
-        uint32_t suffix[2u + 2u * LAGFX_MAX_VERTEX_ARGS];
+        uint32_t suffix[3u * LAGFX_MAX_VERTEX_ARGS];
         uint32_t n_iface = 0u;
-        suffix[n_iface++] = c->id_color_var;
+        for (uint32_t k = 0; k < c->num_color_outputs; k++)
+            suffix[n_iface++] = c->id_color_vars[k];
         for (uint32_t i = 0; i < n_fa; i++) {
             /* SPIR-V 1.4: list ALL used globals (Input + UniformConstant). */
             if (c->arg_input_var_ids[i]) suffix[n_iface++] = c->arg_input_var_ids[i];
@@ -1137,9 +1187,9 @@ static void emit_prologue(xlate_ctx_t *c) {
             uint32_t ops[] = { c->id_main, LAGFX_SPV_EXECUTION_MODE_ORIGIN_UPPER_LEFT };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_EXECUTION_MODE, ops, 2);
         }
-        /* OpDecorate %color Location 0 */
-        {
-            uint32_t ops[] = { c->id_color_var, LAGFX_SPV_DECORATION_LOCATION, 0u };
+        /* OpDecorate %color_k Location k — render target k. */
+        for (uint32_t k = 0; k < c->num_color_outputs; k++) {
+            uint32_t ops[] = { c->id_color_vars[k], LAGFX_SPV_DECORATION_LOCATION, k };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
         }
         /* OpDecorate each texture/sampler resource DescriptorSet 0 + a
@@ -1266,15 +1316,19 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
         }
         emit_arg_resource_vars(c, n_va);
     } else /* fragment */ {
-        /* Colour output typed to the fragment's actual return type (float /
-         * float2 / float4), not a hardcoded vec4. */
-        uint32_t out_ty = fragment_output_type_spv(c);
+        /* One Output OpVariable per render target, each typed to its actual
+         * member/return type (float / float2 / float4), not a hardcoded
+         * vec4. A struct return -> N targets (multi-plane YCbCr). */
         (void)id_v4f;
-        uint32_t id_ptr_out = lagfx_spv_builder_alloc_id(c->b);
-        uint32_t op_pt[] = { id_ptr_out, LAGFX_SPV_STORAGE_OUTPUT, out_ty };
-        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, op_pt, 3);
-        uint32_t op_var[] = { id_ptr_out, c->id_color_var, LAGFX_SPV_STORAGE_OUTPUT };
-        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, op_var, 3);
+        for (uint32_t k = 0; k < c->num_color_outputs; k++) {
+            uint32_t out_ty = fragment_output_type_spv_idx(c, k);
+            uint32_t id_ptr_out = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t op_pt[] = { id_ptr_out, LAGFX_SPV_STORAGE_OUTPUT, out_ty };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, op_pt, 3);
+            uint32_t op_var[] = { id_ptr_out, c->id_color_vars[k],
+                                  LAGFX_SPV_STORAGE_OUTPUT };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, op_var, 3);
+        }
 
         /* One Input OpVariable per stage-in (ATTR) fragment arg, typed to
          * the arg's own float/vector type. The Location decoration was
@@ -2679,14 +2733,34 @@ static void emit_inst_ret(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
         c->id_color_var) {
         uint32_t val_rel = (uint32_t)inst->ops[0];
         uint32_t val_id  = resolve_relative(val_rel, next_val_id);
-        /* Fallback-typed to the colour output's actual type (float/float2/
-         * float4) so an unresolved RET operand's OpUndef matches the store
-         * target — must agree with the output OpVariable emitted above. */
-        uint32_t out_ty  = fragment_output_type_spv(c);
-        uint32_t val_spv = resolve_or_undef(c, val_id, out_ty);
 
-        uint32_t op_st[] = { c->id_color_var, val_spv };
-        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, op_st, 2);
+        if (c->num_color_outputs > 1u) {
+            /* Multi-target: the RET value is a struct (insertvalue chain);
+             * extract member k and store it to its Location-k output. */
+            uint32_t struct_spv = resolve_value_spv(c, val_id);
+            for (uint32_t k = 0; k < c->num_color_outputs; k++) {
+                uint32_t mem_ty = fragment_output_type_spv_idx(c, k);
+                uint32_t mem_id;
+                if (struct_spv) {
+                    mem_id = lagfx_spv_builder_alloc_id(c->b);
+                    uint32_t op_ex[] = { mem_ty, mem_id, struct_spv, k };
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_EXTRACT,
+                                              op_ex, 4);
+                } else {
+                    mem_id = emit_undef(c, mem_ty);
+                }
+                uint32_t op_st[] = { c->id_color_vars[k], mem_id };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, op_st, 2);
+            }
+        } else {
+            /* Single target. Fallback-typed to the colour output's actual
+             * type (float/float2/float4) so an unresolved RET operand's
+             * OpUndef matches the store target. */
+            uint32_t out_ty  = fragment_output_type_spv_idx(c, 0u);
+            uint32_t val_spv = resolve_or_undef(c, val_id, out_ty);
+            uint32_t op_st[] = { c->id_color_var, val_spv };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, op_st, 2);
+        }
     }
 
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_RETURN, NULL, 0);
