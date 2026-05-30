@@ -492,8 +492,19 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
         .shaderSampledImageArrayNonUniformIndexing  = have_descriptor_indexing     ? VK_TRUE : VK_FALSE,
         .pNext                                      = &feat13,
     };
+    /* shaderInt64: our AIR→SPIR-V translator emits OpCapability Int64
+     * (i64 GEP indices / lifetime sizes) on essentially every shader, so
+     * the device MUST enable shaderInt64 or vkCreate{ShaderModule,Graphics
+     * Pipelines} rejects the module (VUID-...-pCode-08740 → -13). lavapipe
+     * advertises it; enable it when the ICD does. */
+    bool have_shader_int64 = (probe2.features.shaderInt64 == VK_TRUE);
+    if (!have_shader_int64) {
+        LAGFX_WARN("vk_init: shaderInt64 not advertised by ICD; AIR shaders "
+                   "that declare OpCapability Int64 will fail pipeline build.");
+    }
     VkPhysicalDeviceFeatures2 feat2 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .features = { .shaderInt64 = have_shader_int64 ? VK_TRUE : VK_FALSE },
         .pNext = &feat12,
     };
 
