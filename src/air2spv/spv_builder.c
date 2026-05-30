@@ -33,7 +33,7 @@
  * instruction into one of four section streams by opcode and concatenates
  * them in spec order at finish time. So a type emitted mid-body is
  * automatically hoisted into the types section. */
-enum { SEC_PREAMBLE = 0, SEC_ANNOT, SEC_TYPES, SEC_FUNCS, SEC_COUNT };
+enum { SEC_CAPS = 0, SEC_PREAMBLE, SEC_ANNOT, SEC_TYPES, SEC_FUNCS, SEC_COUNT };
 
 typedef struct { uint32_t *w; uint32_t n; uint32_t cap; } spv_section;
 
@@ -48,8 +48,10 @@ struct lagfx_spv_builder {
  * it to the types section too. */
 static int section_of(uint32_t opcode, const uint32_t *operands, uint32_t n) {
     switch (opcode) {
-        case 17u: /* OpCapability */
+        case 17u: /* OpCapability — must precede everything; own section so a
+                   * lazily-emitted capability still lands before OpEntryPoint */
         case 10u: /* OpExtension */
+            return SEC_CAPS;
         case 11u: /* OpExtInstImport */
         case 14u: /* OpMemoryModel */
         case 15u: /* OpEntryPoint */
