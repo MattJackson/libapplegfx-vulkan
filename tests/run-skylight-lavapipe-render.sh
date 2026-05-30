@@ -36,20 +36,29 @@ export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
 meson setup build-skyrender --buildtype=release >/dev/null 2>&1 || true
 ninja -C build-skyrender examples/air-translate examples/triangle-extract-retarget >/dev/null
 
-# 2. Extract + translate the real SkyLight fragment.
+# 2. Extract all SkyLight functions + build the render harness once.
 mkdir -p /tmp/skyr
 build-skyrender/examples/triangle-extract-retarget \
   scratch/skylight-re/SkyLightShaders.air64.metallib /tmp/skyr/ >/dev/null
+cc -O2 tests/skylight-lavapipe-render.c -lvulkan -o /tmp/skyr/render
+glslangValidator -V tests/fixtures/skylight_passthrough.vert -o /tmp/skyr/vert_pass.spv >/dev/null
+glslangValidator -V tests/fixtures/skylight_texcoord.vert  -o /tmp/skyr/vert_tex.spv  >/dev/null
+
+RC=0
+
+# Case A: passthrough colour fragment (no resources).
+echo "=== passthrough: $FN ==="
 build-skyrender/examples/air-translate /tmp/skyr/"$FN".bc /tmp/skyr/frag.spv
 spirv-val /tmp/skyr/frag.spv
+LAGFX_FORCE_LAVAPIPE=1 /tmp/skyr/render /tmp/skyr/vert_pass.spv /tmp/skyr/frag.spv 00ff00ff || RC=1
 
-# 3. Compile the reference passthrough vertex.
-glslangValidator -V tests/fixtures/skylight_passthrough.vert -o /tmp/skyr/vert.spv >/dev/null
+# Case B: real texture-sampling fragment with a bound texture+sampler.
+TEXFN="${SKYLIGHT_TEXFN:-SimpleTextureFragment}"
+echo "=== texture-sample: $TEXFN ==="
+build-skyrender/examples/air-translate /tmp/skyr/"$TEXFN".bc /tmp/skyr/texfrag.spv
+spirv-val /tmp/skyr/texfrag.spv
+LAGFX_FORCE_LAVAPIPE=1 /tmp/skyr/render /tmp/skyr/vert_tex.spv /tmp/skyr/texfrag.spv 0000ffff --tex || RC=1
 
-# 4. Build + run the render harness.
-cc -O2 tests/skylight-lavapipe-render.c -lvulkan -o /tmp/skyr/render
-LAGFX_FORCE_LAVAPIPE=1 /tmp/skyr/render /tmp/skyr/vert.spv /tmp/skyr/frag.spv 00ff00ff
-RC=$?
 rm -rf ~/"$REMOTE"
 exit $RC
 REMOTE_SH

@@ -21,8 +21,15 @@
  *     its interpolated `color` input -> the render target).
  *
  * Args: argv[1]=vertex.spv argv[2]=fragment.spv [argv[3]=RRGGBBAA expected]
+ *       [argv[4]=--tex] — when --tex is given, bind a real texture+sampler
+ *       descriptor set (set 0: binding 0 = sampled image, binding 1 =
+ *       sampler) filled with the expected colour, so a texture-sampling
+ *       SkyLight fragment (e.g. SimpleTextureFragment) samples it at the
+ *       Location-1 tex coord (0.5,0.5) and returns it. This exercises the
+ *       resource-binding path the live noVNC wiring needs (most SkyLight
+ *       compositor shaders sample textures).
  * Default expected centre pixel: 00ff00ff (green) — the colour the vertex
- * feeds, which a correct fragment must pass through unchanged.
+ * feeds (passthrough mode) or the texture is filled with (--tex mode).
  *
  * Exit 0 = correct pixel rendered; 77 = no Vulkan ICD (skip); 1 = fail.
  */
@@ -74,6 +81,7 @@ int main(int argc, char **argv) {
         want.r = (v >> 24) & 0xff; want.g = (v >> 16) & 0xff;
         want.b = (v >> 8) & 0xff;  want.a = v & 0xff;
     }
+    int use_tex = (argc >= 5 && strcmp(argv[4], "--tex") == 0);
 
     size_t vlen = 0, flen = 0;
     uint8_t *vspv = slurp(argv[1], &vlen);
@@ -157,7 +165,115 @@ int main(int argc, char **argv) {
     if (!vs) die("vkCreateShaderModule(vertex) — bad vertex SPV");
     if (!fs) { fprintf(stderr, "FAIL: vkCreateShaderModule(fragment) rejected the translated SkyLight SPV\n"); return 1; }
 
-    VkPipelineLayoutCreateInfo plci = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    /* --tex: bind a real texture (binding 0 = sampled image) + sampler
+     * (binding 1) in descriptor set 0, filled with `want` — matches what
+     * the translator emits for air.sample_texture_2d. */
+    VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+    VkDescriptorSet dset = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    if (use_tex) {
+        const uint32_t TW = 4, TH = 4;
+        VkImageCreateInfo tici = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D, .format = fmt, .extent = { TW, TH, 1 },
+            .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED };
+        VkImage tex; if (vkCreateImage(dev, &tici, NULL, &tex) != VK_SUCCESS) die("tex image");
+        VkMemoryRequirements tmr; vkGetImageMemoryRequirements(dev, tex, &tmr);
+        VkMemoryAllocateInfo tmai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = tmr.size,
+            .memoryTypeIndex = pick_memtype(phys, tmr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) };
+        VkDeviceMemory tmem; if (vkAllocateMemory(dev, &tmai, NULL, &tmem) != VK_SUCCESS) die("tex mem");
+        vkBindImageMemory(dev, tex, tmem, 0);
+
+        /* Staging buffer filled with `want` for every texel. */
+        VkBufferCreateInfo tbci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = TW * TH * sizeof(RGBA), .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT };
+        VkBuffer tbuf; if (vkCreateBuffer(dev, &tbci, NULL, &tbuf) != VK_SUCCESS) die("tex buf");
+        VkMemoryRequirements tbmr; vkGetBufferMemoryRequirements(dev, tbuf, &tbmr);
+        VkMemoryAllocateInfo tbmai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = tbmr.size,
+            .memoryTypeIndex = pick_memtype(phys, tbmr.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) };
+        VkDeviceMemory tbmem; if (vkAllocateMemory(dev, &tbmai, NULL, &tbmem) != VK_SUCCESS) die("tex buf mem");
+        vkBindBufferMemory(dev, tbuf, tbmem, 0);
+        void *tm = NULL; vkMapMemory(dev, tbmem, 0, VK_WHOLE_SIZE, 0, &tm);
+        for (uint32_t i = 0; i < TW * TH; i++) ((RGBA *)tm)[i] = want;
+        vkUnmapMemory(dev, tbmem);
+
+        /* One-shot upload: UNDEFINED->TRANSFER_DST, copy, ->SHADER_READ_ONLY. */
+        VkCommandPoolCreateInfo upci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .queueFamilyIndex = 0 };
+        VkCommandPool upool; vkCreateCommandPool(dev, &upci, NULL, &upool);
+        VkCommandBufferAllocateInfo ucbai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = upool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 };
+        VkCommandBuffer ucmd; vkAllocateCommandBuffers(dev, &ucbai, &ucmd);
+        VkCommandBufferBeginInfo ubbi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        vkBeginCommandBuffer(ucmd, &ubbi);
+        VkImageMemoryBarrier b1 = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = tex, .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
+        vkCmdPipelineBarrier(ucmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &b1);
+        VkBufferImageCopy bic = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .imageExtent = { TW, TH, 1 } };
+        vkCmdCopyBufferToImage(ucmd, tbuf, tex, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+        VkImageMemoryBarrier b2 = b1;
+        b2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b2.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b2.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(ucmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &b2);
+        vkEndCommandBuffer(ucmd);
+        VkSubmitInfo usi = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &ucmd };
+        vkQueueSubmit(queue, 1, &usi, VK_NULL_HANDLE); vkQueueWaitIdle(queue);
+
+        VkImageViewCreateInfo tivci = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = tex, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+        VkImageView tview; if (vkCreateImageView(dev, &tivci, NULL, &tview) != VK_SUCCESS) die("tex view");
+        VkSamplerCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+            .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE };
+        if (vkCreateSampler(dev, &sci, NULL, &sampler) != VK_SUCCESS) die("sampler");
+
+        /* Descriptor set layout: binding 0 = sampled image, binding 1 = sampler
+         * (separate, as the translator emits OpTypeImage + OpTypeSampler). */
+        VkDescriptorSetLayoutBinding binds[2] = {
+            { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 1,
+              .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT },
+            { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1,
+              .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT },
+        };
+        VkDescriptorSetLayoutCreateInfo dslci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = 2, .pBindings = binds };
+        if (vkCreateDescriptorSetLayout(dev, &dslci, NULL, &dsl) != VK_SUCCESS) die("dsl");
+
+        VkDescriptorPoolSize psz[2] = {
+            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1 }, { VK_DESCRIPTOR_TYPE_SAMPLER, 1 } };
+        VkDescriptorPoolCreateInfo dpci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = psz };
+        VkDescriptorPool dpool; if (vkCreateDescriptorPool(dev, &dpci, NULL, &dpool) != VK_SUCCESS) die("dpool");
+        VkDescriptorSetAllocateInfo dsai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = dpool, .descriptorSetCount = 1, .pSetLayouts = &dsl };
+        if (vkAllocateDescriptorSets(dev, &dsai, &dset) != VK_SUCCESS) die("dset");
+        VkDescriptorImageInfo img_info = { .imageView = tview,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo samp_info = { .sampler = sampler };
+        VkWriteDescriptorSet writes[2] = {
+            { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dset, .dstBinding = 0,
+              .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &img_info },
+            { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dset, .dstBinding = 1,
+              .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &samp_info },
+        };
+        vkUpdateDescriptorSets(dev, 2, writes, 0, NULL);
+        fprintf(stdout, "  --tex: bound texture+sampler (set 0, bindings 0/1) = %02x%02x%02x%02x\n",
+                want.r, want.g, want.b, want.a);
+    }
+
+    VkPipelineLayoutCreateInfo plci = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = use_tex ? 1u : 0u, .pSetLayouts = use_tex ? &dsl : NULL };
     VkPipelineLayout pl; if (vkCreatePipelineLayout(dev, &plci, NULL, &pl) != VK_SUCCESS) die("layout");
 
     VkPipelineShaderStageCreateInfo stages[2] = {
@@ -207,6 +323,8 @@ int main(int argc, char **argv) {
         .clearValueCount = 1, .pClearValues = &clear };
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    if (use_tex)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &dset, 0, NULL);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
     vkEndCommandBuffer(cmd);
