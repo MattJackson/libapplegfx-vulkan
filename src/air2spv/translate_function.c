@@ -36,6 +36,11 @@
  * resolvers return it when no type is found. UINT32_MAX can never be a
  * real type index (type tables are tiny). */
 #define LAGFX_AIR_TYPE_NONE 0xFFFFFFFFu
+/* Sentinel result-AIR-type for a value that is a SPIR-V bool (a comparison
+ * result). AIR has no bool type index, so CMP records this; emit_air_type
+ * maps it to OpTypeBool, and a downstream SELECT over bools resolves its
+ * result type correctly (instead of treating "2" as a real type index). */
+#define LAGFX_AIR_TYPE_BOOL 0xFFFFFFFEu
 
 /* ===================================================================
  * Context
@@ -310,6 +315,7 @@ static uint32_t emit_type_pointer(xlate_ctx_t *c, uint32_t pointee_air_type,
 
 /* Recursively emit an AIR type as a SPIR-V type, caching the result. */
 static uint32_t emit_air_type(xlate_ctx_t *c, uint32_t air_type_idx) {
+    if (air_type_idx == LAGFX_AIR_TYPE_BOOL) return emit_type_bool(c);
     if (air_type_idx >= c->num_air_types) {
         /* Unknown / out-of-range — fall back to a uint to keep
          * downstream emission valid. */
@@ -2881,10 +2887,18 @@ static void emit_inst_cmp(xlate_ctx_t *c, uint32_t inst_idx,
         }
     }
 
-    /* Resolve operands to SPIR-V ids; undef (typed as the comparison's
-     * operand width) if unresolvable. */
-    uint32_t lhs_spv = resolve_or_undef(c, lhs_id, result_spv_type);
-    uint32_t rhs_spv = resolve_or_undef(c, rhs_id, result_spv_type);
+    /* Resolve operands to SPIR-V ids. The undef fallback must be typed as
+     * the OPERAND type (both compare operands share it), NOT the bool
+     * result type — otherwise an unresolved RHS (e.g. the literal `0` in
+     * `icmp eq i8 %x, 0`, common in function-constant predicate chains)
+     * becomes OpUndef %bool and the OpIEqual gets a bool operand
+     * (spirv-val: "operands must be int"). Derive it from the LHS AIR type
+     * when known. */
+    uint32_t operand_spv_type = (lhs_ty != LAGFX_AIR_TYPE_NONE)
+                                  ? emit_air_type(c, lhs_ty)
+                                  : result_spv_type;
+    uint32_t lhs_spv = resolve_or_undef(c, lhs_id, operand_spv_type);
+    uint32_t rhs_spv = resolve_or_undef(c, rhs_id, operand_spv_type);
 
     uint32_t result_spv = resolve_value_spv(c, result_value_id);
     if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
@@ -2898,9 +2912,12 @@ static void emit_inst_cmp(xlate_ctx_t *c, uint32_t inst_idx,
     lagfx_spv_builder_emit_op(c->b, spv_op, ops, 4);
 
     bind_value_spv(c, result_value_id, result_spv);
-    /* Result AIR type is "unknown" (2): there is no AIR bool type index,
-     * and downstream consumers (Select) read the SPIR-V id, not this. */
-    set_result_air_type(c, result_value_id, 2u);
+    /* Record the SPIR-V-bool sentinel so a downstream SELECT over comparison
+     * results resolves a bool result type (emit_air_type maps the sentinel
+     * to OpTypeBool). For a vector compare the result is a bool-vector; we
+     * still record the scalar-bool sentinel — the select path handles the
+     * common scalar predicate chains (function-constant predicates). */
+    set_result_air_type(c, result_value_id, LAGFX_AIR_TYPE_BOOL);
 }
 
 /* CMP2 (code 28, modern) shares CMP's record layout for our purposes
