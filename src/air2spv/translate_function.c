@@ -428,6 +428,32 @@ static uint32_t emit_air_type(xlate_ctx_t *c, uint32_t air_type_idx) {
     return out;
 }
 
+/* SPIR-V type id for a fragment's Location-0 colour output. A Metal
+ * fragment can return `float4`, but real SkyLight fragments also return
+ * `float2` (SimpleTextureFragmentUV) or scalar `float`
+ * (ColorFillYCbCr_ChromaOnly). The output variable AND the RET store must
+ * match the FUNCTION's declared return type, else spirv-val rejects the
+ * store with a type mismatch (it previously hardcoded v4float). A struct
+ * return (multiple [[color(n)]] targets) isn't modelled yet -> fall back to
+ * v4float. Returns 0 only if no float result type can be derived. */
+static uint32_t fragment_output_type_spv(xlate_ctx_t *c) {
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    uint32_t fn_ty = c->fn ? c->fn->type_index : LAGFX_AIR_TYPE_NONE;
+    if (fn_ty < n_types && ts[fn_ty].kind == LAGFX_AIR_TYPE_FUNCTION &&
+        ts[fn_ty].num_op >= 2u) {
+        uint32_t ret_ty = ts[fn_ty].op[1];
+        if (ret_ty < n_types) {
+            lagfx_air_type_kind_t k = ts[ret_ty].kind;
+            /* Bare float / float-vector return -> use it directly. A struct
+             * (multi-target) or anything else keeps the v4float default. */
+            if (k == LAGFX_AIR_TYPE_FLOAT || k == LAGFX_AIR_TYPE_VECTOR)
+                return emit_air_type(c, ret_ty);
+        }
+    }
+    return emit_type_vec4_f(c);
+}
+
 /* Returns true if `air_type_idx` recursively references a type SPIR-V
  * can't represent without extra capabilities we don't want to declare
  * (i8 / i64 today). Used to filter module-constant pre-bind so we
@@ -1240,8 +1266,12 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
         }
         emit_arg_resource_vars(c, n_va);
     } else /* fragment */ {
+        /* Colour output typed to the fragment's actual return type (float /
+         * float2 / float4), not a hardcoded vec4. */
+        uint32_t out_ty = fragment_output_type_spv(c);
+        (void)id_v4f;
         uint32_t id_ptr_out = lagfx_spv_builder_alloc_id(c->b);
-        uint32_t op_pt[] = { id_ptr_out, LAGFX_SPV_STORAGE_OUTPUT, id_v4f };
+        uint32_t op_pt[] = { id_ptr_out, LAGFX_SPV_STORAGE_OUTPUT, out_ty };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, op_pt, 3);
         uint32_t op_var[] = { id_ptr_out, c->id_color_var, LAGFX_SPV_STORAGE_OUTPUT };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, op_var, 3);
@@ -1760,16 +1790,29 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
     /* Resolve callee to absolute value-id. */
     uint32_t callee_id = resolve_relative(callee_rel, next_val_id);
 
-    /* Look up the function name via module-level functions table. */
+    /* Look up the function name via module-level functions table. The
+     * absolute value-id space is [globalvars | functions | module-consts |
+     * args | local-consts | insts]; functions begin at value-id
+     * n_globalvars (LLVM enumerates globals before functions). So the
+     * function-table index is callee_id - n_globalvars, NOT callee_id.
+     * (Before GLOBALVAR records were counted, n_globalvars was 0 and the
+     * raw id happened to work; now every shader has >=1 globalvar
+     * (@llvm.global_ctors), and a constexpr-sampler shader has 2, which is
+     * why air.sample_texture_2d resolved past the table and dropped ->
+     * the result undef took the global_ctors array type, yielding an
+     * invalid zero-length OpTypeArray downstream.) */
     uint32_t n_fns = 0;
     const lagfx_air_function_t *fns = lagfx_air_module_functions(c->m, &n_fns);
-    if (callee_id >= n_fns) {
+    uint32_t n_globalvars = lagfx_air_module_num_globalvars(c->m);
+    if (callee_id < n_globalvars || (callee_id - n_globalvars) >= n_fns) {
         /* Not a function reference — drop the call. */
-        LAGFX_TRACE("call: callee_id=%u >= n_fns=%u — drop", callee_id, n_fns);
+        LAGFX_TRACE("call: callee_id=%u (globalvars=%u, n_fns=%u) not a fn — drop",
+                    callee_id, n_globalvars, n_fns);
         return;
     }
+    uint32_t fn_idx = callee_id - n_globalvars;
 
-    const char *fn_name = lagfx_air_module_string(c->m, fns[callee_id].name_offset);
+    const char *fn_name = lagfx_air_module_string(c->m, fns[fn_idx].name_offset);
     if (!fn_name) {
         LAGFX_TRACE("call: no name for fn[%u] — drop", callee_id);
         return;
@@ -2636,8 +2679,11 @@ static void emit_inst_ret(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
         c->id_color_var) {
         uint32_t val_rel = (uint32_t)inst->ops[0];
         uint32_t val_id  = resolve_relative(val_rel, next_val_id);
-        uint32_t vec4_f  = emit_type_vec4_f(c);
-        uint32_t val_spv = resolve_or_undef(c, val_id, vec4_f);
+        /* Fallback-typed to the colour output's actual type (float/float2/
+         * float4) so an unresolved RET operand's OpUndef matches the store
+         * target — must agree with the output OpVariable emitted above. */
+        uint32_t out_ty  = fragment_output_type_spv(c);
+        uint32_t val_spv = resolve_or_undef(c, val_id, out_ty);
 
         uint32_t op_st[] = { c->id_color_var, val_spv };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, op_st, 2);
