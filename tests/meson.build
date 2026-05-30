@@ -1062,6 +1062,23 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-multi-render-target-unit.c')
     workdir : meson.current_source_dir() / '..')
 endif
 
+# SPIR-V descriptor-binding reflection (host descriptor-set-layout source).
+if fs.is_file(meson.current_source_dir() / 'air2spv-spv-reflect-bindings-unit.c')
+  air2spv_refl_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_refl_deps += [vulkan_dep]
+  endif
+  air2spv_refl_test = executable('air2spv-spv-reflect-bindings-unit',
+    'air2spv-spv-reflect-bindings-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_refl_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv spv reflect bindings (unit)', air2spv_refl_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   air2spv_si_test_deps = [libapplegfx_vulkan_dep]
