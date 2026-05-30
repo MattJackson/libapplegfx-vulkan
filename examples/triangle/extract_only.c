@@ -91,22 +91,50 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    lagfx_metallib_function_t fns[16];
-    memset(fns, 0, sizeof(fns));
+    /* *out_count is the TRUE function count, which may exceed any fixed
+     * capacity (CoreUI=17, SkyLight=31, MetalFX=76). The old fixed
+     * fns[16] + `i < n` loop ran off the end of the array into
+     * uninitialised stack memory on every real framework metallib. Probe
+     * with capacity=0 to learn the count, then allocate exactly that
+     * many records. See metallib_extract.h for the documented contract. */
     size_t n = 0;
     lagfx_status_t st = lagfx_metallib_extract_functions(
-        buf, buf_len, fns,
-        sizeof(fns) / sizeof(fns[0]), &n);
+        buf, buf_len, NULL, 0u, &n);
     if (st != LAGFX_OK) {
-        fprintf(stderr, "lagfx_metallib_extract_functions failed: %d\n",
-                (int)st);
+        fprintf(stderr, "lagfx_metallib_extract_functions (probe) "
+                "failed: %d\n", (int)st);
         free(buf);
         return 2;
     }
-    fprintf(stdout, "extracted %zu function(s)\n", n);
+    if (n == 0u) {
+        fprintf(stdout, "extracted 0 function(s)\n");
+        free(buf);
+        return 0;
+    }
+
+    lagfx_metallib_function_t *fns =
+        (lagfx_metallib_function_t *)calloc(n, sizeof(*fns));
+    if (!fns) {
+        fprintf(stderr, "out of memory allocating %zu function records\n", n);
+        free(buf);
+        return 2;
+    }
+    size_t got = 0;
+    st = lagfx_metallib_extract_functions(buf, buf_len, fns, n, &got);
+    if (st != LAGFX_OK) {
+        fprintf(stderr, "lagfx_metallib_extract_functions failed: %d\n",
+                (int)st);
+        free(fns);
+        free(buf);
+        return 2;
+    }
+    if (got > n) {
+        got = n;
+    }
+    fprintf(stdout, "extracted %zu function(s)\n", got);
 
     int rc = 0;
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < got; ++i) {
         const char *stage_s = stage_str(fns[i].stage);
         fprintf(stdout, "  fn[%zu]: name=%s stage=%s bitcode_len=%zu\n",
                 i, fns[i].name, stage_s, fns[i].bitcode_len);
@@ -122,6 +150,7 @@ int main(int argc, char **argv) {
                 fns[i].bitcode_len, out_path);
     }
 
+    free(fns);
     free(buf);
     return rc;
 }

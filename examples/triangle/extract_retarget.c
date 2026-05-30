@@ -97,22 +97,57 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    lagfx_metallib_function_t fns[16];
-    memset(fns, 0, sizeof(fns));
+    /* The extractor's contract (metallib_extract.h) is that *out_count
+     * is the TRUE number of functions in the metallib, which may exceed
+     * the capacity we pass — it only fills the first `capacity` slots.
+     * Real framework metallibs routinely carry far more than the old
+     * fixed 16 (CoreUI=17, SkyLight=31, MetalFX=76), so probing with a
+     * fixed-size stack array and then iterating `i < n` read PAST the
+     * array end into uninitialised stack memory: garbage names, a bogus
+     * multi-GB bitcode_len, and ultimately a SIGSEGV in the retarget
+     * call. Use the documented probe-then-allocate pattern: ask for the
+     * real count with capacity=0, allocate exactly that many records,
+     * then extract for real. */
     size_t n = 0;
     lagfx_status_t st = lagfx_metallib_extract_functions(
-        buf, buf_len, fns,
-        sizeof(fns) / sizeof(fns[0]), &n);
+        buf, buf_len, NULL, 0u, &n);
     if (st != LAGFX_OK) {
-        fprintf(stderr, "lagfx_metallib_extract_functions failed: %d\n",
-                (int)st);
+        fprintf(stderr, "lagfx_metallib_extract_functions (probe) "
+                "failed: %d\n", (int)st);
         free(buf);
         return 2;
     }
-    fprintf(stdout, "extracted %zu function(s)\n", n);
+    if (n == 0u) {
+        fprintf(stdout, "extracted 0 function(s)\n");
+        free(buf);
+        return 0;
+    }
+
+    lagfx_metallib_function_t *fns =
+        (lagfx_metallib_function_t *)calloc(n, sizeof(*fns));
+    if (!fns) {
+        fprintf(stderr, "out of memory allocating %zu function records\n", n);
+        free(buf);
+        return 2;
+    }
+    size_t got = 0;
+    st = lagfx_metallib_extract_functions(buf, buf_len, fns, n, &got);
+    if (st != LAGFX_OK) {
+        fprintf(stderr, "lagfx_metallib_extract_functions failed: %d\n",
+                (int)st);
+        free(fns);
+        free(buf);
+        return 2;
+    }
+    /* Belt-and-braces: never iterate beyond what we allocated, even if
+     * the second call somehow reports more than the probe did. */
+    if (got > n) {
+        got = n;
+    }
+    fprintf(stdout, "extracted %zu function(s)\n", got);
 
     int rc = 0;
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < got; ++i) {
         const char *stage_str = "unknown";
         switch (fns[i].stage) {
             case LAGFX_METALLIB_STAGE_VERTEX:   stage_str = "vertex";   break;
@@ -146,6 +181,7 @@ int main(int argc, char **argv) {
         free(rt_buf);
     }
 
+    free(fns);
     free(buf);
     return rc;
 }
