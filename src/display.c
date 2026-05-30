@@ -970,16 +970,37 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
         goto cleanup_rendered;
     }
 
+    /* Scanout source. The substitute/real draws render into display->rt
+     * (the per-display render target), NOT vk->frame_image. This
+     * steady-state DMA path historically copied vk->frame_image — which is
+     * never rendered into — so noVNC was black despite successful draws,
+     * even though the scanout_gpa==0 FALLBACK path above already correctly
+     * sourced display->rt via render_target_readback. Unify the two: source
+     * the DMA from display->rt when it is ready and dimensionally matched,
+     * else keep the old frame_image behaviour. Paid for: 7969 successful
+     * substitute draws produced a black framebuffer because the present DMA
+     * read the wrong image. */
+    VkImage       scanout_src     = vk->frame_image;
+    VkImageLayout scanout_src_old = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    bool          scanout_from_rt = false;
+    if (display->rt_ready && display->rt.image != VK_NULL_HANDLE
+        && display->rt_width == vk->frame_image_w
+        && display->rt_height == vk->frame_image_h) {
+        scanout_src     = display->rt.image;
+        scanout_src_old = display->rt.layout;
+        scanout_from_rt = true;
+    }
+
     {
         VkImageMemoryBarrier barrier1 = {
             .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             .dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .oldLayout           = scanout_src_old,
             .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = vk->frame_image,
+            .image               = scanout_src,
             .subresourceRange    = {
                 .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
                 .baseMipLevel   = 0,
@@ -1008,7 +1029,7 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
             .imageOffset = { 0, 0, 0 },
             .imageExtent = { vk->frame_image_w, vk->frame_image_h, 1u },
         };
-        vkCmdCopyImageToBuffer(cb, vk->frame_image,
+        vkCmdCopyImageToBuffer(cb, scanout_src,
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                slot->buffer, 1, &region);
     }
@@ -1022,7 +1043,7 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
             .newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = vk->frame_image,
+            .image               = scanout_src,
             .subresourceRange    = {
                 .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
                 .baseMipLevel   = 0,
@@ -1035,6 +1056,11 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              0, 0, NULL, 0, NULL, 1, &barrier2);
+    }
+    /* barrier2 left scanout_src in COLOR_ATTACHMENT_OPTIMAL; keep the
+     * tracked rt layout in sync so the next draw's transition is correct. */
+    if (scanout_from_rt) {
+        display->rt.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
 
     vr = vkEndCommandBuffer(cb);
