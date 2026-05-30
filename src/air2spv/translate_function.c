@@ -149,6 +149,8 @@ typedef struct {
     /* Common SPIR-V type ids (filled lazily). */
     uint32_t                  id_void;
     uint32_t                  id_uchar;          /* OpTypeInt 8 0 */
+    uint8_t                   cap_int8;          /* OpCapability Int8 emitted */
+    uint8_t                   cap_int16;         /* OpCapability Int16 emitted */
     uint32_t                  id_uint;           /* OpTypeInt 32 0 */
     uint32_t                  id_int32;          /* OpTypeInt 32 1 — currently unused */
     uint32_t                  id_int64;          /* OpTypeInt 64 1 */
@@ -207,6 +209,20 @@ static uint32_t emit_type_int_w(xlate_ctx_t *c, uint32_t width, uint32_t sign) {
     if (width == 32u && sign == 1u && c->id_int32)   return c->id_int32;
     if (width == 64u && sign == 1u && c->id_int64)   return c->id_int64;
     if (width == 64u && sign == 0u && c->id_ulong)   return c->id_ulong;
+    /* Narrow ints need a capability. Emit it AT THE POINT OF USE — the
+     * multi-section builder routes OpCapability to the preamble regardless
+     * of when it is emitted, so we don't need a fragile pre-scan. Guarded
+     * by a once-flag (signed-8/16 aren't type-cached, so the bare cache
+     * miss above can recur). */
+    if (width == 8u && !c->cap_int8) {
+        c->cap_int8 = 1u;
+        uint32_t cap[] = { LAGFX_SPV_CAPABILITY_INT8 };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, cap, 1);
+    } else if (width == 16u && !c->cap_int16) {
+        c->cap_int16 = 1u;
+        uint32_t cap[] = { LAGFX_SPV_CAPABILITY_INT16 };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, cap, 1);
+    }
     uint32_t id = lagfx_spv_builder_alloc_id(c->b);
     uint32_t ops[] = { id, width, sign };
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_INT, ops, 3);
@@ -443,39 +459,6 @@ static bool air_type_requires_extra_cap(xlate_ctx_t *c, uint32_t air_type_idx,
     }
 }
 
-/* Recursively: does this AIR type reference an integer of the given bit
- * width anywhere in its structure? Used to decide whether to declare the
- * Int8 / Int16 capabilities for CALL result types we pre-emit (e.g. a
- * texture sample returns struct{vec4<float>, i8} — the i8 is a dead
- * sparse-residency field but its OpTypeInt 8 still needs Int8). */
-static bool air_type_uses_int_width(const xlate_ctx_t *c, uint32_t ty_idx,
-                                    uint32_t width, uint32_t depth) {
-    if (depth > 8u || ty_idx >= c->num_air_types) return false;
-    uint32_t n_types = 0;
-    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
-    const lagfx_air_type_t *t = &ts[ty_idx];
-    switch (t->kind) {
-        case LAGFX_AIR_TYPE_INTEGER:
-            return (t->num_op >= 1u ? t->op[0] : 32u) == width;
-        case LAGFX_AIR_TYPE_VECTOR:
-        case LAGFX_AIR_TYPE_ARRAY:
-        case LAGFX_AIR_TYPE_POINTER:
-            return air_type_uses_int_width(c, t->num_op >= 2u ? t->op[1] : 0u,
-                                           width, depth + 1u);
-        case LAGFX_AIR_TYPE_STRUCT_ANON:
-        case LAGFX_AIR_TYPE_STRUCT_NAMED: {
-            uint32_t nf = t->num_op > 1u ? t->num_op - 1u : 0u;
-            for (uint32_t i = 0; i < nf; i++) {
-                if (air_type_uses_int_width(c, t->op[1u + i], width, depth + 1u))
-                    return true;
-            }
-            return false;
-        }
-        default:
-            return false;
-    }
-}
-
 /* ===================================================================
  * Helpers — constant emission
  * =================================================================== */
@@ -531,6 +514,14 @@ static uint32_t emit_const_float32(xlate_ctx_t *c, float val) {
 /* OpUndef per SPIR-V type. Used as a placeholder for unresolvable
  * operands (function-local constants pending Phase 5.5 decode). */
 static uint32_t emit_undef(xlate_ctx_t *c, uint32_t spv_type) {
+    /* OpUndef %void is illegal (spirv-val: "Cannot create undefined values
+     * with void type") — it arises when a placeholder is built for a value
+     * whose AIR type resolved to void (e.g. a void-returning intrinsic that
+     * was nonetheless asked for a result, or an unresolved type in a
+     * function-constant-gated stub body). Substitute a uint undef: a void
+     * undef is never meaningfully consumed, and this keeps the module valid. */
+    if (c->id_void && spv_type == c->id_void)
+        spv_type = emit_type_int_w(c, 32u, 0u);
     uint32_t cached = cache_lookup_const(c, 0, spv_type, 0u);
     if (cached) return cached;
     uint32_t id = lagfx_spv_builder_alloc_id(c->b);
@@ -885,33 +876,11 @@ static void emit_prologue(xlate_ctx_t *c) {
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, ops, 1);
     }
 
-    /* Conditionally declare Int8 / Int16 if a non-void CALL result type
-     * we pre-emit references those widths (e.g. a texture sample →
-     * struct{vec4<float>, i8}). The builder is a flat append-only stream,
-     * so capabilities MUST be decided here, in the capability section,
-     * before any OpType* is emitted. We only scan CALL results because
-     * that is the only path that pre-emits an aggregate narrow-int type;
-     * other handlers alias narrow ints away (see the CAST pre-emit note). */
-    {
-        bool need_i8 = false, need_i16 = false;
-        for (uint32_t i = 0; i < c->num_insts; i++) {
-            const lagfx_air_inst_t *inst = &c->insts[i];
-            if (inst->code != LAGFX_AIR_INST_CALL) continue;
-            if (!inst_produces_value(c, inst)) continue;
-            uint32_t rt = call_return_air_type(c, inst);
-            if (rt == 0u) continue;
-            if (air_type_uses_int_width(c, rt, 8u, 0u))  need_i8 = true;
-            if (air_type_uses_int_width(c, rt, 16u, 0u)) need_i16 = true;
-        }
-        if (need_i16) {
-            uint32_t ops[] = { LAGFX_SPV_CAPABILITY_INT16 };
-            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, ops, 1);
-        }
-        if (need_i8) {
-            uint32_t ops[] = { LAGFX_SPV_CAPABILITY_INT8 };
-            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, ops, 1);
-        }
-    }
+    /* Int8 / Int16 capabilities are emitted lazily at the point of use in
+     * emit_type_int_w — the multi-section builder hoists OpCapability into
+     * the preamble, so no pre-scan is needed (previously this only scanned
+     * CALL results and missed i8 from buffer struct fields / function-
+     * constant predicate types). */
 
     /* 2. OpExtInstImport %glsl "GLSL.std.450" */
     c->id_glsl = lagfx_spv_builder_alloc_id(c->b);
