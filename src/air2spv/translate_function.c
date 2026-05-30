@@ -209,7 +209,11 @@ static uint32_t emit_type_half(xlate_ctx_t *c) {
 }
 
 /* Emit OpTypeInt with the given width + signedness (0=unsigned, 1=signed). */
+static uint32_t emit_type_bool(xlate_ctx_t *c);  /* fwd: i1 -> OpTypeBool */
+
 static uint32_t emit_type_int_w(xlate_ctx_t *c, uint32_t width, uint32_t sign) {
+    /* SPIR-V has no 1-bit integer; LLVM i1 is a boolean -> OpTypeBool. */
+    if (width == 1u) return emit_type_bool(c);
     if (width == 8u  && sign == 0u && c->id_uchar)   return c->id_uchar;
     if (width == 32u && sign == 0u && c->id_uint)    return c->id_uint;
     if (width == 32u && sign == 1u && c->id_int32)   return c->id_int32;
@@ -336,6 +340,10 @@ static uint32_t emit_air_type(xlate_ctx_t *c, uint32_t air_type_idx) {
             out = emit_type_float32(c); break;
         case LAGFX_AIR_TYPE_INTEGER: {
             uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
+            /* LLVM i1 is a boolean — SPIR-V has no 1-bit integer
+             * (OpTypeInt 1 is invalid); map it to OpTypeBool. (icmp/fcmp/
+             * air.all/air.any results and i1 stack temps flow here.) */
+            if (w == 1u) { out = emit_type_bool(c); break; }
             /* Default LLVM ints to "unsigned" in SPIR-V; SPIR-V doesn't
              * carry a signedness bit on arithmetic, just on type
              * declaration. Triangle uses i32 (vid arg) which we treat
