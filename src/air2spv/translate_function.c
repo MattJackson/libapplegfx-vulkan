@@ -128,8 +128,20 @@ typedef struct {
 #define LAGFX_MAX_VERTEX_ARGS 8u
     uint32_t                  arg_input_var_ids[LAGFX_MAX_VERTEX_ARGS];
 
+    /* Fragment/compute resource args: a texture (pointer addrspace 1) or a
+     * sampler (pointer addrspace 2) is declared as a UniformConstant
+     * OpVariable. arg_resource_var[i] holds that variable's id (0 if arg i
+     * is not a resource); the arg's value-id is bound to it so the
+     * air.sample_texture_2d handler can OpLoad image/sampler. The opaque
+     * type ids are shared across all resource args. */
+    uint32_t                  arg_resource_var[LAGFX_MAX_VERTEX_ARGS];
+    uint32_t                  id_image_t;        /* OpTypeImage 2D float, Sampled=1 */
+    uint32_t                  id_sampler_t;      /* OpTypeSampler */
+    uint32_t                  id_sampimg_t;      /* OpTypeSampledImage */
+
     /* Common SPIR-V type ids (filled lazily). */
     uint32_t                  id_void;
+    uint32_t                  id_uchar;          /* OpTypeInt 8 0 */
     uint32_t                  id_uint;           /* OpTypeInt 32 0 */
     uint32_t                  id_int32;          /* OpTypeInt 32 1 — currently unused */
     uint32_t                  id_int64;          /* OpTypeInt 64 1 */
@@ -183,6 +195,7 @@ static uint32_t emit_type_half(xlate_ctx_t *c) {
 
 /* Emit OpTypeInt with the given width + signedness (0=unsigned, 1=signed). */
 static uint32_t emit_type_int_w(xlate_ctx_t *c, uint32_t width, uint32_t sign) {
+    if (width == 8u  && sign == 0u && c->id_uchar)   return c->id_uchar;
     if (width == 32u && sign == 0u && c->id_uint)    return c->id_uint;
     if (width == 32u && sign == 1u && c->id_int32)   return c->id_int32;
     if (width == 64u && sign == 1u && c->id_int64)   return c->id_int64;
@@ -190,6 +203,7 @@ static uint32_t emit_type_int_w(xlate_ctx_t *c, uint32_t width, uint32_t sign) {
     uint32_t id = lagfx_spv_builder_alloc_id(c->b);
     uint32_t ops[] = { id, width, sign };
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_INT, ops, 3);
+    if (width == 8u  && sign == 0u) c->id_uchar = id;
     if (width == 32u && sign == 0u) c->id_uint = id;
     if (width == 32u && sign == 1u) c->id_int32 = id;
     if (width == 64u && sign == 1u) c->id_int64 = id;
@@ -607,6 +621,53 @@ static lagfx_varg_kind_t vertex_arg_kind(const xlate_ctx_t *c, uint32_t arg_idx)
     }
 }
 
+/* Classify a pointer arg as a texture (addrspace 1) or sampler (addrspace 2)
+ * resource. Returns 1=texture, 2=sampler, 0=neither. Metal lowers
+ * `texture2d<float> [[texture(n)]]` to a `ptr addrspace(1)` arg and
+ * `sampler [[sampler(n)]]` to `ptr addrspace(2)`. */
+static int frag_resource_kind(const xlate_ctx_t *c, uint32_t arg_idx) {
+    if (arg_idx >= c->num_args) return 0;
+    uint32_t ty = c->arg_air_type_ids[arg_idx];
+    uint32_t n = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
+    if (ty >= n || ts[ty].kind != LAGFX_AIR_TYPE_POINTER || ts[ty].num_op < 2u)
+        return 0;
+    uint32_t addrspace = ts[ty].op[1];
+    if (addrspace == 1u) return 1;   /* texture */
+    if (addrspace == 2u) return 2;   /* sampler */
+    return 0;
+}
+
+/* Shared OpTypeImage 2D float (Sampled=1, used with a sampler). */
+static uint32_t emit_type_image2d_f(xlate_ctx_t *c) {
+    if (c->id_image_t) return c->id_image_t;
+    uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t ops[] = { id, emit_type_float32(c), LAGFX_SPV_DIM_2D,
+                       0u /*Depth*/, 0u /*Arrayed*/, 0u /*MS*/,
+                       1u /*Sampled=1*/, LAGFX_SPV_IMAGE_FORMAT_UNKNOWN };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_IMAGE, ops, 8);
+    c->id_image_t = id;
+    return id;
+}
+
+static uint32_t emit_type_sampler(xlate_ctx_t *c) {
+    if (c->id_sampler_t) return c->id_sampler_t;
+    uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t ops[] = { id };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_SAMPLER, ops, 1);
+    c->id_sampler_t = id;
+    return id;
+}
+
+static uint32_t emit_type_sampled_image(xlate_ctx_t *c) {
+    if (c->id_sampimg_t) return c->id_sampimg_t;
+    uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t ops[] = { id, emit_type_image2d_f(c) };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_SAMPLED_IMAGE, ops, 2);
+    c->id_sampimg_t = id;
+    return id;
+}
+
 /* ===================================================================
  * Prologue
  * =================================================================== */
@@ -739,14 +800,19 @@ static void emit_prologue(xlate_ctx_t *c) {
         for (uint32_t i = 0; i < n_fa; i++) {
             if (vertex_arg_kind(c, i) == LAGFX_VARG_ATTR)
                 c->arg_input_var_ids[i] = lagfx_spv_builder_alloc_id(c->b);
+            else if (frag_resource_kind(c, i) != 0)
+                c->arg_resource_var[i] = lagfx_spv_builder_alloc_id(c->b);
         }
 
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_FRAGMENT, c->id_main };
-        uint32_t suffix[1u + LAGFX_MAX_VERTEX_ARGS];
+        uint32_t suffix[1u + 2u * LAGFX_MAX_VERTEX_ARGS];
         uint32_t n_iface = 0u;
         suffix[n_iface++] = c->id_color_var;
-        for (uint32_t i = 0; i < n_fa; i++)
+        for (uint32_t i = 0; i < n_fa; i++) {
+            /* SPIR-V 1.4: list ALL used globals (Input + UniformConstant). */
             if (c->arg_input_var_ids[i]) suffix[n_iface++] = c->arg_input_var_ids[i];
+            if (c->arg_resource_var[i])  suffix[n_iface++] = c->arg_resource_var[i];
+        }
         lagfx_spv_builder_emit_op_string(c->b, LAGFX_SPV_OP_ENTRY_POINT,
                                           prefix, 2, "main", suffix, n_iface);
 
@@ -759,6 +825,19 @@ static void emit_prologue(xlate_ctx_t *c) {
         {
             uint32_t ops[] = { c->id_color_var, LAGFX_SPV_DECORATION_LOCATION, 0u };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
+        }
+        /* OpDecorate each texture/sampler resource DescriptorSet 0 + a
+         * sequential Binding (matches the air.texture(n)/sampler(n) order;
+         * metadata-driven binding numbers are a refinement). */
+        uint32_t binding = 0u;
+        for (uint32_t i = 0; i < n_fa; i++) {
+            if (!c->arg_resource_var[i]) continue;
+            uint32_t d_set[] = { c->arg_resource_var[i],
+                                  LAGFX_SPV_DECORATION_DESCRIPTOR_SET, 0u };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d_set, 3);
+            uint32_t d_bind[] = { c->arg_resource_var[i],
+                                   LAGFX_SPV_DECORATION_BINDING, binding++ };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d_bind, 3);
         }
         /* OpDecorate each stage-in Input %arg Location N (input Location
          * space is separate from the output color's). */
@@ -835,6 +914,28 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
                                     LAGFX_SPV_STORAGE_INPUT };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
         }
+
+        /* One UniformConstant OpVariable per texture/sampler resource arg,
+         * typed to the shared OpTypeImage / OpTypeSampler. DescriptorSet +
+         * Binding decorations were emitted in the prologue; the
+         * air.sample_texture_2d handler OpLoads these inside the body. */
+        for (uint32_t i = 0; i < n_fa; i++) {
+            int rk = frag_resource_kind(c, i);
+            if (rk == 0 || !c->arg_resource_var[i]) continue;
+            uint32_t opaque = (rk == 1) ? emit_type_image2d_f(c)
+                                        : emit_type_sampler(c);
+            uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_UNIFORM_CONSTANT, opaque };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, pt_ops, 3);
+            uint32_t var_ops[] = { ptr_id, c->arg_resource_var[i],
+                                    LAGFX_SPV_STORAGE_UNIFORM_CONSTANT };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
+            /* Bind the arg's value-id to the variable (pointer) so the
+             * sample handler resolves the tex/samp operand to it. */
+            bind_value_spv(c, c->arg_id_base + i, c->arg_resource_var[i]);
+        }
+        /* Pre-emit the sampled-image type (used by the sample handler). */
+        if (c->id_image_t) (void)emit_type_sampled_image(c);
     }
 
     /* Pre-emit all AIR types likely to be referenced by the body
@@ -1566,6 +1667,74 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
             LAGFX_TRACE("call: air.dot '%s' → OpDot (value-id %u)",
                         fn_name, result_value_id);
             return;
+        }
+    }
+
+    /* === air.sample_texture_2d.<vty> → OpImageSampleImplicitLod ===
+     * `tex.sample(s, uv)` lowers to
+     *   air.sample_texture_2d.v4f32(tex_ptr, samp_ptr, uv, <opts...>)
+     * returning { vec4 colour, i8 status }. We OpLoad the image + sampler
+     * (bound to UniformConstant vars via the resource-arg setup), combine
+     * with OpSampledImage, sample at `uv`, then OpCompositeConstruct the
+     * { vec4, i8 } result struct (status byte = undef; only field 0, the
+     * colour, is ever extracted). Needs tex + samp + uv operands. */
+    if (strncmp(fn_name, "air.sample_texture_2d", 21u) == 0 &&
+        result_value_id != 0u) {
+        uint32_t tex_slot = callee_slot_idx + 1u;
+        uint32_t samp_slot = callee_slot_idx + 2u;
+        uint32_t uv_slot   = callee_slot_idx + 3u;
+        if (inst->num_ops > uv_slot) {
+            uint32_t tex_var = resolve_value_spv(c,
+                resolve_relative((uint32_t)inst->ops[tex_slot], next_val_id));
+            uint32_t samp_var = resolve_value_spv(c,
+                resolve_relative((uint32_t)inst->ops[samp_slot], next_val_id));
+            uint32_t uv_spv = resolve_or_undef(c,
+                resolve_relative((uint32_t)inst->ops[uv_slot], next_val_id),
+                emit_type_vec2_f(c));
+            if (tex_var && samp_var) {
+                uint32_t img_t  = emit_type_image2d_f(c);
+                uint32_t samp_t = emit_type_sampler(c);
+                uint32_t simg_t = emit_type_sampled_image(c);
+                uint32_t v4f    = emit_type_vec4_f(c);
+
+                uint32_t img_val = lagfx_spv_builder_alloc_id(c->b);
+                { uint32_t o[] = { img_t, img_val, tex_var };
+                  lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, o, 3); }
+                uint32_t samp_val = lagfx_spv_builder_alloc_id(c->b);
+                { uint32_t o[] = { samp_t, samp_val, samp_var };
+                  lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, o, 3); }
+                uint32_t sampled = lagfx_spv_builder_alloc_id(c->b);
+                { uint32_t o[] = { simg_t, sampled, img_val, samp_val };
+                  lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_SAMPLED_IMAGE, o, 4); }
+                uint32_t rgba = lagfx_spv_builder_alloc_id(c->b);
+                { uint32_t o[] = { v4f, rgba, sampled, uv_spv };
+                  lagfx_spv_builder_emit_op(c->b,
+                      LAGFX_SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, o, 4); }
+
+                /* Build the { vec4, i8 } result struct. The struct type +
+                 * Int8 are already pre-emitted (the call-return pre-emit
+                 * pass). Status byte is undef — never read. */
+                uint32_t struct_spv = (result_ty_air != LAGFX_AIR_TYPE_NONE)
+                                        ? emit_air_type(c, result_ty_air)
+                                        : 0u;
+                uint32_t res = resolve_value_spv(c, result_value_id);
+                if (!res) res = lagfx_spv_builder_alloc_id(c->b);
+                if (struct_spv) {
+                    uint32_t status = emit_undef(c, emit_type_int_w(c, 8u, 0u));
+                    uint32_t o[] = { struct_spv, res, rgba, status };
+                    lagfx_spv_builder_emit_op(c->b,
+                        LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, o, 4);
+                    bind_value_spv(c, result_value_id, res);
+                    set_result_air_type(c, result_value_id, result_ty_air);
+                } else {
+                    /* No struct type: bind the bare vec4 (extractval will
+                     * still pass it through if it's field 0). */
+                    bind_value_spv(c, result_value_id, rgba);
+                }
+                LAGFX_TRACE("call: air.sample_texture_2d → OpImageSampleImplicitLod "
+                            "(value-id %u)", result_value_id);
+                return;
+            }
         }
     }
 
