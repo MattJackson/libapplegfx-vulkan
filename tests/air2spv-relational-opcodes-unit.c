@@ -125,6 +125,7 @@ PIN(LAGFX_SPV_OP_SREM, 138);
 PIN(LAGFX_SPV_OP_SMOD, 139);
 PIN(LAGFX_SPV_OP_FREM, 140);
 PIN(LAGFX_SPV_OP_FMOD, 141);
+PIN(LAGFX_SPV_OP_VECTOR_TIMES_SCALAR, 142);
 
 /* An already-trusted neighbour, as a sanity anchor that the enum block
  * as a whole is on the right number line. */

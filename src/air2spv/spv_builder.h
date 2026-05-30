@@ -104,6 +104,7 @@ enum {
     LAGFX_SPV_OP_SMOD                   = 139,   /* OpSMod: signed integer modulo */
     LAGFX_SPV_OP_FREM                   = 140,   /* OpFRem: floating-point remainder */
     LAGFX_SPV_OP_FMOD                   = 141,   /* OpFMod: floating-point modulo */
+    LAGFX_SPV_OP_VECTOR_TIMES_SCALAR    = 142,   /* OpVectorTimesScalar */
     LAGFX_SPV_OP_DOT                    = 148,   /* OpDot: vector dot product (scalar result) */
     /* Relational/comparison opcodes (SPIR-V §3.32.15). Values are the
      * canonical SPIR-V core opcode numbers (verified against

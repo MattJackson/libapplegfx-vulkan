@@ -1875,10 +1875,36 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
      * dropped.) Cite: llvm/include/llvm/Bitcode/LLVMBitCodes.h
      * bitc::BINOP_ADD..BINOP_XOR = 0..12. */
     uint32_t spv_op = 0u;
+    bool use_vector_times_scalar = false;
+
     switch (llvm_binop) {
         case 0:  /* BINOP_ADD  → FAdd / IAdd  */ spv_op = is_float ? LAGFX_SPV_OP_FADD : LAGFX_SPV_OP_IADD; break;
         case 1:  /* BINOP_SUB  → FSub / ISub  */ spv_op = is_float ? LAGFX_SPV_OP_FSUB : LAGFX_SPV_OP_ISUB; break;
-        case 2:  /* BINOP_MUL  → FMul / IMul  */ spv_op = is_float ? LAGFX_SPV_OP_FMUL : LAGFX_SPV_OP_IMUL; break;
+        case 2:  /* BINOP_MUL  → FMul / IMul  */ {
+            if (!is_float) {
+                spv_op = LAGFX_SPV_OP_IMUL;
+            } else {
+                uint32_t rhs_ty = value_air_type_idx(c, rhs_id);
+                uint32_t n_types_local = 0;
+                const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types_local);
+                
+                bool lhs_vec = (lhs_ty != LAGFX_AIR_TYPE_NONE && lhs_ty < n_types_local && 
+                                ts[lhs_ty].kind == LAGFX_AIR_TYPE_VECTOR);
+                bool rhs_vec = (rhs_ty != LAGFX_AIR_TYPE_NONE && rhs_ty < n_types_local && 
+                                ts[rhs_ty].kind == LAGFX_AIR_TYPE_VECTOR);
+                bool lhs_float_scalar = (lhs_ty != LAGFX_AIR_TYPE_NONE && lhs_ty < n_types_local && 
+                                         ts[lhs_ty].kind == LAGFX_AIR_TYPE_FLOAT);
+                bool rhs_float_scalar = (rhs_ty != LAGFX_AIR_TYPE_NONE && rhs_ty < n_types_local && 
+                                         ts[rhs_ty].kind == LAGFX_AIR_TYPE_FLOAT);
+                
+                if ((lhs_vec && rhs_float_scalar) || (rhs_vec && lhs_float_scalar)) {
+                    use_vector_times_scalar = true;
+                } else {
+                    spv_op = LAGFX_SPV_OP_FMUL;
+                }
+            }
+            break;
+        }
         case 3:  /* BINOP_UDIV → UDiv         */ spv_op = LAGFX_SPV_OP_UDIV; break;
         case 4:  /* BINOP_SDIV → FDiv / SDiv  */ spv_op = is_float ? LAGFX_SPV_OP_FDIV : LAGFX_SPV_OP_SDIV; break;
         case 5:  /* BINOP_UREM → UMod         */ spv_op = LAGFX_SPV_OP_UMOD; break;
@@ -1894,10 +1920,26 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
             return;
     }
 
-    /* If we didn't find a mapping for this type, skip */
-    if (spv_op == 0u) return;
+    if (spv_op == 0u && !use_vector_times_scalar) return;
 
-    /* Emit the operation: [result_type, result_id, operand1, operand2] */
+    if (use_vector_times_scalar) {
+        uint32_t vec_spv, scal_spv;
+        uint32_t n_types_local = 0;
+        const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types_local);
+        
+        bool lhs_vec = (lhs_ty != LAGFX_AIR_TYPE_NONE && lhs_ty < n_types_local && 
+                        ts[lhs_ty].kind == LAGFX_AIR_TYPE_VECTOR);
+        
+        if (lhs_vec) { vec_spv = lhs_spv; scal_spv = rhs_spv; }
+        else         { vec_spv = rhs_spv; scal_spv = lhs_spv; }
+        
+        uint32_t ops[4] = { result_spv_type, result_spv, vec_spv, scal_spv };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VECTOR_TIMES_SCALAR, ops, 4);
+        bind_value_spv(c, result_value_id, result_spv);
+        set_result_air_type(c, result_value_id, result_ty_air);
+        return;
+    }
+
     uint32_t ops[5];
     ops[0] = result_spv_type;
     ops[1] = result_spv;
@@ -1905,7 +1947,6 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
     ops[3] = rhs_spv;
     lagfx_spv_builder_emit_op(c->b, spv_op, ops, 4);
 
-    /* Bind the result value-id */
     bind_value_spv(c, result_value_id, result_spv);
     set_result_air_type(c, result_value_id, result_ty_air);
 }
