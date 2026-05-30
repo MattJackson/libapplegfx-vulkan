@@ -1375,6 +1375,34 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         {"air.precise.atan2",   LAGFX_SPV_GLSL_ATAN2,   2},
         {"air.precise.ldexp",   LAGFX_SPV_GLSL_LDEXP,   2},
         {"air.precise.refract", LAGFX_SPV_GLSL_REFRACT, 3},
+        /* ===== REAL Apple naming (verified via llvm-dis of xcrun-metal
+         * output, 2026-05-30) =====
+         * The entries above use an `air.fast.<op>` / `air.precise.<op>`
+         * (dot-separated) convention that does NOT match what Apple's
+         * metal compiler actually emits. Real names are `air.<op>` and
+         * `air.fast_<op>` / `air.precise_<op>` (underscore). Prefix-match
+         * still works because the `.v3f32` / `.f32` type suffix follows.
+         * These are the verified math ops from the coverage-audit corpus;
+         * extend as more real shaders are run through the translator.
+         * (air.dot and air.fast_saturate are NOT GLSL ext-insts — handled
+         * as core-op specials below.) */
+        {"air.mix",            LAGFX_SPV_GLSL_FMIX,         3},
+        {"air.fast_clamp",     LAGFX_SPV_GLSL_FCLAMP,       3},
+        {"air.precise_clamp",  LAGFX_SPV_GLSL_FCLAMP,       3},
+        {"air.fast_pow",       LAGFX_SPV_GLSL_POW,          2},
+        {"air.precise_pow",    LAGFX_SPV_GLSL_POW,          2},
+        {"air.fast_rsqrt",     LAGFX_SPV_GLSL_INVERSE_SQRT, 1},
+        {"air.precise_rsqrt",  LAGFX_SPV_GLSL_INVERSE_SQRT, 1},
+        {"air.fast_sqrt",      LAGFX_SPV_GLSL_SQRT,         1},
+        {"air.precise_sqrt",   LAGFX_SPV_GLSL_SQRT,         1},
+        {"air.fast_fmin",      LAGFX_SPV_GLSL_FMIN,         2},
+        {"air.fast_fmax",      LAGFX_SPV_GLSL_FMAX,         2},
+        {"air.fast_floor",     LAGFX_SPV_GLSL_FLOOR,        1},
+        {"air.fast_ceil",      LAGFX_SPV_GLSL_CEIL,         1},
+        {"air.fast_fract",     LAGFX_SPV_GLSL_FRACT,        1},
+        {"air.fast_normalize", LAGFX_SPV_GLSL_NORMALIZE,    1},
+        {"air.fast_length",    LAGFX_SPV_GLSL_LENGTH,       1},
+        {"air.fast_fabs",      LAGFX_SPV_GLSL_FABS,         1},
     };
 
     uint32_t glsl_inst = 0u;
@@ -1446,6 +1474,36 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         }
         /* Unhandled convert shape — fall through to the typed-undef path
          * so downstream value-numbering still stays in sync. */
+    }
+
+    /* === air.dot.<vty> → OpDot (core SPIR-V, NOT GLSL.std.450) ===
+     * Metal `dot(a,b)` lowers to `air.dot.v3f32(<3xfloat>, <3xfloat>)
+     * -> float`. OpDot takes two vectors of the SAME float type and
+     * yields a SCALAR float (the call's return type). Also reached by
+     * normalize(), which expands to a * rsqrt(dot(a,a)). */
+    if (strncmp(fn_name, "air.dot.", 8u) == 0 && result_value_id != 0u) {
+        uint32_t a0_slot = callee_slot_idx + 1u;
+        uint32_t a1_slot = callee_slot_idx + 2u;
+        if (inst->num_ops > a1_slot) {
+            uint32_t dot_ty = (result_ty_air != LAGFX_AIR_TYPE_NONE)
+                                ? emit_air_type(c, result_ty_air)
+                                : emit_type_float32(c);
+            uint32_t a0 = resolve_or_undef(c,
+                            resolve_relative((uint32_t)inst->ops[a0_slot], next_val_id),
+                            emit_type_vec4_f(c));
+            uint32_t a1 = resolve_or_undef(c,
+                            resolve_relative((uint32_t)inst->ops[a1_slot], next_val_id),
+                            emit_type_vec4_f(c));
+            uint32_t res = resolve_value_spv(c, result_value_id);
+            if (!res) res = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t dops[] = { dot_ty, res, a0, a1 };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DOT, dops, 4);
+            bind_value_spv(c, result_value_id, res);
+            set_result_air_type(c, result_value_id, result_ty_air);
+            LAGFX_TRACE("call: air.dot '%s' → OpDot (value-id %u)",
+                        fn_name, result_value_id);
+            return;
+        }
     }
 
     /* Not an air.* GLSL intrinsic we recognize. Two sub-cases:

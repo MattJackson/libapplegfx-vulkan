@@ -308,26 +308,30 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
         *stride_out = 0;
     }
 
-    /* DIAG (stage80 frame-delivery trace): sampled entry log so we can
-     * confirm the QEMU pending_frames BH actually reaches read_frame and
-     * see which path it takes. First few + every 500th. Remove once the
-     * black-noVNC delivery break is root-caused. */
+    /* Frame-delivery trace (kept at TRACE — silent unless
+     * LAGFX_LOG_LEVEL=trace). Sampled (first few + every 500th) entry +
+     * path log: confirms the QEMU pending_frames BH reaches read_frame and
+     * shows which path it takes. This is the instrumentation that disproved
+     * the "guest present-starvation" theory (the host delivery chain works;
+     * noVNC repaints off the substitute compute draws). Retained for future
+     * display-delivery debugging. See
+     * paravirt-re/library/stage80-onscreen-deploy-investigation-2026-05-29.md. */
     static unsigned rf_calls;
     rf_calls++;
     bool rf_log = (rf_calls <= 6u) || (rf_calls % 500u == 0u);
     if (rf_log) {
-        LAGFX_LOG("read_frame[#%u]: ENTER new_frame_ready=%d rt_ready=%d "
-                  "fallback=%p dst=%p",
-                  rf_calls, (int)display->new_frame_ready,
-                  (int)display->rt_ready, (void *)display->fallback_pixels,
-                  (void *)dst);
+        LAGFX_TRACE("read_frame[#%u]: ENTER new_frame_ready=%d rt_ready=%d "
+                    "fallback=%p dst=%p",
+                    rf_calls, (int)display->new_frame_ready,
+                    (int)display->rt_ready, (void *)display->fallback_pixels,
+                    (void *)dst);
     }
 
     /* If no frame has rendered since the last read, report NO_FRAME.
      * This is the steady-state "nothing changed" path — shells that
      * poll via GraphicHwOps.gfx_update hit it most frames. */
     if (!display->new_frame_ready) {
-        if (rf_log) LAGFX_LOG("read_frame[#%u]: NO_FRAME (flag clear)", rf_calls);
+        if (rf_log) LAGFX_TRACE("read_frame[#%u]: NO_FRAME (flag clear)", rf_calls);
         return LAGFX_ERR_NO_FRAME;
     }
 
@@ -354,7 +358,7 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
         display->fallback_bytes = 0;
         display->new_frame_ready = false;
         display->has_frame = 1;
-        if (rf_log) LAGFX_LOG("read_frame[#%u]: served FALLBACK (%zu bytes)",
+        if (rf_log) LAGFX_TRACE("read_frame[#%u]: served FALLBACK (%zu bytes)",
                               rf_calls, copy_len);
         return LAGFX_OK;
     }
@@ -369,7 +373,7 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
         || !display->device->vk || !display->device->vk->initialized) {
         /* Flag says "frame ready" but no backend — unusual; clear
          * the flag so we don't loop. */
-        if (rf_log) LAGFX_LOG("read_frame[#%u]: NO_FRAME (rt not ready/no vk: "
+        if (rf_log) LAGFX_TRACE("read_frame[#%u]: NO_FRAME (rt not ready/no vk: "
                               "ready=%d dev=%p)", rf_calls, (int)ready,
                               (void *)display->device);
         display->new_frame_ready = false;
@@ -401,7 +405,7 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
     }
     display->new_frame_ready = false;
     display->has_frame = 1;
-    if (rf_log) LAGFX_LOG("read_frame[#%u]: served RT readback (stride=%zu)",
+    if (rf_log) LAGFX_TRACE("read_frame[#%u]: served RT readback (stride=%zu)",
                           rf_calls, stride);
     return LAGFX_OK;
 #else
