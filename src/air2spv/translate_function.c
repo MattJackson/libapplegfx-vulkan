@@ -753,8 +753,8 @@ static uint32_t block_struct_spv_id(const xlate_ctx_t *c, uint32_t struct_ty) {
 
 /* Pure check (no emission): can we model this struct as a std430 Block?
  * Used during var allocation (before OpEntryPoint) so an unhandleable
- * buffer never gets a variable / interface entry. Mirrors the bail
- * conditions in block_struct_decorate. */
+ * buffer never gets a variable / interface entry. Arrays ARE handled (the
+ * multi-section builder auto-routes the ArrayStride decoration). */
 static bool block_struct_handleable(xlate_ctx_t *c, uint32_t struct_ty) {
     uint32_t n = 0;
     const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
@@ -765,10 +765,8 @@ static bool block_struct_handleable(xlate_ctx_t *c, uint32_t struct_ty) {
     uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
     if (nfields == 0u || nfields > 32u) return false;
     for (uint32_t i = 0; i < nfields; i++) {
-        uint32_t fty = t->op[1u + i];
-        if (fty < n && ts[fty].kind == LAGFX_AIR_TYPE_ARRAY) return false;
         uint32_t ms, ma;
-        if (!air_type_size_align(c, fty, &ms, &ma)) return false;
+        if (!air_type_size_align(c, t->op[1u + i], &ms, &ma)) return false;
     }
     return true;
 }
@@ -782,17 +780,16 @@ static uint32_t buffer_arg_struct_ty(const xlate_ctx_t *c, uint32_t arg_idx) {
                ? ts[aty].op[0] : 0u;
 }
 
-/* PROLOGUE phase (annotations section): allocate the Block struct's SPIR-V
- * id and emit its Block + std430 member-Offset decorations (forward-
- * referencing the OpTypeStruct emitted later in the types section — legal
- * per SPIR-V's decorations-before-definitions ordering). Returns the
- * struct id, or 0 if the layout is unhandled (e.g. an array member, which
- * needs an ArrayStride decoration on a not-yet-allocated array type id —
- * deferred). Caches air_ty -> spv_id. */
-static uint32_t block_struct_decorate(xlate_ctx_t *c, uint32_t struct_ty) {
+/* Emit a std430 Block struct for a [[buffer(n)]] arg: OpTypeStruct + Block /
+ * member-Offset / ArrayStride decorations + StorageBuffer pointers to the
+ * field (and array-element) types for the body GEP/AccessChain. The
+ * multi-section builder auto-routes the OpType* to the types section and
+ * the OpDecorate/OpMemberDecorate to the annotations section, so emitting
+ * them together here (in module-vars) is legal — decorations forward-
+ * reference the type ids. Cached by AIR struct type; 0 if unhandled. */
+static uint32_t emit_type_struct_block(xlate_ctx_t *c, uint32_t struct_ty) {
     uint32_t cached = block_struct_spv_id(c, struct_ty);
     if (cached) return cached;
-
     uint32_t n = 0;
     const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
     if (struct_ty >= n) return 0u;
@@ -802,56 +799,48 @@ static uint32_t block_struct_decorate(xlate_ctx_t *c, uint32_t struct_ty) {
     uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
     if (nfields == 0u || nfields > 32u) return 0u;
 
-    /* Compute std430 offsets; bail (unhandled) if any member is an array
-     * (its ArrayStride decoration targets a type id we can't reference from
-     * the annotations section yet). */
-    uint32_t offsets[33];
-    uint32_t off = 0u;
+    uint32_t offsets[33], member_spv[33], off = 0u;
     for (uint32_t i = 0; i < nfields; i++) {
-        uint32_t fty = t->op[1u + i];
-        if (fty < n && ts[fty].kind == LAGFX_AIR_TYPE_ARRAY) return 0u;
         uint32_t ms, ma;
-        if (!air_type_size_align(c, fty, &ms, &ma)) return 0u;
+        if (!air_type_size_align(c, t->op[1u + i], &ms, &ma)) return 0u;
         off = lagfx_round_up(off, ma);
         offsets[i] = off;
         off += ms;
+        member_spv[i] = emit_air_type(c, t->op[1u + i]);  /* -> types section */
     }
 
     uint32_t sid = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t sops[34];
+    sops[0] = sid;
+    for (uint32_t i = 0; i < nfields; i++) sops[1u + i] = member_spv[i];
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_STRUCT, sops, 1u + nfields);
+
     { uint32_t d[] = { sid, LAGFX_SPV_DECORATION_BLOCK };
       lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d, 2); }
     for (uint32_t i = 0; i < nfields; i++) {
         uint32_t md[] = { sid, i, LAGFX_SPV_DECORATION_OFFSET, offsets[i] };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_MEMBER_DECORATE, md, 4);
+        uint32_t fty = t->op[1u + i];
+        /* StorageBuffer pointer to the field (GEP-to-field result). */
+        (void)emit_type_pointer(c, fty, member_spv[i], LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+        if (fty < n && ts[fty].kind == LAGFX_AIR_TYPE_ARRAY && ts[fty].num_op >= 2u) {
+            uint32_t elem = ts[fty].op[1];
+            uint32_t es, ea;
+            if (air_type_size_align(c, elem, &es, &ea)) {
+                uint32_t stride = lagfx_round_up(es, ea);
+                uint32_t as[] = { member_spv[i], LAGFX_SPV_DECORATION_ARRAY_STRIDE, stride };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, as, 3);
+            }
+            /* StorageBuffer pointer to the array element (GEP-into-array). */
+            (void)emit_type_pointer(c, elem, emit_air_type(c, elem),
+                                    LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+        }
     }
     if (c->block_cache_len < LAGFX_MAX_VERTEX_ARGS) {
         c->block_cache[c->block_cache_len].air_ty = struct_ty;
         c->block_cache[c->block_cache_len].spv_id = sid;
         c->block_cache_len++;
     }
-    return sid;
-}
-
-/* TYPES phase (module-vars): emit the OpTypeStruct for a decorated Block
- * struct, using the prologue-allocated id, plus StorageBuffer pointers to
- * each field type so the body GEP/AccessChain reuses them (no in-body
- * OpTypePointer). Returns the struct id, or 0 if not decorated. */
-static uint32_t block_struct_emit_type(xlate_ctx_t *c, uint32_t struct_ty) {
-    uint32_t sid = block_struct_spv_id(c, struct_ty);
-    if (!sid) return 0u;
-    uint32_t n = 0;
-    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
-    const lagfx_air_type_t *t = &ts[struct_ty];
-    uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
-    uint32_t sops[34];
-    sops[0] = sid;
-    for (uint32_t i = 0; i < nfields; i++)
-        sops[1u + i] = emit_air_type(c, t->op[1u + i]);
-    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_STRUCT, sops, 1u + nfields);
-    /* StorageBuffer pointer to each field type (GEP result pointers). */
-    for (uint32_t i = 0; i < nfields; i++)
-        (void)emit_type_pointer(c, t->op[1u + i], sops[1u + i],
-                                LAGFX_SPV_STORAGE_STORAGE_BUFFER);
     return sid;
 }
 
@@ -907,25 +896,51 @@ static void emit_prologue(xlate_ctx_t *c) {
         c->id_position_var = lagfx_spv_builder_alloc_id(c->b);
         uint32_t n_va = c->num_args < LAGFX_MAX_VERTEX_ARGS
                             ? c->num_args : LAGFX_MAX_VERTEX_ARGS;
-        /* One Input variable per VID/ATTR vertex arg; SKIP args get none
-         * (id stays 0). */
+        /* One Input variable per VID/ATTR vertex arg. A pointer arg is a
+         * resource (texture/sampler/buffer) — vertex shaders read a
+         * [[buffer(n)]] for their transform matrices etc.; handle it like
+         * the fragment stage. */
         for (uint32_t i = 0; i < n_va; i++) {
-            if (vertex_arg_kind(c, i) != LAGFX_VARG_SKIP) {
+            lagfx_varg_kind_t k = vertex_arg_kind(c, i);
+            if (k != LAGFX_VARG_SKIP) {
                 c->arg_input_var_ids[i] = lagfx_spv_builder_alloc_id(c->b);
-                if (vertex_arg_kind(c, i) == LAGFX_VARG_VID && !c->id_vid_var)
+                if (k == LAGFX_VARG_VID && !c->id_vid_var)
                     c->id_vid_var = c->arg_input_var_ids[i];
+            } else {
+                int rk = frag_resource_kind(c, i);
+                if (rk == 3 && !block_struct_handleable(c, buffer_arg_struct_ty(c, i)))
+                    continue;
+                if (rk != 0) {
+                    c->arg_resource_var[i] = lagfx_spv_builder_alloc_id(c->b);
+                    c->arg_resource_kind[i] = (uint8_t)rk;
+                }
             }
         }
 
-        /* 4. OpEntryPoint Vertex %main "main" %pos <arg inputs...> */
+        /* 4. OpEntryPoint Vertex %main "main" %pos <arg inputs + resources> */
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_VERTEX, c->id_main };
-        uint32_t suffix[1u + LAGFX_MAX_VERTEX_ARGS];
+        uint32_t suffix[1u + 2u * LAGFX_MAX_VERTEX_ARGS];
         uint32_t n_iface = 0u;
         suffix[n_iface++] = c->id_position_var;
-        for (uint32_t i = 0; i < n_va; i++)
+        for (uint32_t i = 0; i < n_va; i++) {
             if (c->arg_input_var_ids[i]) suffix[n_iface++] = c->arg_input_var_ids[i];
+            if (c->arg_resource_var[i])  suffix[n_iface++] = c->arg_resource_var[i];
+        }
         lagfx_spv_builder_emit_op_string(c->b, LAGFX_SPV_OP_ENTRY_POINT,
                                           prefix, 2, "main", suffix, n_iface);
+        /* DescriptorSet 0 + sequential Binding for vertex resources. */
+        {
+            uint32_t binding = 0u;
+            for (uint32_t i = 0; i < n_va; i++) {
+                if (!c->arg_resource_var[i]) continue;
+                uint32_t ds[] = { c->arg_resource_var[i],
+                                   LAGFX_SPV_DECORATION_DESCRIPTOR_SET, 0u };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ds, 3);
+                uint32_t bd[] = { c->arg_resource_var[i],
+                                   LAGFX_SPV_DECORATION_BINDING, binding++ };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, bd, 3);
+            }
+        }
 
         /* 5. Decorations: position is BuiltIn Position; each arg is either
          * BuiltIn VertexIndex (VID) or Location N (ATTR). */
@@ -1007,13 +1022,10 @@ static void emit_prologue(xlate_ctx_t *c) {
         uint32_t binding = 0u;
         for (uint32_t i = 0; i < n_fa; i++) {
             if (!c->arg_resource_var[i]) continue;
-            /* A [[buffer(n)]] arg needs its Block + std430 Offset
-             * decorations emitted HERE in the annotations section (the
-             * OpTypeStruct itself is emitted later in module-vars). If the
-             * layout is unhandled (array member), drop the resource var so
-             * we don't emit a half-modelled buffer. */
-            if (c->arg_resource_kind[i] == 3u)
-                (void)block_struct_decorate(c, buffer_arg_struct_ty(c, i));
+            /* The buffer's Block / Offset / ArrayStride decorations are
+             * emitted with the OpTypeStruct in module-vars — the
+             * multi-section builder auto-routes them to the annotations
+             * section, so they don't need to be hand-placed here. */
             uint32_t d_set[] = { c->arg_resource_var[i],
                                   LAGFX_SPV_DECORATION_DESCRIPTOR_SET, 0u };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d_set, 3);
@@ -1031,6 +1043,38 @@ static void emit_prologue(xlate_ctx_t *c) {
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
         }
     }
+}
+
+/* Emit the OpVariable + type for each texture/sampler/buffer resource arg
+ * (shared by the vertex and fragment stages) and bind the arg value-id to
+ * its variable. DescriptorSet/Binding were decorated in the prologue. */
+static void emit_arg_resource_vars(xlate_ctx_t *c, uint32_t n_args) {
+    for (uint32_t i = 0; i < n_args; i++) {
+        uint32_t rk = c->arg_resource_kind[i];
+        if (rk == 0u || !c->arg_resource_var[i]) continue;
+        if (rk == 3u) {
+            /* [[buffer(n)]]: a StorageBuffer Block variable. */
+            uint32_t block = emit_type_struct_block(c, buffer_arg_struct_ty(c, i));
+            if (!block) continue;
+            uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_STORAGE_BUFFER, block };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, pt_ops, 3);
+            uint32_t var_ops[] = { ptr_id, c->arg_resource_var[i],
+                                    LAGFX_SPV_STORAGE_STORAGE_BUFFER };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
+            bind_value_spv(c, c->arg_id_base + i, c->arg_resource_var[i]);
+            continue;
+        }
+        uint32_t opaque = (rk == 1u) ? emit_type_image2d_f(c) : emit_type_sampler(c);
+        uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
+        uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_UNIFORM_CONSTANT, opaque };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, pt_ops, 3);
+        uint32_t var_ops[] = { ptr_id, c->arg_resource_var[i],
+                                LAGFX_SPV_STORAGE_UNIFORM_CONSTANT };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
+        bind_value_spv(c, c->arg_id_base + i, c->arg_resource_var[i]);
+    }
+    if (c->id_image_t) (void)emit_type_sampled_image(c);
 }
 
 /* Emit the module-scope variables (OpVariable in Input/Output storage
@@ -1073,6 +1117,7 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
                                     LAGFX_SPV_STORAGE_INPUT };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
         }
+        emit_arg_resource_vars(c, n_va);
     } else /* fragment */ {
         uint32_t id_ptr_out = lagfx_spv_builder_alloc_id(c->b);
         uint32_t op_pt[] = { id_ptr_out, LAGFX_SPV_STORAGE_OUTPUT, id_v4f };
@@ -1097,43 +1142,7 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
         }
 
-        /* One UniformConstant OpVariable per texture/sampler resource arg,
-         * typed to the shared OpTypeImage / OpTypeSampler. DescriptorSet +
-         * Binding decorations were emitted in the prologue; the
-         * air.sample_texture_2d handler OpLoads these inside the body. */
-        for (uint32_t i = 0; i < n_fa; i++) {
-            uint32_t rk = c->arg_resource_kind[i];
-            if (rk == 0u || !c->arg_resource_var[i]) continue;
-            if (rk == 3u) {
-                /* [[buffer(n)]]: a StorageBuffer Block variable. The Block +
-                 * Offset decorations were emitted in the prologue; emit the
-                 * OpTypeStruct (forward-referenced id) + StorageBuffer
-                 * pointer + variable here, and bind the arg to the var. */
-                uint32_t block = block_struct_emit_type(c, buffer_arg_struct_ty(c, i));
-                if (!block) continue;
-                uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
-                uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_STORAGE_BUFFER, block };
-                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, pt_ops, 3);
-                uint32_t var_ops[] = { ptr_id, c->arg_resource_var[i],
-                                        LAGFX_SPV_STORAGE_STORAGE_BUFFER };
-                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
-                bind_value_spv(c, c->arg_id_base + i, c->arg_resource_var[i]);
-                continue;
-            }
-            uint32_t opaque = (rk == 1u) ? emit_type_image2d_f(c)
-                                        : emit_type_sampler(c);
-            uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
-            uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_UNIFORM_CONSTANT, opaque };
-            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, pt_ops, 3);
-            uint32_t var_ops[] = { ptr_id, c->arg_resource_var[i],
-                                    LAGFX_SPV_STORAGE_UNIFORM_CONSTANT };
-            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
-            /* Bind the arg's value-id to the variable (pointer) so the
-             * sample handler resolves the tex/samp operand to it. */
-            bind_value_spv(c, c->arg_id_base + i, c->arg_resource_var[i]);
-        }
-        /* Pre-emit the sampled-image type (used by the sample handler). */
-        if (c->id_image_t) (void)emit_type_sampled_image(c);
+        emit_arg_resource_vars(c, n_fa);
     }
 
     /* Pre-emit all AIR types likely to be referenced by the body
