@@ -121,6 +121,13 @@ typedef struct {
     uint32_t                  id_vid_ptr;        /* OpTypePointer Input uint */
     uint32_t                  id_color_var;      /* fragment: Location 0 output */
 
+    /* Per-vertex-arg Input variables. A vertex arg is either the
+     * vertex_id builtin (integer-typed param) or a stage-in attribute
+     * (vec/float param) declared as a Location-decorated Input. Indexed
+     * by arg index; capped at LAGFX_MAX_VERTEX_ARGS. */
+#define LAGFX_MAX_VERTEX_ARGS 8u
+    uint32_t                  arg_input_var_ids[LAGFX_MAX_VERTEX_ARGS];
+
     /* Common SPIR-V type ids (filled lazily). */
     uint32_t                  id_void;
     uint32_t                  id_uint;           /* OpTypeInt 32 0 */
@@ -559,6 +566,32 @@ static uint32_t call_return_air_type(const xlate_ctx_t *c,
                                      const lagfx_air_inst_t *i);
 static uint32_t value_air_type_idx(xlate_ctx_t *c, uint32_t value_id);
 
+/* Classify a vertex arg for interface emission:
+ *   VID   — integer scalar → BuiltIn VertexIndex (uint Input).
+ *   ATTR  — float/vector    → stage-in attribute (Location-decorated Input).
+ *   SKIP  — pointer/struct/etc. (e.g. a [[buffer(n)]] binding) → NOT a
+ *           simple Input variable; emitting one yields an invalid
+ *           pointer-pointee OpVariable under Logical addressing. Left
+ *           unbound (resolves to undef downstream) until buffer bindings
+ *           are modelled.
+ * (Triangle/clear: uint vertex_id → VID. color_fill/composite_over: vec2
+ * attributes → ATTR. Vfx: a buffer pointer → SKIP.) */
+typedef enum { LAGFX_VARG_VID, LAGFX_VARG_ATTR, LAGFX_VARG_SKIP } lagfx_varg_kind_t;
+
+static lagfx_varg_kind_t vertex_arg_kind(const xlate_ctx_t *c, uint32_t arg_idx) {
+    if (arg_idx >= c->num_args) return LAGFX_VARG_SKIP;
+    uint32_t ty = c->arg_air_type_ids[arg_idx];
+    uint32_t n = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
+    if (ty >= n) return LAGFX_VARG_SKIP;
+    switch (ts[ty].kind) {
+        case LAGFX_AIR_TYPE_INTEGER: return LAGFX_VARG_VID;
+        case LAGFX_AIR_TYPE_FLOAT:
+        case LAGFX_AIR_TYPE_VECTOR:  return LAGFX_VARG_ATTR;
+        default:                     return LAGFX_VARG_SKIP;
+    }
+}
+
 /* ===================================================================
  * Prologue
  * =================================================================== */
@@ -631,26 +664,49 @@ static void emit_prologue(xlate_ctx_t *c) {
 
     if (c->stage == LAGFX_XLATE_STAGE_VERTEX) {
         c->id_position_var = lagfx_spv_builder_alloc_id(c->b);
-        c->id_vid_var      = lagfx_spv_builder_alloc_id(c->b);
+        uint32_t n_va = c->num_args < LAGFX_MAX_VERTEX_ARGS
+                            ? c->num_args : LAGFX_MAX_VERTEX_ARGS;
+        /* One Input variable per VID/ATTR vertex arg; SKIP args get none
+         * (id stays 0). */
+        for (uint32_t i = 0; i < n_va; i++) {
+            if (vertex_arg_kind(c, i) != LAGFX_VARG_SKIP) {
+                c->arg_input_var_ids[i] = lagfx_spv_builder_alloc_id(c->b);
+                if (vertex_arg_kind(c, i) == LAGFX_VARG_VID && !c->id_vid_var)
+                    c->id_vid_var = c->arg_input_var_ids[i];
+            }
+        }
 
-        /* 4. OpEntryPoint Vertex %main "main" %pos %vid */
+        /* 4. OpEntryPoint Vertex %main "main" %pos <arg inputs...> */
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_VERTEX, c->id_main };
-        uint32_t suffix[] = { c->id_position_var, c->id_vid_var };
+        uint32_t suffix[1u + LAGFX_MAX_VERTEX_ARGS];
+        uint32_t n_iface = 0u;
+        suffix[n_iface++] = c->id_position_var;
+        for (uint32_t i = 0; i < n_va; i++)
+            if (c->arg_input_var_ids[i]) suffix[n_iface++] = c->arg_input_var_ids[i];
         lagfx_spv_builder_emit_op_string(c->b, LAGFX_SPV_OP_ENTRY_POINT,
-                                          prefix, 2, "main", suffix, 2);
+                                          prefix, 2, "main", suffix, n_iface);
 
-        /* 5. Decorations */
+        /* 5. Decorations: position is BuiltIn Position; each arg is either
+         * BuiltIn VertexIndex (VID) or Location N (ATTR). */
         {
             uint32_t ops[] = { c->id_position_var,
                                 LAGFX_SPV_DECORATION_BUILTIN,
                                 LAGFX_SPV_BUILTIN_POSITION };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
         }
-        {
-            uint32_t ops[] = { c->id_vid_var,
-                                LAGFX_SPV_DECORATION_BUILTIN,
-                                LAGFX_SPV_BUILTIN_VERTEX_INDEX };
-            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
+        uint32_t loc = 0u;
+        for (uint32_t i = 0; i < n_va; i++) {
+            lagfx_varg_kind_t k = vertex_arg_kind(c, i);
+            if (k == LAGFX_VARG_VID) {
+                uint32_t ops[] = { c->arg_input_var_ids[i],
+                                    LAGFX_SPV_DECORATION_BUILTIN,
+                                    LAGFX_SPV_BUILTIN_VERTEX_INDEX };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
+            } else if (k == LAGFX_VARG_ATTR) {
+                uint32_t ops[] = { c->arg_input_var_ids[i],
+                                    LAGFX_SPV_DECORATION_LOCATION, loc++ };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
+            }
         }
     } else /* fragment */ {
         c->id_color_var = lagfx_spv_builder_alloc_id(c->b);
@@ -692,17 +748,25 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, ops, 3);
         }
 
-        /* OpTypePointer Input uint */
-        uint32_t id_uint = emit_type_int_w(c, 32u, 0u);
-        c->id_vid_ptr = lagfx_spv_builder_alloc_id(c->b);
-        {
-            uint32_t ops[] = { c->id_vid_ptr, LAGFX_SPV_STORAGE_INPUT, id_uint };
-            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, ops, 3);
-        }
-        /* OpVariable %ptr_in %vid Input */
-        {
-            uint32_t ops[] = { c->id_vid_ptr, c->id_vid_var, LAGFX_SPV_STORAGE_INPUT };
-            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, ops, 3);
+        /* One Input OpVariable per vertex arg: a uint for vertex_id, or
+         * the attribute's own type (vec2f etc.) for a stage-in attribute.
+         * The matching Location/BuiltIn decoration was emitted in the
+         * prologue; the OpLoad that reads it into the arg value-id is
+         * emitted in the entry block (below). */
+        uint32_t n_va = c->num_args < LAGFX_MAX_VERTEX_ARGS
+                            ? c->num_args : LAGFX_MAX_VERTEX_ARGS;
+        for (uint32_t i = 0; i < n_va; i++) {
+            lagfx_varg_kind_t k = vertex_arg_kind(c, i);
+            if (k == LAGFX_VARG_SKIP) continue;
+            uint32_t elem_spv = (k == LAGFX_VARG_VID)
+                                  ? emit_type_int_w(c, 32u, 0u)
+                                  : emit_air_type(c, c->arg_air_type_ids[i]);
+            uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_INPUT, elem_spv };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, pt_ops, 3);
+            uint32_t var_ops[] = { ptr_id, c->arg_input_var_ids[i],
+                                    LAGFX_SPV_STORAGE_INPUT };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
         }
     } else /* fragment */ {
         uint32_t id_ptr_out = lagfx_spv_builder_alloc_id(c->b);
@@ -891,17 +955,25 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
         }
     }
 
-    /* For the vertex arg %0 (vertex_id, i32): emit an OpLoad of the
-     * VertexIndex input variable. The resulting SPIR-V id IS the
-     * argument's value, bound in the value-id map. Must come AFTER
-     * all OpVariable instructions in the entry block. */
-    if (c->stage == LAGFX_XLATE_STAGE_VERTEX && c->num_args >= 1u) {
-        uint32_t id_uint = emit_type_int_w(c, 32u, 0u);
-        uint32_t id_load = lagfx_spv_builder_alloc_id(c->b);
-        uint32_t ops[] = { id_uint, id_load, c->id_vid_var };
-        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, ops, 3);
-        c->arg_spv_ids[0] = id_load;
-        bind_value_spv(c, c->arg_id_base, id_load);
+    /* For each vertex arg: OpLoad its Input variable into the arg's
+     * value-id. The loaded SPIR-V id IS the argument's value (a uint for
+     * vertex_id, or the attribute's vec/float type). Must come AFTER all
+     * OpVariable instructions in the entry block. */
+    if (c->stage == LAGFX_XLATE_STAGE_VERTEX) {
+        uint32_t n_va = c->num_args < LAGFX_MAX_VERTEX_ARGS
+                            ? c->num_args : LAGFX_MAX_VERTEX_ARGS;
+        for (uint32_t i = 0; i < n_va; i++) {
+            lagfx_varg_kind_t k = vertex_arg_kind(c, i);
+            if (k == LAGFX_VARG_SKIP) continue;  /* no Input var to load */
+            uint32_t elem_spv = (k == LAGFX_VARG_VID)
+                                  ? emit_type_int_w(c, 32u, 0u)
+                                  : emit_air_type(c, c->arg_air_type_ids[i]);
+            uint32_t id_load = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t ops[] = { elem_spv, id_load, c->arg_input_var_ids[i] };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, ops, 3);
+            c->arg_spv_ids[i] = id_load;
+            bind_value_spv(c, c->arg_id_base + i, id_load);
+        }
     }
 }
 

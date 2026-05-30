@@ -852,6 +852,25 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-local-const-type-unit.c')
     workdir : meson.current_source_dir() / '..')
 endif
 
+# Vertex-input ABI: stage-in attributes (vec params) must be typed
+# Location Input variables, not gl_VertexIndex. Real compositor shader
+# (color_fill vertex) feeds an attribute into an OpVectorShuffle.
+if fs.is_file(meson.current_source_dir() / 'air2spv-vertex-attribute-input-unit.c')
+  air2spv_vattr_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_vattr_deps += [vulkan_dep]
+  endif
+  air2spv_vattr_test = executable('air2spv-vertex-attribute-input-unit',
+    'air2spv-vertex-attribute-input-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_vattr_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv vertex attribute input (unit)', air2spv_vattr_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # Phase 4 reference SPIR-V emitter — Pattern K (storage-image OpImageRead / OpImageWrite).
 if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   air2spv_si_test_deps = [libapplegfx_vulkan_dep]
