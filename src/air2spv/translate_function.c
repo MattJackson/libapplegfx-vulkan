@@ -144,6 +144,7 @@ typedef struct {
      * 0=none), cached so GEP can tell a buffer var apart for its storage
      * class. */
     uint8_t                   arg_resource_kind[LAGFX_MAX_VERTEX_ARGS];
+    uint32_t                  id_default_sampler_var; /* constexpr-sampler fallback (0=none) */
     uint32_t                  id_image_t;        /* OpTypeImage 2D float, Sampled=1 */
     uint32_t                  id_sampler_t;      /* OpTypeSampler */
     uint32_t                  id_sampimg_t;      /* OpTypeSampledImage */
@@ -680,6 +681,23 @@ static int frag_resource_kind(const xlate_ctx_t *c, uint32_t arg_idx) {
     return 0;
 }
 
+/* True when the shader has a texture resource arg but NO sampler resource
+ * arg — the constexpr / in-shader-sampler case. Such a shader samples its
+ * texture(s) with a Metal `constexpr sampler` declared in the body, so the
+ * air.sample_texture_2d sampler operand never resolves to a bound sampler
+ * var. We provide one module-scope default sampler for it to use. */
+static bool needs_default_sampler(const xlate_ctx_t *c) {
+    uint32_t n = c->num_args < LAGFX_MAX_VERTEX_ARGS
+                     ? c->num_args : LAGFX_MAX_VERTEX_ARGS;
+    bool has_texture = false, has_sampler = false;
+    for (uint32_t i = 0; i < n; i++) {
+        int rk = frag_resource_kind(c, i);
+        if (rk == 1) has_texture = true;
+        else if (rk == 2) has_sampler = true;
+    }
+    return has_texture && !has_sampler;
+}
+
 /* Shared OpTypeImage 2D float (Sampled=1, used with a sampler). */
 static uint32_t emit_type_image2d_f(xlate_ctx_t *c) {
     if (c->id_image_t) return c->id_image_t;
@@ -1011,9 +1029,14 @@ static void emit_prologue(xlate_ctx_t *c) {
                 }
             }
         }
+        /* A texture-with-no-sampler shader (constexpr sampler) needs one
+         * module-scope default sampler so the body's sample has a bound
+         * sampler to load. */
+        if (needs_default_sampler(c))
+            c->id_default_sampler_var = lagfx_spv_builder_alloc_id(c->b);
 
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_FRAGMENT, c->id_main };
-        uint32_t suffix[1u + 2u * LAGFX_MAX_VERTEX_ARGS];
+        uint32_t suffix[2u + 2u * LAGFX_MAX_VERTEX_ARGS];
         uint32_t n_iface = 0u;
         suffix[n_iface++] = c->id_color_var;
         for (uint32_t i = 0; i < n_fa; i++) {
@@ -1021,6 +1044,7 @@ static void emit_prologue(xlate_ctx_t *c) {
             if (c->arg_input_var_ids[i]) suffix[n_iface++] = c->arg_input_var_ids[i];
             if (c->arg_resource_var[i])  suffix[n_iface++] = c->arg_resource_var[i];
         }
+        if (c->id_default_sampler_var) suffix[n_iface++] = c->id_default_sampler_var;
         lagfx_spv_builder_emit_op_string(c->b, LAGFX_SPV_OP_ENTRY_POINT,
                                           prefix, 2, "main", suffix, n_iface);
 
@@ -1048,6 +1072,15 @@ static void emit_prologue(xlate_ctx_t *c) {
                                   LAGFX_SPV_DECORATION_DESCRIPTOR_SET, 0u };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d_set, 3);
             uint32_t d_bind[] = { c->arg_resource_var[i],
+                                   LAGFX_SPV_DECORATION_BINDING, binding++ };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d_bind, 3);
+        }
+        /* The default sampler binds after the texture(s) in the same set. */
+        if (c->id_default_sampler_var) {
+            uint32_t d_set[] = { c->id_default_sampler_var,
+                                  LAGFX_SPV_DECORATION_DESCRIPTOR_SET, 0u };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d_set, 3);
+            uint32_t d_bind[] = { c->id_default_sampler_var,
                                    LAGFX_SPV_DECORATION_BINDING, binding++ };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d_bind, 3);
         }
@@ -1091,6 +1124,18 @@ static void emit_arg_resource_vars(xlate_ctx_t *c, uint32_t n_args) {
                                 LAGFX_SPV_STORAGE_UNIFORM_CONSTANT };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
         bind_value_spv(c, c->arg_id_base + i, c->arg_resource_var[i]);
+    }
+    /* Default (constexpr) sampler variable: a single immutable OpTypeSampler
+     * UniformConstant, shared by every sample that finds no sampler arg. Its
+     * DescriptorSet/Binding + interface entry were emitted in the prologue. */
+    if (c->id_default_sampler_var) {
+        uint32_t samp_t = emit_type_sampler(c);
+        uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
+        uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_UNIFORM_CONSTANT, samp_t };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, pt_ops, 3);
+        uint32_t var_ops[] = { ptr_id, c->id_default_sampler_var,
+                                LAGFX_SPV_STORAGE_UNIFORM_CONSTANT };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
     }
     if (c->id_image_t) (void)emit_type_sampled_image(c);
 }
@@ -1963,6 +2008,24 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
                 resolve_relative((uint32_t)inst->ops[tex_slot], next_val_id));
             uint32_t samp_var = resolve_value_spv(c,
                 resolve_relative((uint32_t)inst->ops[samp_slot], next_val_id));
+            /* Is samp_var a real bound sampler resource var? A constexpr /
+             * in-shader sampler has NO sampler arg, so the operand resolves
+             * to an unbound OpUndef pointer (OpLoad of which fails spirv-val
+             * "not a logical pointer"). Detect that and fall back to the
+             * module-scope default sampler reserved in the prologue. */
+            {
+                int is_bound_sampler = 0;
+                for (uint32_t a = 0;
+                     a < c->num_args && a < LAGFX_MAX_VERTEX_ARGS; a++) {
+                    if (c->arg_resource_kind[a] == 2u && samp_var &&
+                        c->arg_resource_var[a] == samp_var) {
+                        is_bound_sampler = 1;
+                        break;
+                    }
+                }
+                if (!is_bound_sampler && c->id_default_sampler_var)
+                    samp_var = c->id_default_sampler_var;
+            }
             uint32_t uv_spv = resolve_or_undef(c,
                 resolve_relative((uint32_t)inst->ops[uv_slot], next_val_id),
                 emit_type_vec2_f(c));
