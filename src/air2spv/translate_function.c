@@ -135,9 +135,16 @@ typedef struct {
      * air.sample_texture_2d handler can OpLoad image/sampler. The opaque
      * type ids are shared across all resource args. */
     uint32_t                  arg_resource_var[LAGFX_MAX_VERTEX_ARGS];
+    /* Per-arg resource kind (frag_resource_kind result: 1=tex 2=samp 3=buf,
+     * 0=none), cached so GEP can tell a buffer var apart for its storage
+     * class. */
+    uint8_t                   arg_resource_kind[LAGFX_MAX_VERTEX_ARGS];
     uint32_t                  id_image_t;        /* OpTypeImage 2D float, Sampled=1 */
     uint32_t                  id_sampler_t;      /* OpTypeSampler */
     uint32_t                  id_sampimg_t;      /* OpTypeSampledImage */
+    /* Block-decorated struct-type cache (one per [[buffer(n)]] struct). */
+    struct { uint32_t air_ty; uint32_t spv_id; } block_cache[LAGFX_MAX_VERTEX_ARGS];
+    uint32_t                  block_cache_len;
 
     /* Common SPIR-V type ids (filled lazily). */
     uint32_t                  id_void;
@@ -635,10 +642,18 @@ static lagfx_varg_kind_t vertex_arg_kind(const xlate_ctx_t *c, uint32_t arg_idx)
     }
 }
 
-/* Classify a pointer arg as a texture (addrspace 1) or sampler (addrspace 2)
- * resource. Returns 1=texture, 2=sampler, 0=neither. Metal lowers
- * `texture2d<float> [[texture(n)]]` to a `ptr addrspace(1)` arg and
- * `sampler [[sampler(n)]]` to `ptr addrspace(2)`. */
+/* Classify a pointer arg as a graphics resource. Returns:
+ *   1 = texture   (opaque pointee, addrspace 1)
+ *   2 = sampler   (opaque pointee, addrspace 2)
+ *   3 = buffer    (STRUCT pointee — a `[[buffer(n)]]` constant/device block)
+ *   0 = neither.
+ *
+ * Address space ALONE is ambiguous: a `sampler [[sampler(n)]]` and a
+ * `constant T* [[buffer(n)]]` are BOTH addrspace 2. The disambiguator
+ * (verified against our reader's type table on real SkyLight shaders) is
+ * the POINTEE kind — a texture/sampler points at an opaque/unknown type,
+ * a buffer points at a real STRUCT with members. Textures live in
+ * addrspace 1, samplers in addrspace 2; buffers in either. */
 static int frag_resource_kind(const xlate_ctx_t *c, uint32_t arg_idx) {
     if (arg_idx >= c->num_args) return 0;
     uint32_t ty = c->arg_air_type_ids[arg_idx];
@@ -646,9 +661,13 @@ static int frag_resource_kind(const xlate_ctx_t *c, uint32_t arg_idx) {
     const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
     if (ty >= n || ts[ty].kind != LAGFX_AIR_TYPE_POINTER || ts[ty].num_op < 2u)
         return 0;
+    uint32_t pointee   = ts[ty].op[0];
     uint32_t addrspace = ts[ty].op[1];
-    if (addrspace == 1u) return 1;   /* texture */
-    if (addrspace == 2u) return 2;   /* sampler */
+    if (pointee < n && (ts[pointee].kind == LAGFX_AIR_TYPE_STRUCT_ANON ||
+                        ts[pointee].kind == LAGFX_AIR_TYPE_STRUCT_NAMED))
+        return 3;                    /* buffer (data struct) */
+    if (addrspace == 1u) return 1;   /* texture (opaque) */
+    if (addrspace == 2u) return 2;   /* sampler (opaque) */
     return 0;
 }
 
@@ -680,6 +699,169 @@ static uint32_t emit_type_sampled_image(xlate_ctx_t *c) {
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_SAMPLED_IMAGE, ops, 2);
     c->id_sampimg_t = id;
     return id;
+}
+
+static uint32_t lagfx_round_up(uint32_t x, uint32_t a) {
+    return (a == 0u) ? x : ((x + a - 1u) / a) * a;
+}
+
+/* std430 byte size + alignment of an AIR type. Matches Metal's natural C
+ * layout (the AIR `e-p:64:64:64-...` datalayout), so computed Offsets line
+ * up with the bytes the host uploads. Returns false for unhandled kinds. */
+static bool air_type_size_align(xlate_ctx_t *c, uint32_t ty,
+                                uint32_t *size, uint32_t *align) {
+    uint32_t n = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
+    if (ty >= n) return false;
+    const lagfx_air_type_t *t = &ts[ty];
+    switch (t->kind) {
+        case LAGFX_AIR_TYPE_FLOAT: *size = 4u; *align = 4u; return true;
+        case LAGFX_AIR_TYPE_INTEGER: {
+            uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
+            uint32_t b = w / 8u; if (b == 0u) b = 1u;
+            *size = b; *align = b; return true;
+        }
+        case LAGFX_AIR_TYPE_VECTOR: {
+            uint32_t lanes = t->num_op >= 1u ? t->op[0] : 4u;
+            uint32_t elem  = t->num_op >= 2u ? t->op[1] : 0u;
+            uint32_t es, ea; if (!air_type_size_align(c, elem, &es, &ea)) return false;
+            *size  = es * lanes;                       /* vec3 = 12 (no pad) */
+            *align = (lanes == 2u) ? es * 2u : es * 4u; /* vec3/4 align 4*elem */
+            return true;
+        }
+        case LAGFX_AIR_TYPE_ARRAY: {
+            uint32_t len  = t->num_op >= 1u ? t->op[0] : 0u;
+            uint32_t elem = t->num_op >= 2u ? t->op[1] : 0u;
+            uint32_t es, ea; if (!air_type_size_align(c, elem, &es, &ea)) return false;
+            uint32_t stride = lagfx_round_up(es, ea);
+            *size = stride * len; *align = ea; return true;
+        }
+        case LAGFX_AIR_TYPE_STRUCT_ANON:
+        case LAGFX_AIR_TYPE_STRUCT_NAMED: {
+            uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
+            uint32_t off = 0u, maxa = 1u;
+            for (uint32_t i = 0; i < nfields; i++) {
+                uint32_t ms, ma;
+                if (!air_type_size_align(c, t->op[1u + i], &ms, &ma)) return false;
+                off = lagfx_round_up(off, ma) + ms;
+                if (ma > maxa) maxa = ma;
+            }
+            *size = lagfx_round_up(off, maxa); *align = maxa; return true;
+        }
+        default: return false;
+    }
+}
+
+/* Look up the pre-allocated SPIR-V id for a [[buffer(n)]] block struct
+ * (populated by block_struct_decorate in the prologue). 0 if not handled. */
+static uint32_t block_struct_spv_id(const xlate_ctx_t *c, uint32_t struct_ty) {
+    for (uint32_t i = 0; i < c->block_cache_len; i++)
+        if (c->block_cache[i].air_ty == struct_ty) return c->block_cache[i].spv_id;
+    return 0u;
+}
+
+/* Pure check (no emission): can we model this struct as a std430 Block?
+ * Used during var allocation (before OpEntryPoint) so an unhandleable
+ * buffer never gets a variable / interface entry. Mirrors the bail
+ * conditions in block_struct_decorate. */
+static bool block_struct_handleable(xlate_ctx_t *c, uint32_t struct_ty) {
+    uint32_t n = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
+    if (struct_ty >= n) return false;
+    const lagfx_air_type_t *t = &ts[struct_ty];
+    if (t->kind != LAGFX_AIR_TYPE_STRUCT_ANON &&
+        t->kind != LAGFX_AIR_TYPE_STRUCT_NAMED) return false;
+    uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
+    if (nfields == 0u || nfields > 32u) return false;
+    for (uint32_t i = 0; i < nfields; i++) {
+        uint32_t fty = t->op[1u + i];
+        if (fty < n && ts[fty].kind == LAGFX_AIR_TYPE_ARRAY) return false;
+        uint32_t ms, ma;
+        if (!air_type_size_align(c, fty, &ms, &ma)) return false;
+    }
+    return true;
+}
+
+/* Pointee struct AIR type of a buffer arg's pointer type (0 if none). */
+static uint32_t buffer_arg_struct_ty(const xlate_ctx_t *c, uint32_t arg_idx) {
+    uint32_t aty = c->arg_air_type_ids[arg_idx];
+    uint32_t n = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
+    return (aty < n && ts[aty].kind == LAGFX_AIR_TYPE_POINTER && ts[aty].num_op >= 1u)
+               ? ts[aty].op[0] : 0u;
+}
+
+/* PROLOGUE phase (annotations section): allocate the Block struct's SPIR-V
+ * id and emit its Block + std430 member-Offset decorations (forward-
+ * referencing the OpTypeStruct emitted later in the types section — legal
+ * per SPIR-V's decorations-before-definitions ordering). Returns the
+ * struct id, or 0 if the layout is unhandled (e.g. an array member, which
+ * needs an ArrayStride decoration on a not-yet-allocated array type id —
+ * deferred). Caches air_ty -> spv_id. */
+static uint32_t block_struct_decorate(xlate_ctx_t *c, uint32_t struct_ty) {
+    uint32_t cached = block_struct_spv_id(c, struct_ty);
+    if (cached) return cached;
+
+    uint32_t n = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
+    if (struct_ty >= n) return 0u;
+    const lagfx_air_type_t *t = &ts[struct_ty];
+    if (t->kind != LAGFX_AIR_TYPE_STRUCT_ANON &&
+        t->kind != LAGFX_AIR_TYPE_STRUCT_NAMED) return 0u;
+    uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
+    if (nfields == 0u || nfields > 32u) return 0u;
+
+    /* Compute std430 offsets; bail (unhandled) if any member is an array
+     * (its ArrayStride decoration targets a type id we can't reference from
+     * the annotations section yet). */
+    uint32_t offsets[33];
+    uint32_t off = 0u;
+    for (uint32_t i = 0; i < nfields; i++) {
+        uint32_t fty = t->op[1u + i];
+        if (fty < n && ts[fty].kind == LAGFX_AIR_TYPE_ARRAY) return 0u;
+        uint32_t ms, ma;
+        if (!air_type_size_align(c, fty, &ms, &ma)) return 0u;
+        off = lagfx_round_up(off, ma);
+        offsets[i] = off;
+        off += ms;
+    }
+
+    uint32_t sid = lagfx_spv_builder_alloc_id(c->b);
+    { uint32_t d[] = { sid, LAGFX_SPV_DECORATION_BLOCK };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d, 2); }
+    for (uint32_t i = 0; i < nfields; i++) {
+        uint32_t md[] = { sid, i, LAGFX_SPV_DECORATION_OFFSET, offsets[i] };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_MEMBER_DECORATE, md, 4);
+    }
+    if (c->block_cache_len < LAGFX_MAX_VERTEX_ARGS) {
+        c->block_cache[c->block_cache_len].air_ty = struct_ty;
+        c->block_cache[c->block_cache_len].spv_id = sid;
+        c->block_cache_len++;
+    }
+    return sid;
+}
+
+/* TYPES phase (module-vars): emit the OpTypeStruct for a decorated Block
+ * struct, using the prologue-allocated id, plus StorageBuffer pointers to
+ * each field type so the body GEP/AccessChain reuses them (no in-body
+ * OpTypePointer). Returns the struct id, or 0 if not decorated. */
+static uint32_t block_struct_emit_type(xlate_ctx_t *c, uint32_t struct_ty) {
+    uint32_t sid = block_struct_spv_id(c, struct_ty);
+    if (!sid) return 0u;
+    uint32_t n = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
+    const lagfx_air_type_t *t = &ts[struct_ty];
+    uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
+    uint32_t sops[34];
+    sops[0] = sid;
+    for (uint32_t i = 0; i < nfields; i++)
+        sops[1u + i] = emit_air_type(c, t->op[1u + i]);
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_STRUCT, sops, 1u + nfields);
+    /* StorageBuffer pointer to each field type (GEP result pointers). */
+    for (uint32_t i = 0; i < nfields; i++)
+        (void)emit_type_pointer(c, t->op[1u + i], sops[1u + i],
+                                LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+    return sid;
 }
 
 /* ===================================================================
@@ -814,8 +996,18 @@ static void emit_prologue(xlate_ctx_t *c) {
         for (uint32_t i = 0; i < n_fa; i++) {
             if (vertex_arg_kind(c, i) == LAGFX_VARG_ATTR)
                 c->arg_input_var_ids[i] = lagfx_spv_builder_alloc_id(c->b);
-            else if (frag_resource_kind(c, i) != 0)
-                c->arg_resource_var[i] = lagfx_spv_builder_alloc_id(c->b);
+            else {
+                int rk = frag_resource_kind(c, i);
+                /* Skip a buffer whose struct layout we can't model — it
+                 * stays unbound (no var, no interface entry) rather than
+                 * emitting a half-modelled block. */
+                if (rk == 3 && !block_struct_handleable(c, buffer_arg_struct_ty(c, i)))
+                    continue;
+                if (rk != 0) {
+                    c->arg_resource_var[i] = lagfx_spv_builder_alloc_id(c->b);
+                    c->arg_resource_kind[i] = (uint8_t)rk;
+                }
+            }
         }
 
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_FRAGMENT, c->id_main };
@@ -846,6 +1038,13 @@ static void emit_prologue(xlate_ctx_t *c) {
         uint32_t binding = 0u;
         for (uint32_t i = 0; i < n_fa; i++) {
             if (!c->arg_resource_var[i]) continue;
+            /* A [[buffer(n)]] arg needs its Block + std430 Offset
+             * decorations emitted HERE in the annotations section (the
+             * OpTypeStruct itself is emitted later in module-vars). If the
+             * layout is unhandled (array member), drop the resource var so
+             * we don't emit a half-modelled buffer. */
+            if (c->arg_resource_kind[i] == 3u)
+                (void)block_struct_decorate(c, buffer_arg_struct_ty(c, i));
             uint32_t d_set[] = { c->arg_resource_var[i],
                                   LAGFX_SPV_DECORATION_DESCRIPTOR_SET, 0u };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d_set, 3);
@@ -934,9 +1133,25 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
          * Binding decorations were emitted in the prologue; the
          * air.sample_texture_2d handler OpLoads these inside the body. */
         for (uint32_t i = 0; i < n_fa; i++) {
-            int rk = frag_resource_kind(c, i);
-            if (rk == 0 || !c->arg_resource_var[i]) continue;
-            uint32_t opaque = (rk == 1) ? emit_type_image2d_f(c)
+            uint32_t rk = c->arg_resource_kind[i];
+            if (rk == 0u || !c->arg_resource_var[i]) continue;
+            if (rk == 3u) {
+                /* [[buffer(n)]]: a StorageBuffer Block variable. The Block +
+                 * Offset decorations were emitted in the prologue; emit the
+                 * OpTypeStruct (forward-referenced id) + StorageBuffer
+                 * pointer + variable here, and bind the arg to the var. */
+                uint32_t block = block_struct_emit_type(c, buffer_arg_struct_ty(c, i));
+                if (!block) continue;
+                uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
+                uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_STORAGE_BUFFER, block };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, pt_ops, 3);
+                uint32_t var_ops[] = { ptr_id, c->arg_resource_var[i],
+                                        LAGFX_SPV_STORAGE_STORAGE_BUFFER };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
+                bind_value_spv(c, c->arg_id_base + i, c->arg_resource_var[i]);
+                continue;
+            }
+            uint32_t opaque = (rk == 1u) ? emit_type_image2d_f(c)
                                         : emit_type_sampler(c);
             uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
             uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_UNIFORM_CONSTANT, opaque };
@@ -1884,6 +2099,20 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
     set_result_air_type(c, result_value_id, result_ty_air);
 }
 
+/* Storage class for a GEP/AccessChain whose base is `ptr_value_id`. If the
+ * base is a [[buffer(n)]] arg (a StorageBuffer Block variable), the result
+ * pointer must also be StorageBuffer (SPIR-V requires AccessChain result
+ * storage == base storage). Otherwise Function (alloca-backed locals). */
+static uint32_t gep_base_storage_class(const xlate_ctx_t *c, uint32_t ptr_value_id) {
+    if (ptr_value_id >= c->arg_id_base &&
+        ptr_value_id < c->arg_id_base + c->num_args) {
+        uint32_t a = ptr_value_id - c->arg_id_base;
+        if (a < LAGFX_MAX_VERTEX_ARGS && c->arg_resource_kind[a] == 3u)
+            return LAGFX_SPV_STORAGE_STORAGE_BUFFER;
+    }
+    return LAGFX_SPV_STORAGE_FUNCTION;
+}
+
 static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
                            const lagfx_air_inst_t *inst,
                            uint32_t result_value_id, uint32_t next_val_id) {
@@ -1952,9 +2181,9 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
         }
     }
 
+    uint32_t storage = gep_base_storage_class(c, ptr_id);
     uint32_t pointee_spv = emit_air_type(c, pointee);
-    uint32_t result_ptr  = emit_type_pointer(c, pointee, pointee_spv,
-                                              LAGFX_SPV_STORAGE_FUNCTION);
+    uint32_t result_ptr  = emit_type_pointer(c, pointee, pointee_spv, storage);
 
     uint32_t result_id = lagfx_spv_builder_alloc_id(c->b);
 

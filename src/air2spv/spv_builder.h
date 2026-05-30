@@ -210,6 +210,7 @@ enum {
      * pre-SPIR-V 1.3 or `StorageBuffer` (id 12) post-1.3 with the
      * SpvCapabilityStorageBuffer capability. Paid for 2026-05-27. */
     LAGFX_SPV_STORAGE_FUNCTION          = 7,
+    LAGFX_SPV_STORAGE_STORAGE_BUFFER    = 12, /* SPIR-V 1.3+: SSBO/constant block */
 };
 
 /* OpTypeImage `Dim` operand. */
@@ -228,7 +229,9 @@ enum {
 /* Decorations. */
 enum {
     LAGFX_SPV_DECORATION_BLOCK          = 2,
+    LAGFX_SPV_DECORATION_ARRAY_STRIDE   = 6,
     LAGFX_SPV_DECORATION_BUILTIN        = 11,
+    LAGFX_SPV_DECORATION_NON_WRITABLE   = 24,
     LAGFX_SPV_DECORATION_LOCATION       = 30,
     LAGFX_SPV_DECORATION_BINDING        = 33,
     LAGFX_SPV_DECORATION_DESCRIPTOR_SET = 34,
