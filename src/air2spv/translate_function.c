@@ -168,6 +168,7 @@ typedef struct {
     uint32_t                  id_uchar;          /* OpTypeInt 8 0 */
     uint8_t                   cap_int8;          /* OpCapability Int8 emitted */
     uint8_t                   cap_int16;         /* OpCapability Int16 emitted */
+    uint8_t                   cap_float16;       /* OpCapability Float16 emitted */
     uint32_t                  id_uint;           /* OpTypeInt 32 0 */
     uint32_t                  id_int32;          /* OpTypeInt 32 1 — currently unused */
     uint32_t                  id_int64;          /* OpTypeInt 64 1 */
@@ -213,6 +214,14 @@ static uint32_t emit_type_float32(xlate_ctx_t *c) {
 /* Emit OpTypeFloat 16 (half). */
 static uint32_t emit_type_half(xlate_ctx_t *c) {
     if (c->id_half) return c->id_half;
+    /* OpTypeFloat 16 requires the Float16 capability. Emit it lazily at the
+     * point of use — the multi-section builder routes OpCapability to the
+     * preamble regardless of emission order. */
+    if (!c->cap_float16) {
+        c->cap_float16 = 1u;
+        uint32_t cap[] = { LAGFX_SPV_CAPABILITY_FLOAT16 };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY, cap, 1);
+    }
     c->id_half = lagfx_spv_builder_alloc_id(c->b);
     uint32_t ops[] = { c->id_half, 16u };
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_FLOAT, ops, 2);
@@ -349,6 +358,15 @@ static uint32_t emit_air_type(xlate_ctx_t *c, uint32_t air_type_idx) {
             out = emit_type_void(c); break;
         case LAGFX_AIR_TYPE_FLOAT:
             out = emit_type_float32(c); break;
+        case LAGFX_AIR_TYPE_HALF:
+            /* IEEE-754 binary16. Needs the Float16 capability, which the
+             * builder emits lazily at point-of-use of OpTypeFloat 16. Without
+             * this case `half` fell through to `default` → uint32, so a
+             * `<2 x half>` vector came out `v2uint` and the f→f convert that
+             * targets it (`air.convert.f.v2f16.f.v2f32` → OpFConvert) got a
+             * non-float result type → spirv-val "Expected float scalar or
+             * vector type as Result Type: FConvert". */
+            out = emit_type_half(c); break;
         case LAGFX_AIR_TYPE_INTEGER: {
             uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
             /* LLVM i1 is a boolean — SPIR-V has no 1-bit integer
@@ -2163,6 +2181,16 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         int dots = 0;
         while (*r && dots < 2) { if (*r == '.') dots++; r++; }
         char srckind = *r;
+        /* srctype string follows srckind after one more '.', e.g.
+         * "...u.i1" → src kind 'u', src type "i1". A bool (i1) source cannot
+         * feed OpConvertUToF/SToF (SPIR-V bool isn't an int) — `step()`/
+         * comparisons lower to `air.convert.f.f32.u.i1(i1)`. Detect it so we
+         * can emit OpSelect(cond, 1.0, 0.0) instead. */
+        const char *srctype = r;
+        while (*srctype && *srctype != '.') srctype++;
+        if (*srctype == '.') srctype++;
+        int src_is_bool = (srctype[0] == 'i' && srctype[1] == '1' &&
+                           (srctype[2] == '\0'));
 
         uint32_t conv_op = 0u;
         if      (dstkind == 'f' && srckind == 'u') conv_op = LAGFX_SPV_OP_CONVERT_U_TO_F;
@@ -2174,6 +2202,59 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         else if (dstkind == 's')                   conv_op = LAGFX_SPV_OP_SCONVERT;
 
         uint32_t cvt_arg_slot = callee_slot_idx + 1u;
+        /* bool(i1) → float: SPIR-V bool is not an integer, so OpConvertUToF/
+         * SToF is invalid (spirv-val "Expected input to be int scalar or
+         * vector"). Lower to OpSelect(cond, 1.0, 0.0) of the destination
+         * float type. `step(edge,x)` and other comparison-to-float casts
+         * take this path. */
+        if (src_is_bool && dstkind == 'f' && inst->num_ops > cvt_arg_slot &&
+            result_value_id != 0u) {
+            uint32_t dst_ty_spv = (result_ty_air != LAGFX_AIR_TYPE_NONE)
+                                    ? emit_air_type(c, result_ty_air)
+                                    : emit_type_float32(c);
+            uint32_t cond = resolve_or_undef(c,
+                resolve_relative((uint32_t)inst->ops[cvt_arg_slot], next_val_id),
+                emit_type_bool(c));
+            uint32_t one = emit_const_float32(c, 1.0f);
+            uint32_t zero = emit_const_float32(c, 0.0f);
+            /* If the destination is a float vector, the OpSelect needs the
+             * 1.0/0.0 (and the condition) broadcast to that width. */
+            uint32_t n_types = 0;
+            const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+            if (result_ty_air < n_types &&
+                ts[result_ty_air].kind == LAGFX_AIR_TYPE_VECTOR &&
+                ts[result_ty_air].num_op >= 1u) {
+                uint32_t lanes = ts[result_ty_air].op[0];
+                if (lanes >= 2u && lanes <= 4u) {
+                    uint32_t one_v[6], zero_v[6];
+                    uint32_t one_id = lagfx_spv_builder_alloc_id(c->b);
+                    uint32_t zero_id = lagfx_spv_builder_alloc_id(c->b);
+                    one_v[0] = dst_ty_spv; one_v[1] = one_id;
+                    zero_v[0] = dst_ty_spv; zero_v[1] = zero_id;
+                    for (uint32_t k = 0; k < lanes; k++) { one_v[2+k]=one; zero_v[2+k]=zero; }
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, one_v, 2u+lanes);
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, zero_v, 2u+lanes);
+                    one = one_id; zero = zero_id;
+                    /* OpSelect over a vector result needs a vector condition. */
+                    uint32_t bvec = emit_type_vec(c, emit_type_bool(c), lanes);
+                    uint32_t cv[6];
+                    uint32_t cv_id = lagfx_spv_builder_alloc_id(c->b);
+                    cv[0] = bvec; cv[1] = cv_id;
+                    for (uint32_t k = 0; k < lanes; k++) cv[2+k] = cond;
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, cv, 2u+lanes);
+                    cond = cv_id;
+                }
+            }
+            uint32_t res = resolve_value_spv(c, result_value_id);
+            if (!res) res = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t sops[] = { dst_ty_spv, res, cond, one, zero };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_SELECT, sops, 5);
+            bind_value_spv(c, result_value_id, res);
+            set_result_air_type(c, result_value_id, result_ty_air);
+            LAGFX_TRACE("call: air.convert '%s' bool→float via OpSelect "
+                        "(value-id %u)", fn_name, result_value_id);
+            return;
+        }
         if (conv_op != 0u && inst->num_ops > cvt_arg_slot &&
             result_value_id != 0u) {
             uint32_t dst_ty_spv = (result_ty_air != LAGFX_AIR_TYPE_NONE)
@@ -2980,16 +3061,21 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
         const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
         if (lhs_ty < n_types) {
             const lagfx_air_type_t *t = &ts[lhs_ty];
-            if (t->kind == LAGFX_AIR_TYPE_FLOAT) {
+            if (t->kind == LAGFX_AIR_TYPE_FLOAT ||
+                t->kind == LAGFX_AIR_TYPE_HALF) {
+                /* `half` is a floating-point type — `fmul half` must lower to
+                 * OpFMul, not OpIMul (spirv-val "Expected int scalar or vector
+                 * type as Result Type: IMul"). */
                 is_float = true;
             } else if (t->kind == LAGFX_AIR_TYPE_VECTOR) {
-                /* A vector is float iff its ELEMENT type is float. A uintN
-                 * vector is integer (e.g. `uint4 % 31` → OpUMod, not FMod);
-                 * the old code classified every VECTOR as float, emitting
-                 * integer ops with a float result type (spirv-val reject). */
+                /* A vector is float iff its ELEMENT type is float OR half. A
+                 * uintN vector is integer (e.g. `uint4 % 31` → OpUMod, not
+                 * FMod); the old code classified every VECTOR as float,
+                 * emitting integer ops with a float result type (reject). */
                 uint32_t elem = t->num_op >= 2u ? t->op[1] : 0u;
                 is_float = (elem < n_types &&
-                            ts[elem].kind == LAGFX_AIR_TYPE_FLOAT);
+                            (ts[elem].kind == LAGFX_AIR_TYPE_FLOAT ||
+                             ts[elem].kind == LAGFX_AIR_TYPE_HALF));
             } else {
                 is_float = false;
             }
@@ -4059,6 +4145,18 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                     if (t->kind == LAGFX_AIR_TYPE_FLOAT) {
                         uint32_t ty_spv = emit_type_float32(&c);
                         uint32_t bits = (uint32_t)(uint64_t)k->payload.i64;
+                        spv_id = lagfx_spv_builder_alloc_id(c.b);
+                        uint32_t ops[] = { ty_spv, spv_id, bits };
+                        lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 3);
+                    } else if (t->kind == LAGFX_AIR_TYPE_HALF) {
+                        /* IEEE-754 binary16 scalar constant. SPIR-V OpConstant
+                         * for OpTypeFloat 16 takes a single 32-bit literal word
+                         * with the 16-bit pattern in the low bits. Without this
+                         * a `half` constant got no id and a `<4 x half>`
+                         * aggregate built from it ended up with float
+                         * constituents → spirv-val composite-element mismatch. */
+                        uint32_t ty_spv = emit_type_half(&c);
+                        uint32_t bits = (uint32_t)(uint64_t)k->payload.i64 & 0xFFFFu;
                         spv_id = lagfx_spv_builder_alloc_id(c.b);
                         uint32_t ops[] = { ty_spv, spv_id, bits };
                         lagfx_spv_builder_emit_op(c.b, LAGFX_SPV_OP_CONSTANT, ops, 3);

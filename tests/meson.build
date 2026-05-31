@@ -1115,4 +1115,40 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-storage-image-emit-unit.c')
   test('air2spv storage_image emit (unit)', air2spv_si_test)
 endif
 
+# --- Coverage-corpus regression guards (2026-05-30, xcrun-metal corpus) ---
+
+# `half` (IEEE-754 binary16) type + half arithmetic lowering guard.
+if fs.is_file(meson.current_source_dir() / 'air2spv-half-type-unit.c')
+  air2spv_half_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_half_deps += [vulkan_dep]
+  endif
+  air2spv_half_test = executable('air2spv-half-type-unit',
+    'air2spv-half-type-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_half_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv half type (unit)', air2spv_half_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
+# bool(i1) -> float convert via OpSelect (step()/comparison-to-float) guard.
+if fs.is_file(meson.current_source_dir() / 'air2spv-bool-to-float-unit.c')
+  air2spv_b2f_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_b2f_deps += [vulkan_dep]
+  endif
+  air2spv_b2f_test = executable('air2spv-bool-to-float-unit',
+    'air2spv-bool-to-float-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_b2f_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv bool to float (unit)', air2spv_b2f_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 
