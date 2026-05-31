@@ -903,7 +903,9 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p,
          * its guest data and dump the first bytes (read page-aware), to
          * confirm the resolver works and reveal the buffer-object layout —
          * the input to draw-time descriptor binding. */
-        if (ref != 0u && getenv("LAGFX_RE_BUFFERS") != NULL) {
+        if (ref != 0u && i < 4u &&
+            (getenv("LAGFX_RE_BUFFERS") != NULL ||
+             getenv("LAGFX_PHASE6_TRANSLATE") != NULL)) {
             uint8_t btype = 0; uint64_t bva = 0, bgpa = 0;
             if (lagfx_resolve_object_data(p, task, ref, &btype, &bva, &bgpa)) {
                 uint8_t data[64] = {0};
