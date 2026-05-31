@@ -481,6 +481,17 @@ static int op_set_buffers_variable(lagfx_protocol_t *p,
                                      size_t           entry_bytes) {
     (void)p;
     if (len < 8) { LAGFX_WARN("%s: payload too short (%zu < 8)", name, len); return 0; }
+    /* Wire-format RE (resource binding): dump the raw payload so the real
+     * buffer-binding layout (header size + per-entry stride) can be decoded
+     * from live guest traffic. The assumed 8-byte header + entry_bytes
+     * stride doesn't fit every payload (e.g. a 20-byte SetVertexBuffers
+     * parsed as count=2 needs 32). */
+    {
+        char hex[160]; size_t hn = 0; size_t dump = len < 40 ? len : 40;
+        for (size_t i = 0; i < dump && hn + 3 < sizeof(hex); i++)
+            hn += (size_t)snprintf(hex + hn, sizeof(hex) - hn, "%02x ", payload[i]);
+        LAGFX_LOG("%s: RAW[%zu]: %s", name, len, hex);
+    }
     uint32_t count = lagfx_le32(payload + 0);
     uint32_t first = lagfx_le32(payload + 4);
     size_t needed = 8 + (size_t)count * entry_bytes;
