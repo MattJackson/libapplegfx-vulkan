@@ -25,19 +25,36 @@
 
 /* Look up the metallib bytes for a function objectId (type=0x06 slot).
  * Returns true on success and populates *out_gpa, *out_len with the
- * physical GPA and byte length of the MTLB blob. Returns false if:
+ * physical GPA and byte length of the MTLB blob. If out_va is non-NULL it
+ * receives the metallib's task-VIRTUAL start address — REQUIRED to read the
+ * blob correctly: the metallib is contiguous in the task's virtual address
+ * space but its physical (GPA) pages are NOT necessarily contiguous, so a
+ * flat read_memory(*out_gpa, *out_len) corrupts everything past the first
+ * page boundary. Read via lagfx_task_read_virtual(p, task, *out_va,
+ * *out_len, dst) instead. Returns false if:
  *   - task->heap_pfn is 0 (no heap published yet)
  *   - radix-walk fails at any level
  *   - the slot is not live (type=0) or not type=0x06
  *   - the bytes at the resolved GPA don't start with 'MTLB' magic
- *
- * Caller can then read the bytes via shell.read_memory(opaque, *out_gpa, *out_len, dst).
  */
 bool lagfx_lookup_function_bytes(lagfx_protocol_t *p,
                                   const lagfx_task_entry_t *task,
                                   uint32_t func_object_id,
                                   uint64_t *out_gpa,
-                                  uint32_t *out_len);
+                                  uint32_t *out_len,
+                                  uint64_t *out_va);
+
+/* Read `len` bytes starting at task-VIRTUAL address `va` into `buf`,
+ * translating each guest page (VA->GPA) separately via the per-task radix
+ * walk. Use this for any guest buffer larger than a page that is virtually
+ * (not necessarily physically) contiguous — e.g. captured metallibs. A flat
+ * read_memory of such a buffer reads the wrong physical page after the first
+ * boundary. Returns false if any page fails to translate or read. */
+bool lagfx_task_read_virtual(lagfx_protocol_t *p,
+                              const lagfx_task_entry_t *task,
+                              uint64_t va,
+                              uint32_t len,
+                              uint8_t *buf);
 
 /* Find the function objectIds referenced by a pipeline-state slot.
  * Walks the type=0x07 descriptor at slot[pipeline_object_id].bytes_va

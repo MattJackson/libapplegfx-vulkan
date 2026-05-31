@@ -1016,8 +1016,8 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
             if (lagfx_lookup_pipeline_function_refs(p, task, reference, &vert_ref, &frag_ref)) {
                 uint64_t v_gpa = 0; uint32_t v_len = 0;
                 uint64_t f_gpa = 0; uint32_t f_len = 0;
-                bool got_v = lagfx_lookup_function_bytes(p, task, vert_ref, &v_gpa, &v_len);
-                bool got_f = (frag_ref != 0) ? lagfx_lookup_function_bytes(p, task, frag_ref, &f_gpa, &f_len) : false;
+                bool got_v = lagfx_lookup_function_bytes(p, task, vert_ref, &v_gpa, &v_len, NULL);
+                bool got_f = (frag_ref != 0) ? lagfx_lookup_function_bytes(p, task, frag_ref, &f_gpa, &f_len, NULL) : false;
                 LAGFX_LOG("Phase B lookup pipeline_ref=0x%x vert=0x%x %s(gpa=0x%llx len=%u) frag=0x%x %s(gpa=0x%llx len=%u)",
                           reference, vert_ref, got_v ? "OK" : "FAIL", (unsigned long long)v_gpa, v_len,
                           frag_ref, got_f ? "OK" : (frag_ref == 0 ? "N/A" : "FAIL"), (unsigned long long)f_gpa, f_len);
@@ -1046,16 +1046,19 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                     /* Capture vertex metallib. */
                     uint64_t vert_gpa = 0, frag_gpa = 0;
                     uint32_t vert_len = 0, frag_len = 0;
-                    
-                    bool got_vert = lagfx_lookup_function_bytes(p, task, vert_ref, &vert_gpa, &vert_len);
+                    uint64_t vert_va = 0, frag_va = 0;
+
+                    bool got_vert = lagfx_lookup_function_bytes(p, task, vert_ref, &vert_gpa, &vert_len, &vert_va);
                     if (got_vert && vert_len > 0) {
                         /* Allocate buffer on heap — metallibs are ~4-6 KB. */
                         uint8_t *buf = (uint8_t *)malloc(vert_len);
                         if (buf != NULL) {
-                            lagfx_device_t *dev_for_dma = (lagfx_device_t *)p->dev;
-                            bool ok_read = dev_for_dma->desc.shell.read_memory(
-                                dev_for_dma->desc.shell.opaque, vert_gpa, vert_len, buf);
-                            
+                            /* Page-aware read: the metallib is virtually
+                             * contiguous but its GPA pages are not, so a flat
+                             * read past the first page boundary is corrupt. */
+                            bool ok_read = lagfx_task_read_virtual(
+                                p, task, vert_va, vert_len, buf);
+
                             if (ok_read) {
                                 /* Build filename: task<TASK_ID>_pipeline<PIPELINE_REF>_vert_func<VERT_REF>_size<LEN>.metallib */
                                 char filename[256];
@@ -1091,18 +1094,16 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
 
                     /* Capture fragment metallif if present. */
                     bool got_frag = false;
-                    if (frag_ref != 0 && !got_vert) {
-                        got_frag = lagfx_lookup_function_bytes(p, task, frag_ref, &frag_gpa, &frag_len);
-                    } else if (frag_ref != 0) {
-                        got_frag = lagfx_lookup_function_bytes(p, task, frag_ref, &frag_gpa, &frag_len);
+                    if (frag_ref != 0) {
+                        got_frag = lagfx_lookup_function_bytes(p, task, frag_ref, &frag_gpa, &frag_len, &frag_va);
                     }
 
                     if (got_frag && frag_len > 0 && frag_ref != 0) {
                         uint8_t *buf = (uint8_t *)malloc(frag_len);
                         if (buf != NULL) {
-                            lagfx_device_t *dev_for_dma = (lagfx_device_t *)p->dev;
-                            bool ok_read = dev_for_dma->desc.shell.read_memory(
-                                dev_for_dma->desc.shell.opaque, frag_gpa, frag_len, buf);
+                            /* Page-aware read (see vertex capture above). */
+                            bool ok_read = lagfx_task_read_virtual(
+                                p, task, frag_va, frag_len, buf);
 
                             if (ok_read) {
                                 char filename[256];
@@ -1191,8 +1192,8 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                 uint8_t fn_ref = (stage == 0) ? vert_ref : frag_ref;
                 if (fn_ref == 0u) continue;
 
-                uint64_t mlib_gpa = 0; uint32_t mlib_len = 0;
-                if (!lagfx_lookup_function_bytes(p, task, fn_ref, &mlib_gpa, &mlib_len)) {
+                uint64_t mlib_gpa = 0; uint32_t mlib_len = 0; uint64_t mlib_va = 0;
+                if (!lagfx_lookup_function_bytes(p, task, fn_ref, &mlib_gpa, &mlib_len, &mlib_va)) {
                     LAGFX_WARN("op_0x74 P6a: lookup_function_bytes failed for %s ref=0x%x",
                                stage == 0 ? "vert" : "frag", fn_ref);
                     break;
@@ -1204,10 +1205,14 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
 
                 uint8_t *mlib_buf = (uint8_t *)malloc(mlib_len);
                 if (!mlib_buf) break;
-                if (!dev_with_vk->desc.shell.read_memory(dev_with_vk->desc.shell.opaque,
-                                                          mlib_gpa, mlib_len, mlib_buf)) {
-                    LAGFX_WARN("op_0x74 P6a: read_memory failed gpa=0x%llx len=%u",
-                               (unsigned long long)mlib_gpa, mlib_len);
+                /* Page-aware read: the metallib is contiguous in the task's
+                 * VIRTUAL address space but its GPA pages are not, so a flat
+                 * read_memory(gpa, len) corrupts the bitcode past the first
+                 * page boundary -> the reader/translate then chokes (and can
+                 * crash) on a real multi-page guest shader. */
+                if (!lagfx_task_read_virtual(p, task, mlib_va, mlib_len, mlib_buf)) {
+                    LAGFX_WARN("op_0x74 P6a: read_virtual failed va=0x%llx len=%u",
+                               (unsigned long long)mlib_va, mlib_len);
                     free(mlib_buf);
                     break;
                 }

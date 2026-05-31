@@ -65,10 +65,12 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
                             const lagfx_task_entry_t *task,
                             uint32_t func_object_id,
                             uint64_t *out_gpa,
-                            uint32_t *out_len) {
+                            uint32_t *out_len,
+                            uint64_t *out_va) {
     if (!p || !task || !out_gpa || !out_len) {
         return false;
     }
+    if (out_va) *out_va = 0;
 
     /* Step 1: heap must be published. Cites phase_b_step5_v2_4_MTLB_CONFIRMED.md line 9-10. */
     if (task->heap_pfn == 0u) {
@@ -165,6 +167,38 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
 
     *out_gpa = next_gpa;
     *out_len = mtlb_len;
+    if (out_va) *out_va = next_va;
+    return true;
+}
+
+bool
+lagfx_task_read_virtual(lagfx_protocol_t *p,
+                        const lagfx_task_entry_t *task,
+                        uint64_t va,
+                        uint32_t len,
+                        uint8_t *buf) {
+    if (!p || !task || !buf) return false;
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    const uint64_t PAGE = 4096u;
+    uint32_t done = 0u;
+    while (done < len) {
+        uint64_t cur_va   = va + done;
+        uint64_t page_off = cur_va & (PAGE - 1u);
+        uint64_t avail    = PAGE - page_off;          /* bytes to next page boundary */
+        uint32_t chunk    = (avail < (uint64_t)(len - done)) ? (uint32_t)avail : (len - done);
+        uint64_t gpa = 0;
+        if (!lagfx_task_translate(p, task, cur_va, &gpa)) {
+            LAGFX_TRACE("read_virtual: VA->GPA failed at va=0x%llx (off %u/%u)",
+                        (unsigned long long)cur_va, done, len);
+            return false;
+        }
+        if (!dev->desc.shell.read_memory(dev->desc.shell.opaque, gpa, chunk, buf + done)) {
+            LAGFX_TRACE("read_virtual: read_memory failed gpa=0x%llx chunk=%u",
+                        (unsigned long long)gpa, chunk);
+            return false;
+        }
+        done += chunk;
+    }
     return true;
 }
 
