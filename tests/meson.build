@@ -833,6 +833,27 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-structured-loop-unit.c')
     workdir : meson.current_source_dir() / '..')
 endif
 
+# Structured control flow, guarded variant: a `while (cond) {...}` (or a
+# for-loop with a runtime trip-count guard) lowers to a 4-block guarded
+# rotated loop — an ENTRY GUARD (conditional br → {header, merge}) plus
+# LOOP-CLOSING PHIs in the merge block. Must emit OpSelectionMerge (guard)
+# + OpLoopMerge + the merge-closing OpPhi, not fall to the linear path.
+if fs.is_file(meson.current_source_dir() / 'air2spv-guarded-loop-unit.c')
+  air2spv_gloop_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_gloop_deps += [vulkan_dep]
+  endif
+  air2spv_gloop_test = executable('air2spv-guarded-loop-unit',
+    'air2spv-guarded-loop-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_gloop_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv guarded loop (unit)', air2spv_gloop_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # SPIR-V §2.4 section-ordering invariant: no OpType*/OpConstant* may
 # follow the first OpFunction. Guards against handlers (CMP/SELECT,
 # non-void CALL, …) emitting a stray type/constant mid-body.

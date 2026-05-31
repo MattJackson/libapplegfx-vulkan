@@ -4172,6 +4172,276 @@ static lagfx_status_t translate_body_loop(xlate_ctx_t *c,
 }
 
 /* ===================================================================
+ * Guarded rotated loop (the 4-block shape `xcrun metal` emits for a
+ * `while (cond) {...}` whose first iteration can be skipped, or a `for`
+ * with a runtime trip-count guard). Distinct from the plain rotated
+ * loop above in two ways:
+ *
+ *   1. ENTRY GUARD — block 0 ends in a CONDITIONAL br that either enters
+ *      the loop header or jumps straight to the after-loop merge.
+ *   2. LOOP-CLOSING PHIs IN THE MERGE — the after-loop block starts with
+ *      PHI nodes whose predecessors are {entry guard-skip edge, loop-exit
+ *      edge from the header/latch}, selecting the right value depending
+ *      on whether the loop ran at all.
+ *
+ * Canonical shape (exactly 3 partitioned blocks; the entry guard fuses
+ * the would-be pre-header into the entry's conditional branch):
+ *
+ *   entry:  ...; br i1 %c, label %H, label %M     (conditional guard)
+ *   H:      phi…; …; br i1 %l, label %H, label %M (self back-edge + exit)
+ *   M:      phi…; …; ret                          (loop-closing phis)
+ *
+ * SPIR-V demands one merge instruction per merge block, so the single
+ * LLVM merge block %M is split into a loop-merge landing pad and the
+ * selection merge:
+ *
+ *   entry:     OpSelectionMerge %merge; OpBranchConditional %c %H %merge
+ *   H:         OpPhi…; OpLoopMerge %loop_exit %continue; OpBranch %body
+ *   body:      <H non-phi insts>; OpBranchConditional %l %continue %loop_exit
+ *   continue:  OpBranch %H
+ *   loop_exit: OpBranch %merge      (loop's structured merge target)
+ *   merge:     OpPhi(entry, loop_exit)…; <M non-phi insts>; OpReturn
+ *
+ * The merge OpPhi predecessors remap: the LLVM `entry`(%2) incoming →
+ * %merge's entry predecessor (the guard-skip edge), and the LLVM
+ * `header`(%H) incoming → %loop_exit (the structured loop-exit edge).
+ *
+ * Any body that does not match this exact shape (e.g. a loop with a real
+ * separate pre-header block, an if/else diamond, or a single block) falls
+ * through to the existing paths unchanged.
+ * =================================================================== */
+
+typedef struct {
+    bool     valid;
+    uint32_t entry_bb;          /* always 0 — the guard */
+    uint32_t header_bb;         /* loop block (phis + latch + self back-edge) */
+    uint32_t merge_bb;          /* after-loop block (loop-closing phis + RET) */
+    bool     guard_true_is_header; /* entry BR cond ? header : merge  (vs swapped) */
+    bool     latch_true_is_header; /* header BR cond ? header(back) : merge(exit) */
+} lagfx_guarded_loop_plan_t;
+
+static lagfx_guarded_loop_plan_t detect_guarded_loop(const xlate_ctx_t *c) {
+    lagfx_guarded_loop_plan_t plan = {0};
+    lagfx_bb_t bbs[8];
+    uint32_t nbb = partition_basic_blocks(c, bbs, 8u);
+    if (nbb != 3u) return plan;   /* only the fused-preheader 3-block shape */
+
+    /* Block 0 (entry) must end in a CONDITIONAL BR to {header, merge}. */
+    const lagfx_air_inst_t *t0 = &c->insts[bbs[0].last_inst];
+    if (t0->code != LAGFX_AIR_INST_BR || t0->num_ops != 3u) return plan;
+    uint32_t g_true  = (uint32_t)t0->ops[0];
+    uint32_t g_false = (uint32_t)t0->ops[1];
+    if (g_true >= nbb || g_false >= nbb) return plan;
+    if (g_true == 0u || g_false == 0u) return plan;       /* neither targets entry */
+    if (g_true == g_false) return plan;
+
+    /* The HEADER is whichever guard target starts with a PHI and ends in a
+     * self-looping conditional BR; the MERGE is the other target. Try both
+     * assignments (the guard may enter header on the true OR false edge). */
+    for (int attempt = 0; attempt < 2; attempt++) {
+        uint32_t header = (attempt == 0) ? g_true  : g_false;
+        uint32_t merge  = (attempt == 0) ? g_false : g_true;
+        bool guard_true_is_header = (attempt == 0);
+
+        /* Header starts with a PHI. */
+        const lagfx_air_inst_t *hfirst = &c->insts[bbs[header].first_inst];
+        if (hfirst->code != LAGFX_AIR_INST_PHI) continue;
+
+        /* Header ends in a CONDITIONAL BR whose targets are {header
+         * (back-edge), merge (exit)}. */
+        const lagfx_air_inst_t *th = &c->insts[bbs[header].last_inst];
+        if (th->code != LAGFX_AIR_INST_BR || th->num_ops != 3u) continue;
+        uint32_t l_true  = (uint32_t)th->ops[0];
+        uint32_t l_false = (uint32_t)th->ops[1];
+        bool latch_true_is_header;
+        if (l_true == header && l_false == merge)      latch_true_is_header = true;
+        else if (l_false == header && l_true == merge) latch_true_is_header = false;
+        else continue;       /* not a self-loop exiting to merge */
+
+        /* The merge block must END in a RET. */
+        const lagfx_air_inst_t *tm = &c->insts[bbs[merge].last_inst];
+        if (tm->code != LAGFX_AIR_INST_RET) continue;
+
+        /* The merge block must START with a loop-closing PHI — that is
+         * the distinguishing signal versus the plain rotated loop (whose
+         * merge has no phis). Be conservative: require it. */
+        const lagfx_air_inst_t *mfirst = &c->insts[bbs[merge].first_inst];
+        if (mfirst->code != LAGFX_AIR_INST_PHI) continue;
+
+        plan.valid = true;
+        plan.entry_bb = 0u;
+        plan.header_bb = header;
+        plan.merge_bb = merge;
+        plan.guard_true_is_header = guard_true_is_header;
+        plan.latch_true_is_header = latch_true_is_header;
+        return plan;
+    }
+    return plan;
+}
+
+/* Emit the loop-closing PHIs at the start of the merge block as OpPhi.
+ * The LLVM incoming pairs are (value_sign_rotated, bb_index); we map
+ * bb_index == entry_bb → entry_pred_label (the guard-skip edge) and
+ * bb_index == header_bb → loop_exit_label (the structured loop-exit
+ * landing pad). */
+static void emit_merge_phis(xlate_ctx_t *c,
+                            const lagfx_guarded_loop_plan_t *plan,
+                            const lagfx_bb_t *bbs,
+                            uint32_t entry_pred_label,
+                            uint32_t loop_exit_label) {
+    uint32_t mfirst = bbs[plan->merge_bb].first_inst;
+    for (uint32_t i = mfirst; i < c->num_insts; i++) {
+        const lagfx_air_inst_t *inst = &c->insts[i];
+        if (inst->code != LAGFX_AIR_INST_PHI) break;   /* phis contiguous at block start */
+        if (inst->num_ops < 3u) continue;
+
+        uint32_t phi_valno = value_id_at_inst(c, i);
+        uint32_t result_spv = resolve_value_spv(c, phi_valno);
+        if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+
+        uint32_t ty_air = (uint32_t)inst->ops[0];
+        uint32_t result_ty = emit_air_type(c, ty_air);
+
+        uint32_t ops[2 + 2 * 8];
+        uint32_t n = 0;
+        ops[n++] = result_ty;
+        ops[n++] = result_spv;
+        uint32_t npairs = (inst->num_ops - 1u) / 2u;
+        if (npairs > 8u) npairs = 8u;
+        for (uint32_t p = 0; p < npairs; p++) {
+            uint64_t v_enc = inst->ops[1u + 2u * p];
+            uint32_t bb    = (uint32_t)inst->ops[2u + 2u * p];
+            int64_t delta  = decode_sign_rotated(v_enc);
+            uint32_t inval_id = (uint32_t)((int64_t)phi_valno - delta);
+            uint32_t inval_spv = resolve_value_spv(c, inval_id);
+            if (!inval_spv) inval_spv = emit_undef(c, result_ty);
+            uint32_t parent = (bb == plan->header_bb) ? loop_exit_label
+                                                      : entry_pred_label;
+            ops[n++] = inval_spv;
+            ops[n++] = parent;
+        }
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_PHI, ops, n);
+
+        bind_value_spv(c, phi_valno, result_spv);
+        set_result_air_type(c, phi_valno, ty_air);
+    }
+}
+
+/* Drive emission for the recognised guarded-loop shape (see the big
+ * comment above for the SPIR-V block layout). */
+static lagfx_status_t translate_body_guarded_loop(
+        xlate_ctx_t *c, const lagfx_guarded_loop_plan_t *plan) {
+    lagfx_bb_t bbs[8];
+    uint32_t nbb = partition_basic_blocks(c, bbs, 8u);
+    if (nbb != 3u) return LAGFX_ERR_PROTOCOL;
+
+    preallocate_result_ids(c);
+
+    uint32_t id_header    = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t id_body      = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t id_continue  = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t id_loop_exit = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t id_merge     = lagfx_spv_builder_alloc_id(c->b);
+
+    /* --- entry block (already open): guard insts + selection guard --- */
+    {
+        uint32_t v = c->inst_id_base;
+        emit_block_body(c, bbs[plan->entry_bb].first_inst,
+                        bbs[plan->entry_bb].last_inst, &v);
+    }
+    /* The guard's condition is the entry block's terminator's cond operand
+     * (ops[2], relative to the value-id AT the terminator). */
+    {
+        const lagfx_air_inst_t *t0 = &c->insts[bbs[plan->entry_bb].last_inst];
+        uint32_t cond_valno = value_id_at_inst(c, bbs[plan->entry_bb].last_inst);
+        uint32_t cond_id = resolve_relative((uint32_t)t0->ops[2], cond_valno);
+        uint32_t cond_spv = resolve_or_undef(c, cond_id, emit_type_bool(c));
+        { uint32_t ops[] = { id_merge, LAGFX_SPV_SELECTION_CONTROL_NONE };
+          lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_SELECTION_MERGE, ops, 2); }
+        uint32_t tgt_true  = plan->guard_true_is_header ? id_header : id_merge;
+        uint32_t tgt_false = plan->guard_true_is_header ? id_merge  : id_header;
+        uint32_t ops[] = { cond_spv, tgt_true, tgt_false };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH_CONDITIONAL, ops, 3);
+    }
+
+    /* --- header: phis + OpLoopMerge + branch to body --- */
+    { uint32_t ops[] = { id_header };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, ops, 1); }
+    {
+        /* Reuse the rotated-loop phi emitter: it maps incoming bb ==
+         * header_bb → continue_label and anything else → entry_label.
+         * The header's entry-edge predecessor is the entry block. */
+        lagfx_loop_plan_t lp = {0};
+        lp.entry_bb = plan->entry_bb;
+        lp.header_bb = plan->header_bb;
+        lp.merge_bb = plan->merge_bb;
+        emit_header_phis(c, &lp, bbs, c->id_entry_label, id_continue);
+    }
+    { uint32_t ops[] = { id_loop_exit, id_continue, LAGFX_SPV_LOOP_CONTROL_NONE };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOOP_MERGE, ops, 3); }
+    { uint32_t ops[] = { id_body };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, ops, 1); }
+
+    /* --- body: header block's non-phi computations + the latch BR --- */
+    { uint32_t ops[] = { id_body };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, ops, 1); }
+    {
+        uint32_t hfirst = bbs[plan->header_bb].first_inst;
+        uint32_t body_first = hfirst;
+        while (body_first <= bbs[plan->header_bb].last_inst &&
+               c->insts[body_first].code == LAGFX_AIR_INST_PHI)
+            body_first++;
+        uint32_t v = value_id_at_inst(c, body_first);
+        emit_block_body(c, body_first, bbs[plan->header_bb].last_inst, &v);
+    }
+    {
+        const lagfx_air_inst_t *th = &c->insts[bbs[plan->header_bb].last_inst];
+        uint32_t cond_valno = value_id_at_inst(c, bbs[plan->header_bb].last_inst);
+        uint32_t cond_id = resolve_relative((uint32_t)th->ops[2], cond_valno);
+        uint32_t cond_spv = resolve_or_undef(c, cond_id, emit_type_bool(c));
+        /* OpBranchConditional %cond <back-edge=continue> <exit=loop_exit>. */
+        uint32_t tgt_true  = plan->latch_true_is_header ? id_continue : id_loop_exit;
+        uint32_t tgt_false = plan->latch_true_is_header ? id_loop_exit : id_continue;
+        uint32_t ops[] = { cond_spv, tgt_true, tgt_false };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH_CONDITIONAL, ops, 3);
+    }
+
+    /* --- continue: branch back to header --- */
+    { uint32_t ops[] = { id_continue };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, ops, 1); }
+    { uint32_t ops[] = { id_header };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, ops, 1); }
+
+    /* --- loop_exit: the loop's structured merge landing pad → merge --- */
+    { uint32_t ops[] = { id_loop_exit };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, ops, 1); }
+    { uint32_t ops[] = { id_merge };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, ops, 1); }
+
+    /* --- merge: loop-closing phis + after-loop insts + RET --- */
+    { uint32_t ops[] = { id_merge };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, ops, 1); }
+    emit_merge_phis(c, plan, bbs, c->id_entry_label, id_loop_exit);
+    {
+        uint32_t mfirst = bbs[plan->merge_bb].first_inst;
+        uint32_t mlast  = bbs[plan->merge_bb].last_inst;   /* the RET */
+        /* Skip the leading loop-closing PHIs (emitted above). */
+        uint32_t after_phis = mfirst;
+        while (after_phis < mlast &&
+               c->insts[after_phis].code == LAGFX_AIR_INST_PHI)
+            after_phis++;
+        uint32_t v = value_id_at_inst(c, after_phis);
+        emit_block_body(c, after_phis, mlast, &v);
+        const lagfx_air_inst_t *ret = &c->insts[mlast];
+        uint32_t ret_valno = value_id_at_inst(c, mlast);
+        emit_inst_ret(c, ret, ret_valno);
+    }
+
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_FUNCTION_END, NULL, 0);
+    return LAGFX_OK;
+}
+
+/* ===================================================================
  * Driver
  * =================================================================== */
 
@@ -4187,6 +4457,14 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
             LAGFX_TRACE("translate_function: recognised single loop "
                         "(header bb=%u merge bb=%u)", plan.header_bb, plan.merge_bb);
             return translate_body_loop(c, &plan);
+        }
+    }
+    {
+        lagfx_guarded_loop_plan_t plan = detect_guarded_loop(c);
+        if (plan.valid) {
+            LAGFX_TRACE("translate_function: recognised guarded loop "
+                        "(header bb=%u merge bb=%u)", plan.header_bb, plan.merge_bb);
+            return translate_body_guarded_loop(c, &plan);
         }
     }
 
