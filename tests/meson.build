@@ -1027,6 +1027,27 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-nested-block-offset-unit.c')
     workdir : meson.current_source_dir() / '..')
 endif
 
+# Non-struct [[buffer(n)]] storage-class correctness — real macOS-guest
+# SkyLight shaders (ViewportToNDC vertex / ColorFill fragment) whose buffer
+# pointee is an UNWRAPPED array/vector (device packed_float2* / device float4*).
+# Guards against: mis-classifying them as textures, and lowering their
+# GEP/load to a Function-class OpAccessChain into a StorageBuffer var.
+if fs.is_file(meson.current_source_dir() / 'air2spv-buffer-storage-class-unit.c')
+  air2spv_bsc_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_bsc_deps += [vulkan_dep]
+  endif
+  air2spv_bsc_test = executable('air2spv-buffer-storage-class-unit',
+    'air2spv-buffer-storage-class-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_bsc_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv non-struct buffer storage class (unit)', air2spv_bsc_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # CALL callee value-id base (functions enumerate after globalvars) +
 # fragment-output typing from the return type (SkyLight SimpleTextureFragmentUV).
 if fs.is_file(meson.current_source_dir() / 'air2spv-call-globalvar-base-unit.c')

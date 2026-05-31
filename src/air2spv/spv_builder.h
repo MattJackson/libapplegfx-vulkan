@@ -56,6 +56,8 @@ enum {
     LAGFX_SPV_OP_TYPE_BOOL              = 20,
     LAGFX_SPV_OP_TYPE_FLOAT             = 22,
     LAGFX_SPV_OP_TYPE_VECTOR            = 23,
+    LAGFX_SPV_OP_TYPE_ARRAY             = 28,
+    LAGFX_SPV_OP_TYPE_RUNTIME_ARRAY     = 29,
     LAGFX_SPV_OP_TYPE_IMAGE             = 25,
     LAGFX_SPV_OP_TYPE_SAMPLER           = 26,
     LAGFX_SPV_OP_TYPE_SAMPLED_IMAGE     = 27,

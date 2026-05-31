@@ -154,9 +154,14 @@ typedef struct {
     uint32_t                  id_image_t;        /* OpTypeImage 2D float, Sampled=1 */
     uint32_t                  id_sampler_t;      /* OpTypeSampler */
     uint32_t                  id_sampimg_t;      /* OpTypeSampledImage */
-    /* Block-decorated struct-type cache (one per [[buffer(n)]] struct). */
+    /* Block-decorated struct-type cache (one per [[buffer(n)]] struct). For a
+     * non-struct buffer pointee the key is the pointee AIR type. */
     struct { uint32_t air_ty; uint32_t spv_id; } block_cache[LAGFX_MAX_VERTEX_ARGS];
     uint32_t                  block_cache_len;
+    /* OpTypeRuntimeArray cache, keyed on element AIR type — backs the
+     * `{ runtimearray<T> }` Block synthesized for non-struct `device T*`. */
+    struct { uint32_t air_ty; uint32_t spv_id; } rtarr_cache[LAGFX_MAX_VERTEX_ARGS];
+    uint32_t                  rtarr_cache_len;
 
     /* Common SPIR-V type ids (filled lazily). */
     uint32_t                  id_void;
@@ -754,6 +759,26 @@ static int frag_resource_kind(const xlate_ctx_t *c, uint32_t arg_idx) {
     }
     if (pointee < n && ts[pointee].kind == LAGFX_AIR_TYPE_STRUCT_ANON)
         return 3;                    /* anonymous data struct -> buffer */
+    /* A pointee that decodes to a CONCRETE data type — an array
+     * (`device packed_float2*`), a vector (`device float4*`), or a
+     * scalar (`device float*`) — is a `[[buffer(n)]]` whose element type
+     * happens not to be wrapped in a struct. Real opaque resources
+     * (texture/sampler) decode to LAGFX_AIR_TYPE_UNKNOWN (255) because
+     * Apple's opaque-pointer AIR carries no concrete pointee. So only an
+     * opaque pointee may fall through to the address-space heuristic;
+     * a concrete data pointee is unambiguously a buffer. */
+    if (pointee < n) {
+        switch (ts[pointee].kind) {
+            case LAGFX_AIR_TYPE_ARRAY:
+            case LAGFX_AIR_TYPE_VECTOR:
+            case LAGFX_AIR_TYPE_FLOAT:
+            case LAGFX_AIR_TYPE_HALF:
+            case LAGFX_AIR_TYPE_DOUBLE:
+            case LAGFX_AIR_TYPE_INTEGER:
+                return 3;            /* concrete data pointee -> buffer */
+            default: break;
+        }
+    }
     if (addrspace == 1u) return 1;   /* texture (opaque) */
     if (addrspace == 2u) return 2;   /* sampler (opaque) */
     return 0;
@@ -865,17 +890,47 @@ static uint32_t block_struct_spv_id(const xlate_ctx_t *c, uint32_t struct_ty) {
     return 0u;
 }
 
+/* True when a buffer arg's pointee is a CONCRETE data type that is NOT a
+ * struct — an array element (`device packed_float2*` -> [2 x float]), a
+ * vector (`device float4*`), or a scalar (`device float*`). Apple emits
+ * such `[[buffer(n)]]` args with an unwrapped pointee (no enclosing
+ * struct). We model them as a single-member Block `{ runtimearray<pointee> }`
+ * — an unbounded `device T*` — so the body's GEP/load lowers to a
+ * StorageBuffer OpAccessChain. (A struct pointee keeps the existing
+ * Block == struct path.) Returns the pointee AIR type id, or 0 if the
+ * pointee is a struct / opaque / unmodellable. */
+static uint32_t buffer_arg_nonstruct_pointee(xlate_ctx_t *c, uint32_t pointee_ty) {
+    uint32_t n = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
+    if (pointee_ty >= n) return 0u;
+    uint32_t ms, ma;
+    switch (ts[pointee_ty].kind) {
+        case LAGFX_AIR_TYPE_ARRAY:
+        case LAGFX_AIR_TYPE_VECTOR:
+        case LAGFX_AIR_TYPE_FLOAT:
+        case LAGFX_AIR_TYPE_HALF:
+        case LAGFX_AIR_TYPE_DOUBLE:
+        case LAGFX_AIR_TYPE_INTEGER:
+            return air_type_size_align(c, pointee_ty, &ms, &ma) ? pointee_ty : 0u;
+        default:
+            return 0u;
+    }
+}
+
 /* Pure check (no emission): can we model this struct as a std430 Block?
  * Used during var allocation (before OpEntryPoint) so an unhandleable
  * buffer never gets a variable / interface entry. Arrays ARE handled (the
- * multi-section builder auto-routes the ArrayStride decoration). */
+ * multi-section builder auto-routes the ArrayStride decoration). A non-struct
+ * pointee (array/vector/scalar `device T*`) is also handleable — modelled as
+ * a `{ runtimearray<T> }` Block (see buffer_arg_nonstruct_pointee). */
 static bool block_struct_handleable(xlate_ctx_t *c, uint32_t struct_ty) {
     uint32_t n = 0;
     const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
     if (struct_ty >= n) return false;
     const lagfx_air_type_t *t = &ts[struct_ty];
     if (t->kind != LAGFX_AIR_TYPE_STRUCT_ANON &&
-        t->kind != LAGFX_AIR_TYPE_STRUCT_NAMED) return false;
+        t->kind != LAGFX_AIR_TYPE_STRUCT_NAMED)
+        return buffer_arg_nonstruct_pointee(c, struct_ty) != 0u;
     uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
     if (nfields == 0u || nfields > 32u) return false;
     for (uint32_t i = 0; i < nfields; i++) {
@@ -943,6 +998,75 @@ static void decorate_nested_layout(xlate_ctx_t *c, uint32_t air_ty,
     }
 }
 
+/* Emit an OpTypeRuntimeArray of `elem_ty` carrying the std430 ArrayStride.
+ * Cached on the (elem) AIR type via a dedicated cache so repeated buffer
+ * args of the same element type share one runtime-array id. */
+static uint32_t emit_type_runtime_array(xlate_ctx_t *c, uint32_t elem_air,
+                                        uint32_t elem_spv) {
+    for (uint32_t i = 0; i < c->rtarr_cache_len; i++)
+        if (c->rtarr_cache[i].air_ty == elem_air) return c->rtarr_cache[i].spv_id;
+    uint32_t es, ea;
+    if (!air_type_size_align(c, elem_air, &es, &ea)) return 0u;
+    uint32_t stride = lagfx_round_up(es, ea);
+    uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t ops[] = { id, elem_spv };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_RUNTIME_ARRAY, ops, 2);
+    uint32_t dec[] = { id, LAGFX_SPV_DECORATION_ARRAY_STRIDE, stride };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, dec, 3);
+    if (c->rtarr_cache_len < LAGFX_MAX_VERTEX_ARGS) {
+        c->rtarr_cache[c->rtarr_cache_len].air_ty = elem_air;
+        c->rtarr_cache[c->rtarr_cache_len].spv_id = id;
+        c->rtarr_cache_len++;
+    }
+    return id;
+}
+
+/* Emit a std430 Block for a [[buffer(n)]] arg whose pointee is a CONCRETE
+ * non-struct type (`device float4*`, `device packed_float2*`, ...). Modelled
+ * as `{ runtimearray<pointee> }` (member 0 Offset 0) — an unbounded device
+ * array, matching Metal's `device T*` semantics. Cached on the pointee AIR
+ * type (the same key block_struct_spv_id / the cache use). 0 if unhandled. */
+static uint32_t emit_type_nonstruct_block(xlate_ctx_t *c, uint32_t pointee_ty) {
+    uint32_t elem_spv = emit_air_type(c, pointee_ty);
+    if (!elem_spv) return 0u;
+    /* Lay out a nested aggregate pointee (array element / vector is laid out
+     * by the runtime-array's own stride, but an array-of-array element needs
+     * its inner ArrayStride too). */
+    uint32_t laid_out[64]; uint32_t n_laid_out = 0;
+    decorate_nested_layout(c, pointee_ty, laid_out, &n_laid_out);
+
+    uint32_t rt = emit_type_runtime_array(c, pointee_ty, elem_spv);
+    if (!rt) return 0u;
+
+    uint32_t sid = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t sops[] = { sid, rt };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_STRUCT, sops, 2);
+    { uint32_t d[] = { sid, LAGFX_SPV_DECORATION_BLOCK };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d, 2); }
+    { uint32_t md[] = { sid, 0u, LAGFX_SPV_DECORATION_OFFSET, 0u };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_MEMBER_DECORATE, md, 4); }
+
+    /* StorageBuffer pointers the body's GEP/load will need: to the member
+     * runtime-array, to the runtime-array element (pointee), and — if the
+     * pointee is itself an array — to its element. */
+    (void)emit_type_pointer(c, pointee_ty, elem_spv, LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+    uint32_t n = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
+    if (pointee_ty < n && ts[pointee_ty].kind == LAGFX_AIR_TYPE_ARRAY &&
+        ts[pointee_ty].num_op >= 2u) {
+        uint32_t inner = ts[pointee_ty].op[1];
+        (void)emit_type_pointer(c, inner, emit_air_type(c, inner),
+                                LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+    }
+
+    if (c->block_cache_len < LAGFX_MAX_VERTEX_ARGS) {
+        c->block_cache[c->block_cache_len].air_ty = pointee_ty;
+        c->block_cache[c->block_cache_len].spv_id = sid;
+        c->block_cache_len++;
+    }
+    return sid;
+}
+
 /* Emit a std430 Block struct for a [[buffer(n)]] arg: OpTypeStruct + Block /
  * member-Offset / ArrayStride decorations + StorageBuffer pointers to the
  * field (and array-element) types for the body GEP/AccessChain. The
@@ -958,7 +1082,12 @@ static uint32_t emit_type_struct_block(xlate_ctx_t *c, uint32_t struct_ty) {
     if (struct_ty >= n) return 0u;
     const lagfx_air_type_t *t = &ts[struct_ty];
     if (t->kind != LAGFX_AIR_TYPE_STRUCT_ANON &&
-        t->kind != LAGFX_AIR_TYPE_STRUCT_NAMED) return 0u;
+        t->kind != LAGFX_AIR_TYPE_STRUCT_NAMED) {
+        /* Non-struct pointee -> synthesize a { runtimearray<T> } Block. */
+        if (buffer_arg_nonstruct_pointee(c, struct_ty))
+            return emit_type_nonstruct_block(c, struct_ty);
+        return 0u;
+    }
     uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
     if (nfields == 0u || nfields > 32u) return 0u;
 
@@ -2327,6 +2456,21 @@ static uint32_t gep_base_storage_class(const xlate_ctx_t *c, uint32_t ptr_value_
     return LAGFX_SPV_STORAGE_FUNCTION;
 }
 
+/* If `ptr_value_id` is a [[buffer(n)]] arg whose pointee is a non-struct
+ * `device T*` (modelled as a `{ runtimearray<T> }` Block), return the
+ * pointee (element) AIR type. 0 otherwise. Such bases need an extra
+ * leading member-0 index in their OpAccessChain, and the LLVM GEP's first
+ * index is a REAL runtime-array element index (not a to-be-dropped 0). */
+static uint32_t buffer_arg_runtimearray_elem(xlate_ctx_t *c, uint32_t ptr_value_id) {
+    if (ptr_value_id < c->arg_id_base ||
+        ptr_value_id >= c->arg_id_base + c->num_args)
+        return 0u;
+    uint32_t a = ptr_value_id - c->arg_id_base;
+    if (a >= LAGFX_MAX_VERTEX_ARGS || c->arg_resource_kind[a] != 3u) return 0u;
+    uint32_t pointee = buffer_arg_struct_ty(c, a);
+    return buffer_arg_nonstruct_pointee(c, pointee);
+}
+
 static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
                            const lagfx_air_inst_t *inst,
                            uint32_t result_value_id, uint32_t next_val_id) {
@@ -2361,13 +2505,22 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
         return;
     }
 
+    /* A non-struct `device T*` buffer base is modelled as a
+     * `{ runtimearray<T> }` Block: the AccessChain needs a leading member-0
+     * index, and the LLVM GEP's FIRST index is the real runtime-array
+     * element index (so it is kept, not dropped). For a struct buffer / a
+     * local alloca the first index is pointer-arithmetic and is skipped. */
+    uint32_t rtarr_elem  = buffer_arg_runtimearray_elem(c, ptr_id);
+    uint32_t first_idx   = rtarr_elem ? 0u : 1u; /* first LLVM index used? */
+
     /* Walk the AIR type chain to deduce the result pointer's pointee
-     * type. Start at source_ty; for each index AFTER the first
-     * (which is the base-array index), step into the element type. */
+     * type. For a runtime-array buffer base, start at the element type and
+     * walk through ALL indices; otherwise start at source_ty and skip the
+     * first (base-array) index. */
     uint32_t n_types = 0;
     const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
     uint32_t pointee = source_ty;
-    for (uint32_t i = 1; i < n_idx_total; i++) {
+    for (uint32_t i = first_idx; i < n_idx_total; i++) {
         if (pointee >= n_types) break;
         const lagfx_air_type_t *t = &ts[pointee];
         switch (t->kind) {
@@ -2401,14 +2554,16 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
 
     uint32_t result_id = lagfx_spv_builder_alloc_id(c->b);
 
-    /* Build the operand vector: [result_type, result, base, idx1, idx2, ...] */
+    /* Build the operand vector: [result_type, result, base, idx..., ...] */
     uint32_t ops[16];
     ops[0] = result_ptr;
     ops[1] = result_id;
     ops[2] = ptr_spv;
     uint32_t op_count = 3u;
-    /* Skip the first LLVM GEP index (base-array index). */
-    for (uint32_t i = 1; i < n_idx_total && op_count < 16u; i++) {
+    /* Runtime-array buffer: index into the Block's member 0 first. */
+    if (rtarr_elem && op_count < 16u)
+        ops[op_count++] = emit_const_uint32(c, 0u);
+    for (uint32_t i = first_idx; i < n_idx_total && op_count < 16u; i++) {
         uint32_t idx_rel = (uint32_t)inst->ops[3u + i];
         uint32_t idx_id  = resolve_relative(idx_rel, next_val_id);
         uint32_t idx_spv = resolve_value_spv(c, idx_id);
@@ -2419,8 +2574,8 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
         ops[op_count++] = idx_spv;
     }
 
-    /* If the GEP had only the base index (n_idx_total == 1), SPIR-V
-     * OpAccessChain isn't strictly needed — just alias. */
+    /* If the GEP produced no index operands, SPIR-V OpAccessChain isn't
+     * needed — just alias the base. */
     if (op_count == 3u) {
         bind_value_spv(c, result_value_id, ptr_spv);
         set_result_air_type(c, result_value_id, pointee);
@@ -2480,6 +2635,22 @@ static void emit_inst_load(xlate_ctx_t *c, uint32_t inst_idx,
         bind_value_spv(c, result_value_id, emit_undef(c, result_spv));
         set_result_air_type(c, result_value_id, result_ty_air);
         return;
+    }
+    /* A direct load through a non-struct `device T*` buffer arg (no GEP —
+     * `load T, ptr %buf`) reads element 0 of the `{ runtimearray<T> }`
+     * Block. The pointer here is the Block VARIABLE itself, so the load
+     * type (T) doesn't match the var's pointee (the Block struct); inject
+     * an OpAccessChain %var, 0(member), 0(elem) to reach the element. */
+    uint32_t rtarr_elem = buffer_arg_runtimearray_elem(c, ptr_id);
+    if (rtarr_elem) {
+        uint32_t elem_spv = emit_air_type(c, rtarr_elem);
+        uint32_t elem_ptr = emit_type_pointer(c, rtarr_elem, elem_spv,
+                                              LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+        uint32_t chain_id = lagfx_spv_builder_alloc_id(c->b);
+        uint32_t zero = emit_const_uint32(c, 0u);
+        uint32_t ac[] = { elem_ptr, chain_id, ptr_spv, zero, zero };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_ACCESS_CHAIN, ac, 5);
+        ptr_spv = chain_id;
     }
     uint32_t result_id = lagfx_spv_builder_alloc_id(c->b);
     uint32_t ops[] = { result_spv, result_id, ptr_spv };
