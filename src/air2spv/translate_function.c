@@ -3813,10 +3813,383 @@ static void emit_inst_select(xlate_ctx_t *c, uint32_t inst_idx,
 }
 
 /* ===================================================================
+ * Structured control flow (multi-basic-block bodies)
+ *
+ * SPIR-V demands STRUCTURED, reducible control flow: every header has an
+ * explicit merge block, and a loop's back-edge must target a dedicated
+ * continue block (not the header). LLVM AIR from Metal is reducible, but
+ * the per-instruction emission in translate_body is single-basic-block —
+ * it emits linearly and drops BR/PHI/SWITCH (they fall through the
+ * default case). That is fine for the (vast) majority of compositor
+ * shaders, whose translated entry-point function is a single block; but a
+ * counted `for`/`while` lowers to a real multi-block loop with PHI nodes,
+ * and dropping the terminators leaves loop instructions emitted AFTER the
+ * OpReturn ("X must appear in a block").
+ *
+ * To keep the regression surface minimal we recognise exactly ONE family
+ * here — the canonical LLVM "rotated" single loop (the shape `xcrun metal`
+ * emits for a counted for/while):
+ *
+ *   entry:   ... ; br label %H            (unconditional)
+ *   merge:   ... ; ret                    (after-loop block)
+ *   H:       phi… ; … ; br i1 %c, %merge, %H   (self back-edge)
+ *
+ * Any body that does NOT match this exact shape falls through to the
+ * existing linear path unchanged — so single-block shaders and the one
+ * multi-block SkyLight entry (InPlaceColorOrClampEDR, an if/else diamond)
+ * keep their current, validated behaviour.
+ * =================================================================== */
+
+/* getDecodedSignRotatedValue (llvm/Bitcode/BitcodeCommon-ish): PHI value
+ * operands are sign-rotated relative ids. low bit = sign; magnitude in the
+ * upper bits. Returns the signed delta to subtract from the PHI's result
+ * value-number to recover the incoming value-id. */
+static int64_t decode_sign_rotated(uint64_t v) {
+    if ((v & 1u) == 0u) return (int64_t)(v >> 1);
+    if (v != 1u)        return -(int64_t)(v >> 1);
+    return INT64_MIN;   /* the special "INT_MIN" encoding; never seen here */
+}
+
+/* A reconstructed basic block: [first, last] inclusive instruction range
+ * (last is the terminator). `index` is the LLVM basic-block number a BR
+ * operand references. */
+typedef struct {
+    uint32_t index;       /* LLVM bb number (0-based) */
+    uint32_t first_inst;  /* first instruction index in this block */
+    uint32_t last_inst;   /* terminator instruction index */
+} lagfx_bb_t;
+
+static bool inst_is_terminator(lagfx_air_inst_code_t code) {
+    return code == LAGFX_AIR_INST_RET || code == LAGFX_AIR_INST_BR ||
+           code == LAGFX_AIR_INST_SWITCH || code == LAGFX_AIR_INST_UNREACHABLE ||
+           code == LAGFX_AIR_INST_INDIRECTBR;
+}
+
+/* Partition the body into basic blocks (split after each terminator).
+ * DECLAREBLOCKS (always inst 0, if present) is folded into block 0.
+ * Returns the block count, or 0 if the body isn't cleanly partitionable
+ * (e.g. the final instruction isn't a terminator). */
+static uint32_t partition_basic_blocks(const xlate_ctx_t *c, lagfx_bb_t *bbs,
+                                       uint32_t max_bbs) {
+    uint32_t nbb = 0;
+    uint32_t start = 0;
+    /* Fold a leading DECLAREBLOCKS into block 0's range start. */
+    if (c->num_insts > 0u && c->insts[0].code == LAGFX_AIR_INST_DECLAREBLOCKS)
+        start = 0; /* keep at 0; the emitter skips DECLAREBLOCKS itself */
+    for (uint32_t i = 0; i < c->num_insts; i++) {
+        if (inst_is_terminator(c->insts[i].code)) {
+            if (nbb >= max_bbs) return 0;
+            bbs[nbb].index = nbb;
+            bbs[nbb].first_inst = start;
+            bbs[nbb].last_inst = i;
+            nbb++;
+            start = i + 1u;
+        }
+    }
+    /* All instructions must be covered: the last instruction is a
+     * terminator (start advanced past num_insts). */
+    if (start != c->num_insts) return 0;
+    return nbb;
+}
+
+/* Plan for the recognised single-loop shape. */
+typedef struct {
+    bool     valid;
+    uint32_t entry_bb;    /* always 0 */
+    uint32_t header_bb;   /* the loop block (phis + latch test + self back-edge) */
+    uint32_t merge_bb;    /* the after-loop block (ends in RET) */
+    /* The header block's conditional BR: which target is the back-edge
+     * (== header) and which is the exit (== merge). */
+    bool     cond_true_is_exit; /* true: BR cond ? merge : header */
+} lagfx_loop_plan_t;
+
+static lagfx_loop_plan_t detect_simple_loop(const xlate_ctx_t *c) {
+    lagfx_loop_plan_t plan = {0};
+    lagfx_bb_t bbs[8];
+    uint32_t nbb = partition_basic_blocks(c, bbs, 8u);
+    if (nbb != 3u) return plan;   /* only the 3-block rotated loop today */
+
+    /* Block 0 (entry) must end in an UNCONDITIONAL BR to some block H. */
+    const lagfx_air_inst_t *t0 = &c->insts[bbs[0].last_inst];
+    if (t0->code != LAGFX_AIR_INST_BR || t0->num_ops != 1u) return plan;
+    uint32_t header = (uint32_t)t0->ops[0];
+    if (header >= nbb) return plan;
+
+    /* The header block must START with a PHI and END with a CONDITIONAL
+     * BR whose two targets are {header (back-edge), other (exit)}. */
+    const lagfx_air_inst_t *hfirst = &c->insts[bbs[header].first_inst];
+    if (hfirst->code != LAGFX_AIR_INST_PHI) return plan;
+    const lagfx_air_inst_t *th = &c->insts[bbs[header].last_inst];
+    if (th->code != LAGFX_AIR_INST_BR || th->num_ops != 3u) return plan;
+    /* Conditional BR operand layout: [true_bb, false_bb, cond_rel]. */
+    uint32_t t_true  = (uint32_t)th->ops[0];
+    uint32_t t_false = (uint32_t)th->ops[1];
+    uint32_t exit_bb;
+    bool cond_true_is_exit;
+    if (t_false == header && t_true != header) {
+        exit_bb = t_true;  cond_true_is_exit = true;
+    } else if (t_true == header && t_false != header) {
+        exit_bb = t_false; cond_true_is_exit = false;
+    } else {
+        return plan;       /* not a self-loop */
+    }
+    if (exit_bb >= nbb) return plan;
+
+    /* The exit block must END in a RET (the after-loop merge). */
+    const lagfx_air_inst_t *te = &c->insts[bbs[exit_bb].last_inst];
+    if (te->code != LAGFX_AIR_INST_RET) return plan;
+
+    /* Entry must be block 0 (the other two are header + merge). */
+    if (header == 0u || exit_bb == 0u) return plan;
+
+    plan.valid = true;
+    plan.entry_bb = 0u;
+    plan.header_bb = header;
+    plan.merge_bb = exit_bb;
+    plan.cond_true_is_exit = cond_true_is_exit;
+    return plan;
+}
+
+/* Pre-allocate a SPIR-V result id for every value-producing body
+ * instruction and bind it in the value map, so that emit_inst_* picks up
+ * the pre-bound id (via resolve_value_spv) instead of allocating — this
+ * makes FORWARD references resolvable, which a loop's PHI requires (its
+ * incoming values are defined later in the same header block). Also
+ * records each instruction's result AIR type where statically known
+ * (PHI/CALL carry it explicitly; others are filled by their emitters). */
+static void preallocate_result_ids(xlate_ctx_t *c) {
+    uint32_t next_val_id = c->inst_id_base;
+    for (uint32_t i = 0; i < c->num_insts; i++) {
+        const lagfx_air_inst_t *inst = &c->insts[i];
+        if (!inst_produces_value(c, inst)) continue;
+        if (!resolve_value_spv(c, next_val_id)) {
+            uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+            bind_value_spv(c, next_val_id, id);
+        }
+        /* PHI carries its result type as op[0] (an AIR type index). */
+        if (inst->code == LAGFX_AIR_INST_PHI && inst->num_ops >= 1u)
+            set_result_air_type(c, next_val_id, (uint32_t)inst->ops[0]);
+        else if (inst->code == LAGFX_AIR_INST_CALL) {
+            uint32_t rt = call_return_air_type(c, inst);
+            if (rt != LAGFX_AIR_TYPE_NONE) set_result_air_type(c, next_val_id, rt);
+        }
+        next_val_id++;
+    }
+}
+
+/* Emit the non-PHI, non-terminator instructions of a basic block using the
+ * existing per-instruction emitters, advancing the value-number counter
+ * exactly as the linear path does. *io_val_id is the value-id of the FIRST
+ * instruction in [first,last) (caller seeds + reads back). PHI and the
+ * terminator are handled by the loop driver, so they are skipped here but
+ * still advance the counter when they produce a value (PHI does). */
+static void emit_block_body(xlate_ctx_t *c, uint32_t first, uint32_t last_excl,
+                            uint32_t *io_val_id) {
+    uint32_t next_val_id = *io_val_id;
+    for (uint32_t i = first; i < last_excl; i++) {
+        const lagfx_air_inst_t *inst = &c->insts[i];
+        bool produces = inst_produces_value(c, inst);
+        uint32_t result_value_id = produces ? next_val_id : 0u;
+        switch (inst->code) {
+            case LAGFX_AIR_INST_ALLOCA:    emit_inst_alloca(c, i, inst, result_value_id); break;
+            case LAGFX_AIR_INST_CAST:      emit_inst_cast(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_CALL:      emit_inst_call(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_GEP:
+            case LAGFX_AIR_INST_GEP_OLD:   emit_inst_gep(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_STORE:
+            case LAGFX_AIR_INST_STORE_OLD: emit_inst_store(c, inst, next_val_id); break;
+            case LAGFX_AIR_INST_LOAD:      emit_inst_load(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_SHUFFLEVEC:emit_inst_shufflevec(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_INSERTVAL: emit_inst_insertval(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_BINOP:     emit_inst_binop(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_UNOP:      emit_inst_unop(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_CMP:       emit_inst_cmp(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_CMP2:      emit_inst_cmp2(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_SELECT:
+            case LAGFX_AIR_INST_VSELECT:   emit_inst_select(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_EXTRACTVAL:emit_inst_extractval(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_EXTRACTELT:emit_inst_extractelt(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_INSERTELT: emit_inst_insertelt(c, i, inst, result_value_id, next_val_id); break;
+            case LAGFX_AIR_INST_DECLAREBLOCKS: break;
+            case LAGFX_AIR_INST_PHI:       break; /* handled by the driver */
+            default:
+                LAGFX_TRACE("translate_function(loop): dropping unhandled "
+                            "AIR opcode raw=%u (code=%d) at i[%u]",
+                            inst->raw_code, (int)inst->code, i);
+                break;
+        }
+        if (produces) next_val_id++;
+    }
+    *io_val_id = next_val_id;
+}
+
+/* The value-id of the instruction at body index `inst_idx` (the value-id a
+ * producing instruction at that index would take). Counts value-producers
+ * up to (not including) inst_idx. */
+static uint32_t value_id_at_inst(const xlate_ctx_t *c, uint32_t inst_idx) {
+    uint32_t v = c->inst_id_base;
+    for (uint32_t i = 0; i < inst_idx && i < c->num_insts; i++)
+        if (inst_produces_value(c, &c->insts[i])) v++;
+    return v;
+}
+
+/* Emit the header block's PHI nodes as OpPhi. `entry_label` is the SPIR-V
+ * label of the predecessor that flows in from the loop's entry edge;
+ * `continue_label` is the predecessor for the self back-edge. The LLVM PHI
+ * incoming pairs are (value_sign_rotated, bb_index); we map bb_index ==
+ * header_bb → continue_label, else → entry_label. */
+static void emit_header_phis(xlate_ctx_t *c, const lagfx_loop_plan_t *plan,
+                             const lagfx_bb_t *bbs,
+                             uint32_t entry_label, uint32_t continue_label) {
+    uint32_t hfirst = bbs[plan->header_bb].first_inst;
+    for (uint32_t i = hfirst; i < c->num_insts; i++) {
+        const lagfx_air_inst_t *inst = &c->insts[i];
+        if (inst->code != LAGFX_AIR_INST_PHI) break;   /* phis are contiguous at block start */
+        if (inst->num_ops < 3u) continue;
+
+        uint32_t phi_valno = value_id_at_inst(c, i);
+        uint32_t result_spv = resolve_value_spv(c, phi_valno);
+        if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+
+        uint32_t ty_air = (uint32_t)inst->ops[0];
+        uint32_t result_ty = emit_air_type(c, ty_air);
+
+        /* OpPhi: [result_type, result, (val, parent_label)...]. */
+        uint32_t ops[2 + 2 * 8];
+        uint32_t n = 0;
+        ops[n++] = result_ty;
+        ops[n++] = result_spv;
+        uint32_t npairs = (inst->num_ops - 1u) / 2u;
+        if (npairs > 8u) npairs = 8u;
+        for (uint32_t p = 0; p < npairs; p++) {
+            uint64_t v_enc = inst->ops[1u + 2u * p];
+            uint32_t bb    = (uint32_t)inst->ops[2u + 2u * p];
+            int64_t delta  = decode_sign_rotated(v_enc);
+            uint32_t inval_id = (uint32_t)((int64_t)phi_valno - delta);
+            uint32_t inval_spv = resolve_value_spv(c, inval_id);
+            if (!inval_spv) inval_spv = emit_undef(c, result_ty);
+            uint32_t parent = (bb == plan->header_bb) ? continue_label : entry_label;
+            ops[n++] = inval_spv;
+            ops[n++] = parent;
+        }
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_PHI, ops, n);
+
+        bind_value_spv(c, phi_valno, result_spv);
+        set_result_air_type(c, phi_valno, ty_air);
+    }
+}
+
+/* Drive emission for the recognised single-loop shape. Emits, in SPIR-V
+ * structured order:
+ *   entry  (already open): non-phi entry insts ; OpBranch %header
+ *   header: OpPhi… ; OpLoopMerge %merge %continue ; OpBranch %body
+ *   body:   header block's non-phi insts (up to the latch test) ;
+ *           OpBranchConditional %cond %merge %continue
+ *   continue: OpBranch %header
+ *   merge:  the after-loop block's insts ; (RET → OpReturn)
+ */
+static lagfx_status_t translate_body_loop(xlate_ctx_t *c,
+                                          const lagfx_loop_plan_t *plan) {
+    lagfx_bb_t bbs[8];
+    uint32_t nbb = partition_basic_blocks(c, bbs, 8u);
+    if (nbb != 3u) return LAGFX_ERR_PROTOCOL;
+
+    /* Allocate result ids for all producers up-front (forward refs). */
+    preallocate_result_ids(c);
+
+    uint32_t id_header   = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t id_body     = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t id_continue = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t id_merge    = lagfx_spv_builder_alloc_id(c->b);
+
+    /* --- entry block (already open via emit_module_vars_and_function) --- */
+    {
+        uint32_t v = c->inst_id_base;
+        emit_block_body(c, bbs[plan->entry_bb].first_inst,
+                        bbs[plan->entry_bb].last_inst, &v);
+    }
+    { uint32_t ops[] = { id_header };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, ops, 1); }
+
+    /* --- header: phis + OpLoopMerge + branch to body --- */
+    { uint32_t ops[] = { id_header };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, ops, 1); }
+    emit_header_phis(c, plan, bbs, c->id_entry_label, id_continue);
+    { uint32_t ops[] = { id_merge, id_continue, LAGFX_SPV_LOOP_CONTROL_NONE };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOOP_MERGE, ops, 3); }
+    { uint32_t ops[] = { id_body };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, ops, 1); }
+
+    /* --- body: header block's non-phi computations + the latch BR --- */
+    { uint32_t ops[] = { id_body };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, ops, 1); }
+    {
+        /* Skip the leading PHIs (emitted in the header). */
+        uint32_t hfirst = bbs[plan->header_bb].first_inst;
+        uint32_t body_first = hfirst;
+        while (body_first <= bbs[plan->header_bb].last_inst &&
+               c->insts[body_first].code == LAGFX_AIR_INST_PHI)
+            body_first++;
+        uint32_t v = value_id_at_inst(c, body_first);
+        emit_block_body(c, body_first, bbs[plan->header_bb].last_inst, &v);
+    }
+    /* Conditional latch BR → merge / continue. */
+    {
+        const lagfx_air_inst_t *th = &c->insts[bbs[plan->header_bb].last_inst];
+        uint32_t cond_valno = value_id_at_inst(c, bbs[plan->header_bb].last_inst);
+        uint32_t cond_id = resolve_relative((uint32_t)th->ops[2], cond_valno);
+        uint32_t cond_spv = resolve_or_undef(c, cond_id, emit_type_bool(c));
+        /* OpBranchConditional %cond <true-target> <false-target>. The LLVM
+         * targets are {merge (exit), header (back-edge→continue)}. */
+        uint32_t tgt_true  = plan->cond_true_is_exit ? id_merge : id_continue;
+        uint32_t tgt_false = plan->cond_true_is_exit ? id_continue : id_merge;
+        uint32_t ops[] = { cond_spv, tgt_true, tgt_false };
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH_CONDITIONAL, ops, 3);
+    }
+
+    /* --- continue block: branch back to header --- */
+    { uint32_t ops[] = { id_continue };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, ops, 1); }
+    { uint32_t ops[] = { id_header };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, ops, 1); }
+
+    /* --- merge block: the after-loop instructions + RET --- */
+    { uint32_t ops[] = { id_merge };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, ops, 1); }
+    {
+        uint32_t mfirst = bbs[plan->merge_bb].first_inst;
+        uint32_t mlast  = bbs[plan->merge_bb].last_inst;   /* the RET */
+        uint32_t v = value_id_at_inst(c, mfirst);
+        emit_block_body(c, mfirst, mlast, &v);
+        /* Emit the RET (→ OpReturn / colour store). */
+        const lagfx_air_inst_t *ret = &c->insts[mlast];
+        uint32_t ret_valno = value_id_at_inst(c, mlast);
+        emit_inst_ret(c, ret, ret_valno);
+    }
+
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_FUNCTION_END, NULL, 0);
+    return LAGFX_OK;
+}
+
+/* ===================================================================
  * Driver
  * =================================================================== */
 
 static lagfx_status_t translate_body(xlate_ctx_t *c) {
+    /* Structured control flow: if the body matches the recognised single
+     * reducible loop, emit multi-basic-block SPIR-V. Otherwise fall
+     * through to the linear single-block path (unchanged) — this keeps
+     * every single-block shader and the one multi-block SkyLight entry
+     * (InPlaceColorOrClampEDR) on their existing, validated route. */
+    {
+        lagfx_loop_plan_t plan = detect_simple_loop(c);
+        if (plan.valid) {
+            LAGFX_TRACE("translate_function: recognised single loop "
+                        "(header bb=%u merge bb=%u)", plan.header_bb, plan.merge_bb);
+            return translate_body_loop(c, &plan);
+        }
+    }
+
     /* Pass 1: allocate result SPIR-V ids for each value-producing
      * instruction; populate value-id → spv map. */
     uint32_t next_val_id = c->inst_id_base;
