@@ -59,6 +59,15 @@ build-skyrender/examples/air-translate /tmp/skyr/"$TEXFN".bc /tmp/skyr/texfrag.s
 spirv-val /tmp/skyr/texfrag.spv
 LAGFX_FORCE_LAVAPIPE=1 /tmp/skyr/render /tmp/skyr/vert_tex.spv /tmp/skyr/texfrag.spv 0000ffff --tex || RC=1
 
+# Case C: REAL live-guest ColorFill fragment reading a vec4 from a
+# StorageBuffer (set 0, binding 0) — proves the [[buffer]] descriptor path
+# (reflection-shaped layout + bound storage buffer -> shader reads it ->
+# correct pixel) end-to-end on the production lavapipe stack.
+echo "=== storage-buffer: guest ColorFill ==="
+build-skyrender/examples/air-translate tests/fixtures/guest_colorfill_frag.air.bc /tmp/skyr/buffrag.spv
+spirv-val /tmp/skyr/buffrag.spv
+LAGFX_FORCE_LAVAPIPE=1 /tmp/skyr/render /tmp/skyr/vert_tex.spv /tmp/skyr/buffrag.spv 00ccffff --buf || RC=1
+
 rm -rf ~/"$REMOTE"
 exit $RC
 REMOTE_SH

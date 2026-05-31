@@ -82,6 +82,10 @@ int main(int argc, char **argv) {
         want.b = (v >> 8) & 0xff;  want.a = v & 0xff;
     }
     int use_tex = (argc >= 5 && strcmp(argv[4], "--tex") == 0);
+    /* --buf: bind a StorageBuffer (set 0, binding 0) holding `want` as a
+     * vec4 — matches what the translator emits for a `[[buffer]]` arg. The
+     * real guest ColorFill fragment reads buffer[0][0] and returns it. */
+    int use_buf = (argc >= 5 && strcmp(argv[4], "--buf") == 0);
 
     size_t vlen = 0, flen = 0;
     uint8_t *vspv = slurp(argv[1], &vlen);
@@ -271,9 +275,46 @@ int main(int argc, char **argv) {
         fprintf(stdout, "  --tex: bound texture+sampler (set 0, bindings 0/1) = %02x%02x%02x%02x\n",
                 want.r, want.g, want.b, want.a);
     }
+    if (use_buf) {
+        /* StorageBuffer (set 0, binding 0) holding `want` as a vec4. */
+        float rgba[4] = { want.r / 255.0f, want.g / 255.0f, want.b / 255.0f, want.a / 255.0f };
+        VkBufferCreateInfo sbci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = sizeof(rgba), .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT };
+        VkBuffer sbuf; if (vkCreateBuffer(dev, &sbci, NULL, &sbuf) != VK_SUCCESS) die("storage buf");
+        VkMemoryRequirements sbmr; vkGetBufferMemoryRequirements(dev, sbuf, &sbmr);
+        VkMemoryAllocateInfo sbmai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = sbmr.size,
+            .memoryTypeIndex = pick_memtype(phys, sbmr.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) };
+        VkDeviceMemory sbmem; if (vkAllocateMemory(dev, &sbmai, NULL, &sbmem) != VK_SUCCESS) die("storage mem");
+        vkBindBufferMemory(dev, sbuf, sbmem, 0);
+        void *sm = NULL; vkMapMemory(dev, sbmem, 0, VK_WHOLE_SIZE, 0, &sm);
+        memcpy(sm, rgba, sizeof(rgba)); vkUnmapMemory(dev, sbmem);
 
+        VkDescriptorSetLayoutBinding b0 = { .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT };
+        VkDescriptorSetLayoutCreateInfo dslci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = 1, .pBindings = &b0 };
+        if (vkCreateDescriptorSetLayout(dev, &dslci, NULL, &dsl) != VK_SUCCESS) die("buf dsl");
+        VkDescriptorPoolSize psz = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 };
+        VkDescriptorPoolCreateInfo dpci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &psz };
+        VkDescriptorPool dpool; if (vkCreateDescriptorPool(dev, &dpci, NULL, &dpool) != VK_SUCCESS) die("buf dpool");
+        VkDescriptorSetAllocateInfo dsai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = dpool, .descriptorSetCount = 1, .pSetLayouts = &dsl };
+        if (vkAllocateDescriptorSets(dev, &dsai, &dset) != VK_SUCCESS) die("buf dset");
+        VkDescriptorBufferInfo binfo = { .buffer = sbuf, .offset = 0, .range = VK_WHOLE_SIZE };
+        VkWriteDescriptorSet wr = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = dset,
+            .dstBinding = 0, .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &binfo };
+        vkUpdateDescriptorSets(dev, 1, &wr, 0, NULL);
+        fprintf(stdout, "  --buf: bound StorageBuffer (set 0, binding 0) = %02x%02x%02x%02x\n",
+                want.r, want.g, want.b, want.a);
+    }
+
+    int use_desc = use_tex || use_buf;
     VkPipelineLayoutCreateInfo plci = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = use_tex ? 1u : 0u, .pSetLayouts = use_tex ? &dsl : NULL };
+        .setLayoutCount = use_desc ? 1u : 0u, .pSetLayouts = use_desc ? &dsl : NULL };
     VkPipelineLayout pl; if (vkCreatePipelineLayout(dev, &plci, NULL, &pl) != VK_SUCCESS) die("layout");
 
     VkPipelineShaderStageCreateInfo stages[2] = {
@@ -323,7 +364,7 @@ int main(int argc, char **argv) {
         .clearValueCount = 1, .pClearValues = &clear };
     vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-    if (use_tex)
+    if (use_desc)
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &dset, 0, NULL);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
