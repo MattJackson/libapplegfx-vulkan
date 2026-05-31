@@ -192,6 +192,14 @@ typedef struct {
      * shader_module handles need vkDestroyShaderModule on overwrite
      * (substitute modules live on the device and must NOT be freed). */
     bool       translated;
+    /* Phase 6a descriptor layout: when the translated shaders declare
+     * [[buffer]]/texture descriptors (DescriptorSet 0), these hold the
+     * VkDescriptorSetLayout + VkPipelineLayout built from SPIR-V reflection
+     * (lagfx_build_pipeline_layout_from_spv). Both NULL for a resource-free
+     * pipeline (use the device empty layout) or the substitute path. Stored
+     * as uintptr_t to keep this struct free of <vulkan/vulkan.h>. */
+    uintptr_t  descriptor_set_layout; /* VkDescriptorSetLayout, NULL if none */
+    uintptr_t  pipeline_layout;       /* VkPipelineLayout, NULL if none */
 } lagfx_pending_pipeline_t;
 
 /* === Task Entry ================================================== */

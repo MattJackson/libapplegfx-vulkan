@@ -49,6 +49,7 @@
 #include "vulkan/iosurface.h"
 #include "vulkan/pipeline_build.h"
 #include "vulkan/draw_record.h"
+#include "vulkan/descriptor_layout.h"
 #include "air/bitcode_reader.h"
 #include "air2spv/translate.h"
 #include "air2spirv/metallib_extract.h"
@@ -1184,6 +1185,11 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
         if (lookup_ok) {
             VkDevice vk_device = dev_with_vk->vk->device;
             VkShaderModule v_mod = VK_NULL_HANDLE, f_mod = VK_NULL_HANDLE;
+            /* Keep each stage's SPIR-V alive past module creation so we can
+             * reflect descriptor bindings and build a matching pipeline
+             * layout once both stages are translated. Freed after the loop. */
+            uint8_t *spv_keep[2] = { NULL, NULL };
+            size_t   spv_keep_sz[2] = { 0, 0 };
 
             /* Inline helper: read metallib at vert/frag ref → extract
              * AIR for that stage → translate → vkCreateShaderModule.
@@ -1278,12 +1284,16 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                 };
                 VkShaderModule mod = VK_NULL_HANDLE;
                 VkResult vr = vkCreateShaderModule(vk_device, &smci, NULL, &mod);
-                free(spv);
                 free(mlib_buf);
                 if (vr != VK_SUCCESS) {
                     LAGFX_WARN("op_0x74 P6a: vkCreateShaderModule failed vr=%d", (int)vr);
+                    free(spv);
                     break;
                 }
+                /* Retain the SPIR-V for descriptor reflection (freed after
+                 * the stage loop). */
+                spv_keep[stage] = spv;
+                spv_keep_sz[stage] = spv_sz;
 
                 if (stage == 0) v_mod = mod;
                 else            f_mod = mod;
@@ -1306,18 +1316,49 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                         vkDestroyShaderModule(vk_device,
                                               (VkShaderModule)task->pending_pipeline.fragment_shader,
                                               NULL);
+                    if (task->pending_pipeline.pipeline_layout)
+                        vkDestroyPipelineLayout(vk_device,
+                                                (VkPipelineLayout)task->pending_pipeline.pipeline_layout, NULL);
+                    if (task->pending_pipeline.descriptor_set_layout)
+                        vkDestroyDescriptorSetLayout(vk_device,
+                                                     (VkDescriptorSetLayout)task->pending_pipeline.descriptor_set_layout, NULL);
                 }
                 task->pending_pipeline.valid           = true;
                 task->pending_pipeline.translated      = true;
                 task->pending_pipeline.vertex_shader   = (uintptr_t)v_mod;
                 task->pending_pipeline.fragment_shader = (uintptr_t)f_mod;
                 task->pending_pipeline.reference       = reference;
+                task->pending_pipeline.descriptor_set_layout = 0;
+                task->pending_pipeline.pipeline_layout       = 0;
                 phase6_translated = true;
                 LAGFX_LOG("op_0x74 P6a: pipeline ref=0x%x using TRANSLATED shaders", reference);
+
+                /* Build the descriptor-set + pipeline layout from the two
+                 * stages' SPIR-V reflection. NULL handles (resource-free
+                 * shaders) mean "use the device empty layout" at draw. A
+                 * failure here is non-fatal — the draw site falls back. */
+                const uint8_t *blobs[2] = { spv_keep[0], spv_keep[1] };
+                const size_t   lens[2]  = { spv_keep_sz[0], spv_keep_sz[1] };
+                VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+                VkPipelineLayout pl = VK_NULL_HANDLE;
+                if (lagfx_build_pipeline_layout_from_spv(vk_device, blobs, lens, 2,
+                                                         &dsl, &pl) == LAGFX_OK) {
+                    task->pending_pipeline.descriptor_set_layout = (uintptr_t)dsl;
+                    task->pending_pipeline.pipeline_layout       = (uintptr_t)pl;
+                    if (pl != VK_NULL_HANDLE)
+                        LAGFX_LOG("op_0x74 P6a: pipeline ref=0x%x built reflection "
+                                  "descriptor layout (has resources)", reference);
+                } else {
+                    LAGFX_WARN("op_0x74 P6a: descriptor layout build failed for "
+                               "ref=0x%x — draw will fall back", reference);
+                }
             } else {
                 if (v_mod != VK_NULL_HANDLE) vkDestroyShaderModule(vk_device, v_mod, NULL);
                 if (f_mod != VK_NULL_HANDLE) vkDestroyShaderModule(vk_device, f_mod, NULL);
             }
+            /* Reflection buffers no longer needed (modules + layout built). */
+            free(spv_keep[0]);
+            free(spv_keep[1]);
         }
     }
 
