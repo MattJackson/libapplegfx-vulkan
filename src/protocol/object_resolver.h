@@ -44,6 +44,21 @@ bool lagfx_lookup_function_bytes(lagfx_protocol_t *p,
                                   uint32_t *out_len,
                                   uint64_t *out_va);
 
+/* Generic per-task object-slot resolver: walk slot[object_id] in the task
+ * heap and return its type byte + the data it points at (virtual address,
+ * and translated GPA — 0 if unmapped). Buffers/textures resolve the same
+ * way functions do (lagfx_lookup_function_bytes is the type=0x06 special
+ * case that additionally reads the MTLB length); this is the building block
+ * for draw-time resource binding (resolve a SetVertexBuffers ref → its data
+ * → read page-aware → upload to a VkBuffer). Returns false if heap unpublished
+ * or the slot/translate walk fails. */
+bool lagfx_resolve_object_data(lagfx_protocol_t *p,
+                                const lagfx_task_entry_t *task,
+                                uint32_t object_id,
+                                uint8_t *out_type,
+                                uint64_t *out_data_va,
+                                uint64_t *out_data_gpa);
+
 /* Read `len` bytes starting at task-VIRTUAL address `va` into `buf`,
  * translating each guest page (VA->GPA) separately via the per-task radix
  * walk. Use this for any guest buffer larger than a page that is virtually

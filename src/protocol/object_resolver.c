@@ -172,6 +172,30 @@ lagfx_lookup_function_bytes(lagfx_protocol_t *p,
 }
 
 bool
+lagfx_resolve_object_data(lagfx_protocol_t *p,
+                          const lagfx_task_entry_t *task,
+                          uint32_t object_id,
+                          uint8_t *out_type,
+                          uint64_t *out_data_va,
+                          uint64_t *out_data_gpa) {
+    if (!p || !task || task->heap_pfn == 0u) return false;
+    uint64_t slot_va = slot_va_for(task->heap_pfn, object_id);
+    uint64_t slot_gpa = 0;
+    if (!lagfx_task_translate(p, task, slot_va, &slot_gpa)) return false;
+    uint8_t type = 0; uint64_t bytes_va = 0;
+    if (!read_slot_fields((const lagfx_device_descriptor_t *)&((lagfx_device_t *)p->dev)->desc,
+                          slot_gpa, &type, &bytes_va))
+        return false;
+    uint64_t bytes_gpa = 0;
+    if (bytes_va != 0u && !lagfx_task_translate(p, task, bytes_va, &bytes_gpa))
+        bytes_gpa = 0; /* unmapped — caller decides */
+    if (out_type) *out_type = type;
+    if (out_data_va) *out_data_va = bytes_va;
+    if (out_data_gpa) *out_data_gpa = bytes_gpa;
+    return true;
+}
+
+bool
 lagfx_task_read_virtual(lagfx_protocol_t *p,
                         const lagfx_task_entry_t *task,
                         uint64_t va,
