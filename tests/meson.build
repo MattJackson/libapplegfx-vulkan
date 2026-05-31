@@ -1151,4 +1151,21 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-bool-to-float-unit.c')
     workdir : meson.current_source_dir() / '..')
 endif
 
+# numeric bitcast (`as_type`) -> real OpBitcast (not silent alias) guard.
+if fs.is_file(meson.current_source_dir() / 'air2spv-bitcast-as-type-unit.c')
+  air2spv_bc_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_bc_deps += [vulkan_dep]
+  endif
+  air2spv_bc_test = executable('air2spv-bitcast-as-type-unit',
+    'air2spv-bitcast-as-type-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_bc_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv bitcast as_type (unit)', air2spv_bc_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 

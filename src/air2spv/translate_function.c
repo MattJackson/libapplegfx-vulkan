@@ -1918,12 +1918,52 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
             set_result_air_type(c, result_value_id, dest_ty);
             return;
 
-        case 11: /* CAST_BITCAST → always alias (avoid runtime type emission) */
-            /* BITCAST requires emitting the pointer type at runtime which
-             * would violate SPIR-V ordering rules (types must precede variables).
-             * Instead, we alias: the operand and result have identical bit
-             * representations so this is semantically correct. The downstream
-             * consumer will use the aliased id directly. */
+        case 11: /* CAST_BITCAST */
+            /* A bitcast between two NUMERIC types (scalar/vector of int or
+             * float of the same total bit width — e.g. `as_type<uint>(float)`,
+             * `bitcast <2 x float> to <2 x i32>`) is a genuine reinterpret:
+             * the result has a DIFFERENT SPIR-V type than the source, so the
+             * old "always alias" path left a float vector flowing into an int
+             * consumer (extractelement → "Vector component type to be equal
+             * to Result Type"). Emit a real OpBitcast for those. POINTER
+             * bitcasts (and anything not representable) still alias — SPIR-V
+             * Logical addressing has no general pointer reinterpret, and the
+             * GEP/access-chain path handles the addressing. The multi-section
+             * builder hoists the dest type, so emitting it here is ordering-safe. */
+            {
+                uint32_t n_types = 0u;
+                const lagfx_air_type_t *ts =
+                    lagfx_air_module_types(c->m, &n_types);
+                int numeric = 0;
+                if (dest_ty < n_types) {
+                    const lagfx_air_type_t *dt = &ts[dest_ty];
+                    if (dt->kind == LAGFX_AIR_TYPE_INTEGER ||
+                        dt->kind == LAGFX_AIR_TYPE_FLOAT ||
+                        dt->kind == LAGFX_AIR_TYPE_HALF) {
+                        numeric = 1;
+                    } else if (dt->kind == LAGFX_AIR_TYPE_VECTOR &&
+                               dt->num_op >= 2u) {
+                        uint32_t el = dt->op[1];
+                        if (el < n_types &&
+                            (ts[el].kind == LAGFX_AIR_TYPE_INTEGER ||
+                             ts[el].kind == LAGFX_AIR_TYPE_FLOAT ||
+                             ts[el].kind == LAGFX_AIR_TYPE_HALF)) {
+                            numeric = 1;
+                        }
+                    }
+                }
+                if (numeric) {
+                    if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
+                    uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+                    uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BITCAST, ops, 3);
+                    bind_value_spv(c, result_value_id, result_spv);
+                    set_result_air_type(c, result_value_id, dest_ty);
+                    return;
+                }
+            }
+            /* Pointer / non-numeric bitcast — alias (identical bit
+             * representation; downstream uses the aliased id directly). */
             bind_value_spv(c, result_value_id, opval_spv);
             set_result_air_type(c, result_value_id, dest_ty);
             return;
