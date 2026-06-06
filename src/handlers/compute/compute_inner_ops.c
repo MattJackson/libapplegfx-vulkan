@@ -661,7 +661,7 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
     (void)encoder_type;
 
     /* RE: render-decoder-handlers.md line 107 — PGCmdSetBuffers (8 B head) + N×PGCmdSetBufferEntry (12 B), array.
-     * Wire layout per spec: [count:u32@0-3][firstIndex:u32@4-7]; Entry: [ref:u32@0-3][offset:u64@4-11] = 12 B */
+     * Wire layout per spec: [firstIndex:u32@0-3][count:u32@4-7] (live 15.7.5 — rule 21; was mis-documented as count-first); Entry: [ref:u32@0-3][offset:u64@4-11] = 12 B */
     if (body_len < 8u) {
         LAGFX_WARN("compute_inner: 0x6e SetFragmentBuffers payload too small (%zu < 8)", body_len);
         return 1;
@@ -672,8 +672,8 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
             _hn += (size_t)snprintf(_hx + _hn, sizeof(_hx) - _hn, "%02x ", body[_k]);
         LAGFX_LOG("WIRE_RAW 0x6e body_len=%zu: %s", body_len, _hx);
     }
-    uint32_t count = lagfx_le32(body + 0);
-    uint32_t first_index = lagfx_le32(body + 4);
+    uint32_t first_index = lagfx_le32(body + 0);
+    uint32_t count = lagfx_le32(body + 4);
     size_t entry_bytes = 12u;
     size_t needed = 8u + (size_t)count * entry_bytes;
     if (body_len < needed) {
@@ -772,8 +772,8 @@ static int op_set_fragment_sampler_states(lagfx_protocol_t *p,
         LAGFX_WARN("compute_inner: 0x70 SetFragmentSamplerStates payload too small (%zu < 8)", body_len);
         return 1;
     }
-    uint32_t count = lagfx_le32(body + 0);
-    uint32_t first_index = lagfx_le32(body + 4);
+    uint32_t first_index = lagfx_le32(body + 0);
+    uint32_t count = lagfx_le32(body + 4);
     size_t entry_bytes = 4u;
     size_t needed = 8u + (size_t)count * entry_bytes;
     if (body_len < needed) {
@@ -799,7 +799,7 @@ static int op_set_fragment_textures(lagfx_protocol_t *p,
                                        size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 111 — PGCmdSetTextures (8 B head) + N×u32 ref, array.
-     * Wire layout per spec: [count:u32@0-3][firstIndex:u32@4-7]; Entry: [ref:u32] = 4 B each */
+     * Wire layout per spec: [firstIndex:u32@0-3][count:u32@4-7] (live 15.7.5 — rule 21; was mis-documented as count-first); Entry: [ref:u32] = 4 B each */
     if (body_len < 8u) {
         LAGFX_WARN("compute_inner: 0x72 SetFragmentTextures payload too small (%zu < 8)", body_len);
         return 1;
@@ -810,8 +810,8 @@ static int op_set_fragment_textures(lagfx_protocol_t *p,
             _hn += (size_t)snprintf(_hx + _hn, sizeof(_hx) - _hn, "%02x ", body[_k]);
         LAGFX_LOG("WIRE_RAW 0x72 body_len=%zu: %s", body_len, _hx);
     }
-    uint32_t count = lagfx_le32(body + 0);
-    uint32_t first_index = lagfx_le32(body + 4);
+    uint32_t first_index = lagfx_le32(body + 0);
+    uint32_t count = lagfx_le32(body + 4);
     size_t entry_bytes = 4u;
     size_t needed = 8u + (size_t)count * entry_bytes;
     if (body_len < needed) {
@@ -864,7 +864,7 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p,
                                     size_t            body_len) {
     (void)encoder_type;
     /* RE: render-decoder-handlers.md line 132 — PGCmdSetBuffers (8 B head) + N×PGCmdSetBufferEntry (12 B), array.
-     * Wire layout per spec: [count:u32@0-3][firstIndex:u32@4-7]; Entry: [ref:u32@0-3][offset:u64@4-11] = 12 B */
+     * Wire layout per spec: [firstIndex:u32@0-3][count:u32@4-7] (live 15.7.5 — rule 21; was mis-documented as count-first); Entry: [ref:u32@0-3][offset:u64@4-11] = 12 B */
     if (body_len < 8u) {
         LAGFX_WARN("compute_inner: 0x7d SetVertexBuffers payload too small (%zu < 8)", body_len);
         return 1;
@@ -875,8 +875,8 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p,
             _hn += (size_t)snprintf(_hx + _hn, sizeof(_hx) - _hn, "%02x ", body[_k]);
         LAGFX_LOG("WIRE_RAW 0x7d body_len=%zu: %s", body_len, _hx);
     }
-    uint32_t count = lagfx_le32(body + 0);
-    uint32_t first_index = lagfx_le32(body + 4);
+    uint32_t first_index = lagfx_le32(body + 0);
+    uint32_t count = lagfx_le32(body + 4);
     size_t entry_bytes = 12u;
     size_t needed = 8u + (size_t)count * entry_bytes;
     if (body_len < needed) {
