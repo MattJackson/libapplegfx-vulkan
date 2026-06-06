@@ -600,6 +600,33 @@ static lagfx_status_t create_fallback_ds(struct lagfx_vk_state *vk) {
     LAGFX_LOG("pipeline_init: fallback descriptor set created "
               "(set=%p ubo=%p, white fill)", (void *)vk->fallback_desc_set,
               (void *)vk->fallback_ubo);
+
+    /* Stage 85b — general per-draw descriptor pool for translated
+     * resource-using pipelines. FREE_DESCRIPTOR_SET so each draw can free its
+     * set after submit. Generously sized for a frame of compositor draws. */
+    {
+        VkDescriptorPoolSize sizes[3] = {
+            { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         .descriptorCount = 1024 },
+            { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         .descriptorCount = 1024 },
+            { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1024 },
+        };
+        VkDescriptorPoolCreateInfo dci = {
+            .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+            .maxSets       = 1024,
+            .poolSizeCount = 3,
+            .pPoolSizes    = sizes,
+        };
+        VkResult dvr = vkCreateDescriptorPool(vk->device, &dci, NULL,
+                                              &vk->draw_desc_pool);
+        if (dvr != VK_SUCCESS) {
+            LAGFX_WARN("pipeline_init: draw_desc_pool create failed (%d) — "
+                       "resource-using pipelines fall back to substitute", (int)dvr);
+            vk->draw_desc_pool = VK_NULL_HANDLE;
+        } else {
+            LAGFX_LOG("pipeline_init: draw_desc_pool created (Stage 85b)");
+        }
+    }
     return LAGFX_OK;
 }
 
@@ -611,6 +638,10 @@ static void destroy_fallback_ds(struct lagfx_vk_state *vk) {
         vkDestroyDescriptorPool(vk->device, vk->fallback_desc_pool, NULL);
         vk->fallback_desc_pool = VK_NULL_HANDLE;
         vk->fallback_desc_set  = VK_NULL_HANDLE;
+    }
+    if (vk->draw_desc_pool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(vk->device, vk->draw_desc_pool, NULL);
+        vk->draw_desc_pool = VK_NULL_HANDLE;
     }
     if (vk->fallback_ubo != VK_NULL_HANDLE) {
         vkDestroyBuffer(vk->device, vk->fallback_ubo, NULL);

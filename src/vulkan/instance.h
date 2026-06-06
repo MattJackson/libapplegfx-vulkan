@@ -94,6 +94,12 @@ struct lagfx_vk_state {
     VkBuffer              fallback_ubo;
     VkDeviceMemory        fallback_ubo_mem;
 
+    /* Stage 85b — general per-draw descriptor pool for translated
+     * resource-using pipelines. Sized for many sets/bindings across a frame;
+     * FREE_DESCRIPTOR_SET so each draw frees its set after submit. Holds
+     * uniform + storage buffers + combined image samplers. */
+    VkDescriptorPool      draw_desc_pool;
+
     VkPipeline       cursor_pipeline;
     VkPipelineLayout cursor_layout;
     VkDescriptorSetLayout cursor_dsl;
