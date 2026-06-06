@@ -666,6 +666,12 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
         LAGFX_WARN("compute_inner: 0x6e SetFragmentBuffers payload too small (%zu < 8)", body_len);
         return 1;
     }
+    if (getenv("LAGFX_PHASE6_TRANSLATE")) {
+        char _hx[160]; size_t _hn = 0;
+        for (size_t _k = 0; _k < body_len && _hn + 3 < sizeof(_hx); _k++)
+            _hn += (size_t)snprintf(_hx + _hn, sizeof(_hx) - _hn, "%02x ", body[_k]);
+        LAGFX_LOG("WIRE_RAW 0x6e body_len=%zu: %s", body_len, _hx);
+    }
     uint32_t count = lagfx_le32(body + 0);
     uint32_t first_index = lagfx_le32(body + 4);
     size_t entry_bytes = 12u;
@@ -798,6 +804,12 @@ static int op_set_fragment_textures(lagfx_protocol_t *p,
         LAGFX_WARN("compute_inner: 0x72 SetFragmentTextures payload too small (%zu < 8)", body_len);
         return 1;
     }
+    if (getenv("LAGFX_PHASE6_TRANSLATE")) {
+        char _hx[160]; size_t _hn = 0;
+        for (size_t _k = 0; _k < body_len && _hn + 3 < sizeof(_hx); _k++)
+            _hn += (size_t)snprintf(_hx + _hn, sizeof(_hx) - _hn, "%02x ", body[_k]);
+        LAGFX_LOG("WIRE_RAW 0x72 body_len=%zu: %s", body_len, _hx);
+    }
     uint32_t count = lagfx_le32(body + 0);
     uint32_t first_index = lagfx_le32(body + 4);
     size_t entry_bytes = 4u;
@@ -856,6 +868,12 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p,
     if (body_len < 8u) {
         LAGFX_WARN("compute_inner: 0x7d SetVertexBuffers payload too small (%zu < 8)", body_len);
         return 1;
+    }
+    if (getenv("LAGFX_PHASE6_TRANSLATE")) {
+        char _hx[160]; size_t _hn = 0;
+        for (size_t _k = 0; _k < body_len && _hn + 3 < sizeof(_hx); _k++)
+            _hn += (size_t)snprintf(_hx + _hn, sizeof(_hx) - _hn, "%02x ", body[_k]);
+        LAGFX_LOG("WIRE_RAW 0x7d body_len=%zu: %s", body_len, _hx);
     }
     uint32_t count = lagfx_le32(body + 0);
     uint32_t first_index = lagfx_le32(body + 4);
