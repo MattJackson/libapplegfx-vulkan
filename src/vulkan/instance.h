@@ -157,4 +157,14 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
  * Safe on NULL. */
 void lagfx_vk_shutdown(struct lagfx_vk_state *state);
 
+#ifdef LAGFX_HAVE_VULKAN
+/* Stage 85b — create a host-visible STORAGE buffer and upload `data` (NULL ⇒
+ * zero-init). Caller destroys *out_buf + frees *out_mem after the draw submits. */
+lagfx_status_t lagfx_vk_make_host_storage_buffer(struct lagfx_vk_state *vk,
+                                                 const void *data,
+                                                 VkDeviceSize size,
+                                                 VkBuffer *out_buf,
+                                                 VkDeviceMemory *out_mem);
+#endif
+
 #endif /* LIBAPPLEGFX_VULKAN_INSTANCE_H */

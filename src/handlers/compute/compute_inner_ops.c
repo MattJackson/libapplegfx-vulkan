@@ -50,6 +50,7 @@
 #include "vulkan/pipeline_build.h"
 #include "vulkan/draw_record.h"
 #include "vulkan/descriptor_layout.h"
+#include "air2spv/spv_reflect.h"
 #include "air/bitcode_reader.h"
 #include "air2spv/translate.h"
 #include "air2spirv/metallib_extract.h"
@@ -80,6 +81,94 @@ typedef struct {
 } lagfx_compute_inner_op_desc_t;
 
 /* === Group A — Draw opcodes (0x01, 0x03, 0x06, 0x07) ========== */
+
+#ifdef LAGFX_HAVE_VULKAN
+#define LAGFX_DRAW_DS_BUF_SZ 4096u
+/* Stage 85b — build a descriptor set for a translated resource-using pipeline,
+ * populated from the guest's bound storage buffers. Returns VK_NULL_HANDLE on
+ * any failure (caller falls back to substitute). out_bufs/out_mems[0..*out_n)
+ * are transient and must be destroyed after the draw submits. The reflected
+ * binding number doubles as the Metal resource index (the translator assigns
+ * bindings in resource-arg/index order); we bind the guest buffer at that slot,
+ * checking the fragment then vertex buffer table. */
+static VkDescriptorSet lagfx_build_draw_descriptor_set(
+        lagfx_protocol_t *p, lagfx_task_entry_t *task,
+        struct lagfx_vk_state *vk, VkDescriptorSetLayout dsl,
+        const uint8_t *binding_no, const uint8_t *binding_kind, uint32_t n,
+        VkBuffer *out_bufs, VkDeviceMemory *out_mems, uint32_t *out_n) {
+    *out_n = 0;
+    if (!vk || vk->draw_desc_pool == VK_NULL_HANDLE
+        || dsl == VK_NULL_HANDLE || n == 0u) {
+        return VK_NULL_HANDLE;
+    }
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo ai = {
+        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool     = vk->draw_desc_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts        = &dsl,
+    };
+    if (vkAllocateDescriptorSets(vk->device, &ai, &set) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+    VkWriteDescriptorSet    writes[16];
+    VkDescriptorBufferInfo  binfos[16];
+    uint32_t nw = 0;
+    for (uint32_t i = 0; i < n && i < 16u; i++) {
+        if (binding_kind[i] != (uint8_t)LAGFX_SPV_BINDING_STORAGE_BUFFER) continue;
+        uint32_t slot = binding_no[i];
+        uint8_t data[LAGFX_DRAW_DS_BUF_SZ];
+        bool have = false;
+        if (slot < LAGFX_MAX_BINDING_SLOTS) {
+            lagfx_binding_slot_t *bs = NULL;
+            if (task->bindings.fragment_buffers[slot].valid)
+                bs = &task->bindings.fragment_buffers[slot];
+            else if (task->bindings.vertex_buffers[slot].valid)
+                bs = &task->bindings.vertex_buffers[slot];
+            if (bs && bs->ref != 0u) {
+                uint8_t type = 0; uint64_t va = 0, gpa = 0;
+                if (lagfx_resolve_object_data(p, task, bs->ref, &type, &va, &gpa)
+                    && va != 0u
+                    && lagfx_task_read_virtual(p, task, va + bs->offset,
+                                               LAGFX_DRAW_DS_BUF_SZ, data)) {
+                    have = true;
+                }
+            }
+        }
+        VkBuffer vb = VK_NULL_HANDLE; VkDeviceMemory vm = VK_NULL_HANDLE;
+        if (lagfx_vk_make_host_storage_buffer(vk, have ? data : NULL,
+                                              LAGFX_DRAW_DS_BUF_SZ, &vb, &vm) != LAGFX_OK
+            || vb == VK_NULL_HANDLE) {
+            for (uint32_t k = 0; k < *out_n; k++) {
+                vkDestroyBuffer(vk->device, out_bufs[k], NULL);
+                vkFreeMemory(vk->device, out_mems[k], NULL);
+            }
+            vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
+            *out_n = 0;
+            return VK_NULL_HANDLE;
+        }
+        out_bufs[*out_n] = vb; out_mems[*out_n] = vm; (*out_n)++;
+        binfos[nw] = (VkDescriptorBufferInfo){
+            .buffer = vb, .offset = 0, .range = LAGFX_DRAW_DS_BUF_SZ };
+        writes[nw] = (VkWriteDescriptorSet){
+            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet          = set,
+            .dstBinding      = binding_no[i],
+            .descriptorCount = 1,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pBufferInfo     = &binfos[nw],
+        };
+        nw++;
+    }
+    if (nw == 0u) {
+        vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
+        *out_n = 0;
+        return VK_NULL_HANDLE;
+    }
+    vkUpdateDescriptorSets(vk->device, nw, writes, 0, NULL);
+    return set;
+}
+#endif /* LAGFX_HAVE_VULKAN */
 
 static int op_draw_primitives_16(lagfx_protocol_t *p,
                                     uint32_t          encoder_type,
@@ -126,7 +215,13 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
             lagfx_pipeline_desc_t pdesc = {
                 .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
                 .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
-                .layout               = dev_with_vk->vk->empty_layout,
+                /* Stage 85b: resource-using translated pipelines use their
+                 * reflected pipeline layout; substitute/resource-free use the
+                 * device empty layout. */
+                .layout               = (task->pending_pipeline.translated
+                                          && task->pending_pipeline.pipeline_layout)
+                                          ? (VkPipelineLayout)task->pending_pipeline.pipeline_layout
+                                          : dev_with_vk->vk->empty_layout,
                 /* Stage 65d Option 3: the substitute triangle SPVs were
                  * compiled by the AIR-to-SPIRV translator and use the
                  * function names from triangle.metal as entry points,
@@ -143,26 +238,54 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
                           (void *)pipeline, vertex_count);
                 /* Step 4: record and submit the draw command */
                 lagfx_display_t *display = dev_with_vk->displays[0];
-                if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
-                    /* Stage 65d Option 3: always draw the bundled triangle
-                     * (3 vertices, 1 instance, unindexed). The guest's
-                     * vertex_count / instance_count / index buffer are
-                     * meaningless for the substitute path — triangle.vert
-                     * hardcodes vec2 verts[3] and reads gl_VertexIndex. */
+                bool resource_using = task->pending_pipeline.translated
+                                      && task->pending_pipeline.descriptor_set_layout != 0
+                                      && task->pending_pipeline.pipeline_layout != 0;
+                if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE
+                    && resource_using) {
+                    /* Stage 85b: bind the guest's storage buffers into a
+                     * descriptor set matching the reflected layout, then draw
+                     * the guest geometry. On any failure, skip (no crash). */
+                    VkBuffer tbuf[16]; VkDeviceMemory tmem[16]; uint32_t ntr = 0;
+                    VkDescriptorSet ds = lagfx_build_draw_descriptor_set(
+                        p, task, dev_with_vk->vk,
+                        (VkDescriptorSetLayout)task->pending_pipeline.descriptor_set_layout,
+                        task->pending_pipeline.spv_binding_no,
+                        task->pending_pipeline.spv_binding_kind,
+                        task->pending_pipeline.n_spv_bindings,
+                        tbuf, tmem, &ntr);
+                    if (ds != VK_NULL_HANDLE) {
+                        uint32_t vc = vertex_count ? vertex_count : 3u;
+                        if (vc > 100000u) vc = 100000u; /* cap: keep lavapipe responsive */
+                        st = lagfx_vk_draw_record_and_submit_bound(
+                            dev_with_vk->vk, pipeline,
+                            (VkPipelineLayout)task->pending_pipeline.pipeline_layout, ds,
+                            &display->rt, false, vc, 1, 0, 0, 0);
+                        if (st == LAGFX_OK) {
+                            LAGFX_LOG("op_0x01 P6b: drew TRANSLATED resource pipeline "
+                                      "ref=0x%x verts=%u bindings=%u",
+                                      task->pending_pipeline.reference, vc,
+                                      task->pending_pipeline.n_spv_bindings);
+                            lagfx_display_signal_frame_ready(display);
+                        } else {
+                            LAGFX_WARN("op_0x01 P6b: bound draw failed (%d)", (int)st);
+                        }
+                        for (uint32_t k = 0; k < ntr; k++) {
+                            vkDestroyBuffer(device, tbuf[k], NULL);
+                            vkFreeMemory(device, tmem[k], NULL);
+                        }
+                        vkFreeDescriptorSets(device, dev_with_vk->vk->draw_desc_pool, 1, &ds);
+                    } else {
+                        LAGFX_WARN("op_0x01 P6b: descriptor-set build failed for ref=0x%x "
+                                   "— skipping draw (no crash)", task->pending_pipeline.reference);
+                    }
+                } else if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
+                    /* Substitute / resource-free path: bundled 3-vertex triangle. */
                     st = lagfx_vk_draw_record_and_submit(
                         dev_with_vk->vk, pipeline, &display->rt,
-                        false,  /* indexed — always unindexed for substitute */
-                        3,      /* vertex_count — the triangle has 3 vertices */
-                        1,      /* instance_count — one triangle is enough */
-                        0, 0,   /* base_vertex, first_instance */
-                        0);     /* index_buffer_ref unused */
+                        false, 3, 1, 0, 0, 0);
                     if (st == LAGFX_OK) {
                         LAGFX_LOG("op_0x01 Option 3 Step 4: drew substitute triangle (guest req vertexCount=%u)", vertex_count);
-                        /* Signal the display tick: post-draw, the render
-                         * target VkImage has fresh pixels. QEMU's frame_ready_bh
-                         * will pull via lagfx_display_read_frame. Without
-                         * this the steady-state path is silent because the
-                         * kext's vchan_display_submit only fires during boot. */
                         lagfx_display_signal_frame_ready(display);
                     } else {
                         LAGFX_WARN("op_0x01 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
@@ -1364,25 +1487,48 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                                        vk_device, blobs, lens, 2, &dsl, &pl) == LAGFX_OK);
                 bool has_resources = reflect_ok && (pl != VK_NULL_HANDLE);
 
+                /* Recover the merged set-0 binding list (binding + kind) so the
+                 * draw site can populate a descriptor set from the guest's
+                 * bound resources. */
+                lagfx_spv_binding_t rb[16]; size_t nrb = 0;
                 if (has_resources) {
-                    /* Not yet drawable. Drop the translated modules + reflected
-                     * layout and leave phase6_translated false so the substitute
-                     * block below installs the triangle (it also frees any
-                     * previously-translated modules for this task). */
-                    LAGFX_LOG("op_0x74 P6a: pipeline ref=0x%x is resource-using "
-                              "(reflected layout has bindings) — draw-time binding "
-                              "unimplemented, using SUBSTITUTE (no crash)", reference);
+                    for (int s = 0; s < 2; s++) {
+                        if (!spv_keep[s]) continue;
+                        lagfx_spv_binding_t tmp[16];
+                        size_t nt = lagfx_spv_reflect_bindings(spv_keep[s], spv_keep_sz[s], tmp, 16);
+                        if (nt > 16) nt = 16;
+                        for (size_t t = 0; t < nt && nrb < 16; t++) {
+                            if (tmp[t].set != 0u) continue;
+                            bool seen = false;
+                            for (size_t u = 0; u < nrb; u++)
+                                if (rb[u].binding == tmp[t].binding) { seen = true; break; }
+                            if (!seen) rb[nrb++] = tmp[t];
+                        }
+                    }
+                }
+                /* Stage 85b: buffer-only resource-using pipelines are drawable —
+                 * the op_0x01 draw site binds the guest's storage buffers into a
+                 * matching descriptor set. Texture/sampler bindings are deferred
+                 * to Stage 90 → substitute. No pool → substitute. */
+                bool drawable = has_resources && nrb > 0 &&
+                                dev_with_vk->vk->draw_desc_pool != VK_NULL_HANDLE;
+                for (size_t u = 0; drawable && u < nrb; u++)
+                    if (rb[u].kind != LAGFX_SPV_BINDING_STORAGE_BUFFER) drawable = false;
+
+                if (has_resources && !drawable) {
+                    /* Resource-using but not yet drawable (textures/samplers, or
+                     * no pool) → leave phase6_translated false so the substitute
+                     * block installs the triangle (no crash). */
+                    LAGFX_LOG("op_0x74 P6a: pipeline ref=0x%x resource-using but not "
+                              "buffer-only / no pool — SUBSTITUTE (Stage 90)", reference);
                     vkDestroyShaderModule(vk_device, v_mod, NULL);
                     vkDestroyShaderModule(vk_device, f_mod, NULL);
                     vkDestroyDescriptorSetLayout(vk_device, dsl, NULL);
                     vkDestroyPipelineLayout(vk_device, pl, NULL);
                 } else {
-                    /* Resource-free → commit the translated shaders. They draw
-                     * with the device empty_layout (no bindings) — valid. */
-                    if (reflect_ok && dsl != VK_NULL_HANDLE)
-                        vkDestroyDescriptorSetLayout(vk_device, dsl, NULL);
-                    /* Free any previously-installed translated modules for this
-                     * task. Substitute modules live on the device — never freed. */
+                    /* Commit translated. Free any previously-installed translated
+                     * modules/layouts first (substitute modules live on the
+                     * device — never freed). */
                     if (task->pending_pipeline.translated) {
                         if (task->pending_pipeline.vertex_shader)
                             vkDestroyShaderModule(vk_device,
@@ -1402,11 +1548,30 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                     task->pending_pipeline.vertex_shader   = (uintptr_t)v_mod;
                     task->pending_pipeline.fragment_shader = (uintptr_t)f_mod;
                     task->pending_pipeline.reference       = reference;
-                    task->pending_pipeline.descriptor_set_layout = 0;
-                    task->pending_pipeline.pipeline_layout       = 0;
-                    phase6_translated = true;
-                    LAGFX_LOG("op_0x74 P6a: pipeline ref=0x%x using TRANSLATED shaders "
-                              "(resource-free)", reference);
+                    if (drawable) {
+                        task->pending_pipeline.descriptor_set_layout = (uintptr_t)dsl;
+                        task->pending_pipeline.pipeline_layout       = (uintptr_t)pl;
+                        task->pending_pipeline.n_spv_bindings        = (uint8_t)nrb;
+                        for (size_t u = 0; u < nrb; u++) {
+                            task->pending_pipeline.spv_binding_no[u]   = (uint8_t)rb[u].binding;
+                            task->pending_pipeline.spv_binding_kind[u] = (uint8_t)rb[u].kind;
+                        }
+                        phase6_translated = true;
+                        LAGFX_LOG("op_0x74 P6a: ref=0x%x using TRANSLATED shaders "
+                                  "(resource-using, %zu buffer binding(s))", reference, nrb);
+                    } else {
+                        /* Resource-free → draws with the device empty_layout. */
+                        if (dsl != VK_NULL_HANDLE)
+                            vkDestroyDescriptorSetLayout(vk_device, dsl, NULL);
+                        if (pl != VK_NULL_HANDLE)
+                            vkDestroyPipelineLayout(vk_device, pl, NULL);
+                        task->pending_pipeline.descriptor_set_layout = 0;
+                        task->pending_pipeline.pipeline_layout       = 0;
+                        task->pending_pipeline.n_spv_bindings        = 0;
+                        phase6_translated = true;
+                        LAGFX_LOG("op_0x74 P6a: ref=0x%x using TRANSLATED shaders "
+                                  "(resource-free)", reference);
+                    }
                 }
             } else {
                 if (v_mod != VK_NULL_HANDLE) vkDestroyShaderModule(vk_device, v_mod, NULL);

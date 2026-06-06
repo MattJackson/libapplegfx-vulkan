@@ -17,6 +17,7 @@
 
 #ifdef LAGFX_HAVE_VULKAN
 
+/* Thin wrapper: the original substitute-path entry (no descriptor set). */
 lagfx_status_t lagfx_vk_draw_record_and_submit(
     struct lagfx_vk_state *vk,
     VkPipeline pipeline,
@@ -27,7 +28,25 @@ lagfx_status_t lagfx_vk_draw_record_and_submit(
     int32_t first_vertex,
     uint32_t first_instance,
     uint32_t index_buffer_ref) {
-    
+    return lagfx_vk_draw_record_and_submit_bound(
+        vk, pipeline, VK_NULL_HANDLE, VK_NULL_HANDLE, rt, indexed,
+        vertex_count, instance_count, first_vertex, first_instance,
+        index_buffer_ref);
+}
+
+lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
+    struct lagfx_vk_state *vk,
+    VkPipeline pipeline,
+    VkPipelineLayout pipe_layout,
+    VkDescriptorSet desc_set,
+    lagfx_vk_render_target_t *rt,
+    bool indexed,
+    uint32_t vertex_count,
+    uint32_t instance_count,
+    int32_t first_vertex,
+    uint32_t first_instance,
+    uint32_t index_buffer_ref) {
+
     (void)index_buffer_ref;  /* TODO: bind actual VkBuffer in future stage */
     
     if (!vk || !vk->initialized || vk->device == VK_NULL_HANDLE
@@ -110,7 +129,14 @@ lagfx_status_t lagfx_vk_draw_record_and_submit(
     
     /* Bind the pipeline (pattern from triangle-lavapipe-e2e.c:500) */
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    
+
+    /* Stage 85b: bind the descriptor set for translated resource-using
+     * pipelines (set 0 with the guest's buffers). NULL for the substitute path. */
+    if (desc_set != VK_NULL_HANDLE && pipe_layout != VK_NULL_HANDLE) {
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipe_layout, 0, 1, &desc_set, 0, NULL);
+    }
+
     /* Record draw command */
     if (indexed) {
         /* Indexed draw — vertex_count holds index_count per compute_inner_ops.c conventions */

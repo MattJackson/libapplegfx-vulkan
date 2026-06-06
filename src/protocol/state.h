@@ -200,6 +200,13 @@ typedef struct {
      * as uintptr_t to keep this struct free of <vulkan/vulkan.h>. */
     uintptr_t  descriptor_set_layout; /* VkDescriptorSetLayout, NULL if none */
     uintptr_t  pipeline_layout;       /* VkPipelineLayout, NULL if none */
+    /* Stage 85b: reflected set-0 bindings so the draw site can populate a
+     * matching descriptor set from the guest's bound resources. kind is
+     * lagfx_spv_binding_kind_t (1=sampled image, 2=sampler, 3=storage buffer).
+     * n_spv_bindings==0 ⇒ resource-free. */
+    uint8_t    spv_binding_no[16];
+    uint8_t    spv_binding_kind[16];
+    uint8_t    n_spv_bindings;
 } lagfx_pending_pipeline_t;
 
 /* === Task Entry ================================================== */
