@@ -1328,53 +1328,67 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
             /* Both stages successful → commit to pending_pipeline.
              * If only one succeeded, destroy it and fall back. */
             if (v_mod != VK_NULL_HANDLE && f_mod != VK_NULL_HANDLE) {
-                /* If we previously installed translated modules for
-                 * this task, free them. Substitute modules live on
-                 * the device and must not be freed. */
-                if (task->pending_pipeline.translated) {
-                    if (task->pending_pipeline.vertex_shader)
-                        vkDestroyShaderModule(vk_device,
-                                              (VkShaderModule)task->pending_pipeline.vertex_shader,
-                                              NULL);
-                    if (task->pending_pipeline.fragment_shader)
-                        vkDestroyShaderModule(vk_device,
-                                              (VkShaderModule)task->pending_pipeline.fragment_shader,
-                                              NULL);
-                    if (task->pending_pipeline.pipeline_layout)
-                        vkDestroyPipelineLayout(vk_device,
-                                                (VkPipelineLayout)task->pending_pipeline.pipeline_layout, NULL);
-                    if (task->pending_pipeline.descriptor_set_layout)
-                        vkDestroyDescriptorSetLayout(vk_device,
-                                                     (VkDescriptorSetLayout)task->pending_pipeline.descriptor_set_layout, NULL);
-                }
-                task->pending_pipeline.valid           = true;
-                task->pending_pipeline.translated      = true;
-                task->pending_pipeline.vertex_shader   = (uintptr_t)v_mod;
-                task->pending_pipeline.fragment_shader = (uintptr_t)f_mod;
-                task->pending_pipeline.reference       = reference;
-                task->pending_pipeline.descriptor_set_layout = 0;
-                task->pending_pipeline.pipeline_layout       = 0;
-                phase6_translated = true;
-                LAGFX_LOG("op_0x74 P6a: pipeline ref=0x%x using TRANSLATED shaders", reference);
-
-                /* Build the descriptor-set + pipeline layout from the two
-                 * stages' SPIR-V reflection. NULL handles (resource-free
-                 * shaders) mean "use the device empty layout" at draw. A
-                 * failure here is non-fatal — the draw site falls back. */
+                /* Reflect both stages' SPIR-V to classify the pipeline BEFORE
+                 * committing. A non-NULL pipeline layout means the translated
+                 * shaders read descriptor set 0 (textures/buffers). Draw-time
+                 * descriptor binding is not implemented yet: drawing such a
+                 * pipeline with the device empty_layout and NO bound descriptor
+                 * sets segfaults lavapipe (confirmed — the op_0x01 draw site
+                 * hardcodes empty_layout). Until binding lands, resource-using
+                 * translated pipelines fall back to the substitute triangle so
+                 * the guest stays stable; resource-free translated shaders still
+                 * render for real. */
                 const uint8_t *blobs[2] = { spv_keep[0], spv_keep[1] };
                 const size_t   lens[2]  = { spv_keep_sz[0], spv_keep_sz[1] };
                 VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
                 VkPipelineLayout pl = VK_NULL_HANDLE;
-                if (lagfx_build_pipeline_layout_from_spv(vk_device, blobs, lens, 2,
-                                                         &dsl, &pl) == LAGFX_OK) {
-                    task->pending_pipeline.descriptor_set_layout = (uintptr_t)dsl;
-                    task->pending_pipeline.pipeline_layout       = (uintptr_t)pl;
-                    if (pl != VK_NULL_HANDLE)
-                        LAGFX_LOG("op_0x74 P6a: pipeline ref=0x%x built reflection "
-                                  "descriptor layout (has resources)", reference);
+                bool reflect_ok = (lagfx_build_pipeline_layout_from_spv(
+                                       vk_device, blobs, lens, 2, &dsl, &pl) == LAGFX_OK);
+                bool has_resources = reflect_ok && (pl != VK_NULL_HANDLE);
+
+                if (has_resources) {
+                    /* Not yet drawable. Drop the translated modules + reflected
+                     * layout and leave phase6_translated false so the substitute
+                     * block below installs the triangle (it also frees any
+                     * previously-translated modules for this task). */
+                    LAGFX_LOG("op_0x74 P6a: pipeline ref=0x%x is resource-using "
+                              "(reflected layout has bindings) — draw-time binding "
+                              "unimplemented, using SUBSTITUTE (no crash)", reference);
+                    vkDestroyShaderModule(vk_device, v_mod, NULL);
+                    vkDestroyShaderModule(vk_device, f_mod, NULL);
+                    vkDestroyDescriptorSetLayout(vk_device, dsl, NULL);
+                    vkDestroyPipelineLayout(vk_device, pl, NULL);
                 } else {
-                    LAGFX_WARN("op_0x74 P6a: descriptor layout build failed for "
-                               "ref=0x%x — draw will fall back", reference);
+                    /* Resource-free → commit the translated shaders. They draw
+                     * with the device empty_layout (no bindings) — valid. */
+                    if (reflect_ok && dsl != VK_NULL_HANDLE)
+                        vkDestroyDescriptorSetLayout(vk_device, dsl, NULL);
+                    /* Free any previously-installed translated modules for this
+                     * task. Substitute modules live on the device — never freed. */
+                    if (task->pending_pipeline.translated) {
+                        if (task->pending_pipeline.vertex_shader)
+                            vkDestroyShaderModule(vk_device,
+                                                  (VkShaderModule)task->pending_pipeline.vertex_shader, NULL);
+                        if (task->pending_pipeline.fragment_shader)
+                            vkDestroyShaderModule(vk_device,
+                                                  (VkShaderModule)task->pending_pipeline.fragment_shader, NULL);
+                        if (task->pending_pipeline.pipeline_layout)
+                            vkDestroyPipelineLayout(vk_device,
+                                                    (VkPipelineLayout)task->pending_pipeline.pipeline_layout, NULL);
+                        if (task->pending_pipeline.descriptor_set_layout)
+                            vkDestroyDescriptorSetLayout(vk_device,
+                                                         (VkDescriptorSetLayout)task->pending_pipeline.descriptor_set_layout, NULL);
+                    }
+                    task->pending_pipeline.valid           = true;
+                    task->pending_pipeline.translated      = true;
+                    task->pending_pipeline.vertex_shader   = (uintptr_t)v_mod;
+                    task->pending_pipeline.fragment_shader = (uintptr_t)f_mod;
+                    task->pending_pipeline.reference       = reference;
+                    task->pending_pipeline.descriptor_set_layout = 0;
+                    task->pending_pipeline.pipeline_layout       = 0;
+                    phase6_translated = true;
+                    LAGFX_LOG("op_0x74 P6a: pipeline ref=0x%x using TRANSLATED shaders "
+                              "(resource-free)", reference);
                 }
             } else {
                 if (v_mod != VK_NULL_HANDLE) vkDestroyShaderModule(vk_device, v_mod, NULL);
