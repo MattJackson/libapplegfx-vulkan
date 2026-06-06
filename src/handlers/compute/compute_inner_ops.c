@@ -150,9 +150,20 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                 uint32_t cand = lagfx_le32(data + w * 4);
                 if (cand == 0u || cand > 0xffffu) continue;
                 uint8_t t = 0; uint64_t cva = 0, cgpa = 0;
-                if (lagfx_resolve_object_data(p, task, cand, &t, &cva, &cgpa) && cva != 0u)
+                if (lagfx_resolve_object_data(p, task, cand, &t, &cva, &cgpa) && cva != 0u) {
                     LAGFX_LOG("P6b   arg[%d]=0x%x RESOLVES type=0x%02x va=0x%llx",
                               w, cand, t, (unsigned long long)cva);
+                    /* If it's a buffer, read its real data — is THIS the float
+                     * struct the shader wants (host-flatten target)? */
+                    if (t == 0x01u) {
+                        uint8_t rd[16] = {0};
+                        if (lagfx_task_read_virtual(p, task, cva, 16, rd))
+                            LAGFX_LOG("P6b     ref0x%x data16: %02x %02x %02x %02x %02x %02x %02x %02x "
+                                      "%02x %02x %02x %02x %02x %02x %02x %02x", cand,
+                                      rd[0],rd[1],rd[2],rd[3],rd[4],rd[5],rd[6],rd[7],
+                                      rd[8],rd[9],rd[10],rd[11],rd[12],rd[13],rd[14],rd[15]);
+                    }
+                }
             }
         } else {
             LAGFX_LOG("P6b bind#%u slot=%u NO guest data (zero buffer)", binding_no[i], slot);
