@@ -156,12 +156,27 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                     /* If it's a buffer, read its real data — is THIS the float
                      * struct the shader wants (host-flatten target)? */
                     if (t == 0x01u) {
-                        uint8_t rd[16] = {0};
-                        if (lagfx_task_read_virtual(p, task, cva, 16, rd))
-                            LAGFX_LOG("P6b     ref0x%x data16: %02x %02x %02x %02x %02x %02x %02x %02x "
-                                      "%02x %02x %02x %02x %02x %02x %02x %02x", cand,
-                                      rd[0],rd[1],rd[2],rd[3],rd[4],rd[5],rd[6],rd[7],
-                                      rd[8],rd[9],rd[10],rd[11],rd[12],rd[13],rd[14],rd[15]);
+                        uint8_t rd[64] = {0};
+                        if (lagfx_task_read_virtual(p, task, cva, 64, rd)) {
+                            LAGFX_LOG("P6b     ref0x%x desc u64: %016llx %016llx %016llx %016llx "
+                                      "%016llx %016llx %016llx %016llx", cand,
+                                      (unsigned long long)lagfx_le64(rd+0),  (unsigned long long)lagfx_le64(rd+8),
+                                      (unsigned long long)lagfx_le64(rd+16), (unsigned long long)lagfx_le64(rd+24),
+                                      (unsigned long long)lagfx_le64(rd+32), (unsigned long long)lagfx_le64(rd+40),
+                                      (unsigned long long)lagfx_le64(rd+48), (unsigned long long)lagfx_le64(rd+56));
+                            /* Each non-tiny u64 might be a guest VA to the actual data. Probe word1
+                             * and word2 as VAs + read 16 bytes (is it the shader's float data?). */
+                            for (int q = 1; q <= 3; q++) {
+                                uint64_t cand_va = lagfx_le64(rd + q*8);
+                                if (cand_va < 0x1000u || cand_va > 0xffffffffull) continue;
+                                uint8_t dd[16] = {0};
+                                if (lagfx_task_read_virtual(p, task, cand_va, 16, dd))
+                                    LAGFX_LOG("P6b       ref0x%x w%d=0x%llx -> %02x %02x %02x %02x %02x %02x %02x %02x "
+                                              "%02x %02x %02x %02x %02x %02x %02x %02x", cand, q,
+                                              (unsigned long long)cand_va, dd[0],dd[1],dd[2],dd[3],dd[4],dd[5],dd[6],dd[7],
+                                              dd[8],dd[9],dd[10],dd[11],dd[12],dd[13],dd[14],dd[15]);
+                            }
+                        }
                     }
                 }
             }
