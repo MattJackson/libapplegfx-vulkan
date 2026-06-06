@@ -135,6 +135,14 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                 }
             }
         }
+        if (have) {
+            LAGFX_LOG("P6b bind#%u slot=%u DATA first16: %02x %02x %02x %02x %02x %02x %02x %02x "
+                      "%02x %02x %02x %02x %02x %02x %02x %02x", binding_no[i], slot,
+                      data[0],data[1],data[2],data[3],data[4],data[5],data[6],data[7],
+                      data[8],data[9],data[10],data[11],data[12],data[13],data[14],data[15]);
+        } else {
+            LAGFX_LOG("P6b bind#%u slot=%u NO guest data (zero buffer)", binding_no[i], slot);
+        }
         VkBuffer vb = VK_NULL_HANDLE; VkDeviceMemory vm = VK_NULL_HANDLE;
         if (lagfx_vk_make_host_storage_buffer(vk, have ? data : NULL,
                                               LAGFX_DRAW_DS_BUF_SZ, &vb, &vm) != LAGFX_OK
@@ -279,8 +287,13 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
                         LAGFX_WARN("op_0x01 P6b: descriptor-set build failed for ref=0x%x "
                                    "— skipping draw (no crash)", task->pending_pipeline.reference);
                     }
-                } else if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
-                    /* Substitute / resource-free path: bundled 3-vertex triangle. */
+                } else if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE
+                           && !(!task->pending_pipeline.translated && getenv("LAGFX_NO_SUBSTITUTE"))) {
+                    /* Substitute / resource-free path: bundled 3-vertex triangle.
+                     * Stage 88 diagnostic: LAGFX_NO_SUBSTITUTE suppresses the
+                     * substitute (non-translated) draws so the real translated
+                     * pipelines' output is visible without the full-screen red
+                     * triangle clobbering the shared render target. */
                     st = lagfx_vk_draw_record_and_submit(
                         dev_with_vk->vk, pipeline, &display->rt,
                         false, 3, 1, 0, 0, 0);
