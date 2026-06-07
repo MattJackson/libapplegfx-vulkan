@@ -173,6 +173,9 @@ typedef struct {
     uint32_t                  id_int32;          /* OpTypeInt 32 1 — currently unused */
     uint32_t                  id_int64;          /* OpTypeInt 64 1 */
     uint32_t                  id_ulong;          /* OpTypeInt 64 0 */
+    uint32_t                  id_char;           /* OpTypeInt 8 1  (B6: was uncached → dup) */
+    uint32_t                  id_ushort;         /* OpTypeInt 16 0 (B6) */
+    uint32_t                  id_short;          /* OpTypeInt 16 1 (B6) */
     uint32_t                  id_float32;
     uint32_t                  id_half;           /* OpTypeFloat 16 (half) */
     uint32_t                  id_bool;           /* OpTypeBool — comparison results */
@@ -235,6 +238,9 @@ static uint32_t emit_type_int_w(xlate_ctx_t *c, uint32_t width, uint32_t sign) {
     /* SPIR-V has no 1-bit integer; LLVM i1 is a boolean -> OpTypeBool. */
     if (width == 1u) return emit_type_bool(c);
     if (width == 8u  && sign == 0u && c->id_uchar)   return c->id_uchar;
+    if (width == 8u  && sign == 1u && c->id_char)    return c->id_char;   /* B6 */
+    if (width == 16u && sign == 0u && c->id_ushort)  return c->id_ushort; /* B6 */
+    if (width == 16u && sign == 1u && c->id_short)   return c->id_short;  /* B6 */
     if (width == 32u && sign == 0u && c->id_uint)    return c->id_uint;
     if (width == 32u && sign == 1u && c->id_int32)   return c->id_int32;
     if (width == 64u && sign == 1u && c->id_int64)   return c->id_int64;
@@ -257,6 +263,9 @@ static uint32_t emit_type_int_w(xlate_ctx_t *c, uint32_t width, uint32_t sign) {
     uint32_t ops[] = { id, width, sign };
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_INT, ops, 3);
     if (width == 8u  && sign == 0u) c->id_uchar = id;
+    if (width == 8u  && sign == 1u) c->id_char = id;    /* B6 */
+    if (width == 16u && sign == 0u) c->id_ushort = id;  /* B6 */
+    if (width == 16u && sign == 1u) c->id_short = id;   /* B6 */
     if (width == 32u && sign == 0u) c->id_uint = id;
     if (width == 32u && sign == 1u) c->id_int32 = id;
     if (width == 64u && sign == 1u) c->id_int64 = id;
@@ -431,6 +440,11 @@ static uint32_t emit_air_type(xlate_ctx_t *c, uint32_t air_type_idx) {
         case LAGFX_AIR_TYPE_STRUCT_NAMED: {
             /* op[0] = packed flag; op[1..num_op-1] = field type ids. */
             uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
+            /* B7: the field arrays + ops[] hold at most 16; the emit below
+             * passed the FULL nfields count, so nfields>=17 read OOB ops[]
+             * (uninitialized → garbage type / crash on unbounded guest input).
+             * Clamp to the array capacity. */
+            if (nfields > 16u) nfields = 16u;
             uint32_t fields_spv[16];
             for (uint32_t i = 0; i < nfields && i < 16u; i++) {
                 fields_spv[i] = emit_air_type(c, t->op[1u + i]);

@@ -86,6 +86,12 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
     if (rt->layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
         src_access = VK_ACCESS_TRANSFER_READ_BIT;
         src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (rt->layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        /* B10: a prior draw left the RT in color-attachment layout — the
+         * WAW hazard against that prior color write must be covered, or a
+         * real GPU (lavapipe hides it) shows ordering artifacts. */
+        src_access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        src_stage  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     }
     
     VkImageMemoryBarrier barrier = {
