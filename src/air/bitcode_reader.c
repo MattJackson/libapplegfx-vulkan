@@ -1807,8 +1807,16 @@ struct lagfx_air_function_body {
      * that are referenced only from within this function as a nested
      * block at the start of the FUNCTION_BLOCK. They occupy value-IDs
      * AFTER the function's arguments and BEFORE instruction results.
-     * See LLVMBitcodes.h / BitcodeReader::ParseFunctionBody. */
-    lagfx_air_constant_t *local_constants;
+     * See LLVMBitcodes.h / BitcodeReader::ParseFunctionBody.
+     *
+     * Stored as an arena BYTE OFFSET, not a raw pointer (B2 fix). The
+     * function's instructions are parsed AFTER this constants block and keep
+     * growing the arena — every growth realloc's arena.base, which would
+     * dangle a raw pointer cached at parse time (use-after-free → SIGSEGV in
+     * lagfx_air2spv_translate_function on large fragments like SkyLight's
+     * pipeline 0x2f). The offset is resolved against the live arena.base in
+     * the accessor, where parsing is already complete and the base is final. */
+    uint32_t              local_constants_off;
     uint32_t              num_local_constants;
 };
 
@@ -2034,8 +2042,12 @@ lagfx_air_function_body_open(const lagfx_air_module_t   *module,
                     }
                     lc_count++;
                 }
-                body->local_constants = lc;
+                /* Store the OFFSET, not lc (the raw pointer): subsequent
+                 * instruction parsing grows + realloc's the arena, which would
+                 * dangle lc. Resolved against the final base in the accessor. */
+                body->local_constants_off = lc_off;
                 body->num_local_constants = lc_count;
+                (void)lc;
                 LAGFX_TRACE("function_body: local CONSTANTS_BLOCK decoded %u constants", lc_count);
                 (void)lagfx_bs_seek(&bs, cb.end_pos);
                 continue;
@@ -2114,7 +2126,15 @@ const lagfx_air_constant_t *
 lagfx_air_function_body_local_constants(const lagfx_air_function_body_t *body,
                                           uint32_t *count) {
     if (count) *count = body ? body->num_local_constants : 0u;
-    return body ? body->local_constants : NULL;
+    if (!body || body->num_local_constants == 0u) {
+        return NULL;
+    }
+    /* Resolve the arena offset against the CURRENT base. Parsing is complete
+     * by the time any consumer calls this, so arena.base is final and the
+     * returned pointer is stable for the lifetime of the body (B2 fix: a raw
+     * pointer cached at parse time dangled after later instruction-parse
+     * arena reallocs). */
+    return (const lagfx_air_constant_t *)(body->arena.base + body->local_constants_off);
 }
 
 const void *
