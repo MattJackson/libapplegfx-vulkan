@@ -19,6 +19,7 @@
 #include "vulkan/instance.h"
 #include "shaders/catalog.h"
 #include "common/log.h"
+#include "common/crash_handler.h"
 
 /* Forward decl for protocol lifecycle functions (defined in lifecycle.c) */
 lagfx_protocol_t *lagfx_protocol_new(struct lagfx_device *dev);
@@ -289,6 +290,10 @@ lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
         set_err(errp_out, "lagfx_device_new: desc is NULL");
         return NULL;
     }
+
+    /* Diagnostic: on a fatal signal, log the crashing fn before dying.
+     * Idempotent — safe to call on every device creation. */
+    lagfx_install_crash_handler();
 
     /* Apply LP_NUM_THREADS BEFORE any Vulkan call. Must run on every
      * lagfx_device_new path, including error returns below, so that the
