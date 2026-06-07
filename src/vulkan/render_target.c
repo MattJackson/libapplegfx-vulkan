@@ -45,6 +45,8 @@
 #include "instance.h"
 #include "command.h"
 #include "common/log.h"
+#include "common/perf.h"
+#include <stdlib.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -412,6 +414,11 @@ lagfx_status_t lagfx_vk_render_target_readback(struct lagfx_vk_state *vk,
     VkFence          fence        = VK_NULL_HANDLE;
     lagfx_status_t   result       = LAGFX_OK;
 
+    /* M3/perf: readback is once per delivered frame, so it is the natural
+     * frame boundary. Time the readback itself + report the frame interval
+     * (→ FPS) and the per-frame draw-submit total accumulated in draw_record. */
+    uint64_t perf_rb_t0 = getenv("LAGFX_PERF") ? lagfx_now_ns() : 0u;
+
     VkBufferCreateInfo bci = {
         .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size        = need,
@@ -564,6 +571,23 @@ cleanup:
     }
     if (staging_buf != VK_NULL_HANDLE) {
         vkDestroyBuffer(vk->device, staging_buf, NULL);
+    }
+
+    if (perf_rb_t0) {
+        uint64_t now = lagfx_now_ns();
+        uint64_t rb_ns = now - perf_rb_t0;
+        uint64_t interval_ns = vk->perf_last_frame_ns ? (now - vk->perf_last_frame_ns) : 0u;
+        vk->perf_last_frame_ns = now;
+        double interval_ms = (double)interval_ns / 1.0e6;
+        LAGFX_LOG("PERF frame: interval=%.2fms (%.1f fps) draws=%llu draw_submit_total=%.2fms "
+                  "readback=%.2fms (%ux%u, %zuKB)",
+                  interval_ms, interval_ms > 0.0 ? 1000.0 / interval_ms : 0.0,
+                  (unsigned long long)vk->perf_frame_draws,
+                  (double)vk->perf_frame_draw_ns / 1.0e6,
+                  (double)rb_ns / 1.0e6,
+                  rt->width, rt->height, need / 1024u);
+        vk->perf_frame_draws = 0u;
+        vk->perf_frame_draw_ns = 0u;
     }
     return result;
 }

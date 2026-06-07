@@ -105,6 +105,12 @@ struct lagfx_vk_state {
      * translated compositor pipelines. */
     VkSampler             default_sampler;
 
+    /* M3/perf (env LAGFX_PERF): frame-time instrumentation accumulators,
+     * reset per frame at readback. Feeds the lavapipe-vs-GPU decision. */
+    uint64_t              perf_last_frame_ns;
+    uint64_t              perf_frame_draws;
+    uint64_t              perf_frame_draw_ns;
+
     VkPipeline       cursor_pipeline;
     VkPipelineLayout cursor_layout;
     VkDescriptorSetLayout cursor_dsl;

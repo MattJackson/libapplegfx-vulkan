@@ -14,6 +14,8 @@
 #include "draw_record.h"
 #include "command.h"
 #include "common/log.h"
+#include "common/perf.h"
+#include <stdlib.h>
 
 #ifdef LAGFX_HAVE_VULKAN
 
@@ -196,6 +198,10 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
         .commandBufferCount = 1,
         .pCommandBuffers = &cb,
     };
+    /* M3/perf: time the submit→fence-complete window — the per-draw
+     * synchronous GPU round-trip (B3). At N draws/frame this is the prime
+     * throughput suspect; aggregated per frame at readback. */
+    uint64_t perf_t0 = getenv("LAGFX_PERF") ? lagfx_now_ns() : 0u;
     vr = vkQueueSubmit(vk->graphics_queue, 1, &si, fence);
     if (vr != VK_SUCCESS) {
         LAGFX_ERR("draw_record_and_submit: vkQueueSubmit failed (%d)", (int)vr);
@@ -217,7 +223,12 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
     /* Cleanup */
     vkDestroyFence(vk->device, fence, NULL);
     lagfx_vk_cmdbuf_free(vk, cb);
-    
+
+    if (perf_t0) {
+        vk->perf_frame_draw_ns += lagfx_now_ns() - perf_t0;
+        vk->perf_frame_draws   += 1u;
+    }
+
     LAGFX_LOG("draw_record_and_submit: draw completed successfully (indexed=%d count=%u)",
               indexed ? 1 : 0, vertex_count);
     return LAGFX_OK;
