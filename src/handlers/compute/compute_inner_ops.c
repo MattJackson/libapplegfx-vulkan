@@ -248,6 +248,109 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
     vkUpdateDescriptorSets(vk->device, nw, writes, 0, NULL);
     return set;
 }
+
+/* M1 (a) — shared resource-aware draw emission for ALL draw opcodes
+ * (0x01/0x03/0x06/0x07). Previously only op_0x01 had the resource/descriptor
+ * path; 0x03/0x06/0x07 (incl. the dominant 0x07, ~22439 occurrences) hardcoded
+ * empty_layout + substitute. Factoring op_0x01's path here gives draw-op parity
+ * so translated resource-using pipelines render through every draw selector.
+ *
+ * Builds (or reuses, via the B1 cache) the VkPipeline for the pending
+ * pipeline+render-pass, then:
+ *   - resource-using translated pipeline → bind the guest's storage buffers in a
+ *     descriptor set matching the reflected layout, draw `count` vertices;
+ *   - otherwise → the substitute triangle (suppressed for non-translated
+ *     pipelines when LAGFX_NO_SUBSTITUTE is set, so real output isn't clobbered).
+ * Any resolve/alloc/translate failure degrades to skip/substitute — never crashes.
+ * `count` is the guest vertex_count (0x01/0x03) or index_count (0x06/0x07).
+ * Indexed geometry is currently drawn unindexed: SkyLight's procedural-quad
+ * vertex shaders compute corners from vertex_id and render correctly without an
+ * index buffer; true index-buffer binding is a later M1 step (G5). */
+static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
+                                    const char *op, uint32_t count) {
+    if (!(task->pending_pipeline.valid && task->render_pass_desc.valid)) {
+        return;
+    }
+    lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
+    if (!(dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized)) {
+        return;
+    }
+    VkDevice device = dev_with_vk->vk->device;
+    lagfx_pipeline_desc_t pdesc = {
+        .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
+        .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
+        /* Resource-using translated pipelines use their reflected pipeline
+         * layout; substitute/resource-free use the device empty layout. */
+        .layout               = (task->pending_pipeline.translated
+                                  && task->pending_pipeline.pipeline_layout)
+                                  ? (VkPipelineLayout)task->pending_pipeline.pipeline_layout
+                                  : dev_with_vk->vk->empty_layout,
+        .vertex_entry_point   = task->pending_pipeline.translated ? "main" : "triangle_vertex",
+        .fragment_entry_point = task->pending_pipeline.translated ? "main" : "triangle_fragment",
+        .color_format         = (VkFormat)task->render_pass_desc.color_format,
+        .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
+    };
+    VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
+    if (pipeline == VK_NULL_HANDLE) {
+        LAGFX_WARN("%s: pipeline build failed", op);
+        return;
+    }
+    lagfx_display_t *display = dev_with_vk->displays[0];
+    if (!(display && display->rt_ready && display->rt.image != VK_NULL_HANDLE)) {
+        LAGFX_WARN("%s: no render target available", op);
+        return;
+    }
+    bool resource_using = task->pending_pipeline.translated
+                          && task->pending_pipeline.descriptor_set_layout != 0
+                          && task->pending_pipeline.pipeline_layout != 0;
+    lagfx_status_t st = LAGFX_OK;
+    if (resource_using) {
+        /* Bind the guest's storage buffers into a descriptor set matching the
+         * reflected layout, then draw the guest geometry. Failure → skip (no crash). */
+        VkBuffer tbuf[16]; VkDeviceMemory tmem[16]; uint32_t ntr = 0;
+        VkDescriptorSet ds = lagfx_build_draw_descriptor_set(
+            p, task, dev_with_vk->vk,
+            (VkDescriptorSetLayout)task->pending_pipeline.descriptor_set_layout,
+            task->pending_pipeline.spv_binding_no,
+            task->pending_pipeline.spv_binding_kind,
+            task->pending_pipeline.n_spv_bindings,
+            tbuf, tmem, &ntr);
+        if (ds != VK_NULL_HANDLE) {
+            uint32_t vc = count ? count : 3u;
+            if (vc > 100000u) vc = 100000u; /* cap: keep lavapipe responsive */
+            st = lagfx_vk_draw_record_and_submit_bound(
+                dev_with_vk->vk, pipeline,
+                (VkPipelineLayout)task->pending_pipeline.pipeline_layout, ds,
+                &display->rt, false, vc, 1, 0, 0, 0);
+            if (st == LAGFX_OK) {
+                LAGFX_LOG("%s P6b: drew TRANSLATED resource pipeline ref=0x%x verts=%u bindings=%u",
+                          op, task->pending_pipeline.reference, vc,
+                          task->pending_pipeline.n_spv_bindings);
+                lagfx_display_signal_frame_ready(display);
+            } else {
+                LAGFX_WARN("%s P6b: bound draw failed (%d)", op, (int)st);
+            }
+            for (uint32_t k = 0; k < ntr; k++) {
+                vkDestroyBuffer(device, tbuf[k], NULL);
+                vkFreeMemory(device, tmem[k], NULL);
+            }
+            vkFreeDescriptorSets(device, dev_with_vk->vk->draw_desc_pool, 1, &ds);
+        } else {
+            LAGFX_WARN("%s P6b: descriptor-set build failed for ref=0x%x — skipping draw (no crash)",
+                       op, task->pending_pipeline.reference);
+        }
+    } else if (!(!task->pending_pipeline.translated && getenv("LAGFX_NO_SUBSTITUTE"))) {
+        /* Substitute / resource-free path: bundled 3-vertex triangle. */
+        st = lagfx_vk_draw_record_and_submit(
+            dev_with_vk->vk, pipeline, &display->rt, false, 3, 1, 0, 0, 0);
+        if (st == LAGFX_OK) {
+            LAGFX_LOG("%s: drew substitute triangle (guest req count=%u)", op, count);
+            lagfx_display_signal_frame_ready(display);
+        } else {
+            LAGFX_WARN("%s: substitute draw failed (%d)", op, (int)st);
+        }
+    }
+}
 #endif /* LAGFX_HAVE_VULKAN */
 
 static int op_draw_primitives_16(lagfx_protocol_t *p,
@@ -285,107 +388,11 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
 
     LAGFX_LOG("compute_inner: 0x01 DrawPrimitives16 vertexStart=%u vertexCount=%u -> pending_draw.valid=true indexed=false",
               vertex_start, vertex_count);
-    
-    /* Stage 65d Option 3 Step 3: build VkPipeline when draw fires. */
+
+    /* M1 (a): resource-aware draw via the shared helper (was op_0x01-only). */
 #ifdef LAGFX_HAVE_VULKAN
-    if (task->pending_pipeline.valid && task->render_pass_desc.valid) {
-        lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
-        if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
-            VkDevice device = dev_with_vk->vk->device;
-            lagfx_pipeline_desc_t pdesc = {
-                .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
-                .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
-                /* Stage 85b: resource-using translated pipelines use their
-                 * reflected pipeline layout; substitute/resource-free use the
-                 * device empty layout. */
-                .layout               = (task->pending_pipeline.translated
-                                          && task->pending_pipeline.pipeline_layout)
-                                          ? (VkPipelineLayout)task->pending_pipeline.pipeline_layout
-                                          : dev_with_vk->vk->empty_layout,
-                /* Stage 65d Option 3: the substitute triangle SPVs were
-                 * compiled by the AIR-to-SPIRV translator and use the
-                 * function names from triangle.metal as entry points,
-                 * not glslang's default "main". */
-                .vertex_entry_point   = task->pending_pipeline.translated ? "main" : "triangle_vertex",
-                .fragment_entry_point = task->pending_pipeline.translated ? "main" : "triangle_fragment",
-                .color_format         = (VkFormat)task->render_pass_desc.color_format,
-                .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
-            };
-            VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
-            lagfx_status_t st = LAGFX_OK;
-            if (pipeline != VK_NULL_HANDLE) {
-                LAGFX_LOG("op_0x01 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
-                          (void *)pipeline, vertex_count);
-                /* Step 4: record and submit the draw command */
-                lagfx_display_t *display = dev_with_vk->displays[0];
-                bool resource_using = task->pending_pipeline.translated
-                                      && task->pending_pipeline.descriptor_set_layout != 0
-                                      && task->pending_pipeline.pipeline_layout != 0;
-                if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE
-                    && resource_using) {
-                    /* Stage 85b: bind the guest's storage buffers into a
-                     * descriptor set matching the reflected layout, then draw
-                     * the guest geometry. On any failure, skip (no crash). */
-                    VkBuffer tbuf[16]; VkDeviceMemory tmem[16]; uint32_t ntr = 0;
-                    VkDescriptorSet ds = lagfx_build_draw_descriptor_set(
-                        p, task, dev_with_vk->vk,
-                        (VkDescriptorSetLayout)task->pending_pipeline.descriptor_set_layout,
-                        task->pending_pipeline.spv_binding_no,
-                        task->pending_pipeline.spv_binding_kind,
-                        task->pending_pipeline.n_spv_bindings,
-                        tbuf, tmem, &ntr);
-                    if (ds != VK_NULL_HANDLE) {
-                        uint32_t vc = vertex_count ? vertex_count : 3u;
-                        if (vc > 100000u) vc = 100000u; /* cap: keep lavapipe responsive */
-                        st = lagfx_vk_draw_record_and_submit_bound(
-                            dev_with_vk->vk, pipeline,
-                            (VkPipelineLayout)task->pending_pipeline.pipeline_layout, ds,
-                            &display->rt, false, vc, 1, 0, 0, 0);
-                        if (st == LAGFX_OK) {
-                            LAGFX_LOG("op_0x01 P6b: drew TRANSLATED resource pipeline "
-                                      "ref=0x%x verts=%u bindings=%u",
-                                      task->pending_pipeline.reference, vc,
-                                      task->pending_pipeline.n_spv_bindings);
-                            lagfx_display_signal_frame_ready(display);
-                        } else {
-                            LAGFX_WARN("op_0x01 P6b: bound draw failed (%d)", (int)st);
-                        }
-                        for (uint32_t k = 0; k < ntr; k++) {
-                            vkDestroyBuffer(device, tbuf[k], NULL);
-                            vkFreeMemory(device, tmem[k], NULL);
-                        }
-                        vkFreeDescriptorSets(device, dev_with_vk->vk->draw_desc_pool, 1, &ds);
-                    } else {
-                        LAGFX_WARN("op_0x01 P6b: descriptor-set build failed for ref=0x%x "
-                                   "— skipping draw (no crash)", task->pending_pipeline.reference);
-                    }
-                } else if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE
-                           && !(!task->pending_pipeline.translated && getenv("LAGFX_NO_SUBSTITUTE"))) {
-                    /* Substitute / resource-free path: bundled 3-vertex triangle.
-                     * Stage 88 diagnostic: LAGFX_NO_SUBSTITUTE suppresses the
-                     * substitute (non-translated) draws so the real translated
-                     * pipelines' output is visible without the full-screen red
-                     * triangle clobbering the shared render target. */
-                    st = lagfx_vk_draw_record_and_submit(
-                        dev_with_vk->vk, pipeline, &display->rt,
-                        false, 3, 1, 0, 0, 0);
-                    if (st == LAGFX_OK) {
-                        LAGFX_LOG("op_0x01 Option 3 Step 4: drew substitute triangle (guest req vertexCount=%u)", vertex_count);
-                        lagfx_display_signal_frame_ready(display);
-                    } else {
-                        LAGFX_WARN("op_0x01 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
-                    }
-                } else {
-                    LAGFX_WARN("op_0x01 Option 3 Step 4: no render target available");
-                }
-            } else {
-                LAGFX_WARN("op_0x01 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
-            }
-        }
-    }
+    lagfx_emit_pending_draw(p, task, "op_0x01", vertex_count);
 #endif
-    
-    /* TODO: Stage 70 — translate to vkCmdDraw once AIR translation is in place. */
     return 0;
 }
 
@@ -426,56 +433,11 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
 
     LAGFX_LOG("compute_inner: 0x03 DrawInstancedPrimitives16 vertexStart=%u vertexCount=%u instanceCount=1 -> pending_draw.valid=true indexed=false",
               vertex_start, vertex_count);
-    
-    /* Stage 65d Option 3 Step 3: build VkPipeline when draw fires. */
+
+    /* M1 (a): resource-aware draw via the shared helper (was substitute-only). */
 #ifdef LAGFX_HAVE_VULKAN
-    if (task->pending_pipeline.valid && task->render_pass_desc.valid) {
-        lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
-        if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
-            VkDevice device = dev_with_vk->vk->device;
-            lagfx_pipeline_desc_t pdesc = {
-                .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
-                .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
-                .layout               = dev_with_vk->vk->empty_layout,
-                /* Stage 65d Option 3: the substitute triangle SPVs were
-                 * compiled by the AIR-to-SPIRV translator and use the
-                 * function names from triangle.metal as entry points,
-                 * not glslang's default "main". */
-                .vertex_entry_point   = task->pending_pipeline.translated ? "main" : "triangle_vertex",
-                .fragment_entry_point = task->pending_pipeline.translated ? "main" : "triangle_fragment",
-                .color_format         = (VkFormat)task->render_pass_desc.color_format,
-                .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
-            };
-            VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
-            lagfx_status_t st = LAGFX_OK;
-            if (pipeline != VK_NULL_HANDLE) {
-                LAGFX_LOG("op_0x03 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
-                          (void *)pipeline, vertex_count);
-                
-                /* Step 4: record and submit the draw command */
-                lagfx_display_t *display = dev_with_vk->displays[0];
-                if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
-                    /* Stage 65d Option 3 substitute — see op_0x01 site for rationale. */
-                    st = lagfx_vk_draw_record_and_submit(
-                        dev_with_vk->vk, pipeline, &display->rt,
-                        false, 3, 1, 0, 0, 0);
-                    if (st == LAGFX_OK) {
-                        LAGFX_LOG("op_0x03 Option 3 Step 4: drew substitute triangle (guest req vertexCount=%u)", vertex_count);
-                        lagfx_display_signal_frame_ready(display);
-                    } else {
-                        LAGFX_WARN("op_0x03 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
-                    }
-                } else {
-                    LAGFX_WARN("op_0x03 Option 3 Step 4: no render target available");
-                }
-            } else {
-                LAGFX_WARN("op_0x03 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
-            }
-        }
-    }
+    lagfx_emit_pending_draw(p, task, "op_0x03", vertex_count);
 #endif
-    
-    /* TODO: Stage 70 — translate to vkCmdDraw with instanceCount once wire format ambiguity resolved. */
     return 0;
 }
 
@@ -517,58 +479,12 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
 
     LAGFX_LOG("compute_inner: 0x06 DrawIndexedPrimitives64 count=%u type=%u bufRef=0x%x offset=0x%llx -> pending_draw.valid=true indexed=true",
               index_count, index_type, index_buffer_ref, (unsigned long long)index_buffer_offset);
-    
-    /* Stage 65d Option 3 Step 3: build VkPipeline when draw fires. */
+
+    /* M1 (a): resource-aware draw via the shared helper (was substitute-only).
+     * Indexed geometry drawn unindexed for now — see lagfx_emit_pending_draw. */
 #ifdef LAGFX_HAVE_VULKAN
-    if (task->pending_pipeline.valid && task->render_pass_desc.valid) {
-        lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
-        if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
-            VkDevice device = dev_with_vk->vk->device;
-            lagfx_pipeline_desc_t pdesc = {
-                .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
-                .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
-                .layout               = dev_with_vk->vk->empty_layout,
-                /* Stage 65d Option 3: the substitute triangle SPVs were
-                 * compiled by the AIR-to-SPIRV translator and use the
-                 * function names from triangle.metal as entry points,
-                 * not glslang's default "main". */
-                .vertex_entry_point   = task->pending_pipeline.translated ? "main" : "triangle_vertex",
-                .fragment_entry_point = task->pending_pipeline.translated ? "main" : "triangle_fragment",
-                .color_format         = (VkFormat)task->render_pass_desc.color_format,
-                .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
-            };
-            VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
-            lagfx_status_t st = LAGFX_OK;
-            if (pipeline != VK_NULL_HANDLE) {
-                LAGFX_LOG("op_0x06 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
-                          (void *)pipeline, index_count);
-                
-                /* Step 4: record and submit the indexed draw command */
-                lagfx_display_t *display = dev_with_vk->displays[0];
-                if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
-                    /* Stage 65d Option 3 substitute — see op_0x01 site for rationale.
-                     * Override indexed=true → false; the substitute triangle ignores
-                     * the index buffer and draws 3 vertices unconditionally. */
-                    st = lagfx_vk_draw_record_and_submit(
-                        dev_with_vk->vk, pipeline, &display->rt,
-                        false, 3, 1, 0, 0, 0);
-                    if (st == LAGFX_OK) {
-                        LAGFX_LOG("op_0x06 Option 3 Step 4: drew substitute triangle (guest req indexCount=%u)", index_count);
-                        lagfx_display_signal_frame_ready(display);
-                    } else {
-                        LAGFX_WARN("op_0x06 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
-                    }
-                } else {
-                    LAGFX_WARN("op_0x06 Option 3 Step 4: no render target available");
-                }
-            } else {
-                LAGFX_WARN("op_0x06 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
-            }
-        }
-    }
+    lagfx_emit_pending_draw(p, task, "op_0x06", index_count);
 #endif
-    
-    /* TODO: Stage 70 — translate to vkCmdDrawIndexed after binding index buffer. */
     return 0;
 }
 
@@ -610,51 +526,11 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
     LAGFX_LOG("compute_inner: 0x07 DrawIndexedPrimitives16 count=%u bufRef=0x%x offset=0x%x -> pending_draw.valid=true indexed=true",
               index_count, index_buffer_ref, index_buffer_offset);
 
-    /* Stage 65d Option 3 Step 3: build VkPipeline when draw fires. */
+    /* M1 (a): resource-aware draw via the shared helper. 0x07 is the DOMINANT
+     * draw (~22439) and was substitute-only (with mislabeled op_0x82 logs) —
+     * now it renders translated resource pipelines like 0x01. */
 #ifdef LAGFX_HAVE_VULKAN
-    if (task->pending_pipeline.valid && task->render_pass_desc.valid) {
-        lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
-        if (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) {
-            VkDevice device = dev_with_vk->vk->device;
-            lagfx_pipeline_desc_t pdesc = {
-                .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
-                .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
-                .layout               = dev_with_vk->vk->empty_layout,
-                /* Stage 65d Option 3: the substitute triangle SPVs were
-                 * compiled by the AIR-to-SPIRV translator and use the
-                 * function names from triangle.metal as entry points,
-                 * not glslang's default "main". */
-                .vertex_entry_point   = task->pending_pipeline.translated ? "main" : "triangle_vertex",
-                .fragment_entry_point = task->pending_pipeline.translated ? "main" : "triangle_fragment",
-                .color_format         = (VkFormat)task->render_pass_desc.color_format,
-                .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
-            };
-            VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
-            lagfx_status_t st = LAGFX_OK;
-            if (pipeline != VK_NULL_HANDLE) {
-                LAGFX_LOG("op_0x82 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
-                          (void *)pipeline, index_count);
-                
-                /* Step 4: Stage 65d Option 3 substitute — see op_0x01 for rationale. */
-                lagfx_display_t *display = dev_with_vk->displays[0];
-                if (display && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
-                    st = lagfx_vk_draw_record_and_submit(
-                        dev_with_vk->vk, pipeline, &display->rt,
-                        false, 3, 1, 0, 0, 0);
-                    if (st == LAGFX_OK) {
-                        LAGFX_LOG("op_0x82 Option 3 Step 4: drew substitute triangle (guest req indexCount=%u)", index_count);
-                        lagfx_display_signal_frame_ready(display);
-                    } else {
-                        LAGFX_WARN("op_0x82 Option 3 Step 4: lagfx_vk_draw_record_and_submit failed (%d)", (int)st);
-                    }
-                } else {
-                    LAGFX_WARN("op_0x82 Option 3 Step 4: no render target available");
-                }
-            } else {
-                LAGFX_WARN("op_0x82 Option 3 Step 3: lagfx_pipeline_build failed (%d)", (int)st);
-            }
-        }
-    }
+    lagfx_emit_pending_draw(p, task, "op_0x07", index_count);
 #endif
 
     /* Stage 70b/c/d observability: one-time full per-task state dump on first draw.
