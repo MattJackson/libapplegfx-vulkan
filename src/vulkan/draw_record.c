@@ -123,7 +123,21 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,  /* preserve existing content */
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
     };
-    
+
+    /* M1 diagnostic (env-gated): clear to a distinctive teal before this draw.
+     * If the isolated translated frame turns teal, the zero-resource-data draws
+     * are DEGENERATE (positions collapse → nothing rasterizes) and a correct
+     * clear/non-zero data would be visible — i.e. a non-black frame is reachable
+     * within M1. If it stays black, the draws cover the RT with black geometry
+     * and visible content genuinely needs M2 resource data. Decisive either way. */
+    if (getenv("LAGFX_TEST_CLEAR") != NULL) {
+        color_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_att.clearValue.color.float32[0] = 0.0f;
+        color_att.clearValue.color.float32[1] = 0.6f;
+        color_att.clearValue.color.float32[2] = 0.6f;
+        color_att.clearValue.color.float32[3] = 1.0f;
+    }
+
     VkRenderingInfo ri = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .renderArea = {{0, 0}, {rt->width, rt->height}},

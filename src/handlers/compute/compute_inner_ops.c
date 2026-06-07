@@ -800,6 +800,25 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
                   (unsigned)offset_48);
     }
 
+    /* M1 wire-format RE: the current offsets are GUESSED (RE doc marks 0x1a
+     * PARTIAL). The parsed values are garbage (view_count=0, color_fmt=0,
+     * render_area_x=0x3FF00000 = high word of double 1.0), strongly implying
+     * Apple's MTLClearColor/MTLViewport DOUBLE fields read as u32/f32. Dump
+     * the head of the real payload as u32 words + f64 doubles to recover the
+     * true layout. Env-gated to avoid spamming the 8168×/run hot path. */
+    if (getenv("LAGFX_DUMP_RP") != NULL) {
+        size_t n = body_len < 96u ? body_len : 96u;
+        for (size_t off = 0; off + 8u <= n; off += 8u) {
+            uint32_t w0 = lagfx_le32(body + off);
+            uint32_t w1 = lagfx_le32(body + off + 4u);
+            uint64_t q  = lagfx_le64(body + off);
+            double d; memcpy(&d, &q, sizeof(d));
+            float f0; memcpy(&f0, &w0, sizeof(f0));
+            LAGFX_LOG("0x1a RAW @%02zu: u32=[0x%08x 0x%08x] f64=%g f32@%02zu=%g",
+                      off, (unsigned)w0, (unsigned)w1, d, off, (double)f0);
+        }
+    }
+
     /* TODO: Stage 70c — consume task->render_pass_desc to construct VkRenderingInfo at vkCmdBeginRendering. */
     return 0;
 }
