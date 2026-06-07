@@ -67,7 +67,7 @@ register_active_object(lagfx_task_entry_t *task, uint32_t object_id) {
 static void
 capture_object_list_payload_b2(uint16_t opcode, const lagfx_cmd_header_t *hdr) {
     static uint32_t cap_count = 0u;
-    if (cap_count >= 8u) return;
+    if (cap_count >= 48u) return;  /* M2 RE: raised from 8 so 0x34/0x39 get captured too */
     const char *env = getenv("LAGFX_PHASE_B2_CAPTURE");
     if (!env || env[0] == '0' || env[0] == '\0') return;
     if (!hdr || !hdr->payload || hdr->payload_size == 0u) return;
@@ -215,8 +215,17 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
             LAGFX_LOG("compute: channel_event 0x%02x ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)hdr->opcode, (unsigned)p->current_chan_id,
                       hdr->stamp, (unsigned)hdr->payload_size);
+            /* M2 RE: 0x34 may be PAGE_BACKING (AppleParavirtResource::pageBacking
+             * emits FIFO 0x34 carrying hostMappedBaseVA + a 3-record range
+             * descriptor sequence). Capture its full payload to confirm whether
+             * the compute-channel 0x34 publishes resource backing GPAs (the
+             * missing data-GPA source) or is just a scheduler ping. */
+            capture_object_list_payload_b2(hdr->opcode, hdr);
             break;
         case LAGFX_OP_MAP_MEMORY_IMMEDIATE:   /* 0x39 — CmdMapMemoryImmediate */
+            /* M2 RE: capture the full 0x39 payload too — it builds the per-task
+             * page table and is a candidate for the buffer data-GPA mapping. */
+            capture_object_list_payload_b2(0x39u, hdr);
             LAGFX_LOG("compute: 0x39 CmdMapMemoryImmediate ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);
