@@ -233,6 +233,36 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                     && lagfx_task_read_virtual(p, task, va + bs->offset,
                                                LAGFX_DRAW_DS_BUF_SZ, data)) {
                     have = true;
+                    /* M2: `va` points to the placement DESCRIPTOR ((size,PFN)
+                     * range pairs), not the buffer content — binding it gives
+                     * the shader garbage. The real data lives at PFN<<12 read
+                     * as a guest VA (translate-then-read; confirmed: descriptor
+                     * PFN 0x741 → VA 0x741000 → real non-zero data, where direct
+                     * read_memory saw zeros). Scan the descriptor for the data
+                     * range (first PFN whose translated page is non-zero) and
+                     * rebind the real bytes. Crash-proof: on any miss, keep the
+                     * descriptor bytes already in `data`. */
+                    uint8_t desc[64];
+                    if (lagfx_task_read_virtual(p, task, va, sizeof(desc), desc)) {
+                        for (int q = 0; q < 8; q++) {
+                            uint64_t pfn = lagfx_le64(desc + (size_t)q * 8u);
+                            if (pfn < 0x10u || pfn > 0xfffffu) continue;
+                            uint64_t dva = (pfn << 12) + bs->offset;
+                            uint8_t probe[16] = {0};
+                            if (lagfx_task_read_virtual(p, task, dva, sizeof(probe), probe)
+                                && (probe[0] | probe[1] | probe[2] | probe[3]
+                                    | probe[4] | probe[5] | probe[6] | probe[7])
+                                && lagfx_task_read_virtual(p, task, dva,
+                                                           LAGFX_DRAW_DS_BUF_SZ, data)) {
+                                LAGFX_LOG("P6b M2: ref=0x%x rebound REAL data via descriptor "
+                                          "PFN0x%llx (VA0x%llx+off0x%llx)", bs->ref,
+                                          (unsigned long long)pfn,
+                                          (unsigned long long)(pfn << 12),
+                                          (unsigned long long)bs->offset);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
