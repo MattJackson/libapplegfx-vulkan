@@ -297,6 +297,18 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                                   cand, q, (unsigned long long)pfn, (unsigned long long)gpa,
                                                   dd[0],dd[1],dd[2],dd[3],dd[4],dd[5],dd[6],dd[7],
                                                   dd[8],dd[9],dd[10],dd[11],dd[12],dd[13],dd[14],dd[15]);
+                                    /* Hypothesis 1: the 0x39 'GPA' may be a guest VA — translate it
+                                     * through the per-task page table before reading. */
+                                    {
+                                        uint8_t dv[16] = {0};
+                                        if (lagfx_task_read_virtual(p, task, gpa, 16, dv)
+                                            && (dv[0]|dv[1]|dv[2]|dv[3]|dv[4]|dv[5]|dv[6]|dv[7]))
+                                            LAGFX_LOG("P6b     PFNVIRT  ref0x%x d[%d] VA0x%llx -> "
+                                                      "%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                                                      cand, q, (unsigned long long)gpa,
+                                                      dv[0],dv[1],dv[2],dv[3],dv[4],dv[5],dv[6],dv[7],
+                                                      dv[8],dv[9],dv[10],dv[11],dv[12],dv[13],dv[14],dv[15]);
+                                    }
                                 }
                             }
                         }
