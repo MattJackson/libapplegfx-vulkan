@@ -97,8 +97,13 @@ struct lagfx_vk_state {
     /* Stage 85b — general per-draw descriptor pool for translated
      * resource-using pipelines. Sized for many sets/bindings across a frame;
      * FREE_DESCRIPTOR_SET so each draw frees its set after submit. Holds
-     * uniform + storage buffers + combined image samplers. */
+     * uniform + storage buffers + combined image samplers + (M1 c) separate
+     * sampled images + samplers. */
     VkDescriptorPool      draw_desc_pool;
+
+    /* M1 (c): shared default sampler (linear/clamp) for texture-sampling
+     * translated compositor pipelines. */
+    VkSampler             default_sampler;
 
     VkPipeline       cursor_pipeline;
     VkPipelineLayout cursor_layout;

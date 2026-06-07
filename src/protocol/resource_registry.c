@@ -81,6 +81,26 @@ lagfx_resource_entry_t *lagfx_resource_lookup(lagfx_resource_registry_t *reg,
     return NULL;
 }
 
+/* M1 B9 — task-agnostic texture lookup. IOSurfaces are global, shared by
+ * surface_id across the system, and are registered under a hardcoded task_id=0
+ * (the single-task convention) while draw-time texture binding looks up under
+ * the real task_id — so an exact (ref,task) lookup always misses. Textures are
+ * keyed by surface_id alone; match on ref + TEXTURE type, ignoring task_id.
+ * Type-filtered so a same-numbered buffer ref in another task can't collide. */
+lagfx_resource_entry_t *lagfx_resource_lookup_texture(lagfx_resource_registry_t *reg,
+                                                       uint32_t ref) {
+    if (!reg) {
+        return NULL;
+    }
+    for (uint32_t i = 0; i < reg->count; ++i) {
+        if (reg->entries[i].ref == ref
+            && reg->entries[i].type == LAGFX_RESOURCE_TYPE_TEXTURE) {
+            return &reg->entries[i];
+        }
+    }
+    return NULL;
+}
+
 void lagfx_resource_unregister(lagfx_resource_registry_t *reg,
                                uint32_t ref,
                                uint32_t task_id) {

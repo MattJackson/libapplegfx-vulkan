@@ -666,16 +666,22 @@ static lagfx_status_t create_fallback_ds(struct lagfx_vk_state *vk) {
      * resource-using pipelines. FREE_DESCRIPTOR_SET so each draw can free its
      * set after submit. Generously sized for a frame of compositor draws. */
     {
-        VkDescriptorPoolSize sizes[3] = {
+        /* M1 (c): the AIR→SPIR-V translator emits SEPARATE OpTypeImage +
+         * OpTypeSampler (not a combined image-sampler), so the per-draw pool
+         * must carry SAMPLED_IMAGE + SAMPLER descriptor types for texture-using
+         * compositor pipelines. */
+        VkDescriptorPoolSize sizes[5] = {
             { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         .descriptorCount = 1024 },
             { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         .descriptorCount = 1024 },
             { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1024 },
+            { .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          .descriptorCount = 1024 },
+            { .type = VK_DESCRIPTOR_TYPE_SAMPLER,                .descriptorCount = 1024 },
         };
         VkDescriptorPoolCreateInfo dci = {
             .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
             .maxSets       = 1024,
-            .poolSizeCount = 3,
+            .poolSizeCount = 5,
             .pPoolSizes    = sizes,
         };
         VkResult dvr = vkCreateDescriptorPool(vk->device, &dci, NULL,
@@ -686,6 +692,31 @@ static lagfx_status_t create_fallback_ds(struct lagfx_vk_state *vk) {
             vk->draw_desc_pool = VK_NULL_HANDLE;
         } else {
             LAGFX_LOG("pipeline_init: draw_desc_pool created (Stage 85b)");
+        }
+    }
+
+    /* M1 (c): one shared default sampler (linear filter, clamp-to-edge) for
+     * texture-sampling compositor pipelines. The translator's shaders use a
+     * Metal constexpr sampler; a single linear/clamp sampler is a faithful
+     * default and avoids per-draw sampler churn. Non-fatal on failure. */
+    {
+        VkSamplerCreateInfo sci = {
+            .sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter    = VK_FILTER_LINEAR,
+            .minFilter    = VK_FILTER_LINEAR,
+            .mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .maxLod       = VK_LOD_CLAMP_NONE,
+        };
+        VkResult svr = vkCreateSampler(vk->device, &sci, NULL, &vk->default_sampler);
+        if (svr != VK_SUCCESS) {
+            LAGFX_WARN("pipeline_init: default_sampler create failed (%d) — "
+                       "texture pipelines fall back to substitute", (int)svr);
+            vk->default_sampler = VK_NULL_HANDLE;
+        } else {
+            LAGFX_LOG("pipeline_init: default_sampler created (M1 c)");
         }
     }
     return LAGFX_OK;
@@ -703,6 +734,10 @@ static void destroy_fallback_ds(struct lagfx_vk_state *vk) {
     if (vk->draw_desc_pool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(vk->device, vk->draw_desc_pool, NULL);
         vk->draw_desc_pool = VK_NULL_HANDLE;
+    }
+    if (vk->default_sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(vk->device, vk->default_sampler, NULL);
+        vk->default_sampler = VK_NULL_HANDLE;
     }
     if (vk->fallback_ubo != VK_NULL_HANDLE) {
         vkDestroyBuffer(vk->device, vk->fallback_ubo, NULL);

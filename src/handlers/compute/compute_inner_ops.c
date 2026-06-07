@@ -145,10 +145,79 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
     }
     VkWriteDescriptorSet    writes[16];
     VkDescriptorBufferInfo  binfos[16];
+    VkDescriptorImageInfo   iinfos[16];
     uint32_t nw = 0;
     for (uint32_t i = 0; i < n && i < 16u; i++) {
-        if (binding_kind[i] != (uint8_t)LAGFX_SPV_BINDING_STORAGE_BUFFER) continue;
         uint32_t slot = binding_no[i];
+        /* M1 (c): texture (SAMPLED_IMAGE) binding — resolve the guest's bound
+         * fragment texture ref → IOSurface VkImageView via the task-agnostic
+         * registry lookup (B9). If the texture isn't guest-visible yet, fail
+         * the whole set (skip this draw) rather than form a partial descriptor
+         * set — no crash, no garbage sample. */
+        if (binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLED_IMAGE) {
+            VkImageView view = VK_NULL_HANDLE;
+            VkImageLayout lay = VK_IMAGE_LAYOUT_GENERAL;
+            if (slot < LAGFX_MAX_BINDING_SLOTS
+                && task->bindings.fragment_textures[slot].valid) {
+                uint32_t tref = task->bindings.fragment_textures[slot].ref;
+                lagfx_resource_entry_t *te =
+                    lagfx_resource_lookup_texture(&p->resources, tref);
+                if (te && te->view != VK_NULL_HANDLE) {
+                    view = te->view;
+                    lagfx_vk_iosurface_t *ios =
+                        (lagfx_vk_iosurface_t *)te->host_handle;
+                    if (ios && (ios->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                || ios->layout == VK_IMAGE_LAYOUT_GENERAL))
+                        lay = ios->layout;
+                }
+            }
+            if (view == VK_NULL_HANDLE) {
+                LAGFX_LOG("P6b bind#%u slot=%u texture unresolved — skip draw (no crash)",
+                          binding_no[i], slot);
+                for (uint32_t k = 0; k < *out_n; k++) {
+                    vkDestroyBuffer(vk->device, out_bufs[k], NULL);
+                    vkFreeMemory(vk->device, out_mems[k], NULL);
+                }
+                vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
+                *out_n = 0;
+                return VK_NULL_HANDLE;
+            }
+            iinfos[nw] = (VkDescriptorImageInfo){ .imageView = view, .imageLayout = lay };
+            writes[nw] = (VkWriteDescriptorSet){
+                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet          = set,
+                .dstBinding      = binding_no[i],
+                .descriptorCount = 1,
+                .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                .pImageInfo      = &iinfos[nw],
+            };
+            nw++;
+            continue;
+        }
+        /* M1 (c): sampler binding — the shared default linear/clamp sampler. */
+        if (binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLER) {
+            if (vk->default_sampler == VK_NULL_HANDLE) {
+                for (uint32_t k = 0; k < *out_n; k++) {
+                    vkDestroyBuffer(vk->device, out_bufs[k], NULL);
+                    vkFreeMemory(vk->device, out_mems[k], NULL);
+                }
+                vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
+                *out_n = 0;
+                return VK_NULL_HANDLE;
+            }
+            iinfos[nw] = (VkDescriptorImageInfo){ .sampler = vk->default_sampler };
+            writes[nw] = (VkWriteDescriptorSet){
+                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet          = set,
+                .dstBinding      = binding_no[i],
+                .descriptorCount = 1,
+                .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+                .pImageInfo      = &iinfos[nw],
+            };
+            nw++;
+            continue;
+        }
+        if (binding_kind[i] != (uint8_t)LAGFX_SPV_BINDING_STORAGE_BUFFER) continue;
         uint8_t data[LAGFX_DRAW_DS_BUF_SZ];
         bool have = false;
         if (slot < LAGFX_MAX_BINDING_SLOTS) {
@@ -1467,14 +1536,18 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                         }
                     }
                 }
-                /* Stage 85b: buffer-only resource-using pipelines are drawable —
-                 * the op_0x01 draw site binds the guest's storage buffers into a
-                 * matching descriptor set. Texture/sampler bindings are deferred
-                 * to Stage 90 → substitute. No pool → substitute. */
+                /* M1 (c): resource-using pipelines are drawable when every
+                 * reflected binding is one the draw site can satisfy — storage
+                 * buffers (guest data), sampled images (IOSurface views), or
+                 * samplers (shared default). Any other kind → substitute. No
+                 * pool → substitute. (Was buffer-only through Stage 85b.) */
                 bool drawable = has_resources && nrb > 0 &&
                                 dev_with_vk->vk->draw_desc_pool != VK_NULL_HANDLE;
                 for (size_t u = 0; drawable && u < nrb; u++)
-                    if (rb[u].kind != LAGFX_SPV_BINDING_STORAGE_BUFFER) drawable = false;
+                    if (rb[u].kind != LAGFX_SPV_BINDING_STORAGE_BUFFER
+                        && rb[u].kind != LAGFX_SPV_BINDING_SAMPLED_IMAGE
+                        && rb[u].kind != LAGFX_SPV_BINDING_SAMPLER)
+                        drawable = false;
 
                 if (has_resources && !drawable) {
                     /* Resource-using but not yet drawable (textures/samplers, or
