@@ -45,6 +45,25 @@ typedef struct {
 size_t lagfx_spv_reflect_bindings(const uint8_t *spv, size_t spv_len,
                                   lagfx_spv_binding_t *out, size_t cap);
 
+/* A vertex stage-in attribute: a Location-decorated Input variable in the
+ * VERTEX shader (the translator emits one per float/vector arg that is not a
+ * resource or a builtin). `components` is 1..4 (scalar/vec2/vec3/vec4 float)
+ * → maps to VK_FORMAT_R32[G32[B32[A32]]]_SFLOAT. The host needs these to build
+ * a non-empty VkPipelineVertexInputState + bind the guest's vertex buffer;
+ * without them the vertex shader reads unbound attributes → 0 positions →
+ * degenerate draws → black. */
+typedef struct {
+    uint32_t location;
+    uint32_t components;  /* 1..4 */
+} lagfx_spv_vertex_input_t;
+
+/* Reflect vertex stage-in attributes (Location-decorated Input vars) from a
+ * translated VERTEX SPIR-V blob. Writes up to `cap` entries (sorted by
+ * location) and returns the total found. 0 = the vertex shader uses no
+ * stage-in attributes (purely vertex_id / builtin-driven). */
+size_t lagfx_spv_reflect_vertex_inputs(const uint8_t *spv, size_t spv_len,
+                                       lagfx_spv_vertex_input_t *out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif
