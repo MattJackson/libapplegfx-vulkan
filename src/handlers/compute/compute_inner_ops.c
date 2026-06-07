@@ -83,6 +83,38 @@ typedef struct {
 /* === Group A — Draw opcodes (0x01, 0x03, 0x06, 0x07) ========== */
 
 #ifdef LAGFX_HAVE_VULKAN
+/* B1 (M0): destroy a task's cached draw pipeline (on shader change / teardown). */
+static void lagfx_pending_pipeline_drop_cache(lagfx_task_entry_t *task, VkDevice device) {
+    if (task->pending_pipeline.cached_pipeline) {
+        vkDestroyPipeline(device, (VkPipeline)task->pending_pipeline.cached_pipeline, NULL);
+        task->pending_pipeline.cached_pipeline  = 0;
+        task->pending_pipeline.cached_color_fmt = 0;
+        task->pending_pipeline.cached_depth_fmt = 0;
+    }
+}
+
+/* B1 (M0): return the cached VkPipeline for this pending_pipeline, building +
+ * caching it on first use or when the RT formats change. Replaces the per-draw
+ * lagfx_pipeline_build that leaked a VkPipeline every draw (→ OOM on long runs).
+ * The cache is keyed on pending_pipeline identity (shaders/layout, invalidated by
+ * op_0x74 via drop_cache) + the render-target formats. */
+static VkPipeline lagfx_get_cached_pipeline(lagfx_task_entry_t *task, VkDevice device,
+                                            const lagfx_pipeline_desc_t *pdesc) {
+    if (task->pending_pipeline.cached_pipeline
+        && task->pending_pipeline.cached_color_fmt == (uint32_t)pdesc->color_format
+        && task->pending_pipeline.cached_depth_fmt == (uint32_t)pdesc->depth_format) {
+        return (VkPipeline)task->pending_pipeline.cached_pipeline;
+    }
+    lagfx_pending_pipeline_drop_cache(task, device);
+    VkPipeline p = VK_NULL_HANDLE;
+    if (lagfx_pipeline_build(device, pdesc, &p) != LAGFX_OK || p == VK_NULL_HANDLE)
+        return VK_NULL_HANDLE;
+    task->pending_pipeline.cached_pipeline  = (uintptr_t)p;
+    task->pending_pipeline.cached_color_fmt = (uint32_t)pdesc->color_format;
+    task->pending_pipeline.cached_depth_fmt = (uint32_t)pdesc->depth_format;
+    return p;
+}
+
 #define LAGFX_DRAW_DS_BUF_SZ 4096u
 /* Stage 85b — build a descriptor set for a translated resource-using pipeline,
  * populated from the guest's bound storage buffers. Returns VK_NULL_HANDLE on
@@ -279,9 +311,9 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
                 .color_format         = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
-            VkPipeline pipeline = VK_NULL_HANDLE;
-            lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
-            if (st == LAGFX_OK) {
+            VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
+            lagfx_status_t st = LAGFX_OK;
+            if (pipeline != VK_NULL_HANDLE) {
                 LAGFX_LOG("op_0x01 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, vertex_count);
                 /* Step 4: record and submit the draw command */
@@ -414,9 +446,9 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
                 .color_format         = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
-            VkPipeline pipeline = VK_NULL_HANDLE;
-            lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
-            if (st == LAGFX_OK) {
+            VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
+            lagfx_status_t st = LAGFX_OK;
+            if (pipeline != VK_NULL_HANDLE) {
                 LAGFX_LOG("op_0x03 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, vertex_count);
                 
@@ -505,9 +537,9 @@ static int op_draw_indexed_primitives_64(lagfx_protocol_t *p,
                 .color_format         = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
-            VkPipeline pipeline = VK_NULL_HANDLE;
-            lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
-            if (st == LAGFX_OK) {
+            VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
+            lagfx_status_t st = LAGFX_OK;
+            if (pipeline != VK_NULL_HANDLE) {
                 LAGFX_LOG("op_0x06 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, index_count);
                 
@@ -597,9 +629,9 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
                 .color_format         = (VkFormat)task->render_pass_desc.color_format,
                 .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
             };
-            VkPipeline pipeline = VK_NULL_HANDLE;
-            lagfx_status_t st = lagfx_pipeline_build(device, &pdesc, &pipeline);
-            if (st == LAGFX_OK) {
+            VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
+            lagfx_status_t st = LAGFX_OK;
+            if (pipeline != VK_NULL_HANDLE) {
                 LAGFX_LOG("op_0x82 Option 3 Step 3: built VkPipeline=%p for draw count=%u",
                           (void *)pipeline, index_count);
                 
@@ -1596,6 +1628,8 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                             vkDestroyDescriptorSetLayout(vk_device,
                                                          (VkDescriptorSetLayout)task->pending_pipeline.descriptor_set_layout, NULL);
                     }
+                    /* B1: shaders changing → the cached VkPipeline is stale. */
+                    lagfx_pending_pipeline_drop_cache(task, vk_device);
                     task->pending_pipeline.valid           = true;
                     task->pending_pipeline.translated      = true;
                     task->pending_pipeline.vertex_shader   = (uintptr_t)v_mod;
@@ -1654,6 +1688,8 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                                       (VkShaderModule)task->pending_pipeline.fragment_shader,
                                       NULL);
         }
+        /* B1: switching to substitute shaders → cached VkPipeline is stale. */
+        lagfx_pending_pipeline_drop_cache(task, dev_with_vk->vk->device);
         task->pending_pipeline.valid           = true;
         task->pending_pipeline.translated      = false;
         task->pending_pipeline.vertex_shader   = (uintptr_t)dev_with_vk->triangle_vertex_module;

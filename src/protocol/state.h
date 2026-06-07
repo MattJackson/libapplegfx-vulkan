@@ -207,6 +207,13 @@ typedef struct {
     uint8_t    spv_binding_no[16];
     uint8_t    spv_binding_kind[16];
     uint8_t    n_spv_bindings;
+    /* B1 (M0): cached VkPipeline built from this pending_pipeline + the RT
+     * formats it was built for. Reused across draws (was rebuilt + LEAKED every
+     * draw → OOM on long runs). Destroyed when the shaders change (op_0x74
+     * overwrite) or the task is torn down. */
+    uintptr_t  cached_pipeline;       /* VkPipeline, NULL if none */
+    uint32_t   cached_color_fmt;      /* render_pass_desc formats the cache was built for */
+    uint32_t   cached_depth_fmt;
 } lagfx_pending_pipeline_t;
 
 /* === Task Entry ================================================== */
