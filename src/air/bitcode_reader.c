@@ -2089,12 +2089,27 @@ lagfx_air_function_body_open(const lagfx_air_module_t   *module,
         inst->ops      = (ops_off == 0u)
                             ? NULL
                             : (const uint64_t *)(body->arena.base + ops_off);
+        inst->ops_off  = ops_off;  /* re-resolved post-parse against final base */
         inst->num_ops  = rec.num_ops;
 
         /* DECLAREBLOCKS sets body->num_blocks. */
         if (inst->code == LAGFX_AIR_INST_DECLAREBLOCKS && rec.num_ops >= 1u) {
             body->num_blocks = (uint32_t)rec.ops[0];
         }
+    }
+
+    /* Re-resolve every instruction's operand pointer against the FINAL
+     * arena.base. During parsing each inst->ops was cached as base+ops_off,
+     * but subsequent instructions' arena_reserve calls realloc the arena and
+     * move base — dangling all earlier ops pointers (use-after-free → SIGSEGV
+     * in the translator on bodies large enough to realloc, e.g. SkyLight
+     * pipelines 0x2f/0x31). body->instructions is refreshed in-loop; the
+     * per-instruction ops pointers are not, so fix them up here once, now that
+     * the base is final. Same fix class as local_constants_off. */
+    for (uint32_t i = 0; i < body->num_instructions; i++) {
+        lagfx_air_inst_t *fi = &body->instructions[i];
+        fi->ops = fi->ops_off ? (const uint64_t *)(body->arena.base + fi->ops_off)
+                              : NULL;
     }
 
     LAGFX_TRACE("function_body: fn[%u] decoded %u instructions (%u basic blocks)",

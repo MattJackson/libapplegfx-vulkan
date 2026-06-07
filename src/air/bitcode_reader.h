@@ -328,6 +328,11 @@ typedef struct {
     uint32_t              raw_code;     /* original record code (in case it's a value we don't have an enum for) */
     const uint64_t       *ops;
     uint32_t              num_ops;
+    /* Arena byte offset of the operand vector. `ops` is resolved from this
+     * against the FINAL arena.base after parsing: the arena reallocs as later
+     * instructions are decoded, which would dangle a pointer cached mid-parse
+     * (the same use-after-free class as local_constants). */
+    uint32_t              ops_off;
 } lagfx_air_inst_t;
 
 typedef struct lagfx_air_function_body lagfx_air_function_body_t;
