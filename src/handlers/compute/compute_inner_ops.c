@@ -450,7 +450,17 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
             tbuf, tmem, &ntr);
         if (ds != VK_NULL_HANDLE) {
             uint32_t vc = count ? count : 3u;
-            if (vc > 100000u) vc = 100000u; /* cap: keep lavapipe responsive */
+            /* M2: now that real data is bound, a vertex shader that indexes the
+             * storage buffer by vertex_id reads OOB past the LAGFX_DRAW_DS_BUF_SZ
+             * buffer for large counts → hard SIGSEGV inside lavapipe (which our
+             * crash-proof fallback cannot catch, since it is mid-draw in Mesa).
+             * Cap to a buffer-safe vertex count (BUF_SZ / 16, worst-case
+             * vec4/vertex). Env-tunable for experimentation. The guest's huge
+             * counts (e.g. 0x60000) are also likely a wire misparse to fix. */
+            uint32_t vmax = LAGFX_DRAW_DS_BUF_SZ / 16u;
+            const char *vcap = getenv("LAGFX_MAX_DRAW_VERTS");
+            if (vcap) { unsigned long v = strtoul(vcap, NULL, 0); if (v) vmax = (uint32_t)v; }
+            if (vc > vmax) vc = vmax;
             st = lagfx_vk_draw_record_and_submit_bound(
                 dev_with_vk->vk, pipeline,
                 (VkPipelineLayout)task->pending_pipeline.pipeline_layout, ds,
