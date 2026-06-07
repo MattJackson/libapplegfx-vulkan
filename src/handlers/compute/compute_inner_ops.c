@@ -277,6 +277,28 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                               (unsigned long long)cand_va, dd[0],dd[1],dd[2],dd[3],dd[4],dd[5],dd[6],dd[7],
                                               dd[8],dd[9],dd[10],dd[11],dd[12],dd[13],dd[14],dd[15]);
                             }
+                            /* M2 BREAKTHROUGH probe: the descriptor holds (size, PFN)
+                             * range pairs — the real data is at PFN<<12 (a GPA read via
+                             * the shell, NOT a VA). 0x39 CmdMapMemoryImmediate maps
+                             * exactly these GPAs (descriptor PFN 0x721 → GPA 0x721000,
+                             * size 0x20000 = the 0x39 map). Probe each descriptor word
+                             * as a PFN and read PFN<<12 directly. */
+                            {
+                                lagfx_device_t *pdev = (lagfx_device_t *)p->dev;
+                                for (int q = 0; q < 8; q++) {
+                                    uint64_t pfn = lagfx_le64(rd + q*8);
+                                    if (pfn < 0x10u || pfn > 0xfffffu) continue;
+                                    uint64_t gpa = pfn << 12;
+                                    uint8_t dd[16] = {0};
+                                    if (pdev && pdev->desc.shell.read_memory
+                                        && pdev->desc.shell.read_memory(pdev->desc.shell.opaque, gpa, 16, dd))
+                                        LAGFX_LOG("P6b     PFNDEREF ref0x%x d[%d]=PFN0x%llx -> GPA0x%llx: "
+                                                  "%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                                                  cand, q, (unsigned long long)pfn, (unsigned long long)gpa,
+                                                  dd[0],dd[1],dd[2],dd[3],dd[4],dd[5],dd[6],dd[7],
+                                                  dd[8],dd[9],dd[10],dd[11],dd[12],dd[13],dd[14],dd[15]);
+                                }
+                            }
                         }
                     }
                 }
