@@ -243,7 +243,15 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * rebind the real bytes. Crash-proof: on any miss, keep the
                      * descriptor bytes already in `data`. */
                     uint8_t desc[64];
-                    if (lagfx_task_read_virtual(p, task, va, sizeof(desc), desc)) {
+                    /* GATED (LAGFX_M2_REBIND): binding the descriptor's first
+                     * non-zero PFN range is a heuristic — it often picks the
+                     * WRONG indirection level (the arg-buffer needs following to
+                     * the actual resource), and wrong-but-real data drives the
+                     * shader to crash lavapipe (hard SIGSEGV in Mesa, mid-draw,
+                     * uncatchable). Off by default keeps production stable
+                     * (degenerate-but-no-crash); the M2 work iterates with it on. */
+                    if (getenv("LAGFX_M2_REBIND")
+                        && lagfx_task_read_virtual(p, task, va, sizeof(desc), desc)) {
                         for (int q = 0; q < 8; q++) {
                             uint64_t pfn = lagfx_le64(desc + (size_t)q * 8u);
                             if (pfn < 0x10u || pfn > 0xfffffu) continue;
