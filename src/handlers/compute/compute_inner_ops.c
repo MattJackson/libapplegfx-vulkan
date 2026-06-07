@@ -1685,6 +1685,27 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                     task->pending_pipeline.vertex_shader   = (uintptr_t)v_mod;
                     task->pending_pipeline.fragment_shader = (uintptr_t)f_mod;
                     task->pending_pipeline.reference       = reference;
+                    /* Vertex-input reflection: the translated vertex shader's
+                     * Location-decorated stage-in attributes. The host builds a
+                     * non-empty vertex-input state + binds the guest vertex
+                     * buffer from these; without them positions read unbound → 0
+                     * → degenerate draws → black. Independent of descriptors, so
+                     * reflect for both drawable and resource-free pipelines. */
+                    task->pending_pipeline.n_vtx_inputs = 0;
+                    if (spv_keep[0]) {
+                        lagfx_spv_vertex_input_t vin[8];
+                        size_t nvi = lagfx_spv_reflect_vertex_inputs(
+                            spv_keep[0], spv_keep_sz[0], vin, 8);
+                        if (nvi > 8) nvi = 8;
+                        for (size_t v = 0; v < nvi; v++) {
+                            task->pending_pipeline.vtx_in_loc[v]  = (uint8_t)vin[v].location;
+                            task->pending_pipeline.vtx_in_comp[v] = (uint8_t)vin[v].components;
+                        }
+                        task->pending_pipeline.n_vtx_inputs = (uint8_t)nvi;
+                        if (nvi)
+                            LAGFX_LOG("op_0x74 P6a: ref=0x%x vertex shader has %zu stage-in attribute(s)",
+                                      reference, nvi);
+                    }
                     if (drawable) {
                         task->pending_pipeline.descriptor_set_layout = (uintptr_t)dsl;
                         task->pending_pipeline.pipeline_layout       = (uintptr_t)pl;

@@ -207,6 +207,14 @@ typedef struct {
     uint8_t    spv_binding_no[16];
     uint8_t    spv_binding_kind[16];
     uint8_t    n_spv_bindings;
+    /* Vertex stage-in attributes reflected from the translated VERTEX shader
+     * (Location-decorated Inputs). The host builds a non-empty vertex-input
+     * state + binds the guest's vertex buffer from these; without them the
+     * vertex shader reads unbound attributes → 0 positions → degenerate draws.
+     * vtx_in_comp[i] = component count (1..4) for Location i; n_vtx_inputs = count. */
+    uint8_t    vtx_in_loc[8];
+    uint8_t    vtx_in_comp[8];
+    uint8_t    n_vtx_inputs;
     /* B1 (M0): cached VkPipeline built from this pending_pipeline + the RT
      * formats it was built for. Reused across draws (was rebuilt + LEAKED every
      * draw → OOM on long runs). Destroyed when the shaders change (op_0x74
