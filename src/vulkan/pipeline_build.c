@@ -19,10 +19,38 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
         return LAGFX_ERR_INVALID_ARG;
     }
 
-    /* Vertex input — empty struct as in triangle-lavapipe-e2e.c */
+    /* Vertex input. Empty by default (procedural/vertex_id shaders). When the
+     * reflected vertex shader declares stage-in attributes, build a non-empty
+     * state (binding 0, tightly-packed R32..A32_SFLOAT) so the shader's
+     * positions come from the bound guest vertex buffer instead of unbound
+     * (= 0 = degenerate = black). Gated by the caller setting n_vtx_inputs. */
+    VkVertexInputBindingDescription   vbind = {0};
+    VkVertexInputAttributeDescription vattr[8];
     VkPipelineVertexInputStateCreateInfo vin = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
     };
+    if (desc->n_vtx_inputs > 0u) {
+        uint32_t nvi = desc->n_vtx_inputs > 8u ? 8u : desc->n_vtx_inputs;
+        uint32_t off = 0u;
+        for (uint32_t a = 0; a < nvi; a++) {
+            uint32_t c = desc->vtx_in_comp[a]; if (c < 1u) c = 1u; if (c > 4u) c = 4u;
+            VkFormat fmt = (c == 1u) ? VK_FORMAT_R32_SFLOAT :
+                           (c == 2u) ? VK_FORMAT_R32G32_SFLOAT :
+                           (c == 3u) ? VK_FORMAT_R32G32B32_SFLOAT :
+                                       VK_FORMAT_R32G32B32A32_SFLOAT;
+            vattr[a] = (VkVertexInputAttributeDescription){
+                .location = desc->vtx_in_loc[a], .binding = 0u, .format = fmt, .offset = off,
+            };
+            off += c * 4u;
+        }
+        vbind = (VkVertexInputBindingDescription){
+            .binding = 0u, .stride = off, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+        };
+        vin.vertexBindingDescriptionCount   = 1u;
+        vin.pVertexBindingDescriptions      = &vbind;
+        vin.vertexAttributeDescriptionCount = nvi;
+        vin.pVertexAttributeDescriptions    = vattr;
+    }
 
     /* Input assembly */
     VkPipelineInputAssemblyStateCreateInfo ia = {

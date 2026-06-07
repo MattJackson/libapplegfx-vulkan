@@ -33,7 +33,7 @@ lagfx_status_t lagfx_vk_draw_record_and_submit(
     return lagfx_vk_draw_record_and_submit_bound(
         vk, pipeline, VK_NULL_HANDLE, VK_NULL_HANDLE, rt, indexed,
         vertex_count, instance_count, first_vertex, first_instance,
-        index_buffer_ref);
+        index_buffer_ref, VK_NULL_HANDLE);
 }
 
 lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
@@ -47,7 +47,8 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
     uint32_t instance_count,
     int32_t first_vertex,
     uint32_t first_instance,
-    uint32_t index_buffer_ref) {
+    uint32_t index_buffer_ref,
+    VkBuffer vertex_buffer) {
 
     (void)index_buffer_ref;  /* TODO: bind actual VkBuffer in future stage */
     
@@ -157,6 +158,14 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
     if (desc_set != VK_NULL_HANDLE && pipe_layout != VK_NULL_HANDLE) {
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 pipe_layout, 0, 1, &desc_set, 0, NULL);
+    }
+
+    /* Vertex-input path: bind the guest's vertex buffer at binding 0 so the
+     * pipeline's vertex attributes are fed real positions. The pipeline was
+     * built with a matching non-empty vertex-input state (pipeline_build). */
+    if (vertex_buffer != VK_NULL_HANDLE) {
+        VkDeviceSize voff = 0;
+        vkCmdBindVertexBuffers(cb, 0, 1, &vertex_buffer, &voff);
     }
 
     /* Record draw command */

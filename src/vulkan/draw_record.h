@@ -72,7 +72,8 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
     uint32_t instance_count,
     int32_t first_vertex,
     uint32_t first_instance,
-    uint32_t index_buffer_ref);
+    uint32_t index_buffer_ref,
+    VkBuffer vertex_buffer);   /* VK_NULL_HANDLE = no vertex-input binding */
 #endif /* LAGFX_HAVE_VULKAN */
 
 #endif /* LIBAPPLEGFX_VULKAN_DRAW_RECORD_H */

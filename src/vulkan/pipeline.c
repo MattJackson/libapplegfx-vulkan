@@ -66,7 +66,10 @@ lagfx_status_t lagfx_vk_make_host_storage_buffer(struct lagfx_vk_state *vk,
     VkBufferCreateInfo bci = {
         .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size        = size,
-        .usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        /* Dual-use: storage-buffer bindings AND vertex-buffer bindings (the
+         * vertex-input path uploads guest vertex data via the same helper). */
+        .usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                     | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     VkBuffer buf = VK_NULL_HANDLE;

@@ -431,6 +431,19 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
         .color_format         = (VkFormat)task->render_pass_desc.color_format,
         .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
     };
+    /* Vertex input (gated by LAGFX_VTX_INPUT): feed the vertex shader's
+     * reflected stage-in attributes from a bound guest vertex buffer. Without
+     * this the positions read unbound → 0 → degenerate → black. */
+    bool vtx_input_on = task->pending_pipeline.translated
+                        && task->pending_pipeline.n_vtx_inputs > 0u
+                        && getenv("LAGFX_VTX_INPUT") != NULL;
+    if (vtx_input_on) {
+        pdesc.n_vtx_inputs = task->pending_pipeline.n_vtx_inputs;
+        for (uint32_t a = 0; a < pdesc.n_vtx_inputs && a < 8u; a++) {
+            pdesc.vtx_in_loc[a]  = task->pending_pipeline.vtx_in_loc[a];
+            pdesc.vtx_in_comp[a] = task->pending_pipeline.vtx_in_comp[a];
+        }
+    }
     VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
     if (pipeline == VK_NULL_HANDLE) {
         LAGFX_WARN("%s: pipeline build failed", op);
@@ -465,14 +478,70 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
              * Cap to a buffer-safe vertex count (BUF_SZ / 16, worst-case
              * vec4/vertex). Env-tunable for experimentation. The guest's huge
              * counts (e.g. 0x60000) are also likely a wire misparse to fix. */
-            uint32_t vmax = LAGFX_DRAW_DS_BUF_SZ / 16u;
+            /* Vertex-input path: stride = sum(comp*4) (tightly-packed, matching
+             * pipeline_build); cap the count to what the 4096B upload holds. */
+            uint32_t vstride = 16u;
+            if (vtx_input_on) {
+                vstride = 0u;
+                for (uint32_t a = 0; a < task->pending_pipeline.n_vtx_inputs && a < 8u; a++)
+                    vstride += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
+                if (vstride == 0u) vstride = 16u;
+            }
+            uint32_t vmax = LAGFX_DRAW_DS_BUF_SZ / vstride;
             const char *vcap = getenv("LAGFX_MAX_DRAW_VERTS");
             if (vcap) { unsigned long v = strtoul(vcap, NULL, 0); if (v) vmax = (uint32_t)v; }
             if (vc > vmax) vc = vmax;
-            st = lagfx_vk_draw_record_and_submit_bound(
-                dev_with_vk->vk, pipeline,
-                (VkPipelineLayout)task->pending_pipeline.pipeline_layout, ds,
-                &display->rt, false, vc, 1, 0, 0, 0);
+
+            /* Upload the guest's real vertex buffer (resolve ref → descriptor
+             * PFN<<12 → translate, the M2 path) so the bound attributes get
+             * real positions. Crash-proof: no real data → no vbuf → the draw
+             * is skipped (degenerate, but no unbound-attribute fault). */
+            VkBuffer vbuf = VK_NULL_HANDLE; VkDeviceMemory vbmem = VK_NULL_HANDLE;
+            if (vtx_input_on && task->bindings.vertex_buffers[0].valid
+                && task->bindings.vertex_buffers[0].ref != 0u) {
+                lagfx_binding_slot_t *vbs = &task->bindings.vertex_buffers[0];
+                uint8_t vtype = 0; uint64_t vva = 0, vgpa = 0; uint8_t vdata[LAGFX_DRAW_DS_BUF_SZ];
+                bool vhave = false;
+                if (lagfx_resolve_object_data(p, task, vbs->ref, &vtype, &vva, &vgpa) && vva != 0u) {
+                    uint8_t vdesc[64];
+                    if (lagfx_task_read_virtual(p, task, vva, sizeof(vdesc), vdesc)) {
+                        for (int q = 0; q < 8; q++) {
+                            uint64_t pfn = lagfx_le64(vdesc + (size_t)q * 8u);
+                            if (pfn < 0x10u || pfn > 0xfffffu) continue;
+                            uint64_t dva = (pfn << 12) + vbs->offset;
+                            uint8_t probe[16] = {0};
+                            if (lagfx_task_read_virtual(p, task, dva, sizeof(probe), probe)
+                                && (probe[0]|probe[1]|probe[2]|probe[3]|probe[4]|probe[5]|probe[6]|probe[7])
+                                && lagfx_task_read_virtual(p, task, dva, LAGFX_DRAW_DS_BUF_SZ, vdata)) {
+                                vhave = true; break;
+                            }
+                        }
+                    }
+                }
+                if (vhave) {
+                    if (lagfx_vk_make_host_storage_buffer(dev_with_vk->vk, vdata,
+                            LAGFX_DRAW_DS_BUF_SZ, &vbuf, &vbmem) != LAGFX_OK)
+                        vbuf = VK_NULL_HANDLE;
+                    else
+                        LAGFX_LOG("%s VTX: bound real vertex buffer ref=0x%x stride=%u verts=%u",
+                                  op, vbs->ref, vstride, vc);
+                }
+            }
+            /* With vertex input on but no real vertex data, SKIP the draw
+             * (st != OK) to avoid the unbound-attribute lavapipe fault — don't
+             * signal a frame for a draw that didn't happen. */
+            if (vtx_input_on && vbuf == VK_NULL_HANDLE) {
+                st = LAGFX_ERR_INVALID_ARG;
+            } else {
+                st = lagfx_vk_draw_record_and_submit_bound(
+                    dev_with_vk->vk, pipeline,
+                    (VkPipelineLayout)task->pending_pipeline.pipeline_layout, ds,
+                    &display->rt, false, vc, 1, 0, 0, 0, vbuf);
+            }
+            if (vbuf != VK_NULL_HANDLE) {
+                vkDestroyBuffer(device, vbuf, NULL);
+                vkFreeMemory(device, vbmem, NULL);
+            }
             if (st == LAGFX_OK) {
                 LAGFX_LOG("%s P6b: drew TRANSLATED resource pipeline ref=0x%x verts=%u bindings=%u",
                           op, task->pending_pipeline.reference, vc,

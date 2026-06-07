@@ -33,6 +33,14 @@ typedef struct {
     const char      *fragment_entry_point;     /* default: "main" if NULL */
     VkFormat         color_format;             /* default: VK_FORMAT_B8G8R8A8_UNORM */
     VkFormat         depth_format;             /* default: VK_FORMAT_UNDEFINED (no depth) */
+    /* Vertex stage-in attributes (from lagfx_spv_reflect_vertex_inputs). When
+     * n_vtx_inputs > 0, the pipeline gets a non-empty vertex-input state
+     * (binding 0, tightly-packed R32..A32_SFLOAT) so the vertex shader's
+     * stage-in reads come from the bound guest vertex buffer instead of an
+     * unbound attribute (= 0 = degenerate positions = black). */
+    uint8_t          vtx_in_loc[8];
+    uint8_t          vtx_in_comp[8];            /* 1..4 components per attribute */
+    uint8_t          n_vtx_inputs;
     /* Future fields (Stage 70b+):
      *   cull_mode, front_face, blend factor, depth-stencil state... */
 } lagfx_pipeline_desc_t;
