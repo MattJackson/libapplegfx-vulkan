@@ -704,23 +704,34 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
     if (!lagfx_task_read_virtual(p, task, vva, sizeof(vdesc), vdesc))
         return VK_NULL_HANDLE;
     uint8_t vdata[LAGFX_DRAW_DS_BUF_SZ];
+    /* B8: LOGICAL scatter-gather walk (same as the descriptor-binding path) — the
+     * placement descriptor's {size,PFN} entries tile the buffer's LOGICAL address
+     * space; read vbs->offset by accumulating sizes and reading PFN<<12 + (offset -
+     * range_start). The old first-non-zero-probe mis-bound to the wrong physical
+     * range when an entry's page started with zero bytes (a leading-zero vertex
+     * attribute) → garbage vertex data → degenerate geometry. Mask the PFN's high
+     * 32 bits (flags live there for some object types). */
+    uint64_t vacc = 0;
     for (int e = 0; e < 4; e++) {
-        uint64_t pfn = lagfx_le64(vdesc + (size_t)e * 16u + 8u);
-        if (pfn < 0x10u || pfn > 0xfffffu) continue;
-        uint64_t dva = (pfn << 12) + vbs->offset;
-        uint8_t probe[16] = {0};
-        if (lagfx_task_read_virtual(p, task, dva, sizeof(probe), probe)
-            && (probe[0]|probe[1]|probe[2]|probe[3]|probe[4]|probe[5]|probe[6]|probe[7])
-            && lagfx_read_virtual_besteffort(p, task, dva, LAGFX_DRAW_DS_BUF_SZ, vdata)) {
-            VkBuffer vb = VK_NULL_HANDLE;
-            if (lagfx_vk_make_host_storage_buffer(vk, vdata, LAGFX_DRAW_DS_BUF_SZ,
-                                                  &vb, out_mem) == LAGFX_OK) {
-                LAGFX_LOG("VTX: uploaded real vertex buffer ref=0x%x via PFN0x%llx",
-                          vbs->ref, (unsigned long long)pfn);
-                return vb;
+        uint64_t rsize = lagfx_le64(vdesc + (size_t)e * 16u);
+        uint64_t pfn = lagfx_le64(vdesc + (size_t)e * 16u + 8u) & 0xffffffffull;
+        if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
+        if (vbs->offset < vacc + rsize) {
+            uint64_t dva = (pfn << 12) + (vbs->offset - vacc);
+            if (lagfx_read_virtual_besteffort(p, task, dva, LAGFX_DRAW_DS_BUF_SZ, vdata)) {
+                VkBuffer vb = VK_NULL_HANDLE;
+                if (lagfx_vk_make_host_storage_buffer(vk, vdata, LAGFX_DRAW_DS_BUF_SZ,
+                                                      &vb, out_mem) == LAGFX_OK) {
+                    LAGFX_LOG("VTX: uploaded real vertex buffer ref=0x%x logical off=%llu "
+                              "-> PFN0x%llx (range size=%llu)", vbs->ref,
+                              (unsigned long long)vbs->offset, (unsigned long long)pfn,
+                              (unsigned long long)rsize);
+                    return vb;
+                }
             }
             return VK_NULL_HANDLE;
         }
+        vacc += rsize;
     }
     return VK_NULL_HANDLE;
 }
