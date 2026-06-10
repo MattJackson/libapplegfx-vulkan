@@ -14,6 +14,7 @@
  */
 
 #include "translate.h"
+#include <string.h>
 #include "emit_position.h"
 #include "emit_render_target.h"
 #include "translate_function.h"
@@ -68,7 +69,21 @@ lagfx_air2spv_translate_module(const lagfx_air_module_t *m,
         const lagfx_air_function_t *fns = lagfx_air_module_functions(m, &n_fns);
         uint32_t body_fn = (uint32_t)-1;
         for (uint32_t i = 0; i < n_fns; i++) {
-            if (!fns[i].is_proto && fns[i].body_offset != 0u) { body_fn = i; break; }
+            if (fns[i].is_proto || fns[i].body_offset == 0u) continue;
+            /* Skip C++ static-initializer functions (`_GLOBAL__sub_I_*.metal`,
+             * void(), section "air.static_init"). Composite SkyLight shaders
+             * carry one BEFORE the real entry shader (function-constant init);
+             * picking the first body function then translated the static-init
+             * (num_args=0, no resources) instead of e.g. UberCompositeFragment
+             * → every texture + buffer dropped → black. The real entry shader
+             * is the non-static-init body function. */
+            const char *nm = lagfx_air_module_string(m, fns[i].name_offset);
+            if (nm && (strstr(nm, "_GLOBAL__sub_I") || strstr(nm, "global_ctors")
+                       || strstr(nm, ".static_init"))) {
+                LAGFX_TRACE("air2spv: skipping static-init fn[%u] '%s'", i, nm);
+                continue;
+            }
+            body_fn = i; break;
         }
         if (body_fn != (uint32_t)-1 && stage != LAGFX_TRANS_STAGE_UNKNOWN) {
             lagfx_xlate_stage_t xs = (stage == LAGFX_TRANS_STAGE_VERTEX)
