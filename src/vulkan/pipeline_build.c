@@ -43,8 +43,18 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
             };
             off += c * 4u;
         }
+        /* The guest's MTLVertexDescriptor stride may exceed the tight-packed sum
+         * (per-attribute padding / 8-byte alignment); a wrong stride misreads
+         * vertices 1.. (vertex 0 still anchors). Live data for the SkyLight
+         * composites (vec2 pos + vec2 tex + float, tight=20) shows the real
+         * stride is 24 (the trailing float padded to an 8-byte boundary). Allow
+         * an env override to probe the real stride until the descriptor is
+         * decoded; default rounds the tight sum UP to a multiple of 8. */
+        uint32_t stride = (off + 7u) & ~7u;
+        const char *vs = getenv("LAGFX_VTX_STRIDE");
+        if (vs) { unsigned long s = strtoul(vs, NULL, 0); if (s >= off && s <= 256u) stride = (uint32_t)s; }
         vbind = (VkVertexInputBindingDescription){
-            .binding = 0u, .stride = off, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+            .binding = 0u, .stride = stride, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
         };
         vin.vertexBindingDescriptionCount   = 1u;
         vin.pVertexBindingDescriptions      = &vbind;
