@@ -338,6 +338,46 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                     | probe[4] | probe[5] | probe[6] | probe[7])) {
                                 lagfx_read_virtual_besteffort(p, task, dva,
                                                               LAGFX_DRAW_DS_BUF_SZ, data);
+                                /* B8 INDIRECTION-FOLLOW: the placement descriptor
+                                 * for a buffer (e.g. ref=0xe) may have entries that
+                                 * point to an INDIRECTION page rather than leaf data
+                                 * — the page's first 16 bytes are themselves a
+                                 * {size@0, PFN@8} descriptor entry pointing to the
+                                 * real backing. Confirmed live: ref=0xe binding 0
+                                 * (positions) landed on PFN0x741 whose content was
+                                 * exactly {size=131072, PFN=0x721}, while the real
+                                 * float data lives at PFN0x721 (where the viewport
+                                 * binding resolved directly and read valid floats).
+                                 * If the resolved page decodes as a plausible
+                                 * {size<=16MiB, valid-PFN != this PFN} descriptor,
+                                 * follow ONE level to the leaf and re-read. A leaf
+                                 * of real floats (e.g. 0x3acccccd ~= 985MiB as a
+                                 * u64 size) fails the size bound → no follow, so
+                                 * genuine data is never mis-followed. Gated with the
+                                 * whole rebind (off in production). */
+                                {
+                                    uint64_t s0 = lagfx_le64(data);
+                                    uint64_t p0 = lagfx_le64(data + 8u);
+                                    if (p0 >= 0x10u && p0 <= 0xfffffu && p0 != pfn
+                                        && s0 >= 16u && s0 <= (16u * 1024u * 1024u)) {
+                                        uint64_t leaf_dva = (p0 << 12) + bs->offset;
+                                        uint8_t lprobe[16] = {0};
+                                        if (lagfx_task_read_virtual(p, task, leaf_dva,
+                                                                    sizeof(lprobe), lprobe)
+                                            && (lprobe[0] | lprobe[1] | lprobe[2] | lprobe[3]
+                                                | lprobe[4] | lprobe[5] | lprobe[6] | lprobe[7])) {
+                                            lagfx_read_virtual_besteffort(p, task, leaf_dva,
+                                                                          LAGFX_DRAW_DS_BUF_SZ, data);
+                                            LAGFX_LOG("P6b M2: ref=0x%x binding%u FOLLOWED indirection "
+                                                      "PFN0x%llx -> leaf PFN0x%llx (size=%llu)",
+                                                      bs->ref, binding_no[i],
+                                                      (unsigned long long)pfn,
+                                                      (unsigned long long)p0,
+                                                      (unsigned long long)s0);
+                                            pfn = p0; rsize = s0;
+                                        }
+                                    }
+                                }
                                 /* Size the VkBuffer generously so ANY dynamic
                                  * index the shader computes stays in bounds —
                                  * the placement descriptor has MULTIPLE ranges
