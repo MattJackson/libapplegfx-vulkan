@@ -390,6 +390,47 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
     return set;
 }
 
+/* Upload the guest's vertex buffer (vertex_buffers[0], real data via the
+ * placement descriptor PFN<<12 + page-table translate — the M2 path) into a
+ * host VkBuffer for vertex-input binding. Returns VK_NULL_HANDLE if there is no
+ * real vertex data; the caller frees the returned buffer + *out_mem. */
+static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
+                                                 lagfx_task_entry_t *task,
+                                                 struct lagfx_vk_state *vk,
+                                                 VkDeviceMemory *out_mem) {
+    *out_mem = VK_NULL_HANDLE;
+    if (!task->bindings.vertex_buffers[0].valid
+        || task->bindings.vertex_buffers[0].ref == 0u)
+        return VK_NULL_HANDLE;
+    lagfx_binding_slot_t *vbs = &task->bindings.vertex_buffers[0];
+    uint8_t vtype = 0; uint64_t vva = 0, vgpa = 0;
+    if (!lagfx_resolve_object_data(p, task, vbs->ref, &vtype, &vva, &vgpa) || vva == 0u)
+        return VK_NULL_HANDLE;
+    uint8_t vdesc[64];
+    if (!lagfx_task_read_virtual(p, task, vva, sizeof(vdesc), vdesc))
+        return VK_NULL_HANDLE;
+    uint8_t vdata[LAGFX_DRAW_DS_BUF_SZ];
+    for (int q = 0; q < 8; q++) {
+        uint64_t pfn = lagfx_le64(vdesc + (size_t)q * 8u);
+        if (pfn < 0x10u || pfn > 0xfffffu) continue;
+        uint64_t dva = (pfn << 12) + vbs->offset;
+        uint8_t probe[16] = {0};
+        if (lagfx_task_read_virtual(p, task, dva, sizeof(probe), probe)
+            && (probe[0]|probe[1]|probe[2]|probe[3]|probe[4]|probe[5]|probe[6]|probe[7])
+            && lagfx_task_read_virtual(p, task, dva, LAGFX_DRAW_DS_BUF_SZ, vdata)) {
+            VkBuffer vb = VK_NULL_HANDLE;
+            if (lagfx_vk_make_host_storage_buffer(vk, vdata, LAGFX_DRAW_DS_BUF_SZ,
+                                                  &vb, out_mem) == LAGFX_OK) {
+                LAGFX_LOG("VTX: uploaded real vertex buffer ref=0x%x via PFN0x%llx",
+                          vbs->ref, (unsigned long long)pfn);
+                return vb;
+            }
+            return VK_NULL_HANDLE;
+        }
+    }
+    return VK_NULL_HANDLE;
+}
+
 /* M1 (a) — shared resource-aware draw emission for ALL draw opcodes
  * (0x01/0x03/0x06/0x07). Previously only op_0x01 had the resource/descriptor
  * path; 0x03/0x06/0x07 (incl. the dominant 0x07, ~22439 occurrences) hardcoded
@@ -458,6 +499,34 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
                           && task->pending_pipeline.descriptor_set_layout != 0
                           && task->pending_pipeline.pipeline_layout != 0;
     lagfx_status_t st = LAGFX_OK;
+
+    /* Vertex-input upload — SHARED by the resource-using and resource-free
+     * translated paths. A vertex shader with stage-in attributes may be
+     * resource-free (no [[buffer]] descriptors) — e.g. SkyLight ref=0x14/0x1d
+     * have 3 stage-in attrs but no storage buffers — so the upload must NOT
+     * live only inside the descriptor-set branch (that was the vtx_bound=0 bug:
+     * resource-free vtx pipelines fell through to the substitute triangle).
+     * stride = sum(comp*4) (tightly-packed, matching pipeline_build). */
+    uint32_t vstride = 16u;
+    VkBuffer vbuf = VK_NULL_HANDLE; VkDeviceMemory vbmem = VK_NULL_HANDLE;
+    if (vtx_input_on) {
+        vstride = 0u;
+        for (uint32_t a = 0; a < task->pending_pipeline.n_vtx_inputs && a < 8u; a++)
+            vstride += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
+        if (vstride == 0u) vstride = 16u;
+        vbuf = lagfx_upload_guest_vertex_buffer(p, task, dev_with_vk->vk, &vbmem);
+    }
+    /* M2: real data makes the shader actually fetch; cap the vertex count to
+     * what the 4096B upload holds (BUF_SZ/stride) so a vertex_id index stays in
+     * bounds — else a hard SIGSEGV inside lavapipe (mid-draw in Mesa, uncatchable
+     * by our fallback). Env-tunable. The guest's huge counts (0x60000) are also
+     * likely a wire misparse to fix. */
+    uint32_t vc = count ? count : 3u;
+    uint32_t vmax = LAGFX_DRAW_DS_BUF_SZ / vstride;
+    const char *vcap = getenv("LAGFX_MAX_DRAW_VERTS");
+    if (vcap) { unsigned long v = strtoul(vcap, NULL, 0); if (v) vmax = (uint32_t)v; }
+    if (vc > vmax) vc = vmax;
+
     if (resource_using) {
         /* Bind the guest's storage buffers into a descriptor set matching the
          * reflected layout, then draw the guest geometry. Failure → skip (no crash). */
@@ -470,63 +539,6 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
             task->pending_pipeline.n_spv_bindings,
             tbuf, tmem, &ntr);
         if (ds != VK_NULL_HANDLE) {
-            uint32_t vc = count ? count : 3u;
-            /* M2: now that real data is bound, a vertex shader that indexes the
-             * storage buffer by vertex_id reads OOB past the LAGFX_DRAW_DS_BUF_SZ
-             * buffer for large counts → hard SIGSEGV inside lavapipe (which our
-             * crash-proof fallback cannot catch, since it is mid-draw in Mesa).
-             * Cap to a buffer-safe vertex count (BUF_SZ / 16, worst-case
-             * vec4/vertex). Env-tunable for experimentation. The guest's huge
-             * counts (e.g. 0x60000) are also likely a wire misparse to fix. */
-            /* Vertex-input path: stride = sum(comp*4) (tightly-packed, matching
-             * pipeline_build); cap the count to what the 4096B upload holds. */
-            uint32_t vstride = 16u;
-            if (vtx_input_on) {
-                vstride = 0u;
-                for (uint32_t a = 0; a < task->pending_pipeline.n_vtx_inputs && a < 8u; a++)
-                    vstride += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
-                if (vstride == 0u) vstride = 16u;
-            }
-            uint32_t vmax = LAGFX_DRAW_DS_BUF_SZ / vstride;
-            const char *vcap = getenv("LAGFX_MAX_DRAW_VERTS");
-            if (vcap) { unsigned long v = strtoul(vcap, NULL, 0); if (v) vmax = (uint32_t)v; }
-            if (vc > vmax) vc = vmax;
-
-            /* Upload the guest's real vertex buffer (resolve ref → descriptor
-             * PFN<<12 → translate, the M2 path) so the bound attributes get
-             * real positions. Crash-proof: no real data → no vbuf → the draw
-             * is skipped (degenerate, but no unbound-attribute fault). */
-            VkBuffer vbuf = VK_NULL_HANDLE; VkDeviceMemory vbmem = VK_NULL_HANDLE;
-            if (vtx_input_on && task->bindings.vertex_buffers[0].valid
-                && task->bindings.vertex_buffers[0].ref != 0u) {
-                lagfx_binding_slot_t *vbs = &task->bindings.vertex_buffers[0];
-                uint8_t vtype = 0; uint64_t vva = 0, vgpa = 0; uint8_t vdata[LAGFX_DRAW_DS_BUF_SZ];
-                bool vhave = false;
-                if (lagfx_resolve_object_data(p, task, vbs->ref, &vtype, &vva, &vgpa) && vva != 0u) {
-                    uint8_t vdesc[64];
-                    if (lagfx_task_read_virtual(p, task, vva, sizeof(vdesc), vdesc)) {
-                        for (int q = 0; q < 8; q++) {
-                            uint64_t pfn = lagfx_le64(vdesc + (size_t)q * 8u);
-                            if (pfn < 0x10u || pfn > 0xfffffu) continue;
-                            uint64_t dva = (pfn << 12) + vbs->offset;
-                            uint8_t probe[16] = {0};
-                            if (lagfx_task_read_virtual(p, task, dva, sizeof(probe), probe)
-                                && (probe[0]|probe[1]|probe[2]|probe[3]|probe[4]|probe[5]|probe[6]|probe[7])
-                                && lagfx_task_read_virtual(p, task, dva, LAGFX_DRAW_DS_BUF_SZ, vdata)) {
-                                vhave = true; break;
-                            }
-                        }
-                    }
-                }
-                if (vhave) {
-                    if (lagfx_vk_make_host_storage_buffer(dev_with_vk->vk, vdata,
-                            LAGFX_DRAW_DS_BUF_SZ, &vbuf, &vbmem) != LAGFX_OK)
-                        vbuf = VK_NULL_HANDLE;
-                    else
-                        LAGFX_LOG("%s VTX: bound real vertex buffer ref=0x%x stride=%u verts=%u",
-                                  op, vbs->ref, vstride, vc);
-                }
-            }
             /* With vertex input on but no real vertex data, SKIP the draw
              * (st != OK) to avoid the unbound-attribute lavapipe fault — don't
              * signal a frame for a draw that didn't happen. */
@@ -537,10 +549,6 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
                     dev_with_vk->vk, pipeline,
                     (VkPipelineLayout)task->pending_pipeline.pipeline_layout, ds,
                     &display->rt, false, vc, 1, 0, 0, 0, vbuf);
-            }
-            if (vbuf != VK_NULL_HANDLE) {
-                vkDestroyBuffer(device, vbuf, NULL);
-                vkFreeMemory(device, vbmem, NULL);
             }
             if (st == LAGFX_OK) {
                 LAGFX_LOG("%s P6b: drew TRANSLATED resource pipeline ref=0x%x verts=%u bindings=%u",
@@ -559,6 +567,24 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
             LAGFX_WARN("%s P6b: descriptor-set build failed for ref=0x%x — skipping draw (no crash)",
                        op, task->pending_pipeline.reference);
         }
+    } else if (vtx_input_on && vbuf != VK_NULL_HANDLE) {
+        /* Resource-free TRANSLATED pipeline WITH vertex input: real geometry
+         * from the bound vertex buffer, no descriptor set (empty layout). This
+         * is the SkyLight ref=0x14/0x1d case — stage-in attrs, no [[buffer]]. */
+        st = lagfx_vk_draw_record_and_submit_bound(
+            dev_with_vk->vk, pipeline, VK_NULL_HANDLE, VK_NULL_HANDLE,
+            &display->rt, false, vc, 1, 0, 0, 0, vbuf);
+        if (st == LAGFX_OK) {
+            LAGFX_LOG("%s VTX: drew TRANSLATED vertex-input pipeline ref=0x%x verts=%u stride=%u",
+                      op, task->pending_pipeline.reference, vc, vstride);
+            lagfx_display_signal_frame_ready(display);
+        } else {
+            LAGFX_WARN("%s VTX: vertex-input draw failed (%d)", op, (int)st);
+        }
+    } else if (vtx_input_on) {
+        /* vtx-input pipeline but no real vertex data → skip (no unbound fault). */
+        LAGFX_LOG("%s VTX: ref=0x%x no real vertex data — skip (no crash)",
+                  op, task->pending_pipeline.reference);
     } else if (!(!task->pending_pipeline.translated && getenv("LAGFX_NO_SUBSTITUTE"))) {
         /* Substitute / resource-free path: bundled 3-vertex triangle. */
         st = lagfx_vk_draw_record_and_submit(
@@ -569,6 +595,11 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
         } else {
             LAGFX_WARN("%s: substitute draw failed (%d)", op, (int)st);
         }
+    }
+
+    if (vbuf != VK_NULL_HANDLE) {
+        vkDestroyBuffer(device, vbuf, NULL);
+        vkFreeMemory(device, vbmem, NULL);
     }
 }
 #endif /* LAGFX_HAVE_VULKAN */
