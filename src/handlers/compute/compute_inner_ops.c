@@ -559,9 +559,12 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
      * by our fallback). Env-tunable. The guest's huge counts (0x60000) are also
      * likely a wire misparse to fix. */
     uint32_t vc = count ? count : 3u;
+    /* Hard buffer-safe cap: a vertex fetch reads vc*vstride bytes from the
+     * 64 KiB vertex buffer; vc > BUF_SZ/vstride reads OOB → lavapipe SIGSEGV.
+     * LAGFX_MAX_DRAW_VERTS may only LOWER this, never raise it past safe. */
     uint32_t vmax = LAGFX_DRAW_DS_BUF_SZ / vstride;
     const char *vcap = getenv("LAGFX_MAX_DRAW_VERTS");
-    if (vcap) { unsigned long v = strtoul(vcap, NULL, 0); if (v) vmax = (uint32_t)v; }
+    if (vcap) { unsigned long v = strtoul(vcap, NULL, 0); if (v && (uint32_t)v < vmax) vmax = (uint32_t)v; }
     if (vc > vmax) vc = vmax;
 
     if (resource_using) {
