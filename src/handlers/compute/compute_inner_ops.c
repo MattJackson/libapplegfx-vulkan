@@ -352,84 +352,48 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                 }
                             }
                         }
+                        /* B8 LOGICAL SCATTER-GATHER WALK. The placement descriptor
+                         * is an ORDERED list of {size,PFN} ranges that tile the
+                         * buffer's LOGICAL address space: desc[0] covers logical
+                         * [0, size0), desc[1] covers [size0, size0+size1), etc. To
+                         * read the binding at logical offset `bs->offset`, find the
+                         * entry whose range CONTAINS it and read PFN<<12 + (offset -
+                         * range_start). The previous "first PFN whose page is
+                         * non-zero at +offset" heuristic was WRONG: ground-truth
+                         * dump of ref=0xe showed desc[0]={131072, PFN0x721} (real
+                         * float uniforms: 1024.0@+12, 0.0015@+128, 1.0@+192) and
+                         * desc[1]={5242880, PFN0x741} (5 MiB of 00 00 00 ff black
+                         * pixels). All bindings (offsets 0/64/128/192 < 131072)
+                         * belong to PFN0x721, but because PFN0x721+0 STARTS with 8
+                         * zero bytes (the 1024.0 float sits at +12), the zero-probe
+                         * skipped it and mis-bound bindings 0/1 to the black-pixel
+                         * buffer PFN0x741. The logical walk binds the correct page
+                         * regardless of leading zero bytes. */
+                        uint64_t acc = 0;
                         for (int e = 0; e < 4; e++) {
                             uint64_t rsize = lagfx_le64(desc + (size_t)e * 16u);
                             uint64_t pfn = lagfx_le64(desc + (size_t)e * 16u + 8u);
-                            if (pfn < 0x10u || pfn > 0xfffffu) continue;
-                            uint64_t dva = (pfn << 12) + bs->offset;
-                            uint8_t probe[16] = {0};
-                            if (lagfx_task_read_virtual(p, task, dva, sizeof(probe), probe)
-                                && (probe[0] | probe[1] | probe[2] | probe[3]
-                                    | probe[4] | probe[5] | probe[6] | probe[7])) {
+                            if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
+                            if (bs->offset < acc + rsize) {
+                                uint64_t local = bs->offset - acc;
+                                uint64_t dva = (pfn << 12) + local;
                                 lagfx_read_virtual_besteffort(p, task, dva,
                                                               LAGFX_DRAW_DS_BUF_SZ, data);
-                                /* B8 INDIRECTION-FOLLOW: the placement descriptor
-                                 * for a buffer (e.g. ref=0xe) may have entries that
-                                 * point to an INDIRECTION page rather than leaf data
-                                 * — the page's first 16 bytes are themselves a
-                                 * {size@0, PFN@8} descriptor entry pointing to the
-                                 * real backing. Confirmed live: ref=0xe binding 0
-                                 * (positions) landed on PFN0x741 whose content was
-                                 * exactly {size=131072, PFN=0x721}, while the real
-                                 * float data lives at PFN0x721 (where the viewport
-                                 * binding resolved directly and read valid floats).
-                                 * If the resolved page decodes as a plausible
-                                 * {size<=16MiB, valid-PFN != this PFN} descriptor,
-                                 * follow ONE level to the leaf and re-read. A leaf
-                                 * of real floats (e.g. 0x3acccccd ~= 985MiB as a
-                                 * u64 size) fails the size bound → no follow, so
-                                 * genuine data is never mis-followed. Gated with the
-                                 * whole rebind (off in production). */
-                                {
-                                    uint64_t s0 = lagfx_le64(data);
-                                    uint64_t p0 = lagfx_le64(data + 8u);
-                                    if (p0 >= 0x10u && p0 <= 0xfffffu && p0 != pfn
-                                        && s0 >= 16u && s0 <= (16u * 1024u * 1024u)) {
-                                        uint64_t leaf_dva = (p0 << 12) + bs->offset;
-                                        uint8_t lprobe[16] = {0};
-                                        if (lagfx_task_read_virtual(p, task, leaf_dva,
-                                                                    sizeof(lprobe), lprobe)
-                                            && (lprobe[0] | lprobe[1] | lprobe[2] | lprobe[3]
-                                                | lprobe[4] | lprobe[5] | lprobe[6] | lprobe[7])) {
-                                            lagfx_read_virtual_besteffort(p, task, leaf_dva,
-                                                                          LAGFX_DRAW_DS_BUF_SZ, data);
-                                            LAGFX_LOG("P6b M2: ref=0x%x binding%u FOLLOWED indirection "
-                                                      "PFN0x%llx -> leaf PFN0x%llx (size=%llu)",
-                                                      bs->ref, binding_no[i],
-                                                      (unsigned long long)pfn,
-                                                      (unsigned long long)p0,
-                                                      (unsigned long long)s0);
-                                            pfn = p0; rsize = s0;
-                                        }
-                                    }
-                                }
-                                /* Size the VkBuffer generously so ANY dynamic
-                                 * index the shader computes stays in bounds —
-                                 * the placement descriptor has MULTIPLE ranges
-                                 * (e.g. 128 KiB + 5 MiB) and the shader may index
-                                 * the larger one, while the matched range is the
-                                 * smaller; an under-sized buffer → lavapipe OOB.
-                                 * Use the max(matched range, 8 MiB), capped 8 MiB.
-                                 * Only the first 64 KiB has real content; the
-                                 * rest zero-pads (OOB reads return 0, no crash). */
+                                /* Size the VkBuffer to the matched range (cap 16 MiB,
+                                 * floor 8 MiB) so any dynamic shader index stays in
+                                 * bounds (OOB reads zero-pad, no lavapipe crash). */
                                 bind_alloc_sz = 8u * 1024u * 1024u;
-                                if (rsize > bind_alloc_sz) bind_alloc_sz = rsize > (16u*1024u*1024u)
-                                                                            ? (16u*1024u*1024u) : rsize;
-                                LAGFX_LOG("P6b M2: ref=0x%x rebound REAL data via descriptor "
-                                          "PFN0x%llx (VA0x%llx+off0x%llx) size=%llu", bs->ref,
-                                          (unsigned long long)pfn,
-                                          (unsigned long long)(pfn << 12),
-                                          (unsigned long long)bs->offset,
+                                if (rsize > bind_alloc_sz)
+                                    bind_alloc_sz = rsize > (16u*1024u*1024u)
+                                                        ? (16u*1024u*1024u) : rsize;
+                                LAGFX_LOG("P6b M2: ref=0x%x binding%u logical off=%llu -> desc[%d] "
+                                          "PFN0x%llx+%llu (range size=%llu)", bs->ref, binding_no[i],
+                                          (unsigned long long)bs->offset, e,
+                                          (unsigned long long)pfn, (unsigned long long)local,
                                           (unsigned long long)rsize);
-                                /* LAGFX_SIMPLE_ONLY: a large data range is an
-                                 * argument buffer (guest pointers → lavapipe
-                                 * derefs them → crash) or a dynamically-indexed
-                                 * buffer. Only PLAIN SMALL buffers (e.g. the 64 B
-                                 * MVP matrix) are safe to bind raw. If this range
-                                 * is large, skip the whole draw so only simple
-                                 * MVP+vertex pipelines render. */
-                                if (getenv("LAGFX_SIMPLE_ONLY")
-                                    && rsize > 512u) {
+                                /* LAGFX_SIMPLE_ONLY: skip large (arg-buffer/heap)
+                                 * ranges — only plain small uniform buffers bind raw. */
+                                if (getenv("LAGFX_SIMPLE_ONLY") && rsize > 512u) {
                                     vkFreeDescriptorSets(vk->device,
                                                          vk->draw_desc_pool, 1, &set);
                                     for (uint32_t k = 0; k < *out_n; k++) {
@@ -441,6 +405,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                 }
                                 break;
                             }
+                            acc += rsize;
                         }
                     }
                 }
