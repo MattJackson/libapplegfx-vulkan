@@ -787,10 +787,18 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                 VkBuffer vb = VK_NULL_HANDLE;
                 if (lagfx_vk_make_host_storage_buffer(vk, vdata, LAGFX_DRAW_DS_BUF_SZ,
                                                       &vb, out_mem) == LAGFX_OK) {
-                    LAGFX_LOG("VTX: uploaded real vertex buffer ref=0x%x logical off=%llu "
-                              "-> PFN0x%llx (range size=%llu)", vbs->ref,
+                    /* Dump first 3 vertices as floats assuming tight pack
+                     * [pos.xy(8), tex.xy(8), perspective(4)] stride 20. Reveals
+                     * whether the _tex UVs are valid [0,1] or degenerate (→ the
+                     * composite samples black). */
+                    float vf[15];
+                    for (int q = 0; q < 15; q++) {
+                        uint32_t u = lagfx_le32(vdata + q*4); memcpy(&vf[q], &u, 4);
+                    }
+                    LAGFX_LOG("VTX: ref=0x%x off=%llu PFN0x%llx v0[pos %.3g,%.3g tex %.3g,%.3g] "
+                              "v1@20[%.3g,%.3g %.3g,%.3g] (stride20 assumed)", vbs->ref,
                               (unsigned long long)vbs->offset, (unsigned long long)pfn,
-                              (unsigned long long)rsize);
+                              vf[0],vf[1],vf[2],vf[3], vf[5],vf[6],vf[7],vf[8]);
                     return vb;
                 }
             }
