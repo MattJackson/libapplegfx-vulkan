@@ -114,6 +114,82 @@ lagfx_status_t lagfx_vk_make_host_storage_buffer(struct lagfx_vk_state *vk,
     return LAGFX_OK;
 }
 
+/* M2 host-flatten step 2: a host-visible storage buffer that also exposes a
+ * VkDeviceAddress (SHADER_DEVICE_ADDRESS usage + DEVICE_ADDRESS allocate flag).
+ * Returns the buffer + memory + its device address. The address is written into
+ * a flattened argument buffer so a PhysicalStorageBuffer shader can deref it.
+ * Requires vk->have_buffer_device_address. */
+lagfx_status_t lagfx_vk_make_device_address_buffer(struct lagfx_vk_state *vk,
+                                                   const void *data,
+                                                   VkDeviceSize size,
+                                                   VkBuffer *out_buf,
+                                                   VkDeviceMemory *out_mem,
+                                                   VkDeviceAddress *out_addr) {
+    *out_buf = VK_NULL_HANDLE;
+    *out_mem = VK_NULL_HANDLE;
+    if (out_addr) *out_addr = 0u;
+    if (!vk || vk->device == VK_NULL_HANDLE || size == 0u
+        || !vk->have_buffer_device_address) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    VkBufferCreateInfo bci = {
+        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size        = size,
+        .usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                     | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkBuffer buf = VK_NULL_HANDLE;
+    if (vkCreateBuffer(vk->device, &bci, NULL, &buf) != VK_SUCCESS) {
+        return LAGFX_ERR_BACKEND;
+    }
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(vk->device, buf, &req);
+    uint32_t mt = find_memory_type(vk->phys_device, req.memoryTypeBits,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                   | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt == UINT32_MAX) {
+        vkDestroyBuffer(vk->device, buf, NULL);
+        return LAGFX_ERR_BACKEND;
+    }
+    VkMemoryAllocateFlagsInfo flags = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+        .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+    };
+    VkMemoryAllocateInfo mai = {
+        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext           = &flags,
+        .allocationSize  = req.size,
+        .memoryTypeIndex = mt,
+    };
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    if (vkAllocateMemory(vk->device, &mai, NULL, &mem) != VK_SUCCESS) {
+        vkDestroyBuffer(vk->device, buf, NULL);
+        return LAGFX_ERR_BACKEND;
+    }
+    if (vkBindBufferMemory(vk->device, buf, mem, 0) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, mem, NULL);
+        vkDestroyBuffer(vk->device, buf, NULL);
+        return LAGFX_ERR_BACKEND;
+    }
+    void *mapped = NULL;
+    if (vkMapMemory(vk->device, mem, 0, size, 0, &mapped) == VK_SUCCESS && mapped) {
+        if (data) memcpy(mapped, data, (size_t)size);
+        else      memset(mapped, 0, (size_t)size);
+        vkUnmapMemory(vk->device, mem);
+    }
+    if (out_addr) {
+        VkBufferDeviceAddressInfo dai = {
+            .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+            .buffer = buf,
+        };
+        *out_addr = vkGetBufferDeviceAddress(vk->device, &dai);
+    }
+    *out_buf = buf;
+    *out_mem = mem;
+    return LAGFX_OK;
+}
+
 /* --- Pipeline layout creation ------------------------------------ */
 
 static lagfx_status_t create_pipeline_layout(struct lagfx_vk_state *vk) {

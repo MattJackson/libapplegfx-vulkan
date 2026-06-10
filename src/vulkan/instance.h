@@ -177,6 +177,16 @@ lagfx_status_t lagfx_vk_make_host_storage_buffer(struct lagfx_vk_state *vk,
                                                  VkDeviceSize size,
                                                  VkBuffer *out_buf,
                                                  VkDeviceMemory *out_mem);
+
+/* M2 host-flatten step 2: host-visible storage buffer that also exposes a
+ * VkDeviceAddress (for PhysicalStorageBuffer arg-buffer flattening). Requires
+ * vk->have_buffer_device_address. */
+lagfx_status_t lagfx_vk_make_device_address_buffer(struct lagfx_vk_state *vk,
+                                                   const void *data,
+                                                   VkDeviceSize size,
+                                                   VkBuffer *out_buf,
+                                                   VkDeviceMemory *out_mem,
+                                                   VkDeviceAddress *out_addr);
 #endif
 
 #endif /* LIBAPPLEGFX_VULKAN_INSTANCE_H */
