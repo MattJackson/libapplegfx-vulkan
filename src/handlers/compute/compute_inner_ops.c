@@ -217,9 +217,10 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
             /* Textures are fragment-stage; resolve by ordinal under texcomp. */
             uint32_t tex_idx = m1_texcomp ? tex_ord : slot;
             tex_ord++;
+            uint32_t tref = 0;
             if (tex_idx < LAGFX_MAX_BINDING_SLOTS
                 && task->bindings.fragment_textures[tex_idx].valid) {
-                uint32_t tref = task->bindings.fragment_textures[tex_idx].ref;
+                tref = task->bindings.fragment_textures[tex_idx].ref;
                 lagfx_resource_entry_t *te =
                     lagfx_resource_lookup_texture(&p->resources, tref);
                 if (te && te->view != VK_NULL_HANDLE) {
@@ -240,6 +241,44 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                 }
             }
             if (view == VK_NULL_HANDLE) {
+                /* M1 TEXPROBE: the texture has no host VkImage backing. Resolve
+                 * its guest memory (placement descriptor, same as buffers) and
+                 * histogram the first leaf page as BGRA8 — does the guest texture
+                 * hold real (non-black) content (CPU-uploaded image/atlas) that a
+                 * future backing would surface, or is it an empty GPU render
+                 * target? Decides whether texture-backing is viable at this guest
+                 * state. Read-only; gated. */
+                if (getenv("LAGFX_M1_TEXPROBE") && tref != 0u) {
+                    uint8_t ttype = 0; uint64_t tva = 0, tgpa = 0;
+                    bool resolved = lagfx_resolve_object_data(p, task, tref, &ttype, &tva, &tgpa);
+                    uint8_t tdesc[64] = {0};
+                    uint64_t leaf_pfn = 0, leaf_sz = 0;
+                    if (resolved && tva != 0u
+                        && lagfx_task_read_virtual(p, task, tva, sizeof(tdesc), tdesc)) {
+                        uint64_t acc = 0;
+                        for (int e = 0; e < 4; e++) {
+                            uint64_t es = lagfx_le64(tdesc + (size_t)e * 16u);
+                            uint64_t ep = lagfx_le64(tdesc + (size_t)e * 16u + 8u);
+                            if (ep < 0x10u || ep > 0xfffffu || es == 0u) continue;
+                            leaf_pfn = ep; leaf_sz = es; (void)acc; break;
+                        }
+                    }
+                    uint32_t nonblack = 0, nonzero = 0; uint8_t px[4096] = {0};
+                    if (leaf_pfn
+                        && lagfx_task_read_virtual(p, task, leaf_pfn << 12, sizeof(px), px)) {
+                        for (size_t q = 0; q + 4 <= sizeof(px); q += 4) {
+                            if (px[q] | px[q+1] | px[q+2]) nonblack++;
+                            if (px[q] | px[q+1] | px[q+2] | px[q+3]) nonzero++;
+                        }
+                    }
+                    LAGFX_LOG("P6b TEXPROBE ref=0x%x type=0x%02x resolved=%d leafPFN=0x%llx "
+                              "sz=%llu | of %zu px: nonblack=%u nonzero=%u first16=%02x%02x%02x%02x "
+                              "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+                              tref, ttype, (int)resolved, (unsigned long long)leaf_pfn,
+                              (unsigned long long)leaf_sz, sizeof(px)/4, nonblack, nonzero,
+                              px[0],px[1],px[2],px[3],px[4],px[5],px[6],px[7],
+                              px[8],px[9],px[10],px[11],px[12],px[13],px[14],px[15]);
+                }
                 LAGFX_LOG("P6b bind#%u slot=%u texture unresolved — skip draw (no crash)",
                           binding_no[i], slot);
                 for (uint32_t k = 0; k < *out_n; k++) {
