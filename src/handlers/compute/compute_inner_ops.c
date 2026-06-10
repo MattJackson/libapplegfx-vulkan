@@ -421,8 +421,27 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                         && task->bindings.fragment_buffers[fbuf_ord].valid)
                         bs = &task->bindings.fragment_buffers[fbuf_ord];
                     fbuf_ord++;
-                } else if (task->bindings.vertex_buffers[slot].valid) {
-                    bs = &task->bindings.vertex_buffers[slot];
+                } else {
+                    /* Vertex storage buffer. When the pipeline has STAGE-IN vertex
+                     * attributes (UberCompositeVertex et al.), the guest binds the
+                     * per-vertex stage-in data at SetVertexBuffers[0] and the
+                     * shader's [[buffer(n)]] (e.g. the MVP at [[buffer(1)]]) at the
+                     * NEXT vertex-buffer slot(s). But our translator numbers the
+                     * vertex storage buffer linearly from binding 0, so binding 0
+                     * would mis-resolve to vertex_buffers[0] = the stage-in data
+                     * (garbage as a matrix) → degenerate geometry → zero coverage.
+                     * Skip the stage-in vertex buffer slot(s): the storage buffer's
+                     * guest slot = binding + n_vtx_inputs's buffer count (1 for a
+                     * single interleaved stage-in buffer). Proven: composites cover
+                     * nothing while ColorFill (no stage-in) covers fullscreen. */
+                    uint32_t vslot = slot;
+                    if (task->pending_pipeline.n_vtx_inputs > 0u)
+                        vslot = slot + 1u;
+                    if (vslot < LAGFX_MAX_BINDING_SLOTS
+                        && task->bindings.vertex_buffers[vslot].valid)
+                        bs = &task->bindings.vertex_buffers[vslot];
+                    else if (task->bindings.vertex_buffers[slot].valid)
+                        bs = &task->bindings.vertex_buffers[slot];
                 }
             } else {
                 /* B8: VERTEX-FIRST (no binding offset). The pipeline reflection
