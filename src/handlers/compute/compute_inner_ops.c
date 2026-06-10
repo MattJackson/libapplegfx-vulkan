@@ -579,29 +579,17 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
                           && task->pending_pipeline.pipeline_layout != 0;
     lagfx_status_t st = LAGFX_OK;
 
-    /* CRASH FIX (reflection gap): if the guest bound a fragment texture but the
-     * reflected descriptor layout has NO SAMPLED_IMAGE binding, the shader
-     * samples a descriptor that isn't in the set → lavapipe NULL-deref. The
-     * descriptor set is INCOMPLETE for what the shader does. Skip the draw
-     * (substitute/none) rather than crash. Same for a missing sampler. This is
-     * the composite-pipeline crash once real data drove the texturing branch. */
-    if (resource_using) {
-        bool guest_bound_texture = false;
-        for (uint32_t s = 0; s < LAGFX_MAX_BINDING_SLOTS; s++)
-            if (task->bindings.fragment_textures[s].valid
-                && task->bindings.fragment_textures[s].ref != 0u) { guest_bound_texture = true; break; }
-        bool reflected_image = false;
-        for (uint32_t b = 0; b < task->pending_pipeline.n_spv_bindings && b < 16u; b++)
-            if (task->pending_pipeline.spv_binding_kind[b] == (uint8_t)LAGFX_SPV_BINDING_SAMPLED_IMAGE) {
-                reflected_image = true; break;
-            }
-        if (guest_bound_texture && !reflected_image) {
-            LAGFX_LOG("%s: ref=0x%x guest bound a texture but reflection has no "
-                      "SAMPLED_IMAGE — incomplete descriptor set, skip draw (no crash)",
-                      op, task->pending_pipeline.reference);
-            return;
-        }
-    }
+    /* NOTE: the earlier "guest bound a texture but reflection has no
+     * SAMPLED_IMAGE → skip" gate was REMOVED — it was backwards. A shader whose
+     * reflected SPIR-V has NO SAMPLED_IMAGE does NOT sample a texture (e.g.
+     * ColorFill, which just fills a colour from a buffer), so a stale guest
+     * texture binding is irrelevant and the draw is safe — skipping it wrongly
+     * dropped renderable colour-fill pipelines. The real texture-sample crash
+     * (a REFLECTED texture whose IOSurface isn't sampleable) is handled in
+     * lagfx_build_draw_descriptor_set, which skips only when a texture the
+     * shader actually samples can't be bound. With the translator static-init
+     * fix, composite shaders now reflect their textures and go through that
+     * path. */
 
     /* Vertex-input upload — SHARED by the resource-using and resource-free
      * translated paths. A vertex shader with stage-in attributes may be
