@@ -139,6 +139,15 @@ typedef struct {
     uint32_t                  id_color_vars[LAGFX_MAX_VERTEX_ARGS];
     uint32_t                  num_color_outputs;
 
+    /* Vertex output varyings. A Metal vertex returning a struct
+     * {float4 [[position]], varying0, ...} feeds the fragment's stage_in:
+     * member 0 drives gl_Position AND every member is also a Location-k Output
+     * varying so the fragment's interpolated inputs (e.g. the UV) are fed.
+     * Without these the fragment reads unbound inputs → 0 → samples texel(0,0)
+     * → black composites. Mirrors the fragment multi-output path. */
+    uint32_t                  id_vertex_out_vars[LAGFX_MAX_VERTEX_ARGS];
+    uint32_t                  num_vertex_outs;
+
     /* Fragment/compute resource args: a texture (pointer addrspace 1) or a
      * sampler (pointer addrspace 2) is declared as a UniformConstant
      * OpVariable. arg_resource_var[i] holds that variable's id (0 if arg i
@@ -531,6 +540,51 @@ static uint32_t fragment_output_type_spv_idx(xlate_ctx_t *c, uint32_t idx) {
         lagfx_air_type_kind_t k = ts[mty].kind;
         if (k == LAGFX_AIR_TYPE_FLOAT || k == LAGFX_AIR_TYPE_VECTOR)
             return emit_air_type(c, mty);
+    }
+    return emit_type_vec4_f(c);
+}
+
+/* Count of vertex output struct members ({[[position]], varying...} return).
+ * 0 for a bare float4 return (just gl_Position, no varyings). */
+static uint32_t vertex_output_count(xlate_ctx_t *c) {
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    uint32_t fn_ty = c->fn ? c->fn->type_index : LAGFX_AIR_TYPE_NONE;
+    if (fn_ty < n_types && ts[fn_ty].kind == LAGFX_AIR_TYPE_FUNCTION
+        && ts[fn_ty].num_op >= 2u) {
+        uint32_t ret_ty = ts[fn_ty].op[1];
+        if (ret_ty < n_types &&
+            (ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_ANON ||
+             ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_NAMED)) {
+            uint32_t nf = ts[ret_ty].num_op > 1u ? ts[ret_ty].num_op - 1u : 0u;
+            if (nf > LAGFX_MAX_VERTEX_ARGS) nf = LAGFX_MAX_VERTEX_ARGS;
+            return nf;
+        }
+    }
+    return 0u;
+}
+
+/* SPIR-V type id for vertex output varying member `idx`. */
+static uint32_t vertex_output_type_spv_idx(xlate_ctx_t *c, uint32_t idx) {
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    uint32_t fn_ty = c->fn ? c->fn->type_index : LAGFX_AIR_TYPE_NONE;
+    if (fn_ty < n_types && ts[fn_ty].kind == LAGFX_AIR_TYPE_FUNCTION
+        && ts[fn_ty].num_op >= 2u) {
+        uint32_t ret_ty = ts[fn_ty].op[1];
+        if (ret_ty < n_types &&
+            (ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_ANON ||
+             ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_NAMED)) {
+            uint32_t nf = ts[ret_ty].num_op > 1u ? ts[ret_ty].num_op - 1u : 0u;
+            if (idx < nf) {
+                uint32_t mty = ts[ret_ty].op[1u + idx];
+                if (mty < n_types) {
+                    lagfx_air_type_kind_t k = ts[mty].kind;
+                    if (k == LAGFX_AIR_TYPE_FLOAT || k == LAGFX_AIR_TYPE_VECTOR)
+                        return emit_air_type(c, mty);
+                }
+            }
+        }
     }
     return emit_type_vec4_f(c);
 }
@@ -1242,15 +1296,25 @@ static void emit_prologue(xlate_ctx_t *c) {
             }
         }
 
+        /* Vertex output varyings: a struct {[[position]], varying...} return
+         * feeds the fragment's stage_in. Alloc a Location-k Output var per
+         * member so the fragment's interpolated inputs are fed (else UV=0 →
+         * black). 0 for a bare float4 return. */
+        c->num_vertex_outs = vertex_output_count(c);
+        for (uint32_t k = 0; k < c->num_vertex_outs; k++)
+            c->id_vertex_out_vars[k] = lagfx_spv_builder_alloc_id(c->b);
+
         /* 4. OpEntryPoint Vertex %main "main" %pos <arg inputs + resources> */
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_VERTEX, c->id_main };
-        uint32_t suffix[1u + 2u * LAGFX_MAX_VERTEX_ARGS];
+        uint32_t suffix[1u + 3u * LAGFX_MAX_VERTEX_ARGS];
         uint32_t n_iface = 0u;
         suffix[n_iface++] = c->id_position_var;
         for (uint32_t i = 0; i < n_va; i++) {
             if (c->arg_input_var_ids[i]) suffix[n_iface++] = c->arg_input_var_ids[i];
             if (c->arg_resource_var[i])  suffix[n_iface++] = c->arg_resource_var[i];
         }
+        for (uint32_t k = 0; k < c->num_vertex_outs; k++)
+            suffix[n_iface++] = c->id_vertex_out_vars[k];
         lagfx_spv_builder_emit_op_string(c->b, LAGFX_SPV_OP_ENTRY_POINT,
                                           prefix, 2, "main", suffix, n_iface);
         /* DescriptorSet 0 + sequential Binding for vertex resources. */
@@ -1288,6 +1352,13 @@ static void emit_prologue(xlate_ctx_t *c) {
                                     LAGFX_SPV_DECORATION_LOCATION, loc++ };
                 lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
             }
+        }
+        /* Vertex output varyings: Location k (matches the fragment's Location-k
+         * stage_in inputs). Member 0 is also gl_Position (BuiltIn, above). */
+        for (uint32_t k = 0; k < c->num_vertex_outs; k++) {
+            uint32_t ops[] = { c->id_vertex_out_vars[k],
+                                LAGFX_SPV_DECORATION_LOCATION, k };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ops, 3);
         }
     } else /* fragment */ {
         /* One Output variable per colour render target (1 for a bare
@@ -1453,6 +1524,19 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
             uint32_t ops[] = { c->id_position_ptr, c->id_position_var,
                                 LAGFX_SPV_STORAGE_OUTPUT };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, ops, 3);
+        }
+
+        /* One Output OpVariable per vertex output varying, typed to the struct
+         * member type (float4/float2/...). Fed at RET; read by the fragment's
+         * Location-k stage_in input. */
+        for (uint32_t k = 0; k < c->num_vertex_outs; k++) {
+            uint32_t out_ty = vertex_output_type_spv_idx(c, k);
+            uint32_t id_ptr_out = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t op_pt[] = { id_ptr_out, LAGFX_SPV_STORAGE_OUTPUT, out_ty };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, op_pt, 3);
+            uint32_t op_var[] = { id_ptr_out, c->id_vertex_out_vars[k],
+                                  LAGFX_SPV_STORAGE_OUTPUT };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, op_var, 3);
         }
 
         /* One Input OpVariable per vertex arg: a uint for vertex_id, or
@@ -3026,6 +3110,22 @@ static void emit_inst_ret(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
 
         uint32_t op_st[] = { c->id_position_var, store_src };
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, op_st, 2);
+
+        /* Store each struct member to its Location-k Output varying so the
+         * fragment's stage_in inputs are fed. Member 0 is the position (already
+         * → gl_Position; also emitted as Location-0 varying to match the
+         * fragment's first stage_in). Without this the fragment's UV varying is
+         * unbound → 0 → samples texel(0,0) → black composites. */
+        if (is_struct) {
+            for (uint32_t k = 0; k < c->num_vertex_outs; k++) {
+                uint32_t mem_ty = vertex_output_type_spv_idx(c, k);
+                uint32_t mem_id = lagfx_spv_builder_alloc_id(c->b);
+                uint32_t op_ex[] = { mem_ty, mem_id, val_spv, k };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_EXTRACT, op_ex, 4);
+                uint32_t op_vst[] = { c->id_vertex_out_vars[k], mem_id };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, op_vst, 2);
+            }
+        }
     }
 
     /* Fragment shader: the returned value IS the colour. A Metal
