@@ -8,6 +8,7 @@
 
 #include "iosurface.h"
 #include "instance.h"
+#include "command.h"
 #include "common/log.h"
 
 #include <stdlib.h>
@@ -147,6 +148,78 @@ lagfx_status_t lagfx_vk_iosurface_create(struct lagfx_vk_state *vk,
     ios->format = fmt;
     ios->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     ios->refcount = 1u;
+
+    /* M2: clear the new IOSurface to a color + transition to SHADER_READ_ONLY
+     * so it is immediately SAMPLEABLE. Without this every IOSurface stays
+     * UNDEFINED, the texture-bind path treats it as unbacked, and every
+     * texture-sampling compositor pipeline is skipped → black. A cleared,
+     * sampleable surface lets the composite chain DRAW (sampling real content)
+     * — non-black pixels from the real translated shaders. The cleared colour
+     * is the placeholder until per-pipeline RT compositing fills surfaces with
+     * actual rendered layers. Gated by LAGFX_CLEAR_IOSURF (off → no behaviour
+     * change). Best-effort: on any Vulkan failure, leave layout UNDEFINED. */
+    if (getenv("LAGFX_CLEAR_IOSURF") && vk->graphics_queue != VK_NULL_HANDLE) {
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        if (lagfx_vk_cmdbuf_alloc(vk, &cb) == LAGFX_OK) {
+            VkCommandBufferBeginInfo bi = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            };
+            VkImageSubresourceRange range = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .levelCount = 1u, .layerCount = 1u,
+            };
+            if (vkBeginCommandBuffer(cb, &bi) == VK_SUCCESS) {
+                VkImageMemoryBarrier to_dst = {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = ios->image, .subresourceRange = range,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                };
+                vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                     0, NULL, 0, NULL, 1, &to_dst);
+                VkClearColorValue cc = { .float32 = { 0.20f, 0.22f, 0.28f, 1.0f } };
+                vkCmdClearColorImage(cb, ios->image,
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                     &cc, 1, &range);
+                VkImageMemoryBarrier to_ro = {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = ios->image, .subresourceRange = range,
+                    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                };
+                vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                                     0, NULL, 0, NULL, 1, &to_ro);
+                if (vkEndCommandBuffer(cb) == VK_SUCCESS) {
+                    VkFence fence = VK_NULL_HANDLE;
+                    VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+                    vkCreateFence(vk->device, &fci, NULL, &fence);
+                    VkSubmitInfo si = {
+                        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                        .commandBufferCount = 1, .pCommandBuffers = &cb,
+                    };
+                    if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) == VK_SUCCESS) {
+                        vkWaitForFences(vk->device, 1, &fence, VK_TRUE,
+                                        1000ull * 1000ull * 1000ull);
+                        ios->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        LAGFX_LOG("iosurface_create: %ux%u cleared + SHADER_READ_ONLY (sampleable)",
+                                  width, height);
+                    }
+                    if (fence != VK_NULL_HANDLE) vkDestroyFence(vk->device, fence, NULL);
+                }
+            }
+            lagfx_vk_cmdbuf_free(vk, cb);
+        }
+    }
 
     LAGFX_LOG("iosurface_create: %ux%u fmt=%d image=%p view=%p mem=%p refcount=1",
               width, height, (int)fmt,
