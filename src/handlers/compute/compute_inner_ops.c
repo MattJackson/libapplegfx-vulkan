@@ -249,6 +249,28 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * that killed the M2 runs once real data drove the shader. */
                     if (ios && (ios->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                                 || ios->layout == VK_IMAGE_LAYOUT_GENERAL)) {
+                        /* REFRESH: the guest texture content changes over time, but
+                         * the backing is created ONCE and cached — a stale first
+                         * backing may be black while the guest has since drawn real
+                         * content. Re-upload the CURRENT guest bytes each draw so we
+                         * sample live content. (Gated with TEXBACK.) */
+                        if (getenv("LAGFX_M1_TEXBACK") && te->gpu_addr != 0u
+                            && ios->width && ios->height) {
+                            size_t rl = (size_t)ios->width * ios->height * 4u;
+                            if (rl > 8u * 1024u * 1024u) rl = 8u * 1024u * 1024u;
+                            uint8_t *rp = malloc(rl);
+                            if (rp) {
+                                if (lagfx_read_virtual_besteffort(p, task, te->gpu_addr, rl, rp)) {
+                                    uint32_t nb = 0;
+                                    for (size_t q = 0; q + 4 <= rl; q += 4)
+                                        if (rp[q] | rp[q+1] | rp[q+2]) nb++;
+                                    lagfx_vk_iosurface_upload_pixels(vk, ios, rp, rl);
+                                    LAGFX_LOG("P6b TEXREFRESH ref=0x%x %ux%u nonblack_px=%u/%zu",
+                                              tref, ios->width, ios->height, nb, rl/4);
+                                }
+                                free(rp);
+                            }
+                        }
                         view = te->view;
                         lay  = ios->layout;
                     }
@@ -310,9 +332,12 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                         if (ne) { ne->host_handle = ios; ne->image = ios->image; ne->view = ios->view; }
                         view = ios->view;
                         lay  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        uint32_t nb = 0;
+                        for (size_t q = 0; q + 4 <= rd_len; q += 4)
+                            if (pix[q] | pix[q+1] | pix[q+2]) nb++;
                         LAGFX_LOG("P6b TEXBACK ref=0x%x backed %ux%u from PFN0x%llx (%llu B) "
-                                  "→ sampleable, real content", tref, W, H,
-                                  (unsigned long long)pfn, (unsigned long long)sz);
+                                  "nonblack_px=%u/%zu", tref, W, H,
+                                  (unsigned long long)pfn, (unsigned long long)sz, nb, rd_len/4);
                     } else if (ios) {
                         lagfx_vk_iosurface_destroy(vk, ios);
                     }
