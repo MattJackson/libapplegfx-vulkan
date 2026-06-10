@@ -453,6 +453,11 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
     bool have_synchronization2        = (probe13.synchronization2   == VK_TRUE);
     bool have_timeline_semaphore_feat = (probe12.timelineSemaphore  == VK_TRUE);
     bool have_descriptor_indexing     = (probe12.descriptorIndexing == VK_TRUE);
+    /* M2 host-flattening: bufferDeviceAddress lets the host hand the shader
+     * real device addresses for the resources a Metal argument buffer points
+     * to (via SPIR-V PhysicalStorageBuffer), so arg-buffer [[id(n)]] pointer
+     * members can be dereferenced. Core 1.2; lavapipe advertises it. */
+    bool have_buffer_device_address   = (probe12.bufferDeviceAddress == VK_TRUE);
 
     if (!have_dyn_rendering_feature) {
         LAGFX_WARN("vk_init: dynamicRendering feature not advertised by ICD; "
@@ -473,6 +478,10 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
         LAGFX_WARN("vk_init: descriptorIndexing feature not advertised; "
                    "bindless paths will need rewiring.");
     }
+    if (!have_buffer_device_address) {
+        LAGFX_WARN("vk_init: bufferDeviceAddress not advertised; M2 arg-buffer "
+                   "host-flattening (PhysicalStorageBuffer) will be unavailable.");
+    }
 
     VkPhysicalDeviceShaderObjectFeaturesEXT feat_so = {
         .sType     = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
@@ -490,6 +499,7 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
         .descriptorIndexing                         = have_descriptor_indexing     ? VK_TRUE : VK_FALSE,
         .runtimeDescriptorArray                     = have_descriptor_indexing     ? VK_TRUE : VK_FALSE,
         .shaderSampledImageArrayNonUniformIndexing  = have_descriptor_indexing     ? VK_TRUE : VK_FALSE,
+        .bufferDeviceAddress                        = have_buffer_device_address   ? VK_TRUE : VK_FALSE,
         .pNext                                      = &feat13,
     };
     /* shaderInt64: our AIR→SPIR-V translator emits OpCapability Int64
@@ -538,6 +548,10 @@ lagfx_status_t lagfx_vk_init(struct lagfx_vk_state **out,
     s->have_descriptor_indexing    = have_descriptor_indexing;
     s->have_shader_object          = want_shader_object;
     s->have_extended_dynamic_state3= want_eds3;
+    s->have_buffer_device_address  = have_buffer_device_address;
+    LAGFX_LOG("vk_init: bufferDeviceAddress=%d (M2 host-flattening %s)",
+              (int)have_buffer_device_address,
+              have_buffer_device_address ? "available" : "UNAVAILABLE");
 
     vkGetDeviceQueue(s->device, s->graphics_queue_family, 0,
                      &s->graphics_queue);

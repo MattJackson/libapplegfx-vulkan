@@ -51,6 +51,7 @@ struct lagfx_vk_state {
     bool have_descriptor_indexing;
     bool have_shader_object;
     bool have_extended_dynamic_state3;
+    bool have_buffer_device_address;  /* M2 host-flattening (PhysicalStorageBuffer) */
 
     /* Phase 1.B.2: command pool bound to the graphics queue family.
      * Created at lagfx_vk_init completion, destroyed in
