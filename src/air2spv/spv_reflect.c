@@ -152,6 +152,24 @@ done:
     return total;
 }
 
+bool lagfx_spv_has_image_sample(const uint8_t *spv, size_t spv_len) {
+    if (!spv || spv_len < 20u || lagfx_le32(spv) != SPV_MAGIC) return false;
+    size_t nwords = spv_len / 4u;
+    for (size_t i = 5u; i < nwords;) {
+        uint32_t hdr = lagfx_le32(spv + i * 4u);
+        uint16_t wc = (uint16_t)(hdr >> 16);
+        uint16_t op = (uint16_t)(hdr & 0xFFFFu);
+        if (wc == 0u || i + wc > nwords) break;
+        /* SPIR-V image-sample / fetch / read opcodes (the shader reads a
+         * texture): OpImageSample* 87..96, OpImageFetch 95, OpImageGather 96/97,
+         * OpImageRead 98, OpImageSparse* 305..320. If any appear, the shader
+         * USES a texture — it must have a bound sampled-image descriptor. */
+        if ((op >= 87u && op <= 98u) || (op >= 305u && op <= 320u)) return true;
+        i += wc;
+    }
+    return false;
+}
+
 size_t lagfx_spv_reflect_vertex_inputs(const uint8_t *spv, size_t spv_len,
                                        lagfx_spv_vertex_input_t *out, size_t cap) {
     if (!spv || spv_len < 20u) return 0;

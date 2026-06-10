@@ -19,6 +19,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -63,6 +64,12 @@ typedef struct {
  * stage-in attributes (purely vertex_id / builtin-driven). */
 size_t lagfx_spv_reflect_vertex_inputs(const uint8_t *spv, size_t spv_len,
                                        lagfx_spv_vertex_input_t *out, size_t cap);
+
+/* True if the SPIR-V contains any image sample/fetch/read instruction (the
+ * shader USES a texture). If true but reflection found no SAMPLED_IMAGE
+ * binding, the module is INCONSISTENT (translator dropped the texture
+ * binding) → must not be drawn or it samples an unbound descriptor → crash. */
+bool lagfx_spv_has_image_sample(const uint8_t *spv, size_t spv_len);
 
 #ifdef __cplusplus
 }

@@ -1880,6 +1880,26 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                         && rb[u].kind != LAGFX_SPV_BINDING_SAMPLER)
                         drawable = false;
 
+                /* INCONSISTENT-SHADER GUARD: if the fragment SPIR-V SAMPLES a
+                 * texture but reflection surfaced NO SAMPLED_IMAGE binding, the
+                 * translator dropped the texture binding (live composite shaders
+                 * still do this for some variants). The descriptor layout then
+                 * lacks the binding the shader samples → lavapipe NULL-deref at
+                 * draw. Such a pipeline is NOT drawable → falls back to the
+                 * substitute (no crash). ColorFill (no sample) is unaffected. */
+                if (drawable && spv_keep[1]) {
+                    bool frag_samples = lagfx_spv_has_image_sample(spv_keep[1], spv_keep_sz[1]);
+                    bool have_image = false;
+                    for (size_t u = 0; u < nrb; u++)
+                        if (rb[u].kind == LAGFX_SPV_BINDING_SAMPLED_IMAGE) { have_image = true; break; }
+                    if (frag_samples && !have_image) {
+                        LAGFX_LOG("op_0x74 P6a: ref=0x%x frag SAMPLES a texture but reflection "
+                                  "has no SAMPLED_IMAGE — incomplete translation, SUBSTITUTE (no crash)",
+                                  reference);
+                        drawable = false;
+                    }
+                }
+
                 if (has_resources && !drawable) {
                     /* Resource-using but not yet drawable (textures/samplers, or
                      * no pool) → leave phase6_translated false so the substitute
