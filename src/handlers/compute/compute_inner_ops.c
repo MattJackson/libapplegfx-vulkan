@@ -255,12 +255,14 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                     uint64_t leaf_pfn = 0, leaf_sz = 0;
                     if (resolved && tva != 0u
                         && lagfx_task_read_virtual(p, task, tva, sizeof(tdesc), tdesc)) {
-                        uint64_t acc = 0;
                         for (int e = 0; e < 4; e++) {
                             uint64_t es = lagfx_le64(tdesc + (size_t)e * 16u);
-                            uint64_t ep = lagfx_le64(tdesc + (size_t)e * 16u + 8u);
+                            uint64_t raw = lagfx_le64(tdesc + (size_t)e * 16u + 8u);
+                            /* Texture objects carry FLAGS in the PFN word's high 32
+                             * bits (e.g. 0x0001000100000741 → PFN 0x741); mask low. */
+                            uint64_t ep = raw & 0xffffffffull;
                             if (ep < 0x10u || ep > 0xfffffu || es == 0u) continue;
-                            leaf_pfn = ep; leaf_sz = es; (void)acc; break;
+                            leaf_pfn = ep; leaf_sz = es; break;
                         }
                     }
                     uint32_t nonblack = 0, nonzero = 0; uint8_t px[4096] = {0};
