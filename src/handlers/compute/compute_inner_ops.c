@@ -327,6 +327,31 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * MVP binds AND a dynamic over-read returns zeros (no crash). */
                     if ((getenv("LAGFX_M2_REBIND") || getenv("LAGFX_VTX_INPUT"))
                         && lagfx_task_read_virtual(p, task, va, sizeof(desc), desc)) {
+                        /* GROUND-TRUTH dump (LAGFX_M2_DUMP): the full placement
+                         * descriptor (4× {size,PFN}) plus the leaf-page bytes at
+                         * each entry's PFN<<12 read at offsets 0/64/128/192 — so we
+                         * can SEE where the real float position/uniform data lives
+                         * instead of guessing the buffer layout. */
+                        if (getenv("LAGFX_M2_DUMP")) {
+                            for (int e = 0; e < 4; e++) {
+                                uint64_t es = lagfx_le64(desc + (size_t)e * 16u);
+                                uint64_t ep = lagfx_le64(desc + (size_t)e * 16u + 8u);
+                                LAGFX_LOG("P6b DUMP ref=0x%x bind%u desc[%d]={size=%llu PFN=0x%llx}",
+                                          bs->ref, binding_no[i], e,
+                                          (unsigned long long)es, (unsigned long long)ep);
+                                if (ep < 0x10u || ep > 0xfffffu) continue;
+                                for (int o = 0; o < 4; o++) {
+                                    uint64_t off = (uint64_t)o * 64u;
+                                    uint8_t lb[16] = {0};
+                                    if (lagfx_task_read_virtual(p, task, (ep << 12) + off, 16, lb))
+                                        LAGFX_LOG("P6b DUMP   PFN0x%llx+%llu: %02x %02x %02x %02x "
+                                                  "%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                                                  (unsigned long long)ep, (unsigned long long)off,
+                                                  lb[0],lb[1],lb[2],lb[3],lb[4],lb[5],lb[6],lb[7],
+                                                  lb[8],lb[9],lb[10],lb[11],lb[12],lb[13],lb[14],lb[15]);
+                                }
+                            }
+                        }
                         for (int e = 0; e < 4; e++) {
                             uint64_t rsize = lagfx_le64(desc + (size_t)e * 16u);
                             uint64_t pfn = lagfx_le64(desc + (size_t)e * 16u + 8u);
