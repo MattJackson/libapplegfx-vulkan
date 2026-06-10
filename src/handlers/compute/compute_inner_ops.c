@@ -195,6 +195,20 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
             }
         }
     }
+    /* Diagnostic (LAGFX_TEXCOMP_ONLY): draw ONLY texture-sampling composites
+     * (pipelines with a SAMPLED_IMAGE binding), skipping the buffer-only fills
+     * (ColorFill draws fullscreen black 18× and dominates the shared render
+     * target, burying the 1× composite). Isolates whether the translated
+     * composite + backed guest texture produces VISIBLE non-black content. */
+    if (getenv("LAGFX_TEXCOMP_ONLY")) {
+        bool has_img = false;
+        for (uint32_t i = 0; i < n && i < 16u; i++)
+            if (binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLED_IMAGE) { has_img = true; break; }
+        if (!has_img) {
+            vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
+            return VK_NULL_HANDLE;
+        }
+    }
     /* M1 texture-composite: when fragment bindings are offset (LAGFX_M1_TEXCOMP),
      * the reflected binding number no longer equals the Metal resource index.
      * Demux per stage/kind: bindings < FRAG_BASE are vertex; >= FRAG_BASE are
