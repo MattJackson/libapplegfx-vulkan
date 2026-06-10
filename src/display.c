@@ -80,6 +80,42 @@ static void notify_mode_changed(lagfx_display_t *display, uint32_t width, uint32
     }
 }
 
+/* Diagnostic (LAGFX_RT_INIT_TINT): clear the render target to teal ONCE at
+ * creation. Draws use loadOp=LOAD (accumulate), so this is the decisive raster
+ * test: if a translated draw (e.g. ColorFill) covers the screen, the teal turns
+ * to that draw's colour; if NO draw rasterizes, the teal survives. Distinguishes
+ * "ColorFill correctly fills black (geometry works)" from "nothing rasterizes". */
+static void display_rt_tint(lagfx_display_t *disp) {
+    if (!getenv("LAGFX_RT_INIT_TINT") || !disp || !disp->rt_ready) return;
+    struct lagfx_vk_state *vk = disp->device ? disp->device->vk : NULL;
+    if (!vk || vk->graphics_queue == VK_NULL_HANDLE
+        || disp->rt.image == VK_NULL_HANDLE) return;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    if (lagfx_vk_cmdbuf_alloc(vk, &cb) != LAGFX_OK) return;
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    if (vkBeginCommandBuffer(cb, &bi) == VK_SUCCESS) {
+        const float teal[4] = { 0.0f, 0.6f, 0.6f, 1.0f };
+        lagfx_vk_render_clear_color(vk, cb, &disp->rt, teal);
+        if (vkEndCommandBuffer(cb) == VK_SUCCESS) {
+            VkFence fence = VK_NULL_HANDLE;
+            VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+            vkCreateFence(vk->device, &fci, NULL, &fence);
+            VkSubmitInfo si = {
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .commandBufferCount = 1, .pCommandBuffers = &cb,
+            };
+            if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) == VK_SUCCESS)
+                vkWaitForFences(vk->device, 1, &fence, VK_TRUE, 1000000000ull);
+            if (fence != VK_NULL_HANDLE) vkDestroyFence(vk->device, fence, NULL);
+            LAGFX_LOG("display_rt_tint: RT cleared teal once (raster-coverage test)");
+        }
+    }
+    lagfx_vk_cmdbuf_free(vk, cb);
+}
+
 static void display_rt_create(lagfx_display_t *disp) {
     if (!disp || !disp->device || !disp->device->vk
         || !disp->device->vk->initialized) {
@@ -120,6 +156,7 @@ static void display_rt_create(lagfx_display_t *disp) {
             LAGFX_LOG("display_rt_create: wrapped pipeline frame image "
                       "(%ux%u, no extra allocation)", w, h);
             disp->rt_ready = true;
+            display_rt_tint(disp);
             notify_mode_changed(disp, w, h);
             return;
         }
@@ -135,6 +172,7 @@ static void display_rt_create(lagfx_display_t *disp) {
         return;
     }
     disp->rt_ready = true;
+    display_rt_tint(disp);
     notify_mode_changed(disp, w, h);
 }
 
