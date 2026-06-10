@@ -205,12 +205,20 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                 lagfx_resource_entry_t *te =
                     lagfx_resource_lookup_texture(&p->resources, tref);
                 if (te && te->view != VK_NULL_HANDLE) {
-                    view = te->view;
                     lagfx_vk_iosurface_t *ios =
                         (lagfx_vk_iosurface_t *)te->host_handle;
+                    /* CRASH FIX: only bind the texture if its image is genuinely
+                     * in a SAMPLEABLE layout. Binding a view whose image is still
+                     * UNDEFINED/uninitialized (declared here as GENERAL) makes
+                     * lavapipe sample a layout-mismatched image → SIGSEGV. An
+                     * unbacked/not-yet-rendered IOSurface → leave view NULL →
+                     * skip the draw (no crash). This is the texture-sample crash
+                     * that killed the M2 runs once real data drove the shader. */
                     if (ios && (ios->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                || ios->layout == VK_IMAGE_LAYOUT_GENERAL))
-                        lay = ios->layout;
+                                || ios->layout == VK_IMAGE_LAYOUT_GENERAL)) {
+                        view = te->view;
+                        lay  = ios->layout;
+                    }
                 }
             }
             if (view == VK_NULL_HANDLE) {
