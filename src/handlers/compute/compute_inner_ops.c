@@ -304,6 +304,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                     if ((getenv("LAGFX_M2_REBIND") || getenv("LAGFX_VTX_INPUT"))
                         && lagfx_task_read_virtual(p, task, va, sizeof(desc), desc)) {
                         for (int e = 0; e < 4; e++) {
+                            uint64_t rsize = lagfx_le64(desc + (size_t)e * 16u);
                             uint64_t pfn = lagfx_le64(desc + (size_t)e * 16u + 8u);
                             if (pfn < 0x10u || pfn > 0xfffffu) continue;
                             uint64_t dva = (pfn << 12) + bs->offset;
@@ -314,10 +315,29 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                 lagfx_read_virtual_besteffort(p, task, dva,
                                                               LAGFX_DRAW_DS_BUF_SZ, data);
                                 LAGFX_LOG("P6b M2: ref=0x%x rebound REAL data via descriptor "
-                                          "PFN0x%llx (VA0x%llx+off0x%llx)", bs->ref,
+                                          "PFN0x%llx (VA0x%llx+off0x%llx) size=%llu", bs->ref,
                                           (unsigned long long)pfn,
                                           (unsigned long long)(pfn << 12),
-                                          (unsigned long long)bs->offset);
+                                          (unsigned long long)bs->offset,
+                                          (unsigned long long)rsize);
+                                /* LAGFX_SIMPLE_ONLY: a large data range is an
+                                 * argument buffer (guest pointers → lavapipe
+                                 * derefs them → crash) or a dynamically-indexed
+                                 * buffer. Only PLAIN SMALL buffers (e.g. the 64 B
+                                 * MVP matrix) are safe to bind raw. If this range
+                                 * is large, skip the whole draw so only simple
+                                 * MVP+vertex pipelines render. */
+                                if (getenv("LAGFX_SIMPLE_ONLY")
+                                    && rsize > 512u) {
+                                    vkFreeDescriptorSets(vk->device,
+                                                         vk->draw_desc_pool, 1, &set);
+                                    for (uint32_t k = 0; k < *out_n; k++) {
+                                        vkDestroyBuffer(vk->device, out_bufs[k], NULL);
+                                        vkFreeMemory(vk->device, out_mems[k], NULL);
+                                    }
+                                    *out_n = 0;
+                                    return VK_NULL_HANDLE;
+                                }
                                 break;
                             }
                         }
