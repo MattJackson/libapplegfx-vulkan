@@ -280,8 +280,18 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                     uint32_t W = 1u, H = 1u;
                     if (total_px >= 1310720u) { W = 1280u; H = 1024u; }
                     else {
-                        for (uint32_t cand = 256u; cand >= 1u; cand >>= 1) {
-                            if (total_px % cand == 0u) { W = cand; H = total_px / cand; break; }
+                        /* Prefer a SQUARE texture (UI textures/atlases are usually
+                         * square, e.g. 4096 B = 1024 px = 32×32). A wrong aspect
+                         * (e.g. 256×4) maps the composite's UVs to the wrong texels
+                         * → samples the black/zero regions → black output. Use isqrt
+                         * when total_px is a perfect square; else fall back to the
+                         * largest dividing power-of-2 width. */
+                        uint32_t s = 1u; while (s * s < total_px) s++;
+                        if (s * s == total_px) { W = s; H = s; }
+                        else {
+                            for (uint32_t cand = 256u; cand >= 1u; cand >>= 1) {
+                                if (total_px % cand == 0u) { W = cand; H = total_px / cand; break; }
+                            }
                         }
                     }
                     size_t rd_len = (size_t)W * H * 4u;
