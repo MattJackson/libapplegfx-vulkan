@@ -120,6 +120,12 @@ static VkPipeline lagfx_get_cached_pipeline(lagfx_task_entry_t *task, VkDevice d
  * the descriptor / MVP reads use only the first bytes. */
 #define LAGFX_DRAW_DS_BUF_SZ 65536u
 
+/* M1 texture-composite: fragment-stage descriptor bindings are offset by this
+ * base so they never collide with vertex-stage set-0 bindings in the merged
+ * pipeline layout (SkyLight vertex shaders use ≤4 buffers, well under 16). The
+ * draw site treats binding < base as vertex, >= base as fragment. */
+#define LAGFX_FRAG_BINDING_BASE 16u
+
 /* Best-effort guest-VA read: zero-fill `buf`, then read page by page, stopping
  * at the first unmapped page (keeping what was read). Returns true if at least
  * the first page read. Unlike lagfx_task_read_virtual (all-or-nothing), this
@@ -189,6 +195,15 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
             }
         }
     }
+    /* M1 texture-composite: when fragment bindings are offset (LAGFX_M1_TEXCOMP),
+     * the reflected binding number no longer equals the Metal resource index.
+     * Demux per stage/kind: bindings < FRAG_BASE are vertex; >= FRAG_BASE are
+     * fragment. The guest binds textures/buffers by Metal index per namespace,
+     * so resolve by per-kind ORDINAL among the (sorted) fragment bindings —
+     * the N-th fragment SAMPLED_IMAGE → fragment_textures[N], N-th fragment
+     * STORAGE → fragment_buffers[N]. */
+    const bool m1_texcomp = getenv("LAGFX_M1_TEXCOMP") != NULL;
+    uint32_t tex_ord = 0, fbuf_ord = 0;
     for (uint32_t i = 0; i < n && i < 16u; i++) {
         uint32_t slot = binding_no[i];
         /* M1 (c): texture (SAMPLED_IMAGE) binding — resolve the guest's bound
@@ -199,9 +214,12 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
         if (binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLED_IMAGE) {
             VkImageView view = VK_NULL_HANDLE;
             VkImageLayout lay = VK_IMAGE_LAYOUT_GENERAL;
-            if (slot < LAGFX_MAX_BINDING_SLOTS
-                && task->bindings.fragment_textures[slot].valid) {
-                uint32_t tref = task->bindings.fragment_textures[slot].ref;
+            /* Textures are fragment-stage; resolve by ordinal under texcomp. */
+            uint32_t tex_idx = m1_texcomp ? tex_ord : slot;
+            tex_ord++;
+            if (tex_idx < LAGFX_MAX_BINDING_SLOTS
+                && task->bindings.fragment_textures[tex_idx].valid) {
+                uint32_t tref = task->bindings.fragment_textures[tex_idx].ref;
                 lagfx_resource_entry_t *te =
                     lagfx_resource_lookup_texture(&p->resources, tref);
                 if (te && te->view != VK_NULL_HANDLE) {
@@ -276,22 +294,39 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
         uint64_t bind_alloc_sz = LAGFX_DRAW_DS_BUF_SZ;
         if (slot < LAGFX_MAX_BINDING_SLOTS) {
             lagfx_binding_slot_t *bs = NULL;
-            /* B8: VERTEX-FIRST. The pipeline reflection MERGES the vertex and
-             * fragment [[buffer(n)]] namespaces into one set-0 binding array, so
-             * binding N collides when BOTH stages bind buffer N (e.g. ColorFill:
-             * vertex ViewportToNDC binds positions at [[buffer(0)]] offset 0,
-             * fragment ColorFill binds its colour at [[buffer(0)]] offset 192 of
-             * the SAME guest buffer ref=0xe). Checking fragment first gave the
-             * VERTEX shader's binding-0 the fragment colour bytes → garbage
-             * positions → degenerate geometry → black frame (confirmed on
-             * ref=0xd: bind#0 read off0xc0=192 not off0=positions). Vertex MUST
-             * win: a wrong fragment colour only mis-tints; wrong vertex positions
-             * collapse the whole draw. So resolve vertex_buffers[slot] first and
-             * only fall back to fragment_buffers[slot] for fragment-only bindings. */
-            if (task->bindings.vertex_buffers[slot].valid)
-                bs = &task->bindings.vertex_buffers[slot];
-            else if (task->bindings.fragment_buffers[slot].valid)
-                bs = &task->bindings.fragment_buffers[slot];
+            if (m1_texcomp) {
+                /* TEXCOMP demux: fragment buffers are at binding >= FRAG_BASE
+                 * (resolve by ordinal among fragment STORAGE bindings →
+                 * fragment_buffers[ordinal]); lower bindings are vertex buffers
+                 * at their binding index. Unambiguous — no cross-stage collision. */
+                if (slot >= LAGFX_FRAG_BINDING_BASE) {
+                    if (fbuf_ord < LAGFX_MAX_BINDING_SLOTS
+                        && task->bindings.fragment_buffers[fbuf_ord].valid)
+                        bs = &task->bindings.fragment_buffers[fbuf_ord];
+                    fbuf_ord++;
+                } else if (task->bindings.vertex_buffers[slot].valid) {
+                    bs = &task->bindings.vertex_buffers[slot];
+                }
+            } else {
+                /* B8: VERTEX-FIRST (no binding offset). The pipeline reflection
+                 * MERGES the vertex and fragment [[buffer(n)]] namespaces into one
+                 * set-0 binding array, so binding N collides when BOTH stages bind
+                 * buffer N (e.g. ColorFill: vertex ViewportToNDC binds positions at
+                 * [[buffer(0)]] offset 0, fragment ColorFill binds its colour at
+                 * [[buffer(0)]] offset 192 of the SAME guest buffer ref=0xe).
+                 * Checking fragment first gave the VERTEX shader's binding-0 the
+                 * fragment colour bytes → garbage positions → degenerate geometry →
+                 * black frame (confirmed on ref=0xd: bind#0 read off0xc0=192 not
+                 * off0=positions). Vertex MUST win: a wrong fragment colour only
+                 * mis-tints; wrong vertex positions collapse the whole draw. So
+                 * resolve vertex_buffers[slot] first and only fall back to
+                 * fragment_buffers[slot] for fragment-only bindings. (Superseded by
+                 * the TEXCOMP demux above when fragment bindings are offset.) */
+                if (task->bindings.vertex_buffers[slot].valid)
+                    bs = &task->bindings.vertex_buffers[slot];
+                else if (task->bindings.fragment_buffers[slot].valid)
+                    bs = &task->bindings.fragment_buffers[slot];
+            }
             if (bs && bs->ref != 0u) {
                 uint8_t type = 0; uint64_t va = 0, gpa = 0;
                 if (lagfx_resolve_object_data(p, task, bs->ref, &type, &va, &gpa)
@@ -1842,6 +1877,18 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                     if (spv) free(spv);
                     free(mlib_buf);
                     break;
+                }
+
+                /* M1 TEXTURE-COMPOSITE (LAGFX_M1_TEXCOMP): give the FRAGMENT
+                 * stage a disjoint binding range so the merged set-0 layout
+                 * doesn't collide vertex `[[buffer(n)]]` with fragment
+                 * `[[texture(n)]]`/`[[buffer(n)]]` (both emitted at set0 from
+                 * binding 0). Without this the merge drops the fragment's
+                 * texture/colour binding → composites flagged inconsistent and
+                 * substituted (no real content ever drawn). The draw site
+                 * demuxes on the same LAGFX_FRAG_BINDING_BASE. */
+                if (stage == 1 && getenv("LAGFX_M1_TEXCOMP")) {
+                    lagfx_spv_offset_bindings(spv, spv_sz, LAGFX_FRAG_BINDING_BASE);
                 }
 
                 /* Hand SPIR-V to lavapipe. */

@@ -71,6 +71,20 @@ size_t lagfx_spv_reflect_vertex_inputs(const uint8_t *spv, size_t spv_len,
  * binding) → must not be drawn or it samples an unbound descriptor → crash. */
 bool lagfx_spv_has_image_sample(const uint8_t *spv, size_t spv_len);
 
+/* In-place ADD `base` to every `OpDecorate <id> Binding <n>` literal in the
+ * SPIR-V module (DescriptorSet decorations are left untouched). Used to give
+ * the FRAGMENT stage a disjoint binding range from the VERTEX stage: the
+ * translator emits both stages' resources in descriptor set 0 starting at
+ * binding 0, so vertex `[[buffer(0)]]` and fragment `[[texture(0)]]` collide
+ * at set0/binding0 — and Vulkan cannot hold two descriptorTypes at one
+ * (set,binding), so the merged pipeline layout drops one and the shader
+ * samples/loads an unbound descriptor. Offsetting the fragment stage by a
+ * fixed base (e.g. 16) makes the merged set-0 layout unambiguous: bindings
+ * < base are vertex resources, >= base are fragment resources. The draw site
+ * demuxes on the same base. Mutates `spv` in place; safe to call once per
+ * fragment module before vkCreateShaderModule + reflection. */
+void lagfx_spv_offset_bindings(uint8_t *spv, size_t spv_len, uint32_t base);
+
 #ifdef __cplusplus
 }
 #endif

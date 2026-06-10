@@ -152,6 +152,26 @@ done:
     return total;
 }
 
+void lagfx_spv_offset_bindings(uint8_t *spv, size_t spv_len, uint32_t base) {
+    if (!spv || spv_len < 20u || base == 0u) return;
+    if (lagfx_le32(spv) != SPV_MAGIC) return;
+    size_t nwords = spv_len / 4u;
+    for (size_t i = 5u; i < nwords;) {
+        uint32_t hdr = lagfx_le32(spv + i * 4u);
+        uint16_t wc = (uint16_t)(hdr >> 16);
+        uint16_t op = (uint16_t)(hdr & 0xFFFFu);
+        if (wc == 0u || i + wc > nwords) break;
+        /* OpDecorate <id> Binding <literal>: wc==4, W(2)==Binding(33). Add base
+         * to the binding literal at word i+3. DescriptorSet (34) untouched. */
+        if (op == OP_DECORATE && wc >= 4u
+            && lagfx_le32(spv + (i + 2u) * 4u) == DECOR_BINDING) {
+            uint32_t b = lagfx_le32(spv + (i + 3u) * 4u);
+            lagfx_put_le32(spv + (i + 3u) * 4u, b + base);
+        }
+        i += wc;
+    }
+}
+
 bool lagfx_spv_has_image_sample(const uint8_t *spv, size_t spv_len) {
     if (!spv || spv_len < 20u || lagfx_le32(spv) != SPV_MAGIC) return false;
     size_t nwords = spv_len / 4u;
