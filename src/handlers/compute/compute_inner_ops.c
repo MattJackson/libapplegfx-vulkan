@@ -571,6 +571,17 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                       data[8],data[9],data[10],data[11],data[12],data[13],data[14],data[15],
                       data[16],data[17],data[18],data[19],data[20],data[21],data[22],data[23],
                       data[24],data[25],data[26],data[27],data[28],data[29],data[30],data[31]);
+            /* Geometry RE: dump bytes 32..63 (matrix cols 2,3 for a 64-B float4x4)
+             * as float words — col3 carries the translation + w; if w (the last
+             * float) != 1.0 the perspective divide collapses every vertex. */
+            {
+                float f[16];
+                for (int q = 0; q < 16; q++) { uint32_t u = lagfx_le32(data + q*4); memcpy(&f[q], &u, 4); }
+                LAGFX_LOG("P6b bind#%u FLOATS: c0[%.4g %.4g %.4g %.4g] c1[%.4g %.4g %.4g %.4g] "
+                          "c2[%.4g %.4g %.4g %.4g] c3[%.4g %.4g %.4g %.4g]", binding_no[i],
+                          f[0],f[1],f[2],f[3], f[4],f[5],f[6],f[7],
+                          f[8],f[9],f[10],f[11], f[12],f[13],f[14],f[15]);
+            }
             /* Arg-buffer RE: the bound buffer may be an ARGUMENT buffer whose
              * u32 words are object IDs referencing the real resources. Probe
              * the first 8 words: any that resolve as a live object are refs. */
