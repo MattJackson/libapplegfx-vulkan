@@ -175,6 +175,20 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
     VkDescriptorBufferInfo  binfos[16];
     VkDescriptorImageInfo   iinfos[16];
     uint32_t nw = 0;
+    /* Diagnostic (LAGFX_SKIP_TEX): skip any pipeline that samples a fragment
+     * texture, so the pure-geometry (buffer + vertex) pipelines render without
+     * the lavapipe NULL-deref that an unbacked IOSurface sample causes once
+     * real storage data drives the shader down its texturing branch. Isolates
+     * whether the MVP+vertex geometry path itself produces visible pixels. */
+    if (getenv("LAGFX_SKIP_TEX")) {
+        for (uint32_t i = 0; i < n && i < 16u; i++) {
+            if (binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLED_IMAGE
+                || binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLER) {
+                vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
+                return VK_NULL_HANDLE;
+            }
+        }
+    }
     for (uint32_t i = 0; i < n && i < 16u; i++) {
         uint32_t slot = binding_no[i];
         /* M1 (c): texture (SAMPLED_IMAGE) binding — resolve the guest's bound
