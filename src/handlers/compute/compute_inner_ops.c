@@ -115,7 +115,35 @@ static VkPipeline lagfx_get_cached_pipeline(lagfx_task_entry_t *task, VkDevice d
     return p;
 }
 
-#define LAGFX_DRAW_DS_BUF_SZ 4096u
+/* 64 KiB: large enough to bound a shader's dynamic storage-buffer indexing so
+ * an over-read returns zero-padded data instead of SIGSEGV'ing lavapipe, while
+ * the descriptor / MVP reads use only the first bytes. */
+#define LAGFX_DRAW_DS_BUF_SZ 65536u
+
+/* Best-effort guest-VA read: zero-fill `buf`, then read page by page, stopping
+ * at the first unmapped page (keeping what was read). Returns true if at least
+ * the first page read. Unlike lagfx_task_read_virtual (all-or-nothing), this
+ * lets a small real buffer (e.g. a 64 B MVP matrix) bind from a large request
+ * by zero-padding the tail, and bounds a shader's dynamic over-read to zeros. */
+static bool lagfx_read_virtual_besteffort(lagfx_protocol_t *p,
+                                          const lagfx_task_entry_t *task,
+                                          uint64_t va, uint32_t len, uint8_t *buf) {
+    memset(buf, 0, len);
+    const uint32_t PAGE = 4096u;
+    uint32_t done = 0u;
+    bool any = false;
+    while (done < len) {
+        uint64_t cur = va + done;
+        uint32_t page_off = (uint32_t)(cur & (PAGE - 1u));
+        uint32_t chunk = PAGE - page_off;
+        if (chunk > len - done) chunk = len - done;
+        if (!lagfx_task_read_virtual(p, task, cur, chunk, buf + done)) break;
+        any = true;
+        done += chunk;
+    }
+    return any;
+}
+
 /* Stage 85b — build a descriptor set for a translated resource-using pipeline,
  * populated from the guest's bound storage buffers. Returns VK_NULL_HANDLE on
  * any failure (caller falls back to substitute). out_bufs/out_mems[0..*out_n)
@@ -230,8 +258,8 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                 uint8_t type = 0; uint64_t va = 0, gpa = 0;
                 if (lagfx_resolve_object_data(p, task, bs->ref, &type, &va, &gpa)
                     && va != 0u
-                    && lagfx_task_read_virtual(p, task, va + bs->offset,
-                                               LAGFX_DRAW_DS_BUF_SZ, data)) {
+                    && lagfx_read_virtual_besteffort(p, task, va + bs->offset,
+                                                     LAGFX_DRAW_DS_BUF_SZ, data)) {
                     have = true;
                     /* M2: `va` points to the placement DESCRIPTOR ((size,PFN)
                      * range pairs), not the buffer content — binding it gives
@@ -250,18 +278,27 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * shader to crash lavapipe (hard SIGSEGV in Mesa, mid-draw,
                      * uncatchable). Off by default keeps production stable
                      * (degenerate-but-no-crash); the M2 work iterates with it on. */
-                    if (getenv("LAGFX_M2_REBIND")
+                    /* Bind the buffer's REAL data (the MVP matrix, vertex data,
+                     * etc.) instead of the placement descriptor. Active when
+                     * LAGFX_M2_REBIND or LAGFX_VTX_INPUT is set — the vertex
+                     * shaders compute position = MVP * vertex_input, so the MVP
+                     * [[buffer]] MUST be real or every position collapses to 0.
+                     * The descriptor is (size@e*16, PFN@e*16+8) 16-byte entries;
+                     * the data is at PFN<<12 read as a guest VA (translate). The
+                     * 64 KiB best-effort read zero-pads the tail so a fixed 64 B
+                     * MVP binds AND a dynamic over-read returns zeros (no crash). */
+                    if ((getenv("LAGFX_M2_REBIND") || getenv("LAGFX_VTX_INPUT"))
                         && lagfx_task_read_virtual(p, task, va, sizeof(desc), desc)) {
-                        for (int q = 0; q < 8; q++) {
-                            uint64_t pfn = lagfx_le64(desc + (size_t)q * 8u);
+                        for (int e = 0; e < 4; e++) {
+                            uint64_t pfn = lagfx_le64(desc + (size_t)e * 16u + 8u);
                             if (pfn < 0x10u || pfn > 0xfffffu) continue;
                             uint64_t dva = (pfn << 12) + bs->offset;
                             uint8_t probe[16] = {0};
                             if (lagfx_task_read_virtual(p, task, dva, sizeof(probe), probe)
                                 && (probe[0] | probe[1] | probe[2] | probe[3]
-                                    | probe[4] | probe[5] | probe[6] | probe[7])
-                                && lagfx_task_read_virtual(p, task, dva,
-                                                           LAGFX_DRAW_DS_BUF_SZ, data)) {
+                                    | probe[4] | probe[5] | probe[6] | probe[7])) {
+                                lagfx_read_virtual_besteffort(p, task, dva,
+                                                              LAGFX_DRAW_DS_BUF_SZ, data);
                                 LAGFX_LOG("P6b M2: ref=0x%x rebound REAL data via descriptor "
                                           "PFN0x%llx (VA0x%llx+off0x%llx)", bs->ref,
                                           (unsigned long long)pfn,
@@ -410,14 +447,14 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
     if (!lagfx_task_read_virtual(p, task, vva, sizeof(vdesc), vdesc))
         return VK_NULL_HANDLE;
     uint8_t vdata[LAGFX_DRAW_DS_BUF_SZ];
-    for (int q = 0; q < 8; q++) {
-        uint64_t pfn = lagfx_le64(vdesc + (size_t)q * 8u);
+    for (int e = 0; e < 4; e++) {
+        uint64_t pfn = lagfx_le64(vdesc + (size_t)e * 16u + 8u);
         if (pfn < 0x10u || pfn > 0xfffffu) continue;
         uint64_t dva = (pfn << 12) + vbs->offset;
         uint8_t probe[16] = {0};
         if (lagfx_task_read_virtual(p, task, dva, sizeof(probe), probe)
             && (probe[0]|probe[1]|probe[2]|probe[3]|probe[4]|probe[5]|probe[6]|probe[7])
-            && lagfx_task_read_virtual(p, task, dva, LAGFX_DRAW_DS_BUF_SZ, vdata)) {
+            && lagfx_read_virtual_besteffort(p, task, dva, LAGFX_DRAW_DS_BUF_SZ, vdata)) {
             VkBuffer vb = VK_NULL_HANDLE;
             if (lagfx_vk_make_host_storage_buffer(vk, vdata, LAGFX_DRAW_DS_BUF_SZ,
                                                   &vb, out_mem) == LAGFX_OK) {
