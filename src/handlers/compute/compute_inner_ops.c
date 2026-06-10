@@ -270,6 +270,10 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
         if (binding_kind[i] != (uint8_t)LAGFX_SPV_BINDING_STORAGE_BUFFER) continue;
         uint8_t data[LAGFX_DRAW_DS_BUF_SZ];
         bool have = false;
+        /* M2: the bound buffer's DECLARED size (from the placement descriptor's
+         * matched range). The VkBuffer is sized to this so a shader's dynamic
+         * index stays in bounds (no lavapipe OOB). Default to the read size. */
+        uint64_t bind_alloc_sz = LAGFX_DRAW_DS_BUF_SZ;
         if (slot < LAGFX_MAX_BINDING_SLOTS) {
             lagfx_binding_slot_t *bs = NULL;
             if (task->bindings.fragment_buffers[slot].valid)
@@ -322,6 +326,13 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                     | probe[4] | probe[5] | probe[6] | probe[7])) {
                                 lagfx_read_virtual_besteffort(p, task, dva,
                                                               LAGFX_DRAW_DS_BUF_SZ, data);
+                                /* Size the VkBuffer to the declared range size
+                                 * (capped to 8 MiB) so a dynamic index into the
+                                 * real buffer stays in bounds — only the first
+                                 * 64 KiB has real content, the rest zero-pads. */
+                                if (rsize > LAGFX_DRAW_DS_BUF_SZ)
+                                    bind_alloc_sz = rsize > (8u*1024u*1024u)
+                                                      ? (8u*1024u*1024u) : rsize;
                                 LAGFX_LOG("P6b M2: ref=0x%x rebound REAL data via descriptor "
                                           "PFN0x%llx (VA0x%llx+off0x%llx) size=%llu", bs->ref,
                                           (unsigned long long)pfn,
@@ -436,8 +447,13 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
             LAGFX_LOG("P6b bind#%u slot=%u NO guest data (zero buffer)", binding_no[i], slot);
         }
         VkBuffer vb = VK_NULL_HANDLE; VkDeviceMemory vm = VK_NULL_HANDLE;
-        if (lagfx_vk_make_host_storage_buffer(vk, have ? data : NULL,
-                                              LAGFX_DRAW_DS_BUF_SZ, &vb, &vm) != LAGFX_OK
+        /* Buffer sized to the declared range (bind_alloc_sz, ≥ BUF_SZ): real
+         * content in the first LAGFX_DRAW_DS_BUF_SZ bytes, rest zero-padded, so
+         * a shader's dynamic index into the real buffer stays in bounds. */
+        if (lagfx_vk_make_host_storage_buffer_padded(
+                vk, have ? data : NULL,
+                have ? (VkDeviceSize)LAGFX_DRAW_DS_BUF_SZ : 0u,
+                (VkDeviceSize)bind_alloc_sz, &vb, &vm) != LAGFX_OK
             || vb == VK_NULL_HANDLE) {
             for (uint32_t k = 0; k < *out_n; k++) {
                 vkDestroyBuffer(vk->device, out_bufs[k], NULL);
@@ -449,7 +465,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
         }
         out_bufs[*out_n] = vb; out_mems[*out_n] = vm; (*out_n)++;
         binfos[nw] = (VkDescriptorBufferInfo){
-            .buffer = vb, .offset = 0, .range = LAGFX_DRAW_DS_BUF_SZ };
+            .buffer = vb, .offset = 0, .range = (VkDeviceSize)bind_alloc_sz };
         writes[nw] = (VkWriteDescriptorSet){
             .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet          = set,
@@ -599,18 +615,12 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
      * correctly. Until the composite translation is complete, draw only the
      * simple (≤1 storage binding) pipelines so the system is stable AND
      * ColorFill's real colour output is visible. Off by default. */
-    if (resource_using && getenv("LAGFX_M2_SIMPLE_DRAW")) {
-        uint32_t nstorage = 0;
-        for (uint32_t b = 0; b < task->pending_pipeline.n_spv_bindings && b < 16u; b++)
-            if (task->pending_pipeline.spv_binding_kind[b]
-                == (uint8_t)LAGFX_SPV_BINDING_STORAGE_BUFFER) nstorage++;
-        if (nstorage > 1u) {
-            LAGFX_LOG("%s: ref=0x%x %u storage bindings — composite (incomplete "
-                      "translation), skip for SIMPLE_DRAW (no crash)",
-                      op, task->pending_pipeline.reference, nstorage);
-            return;
-        }
-    }
+    /* (LAGFX_M2_SIMPLE_DRAW was a broken heuristic — the pipeline reflection
+     * MERGES vertex + fragment bindings, so even ColorFill reflects 3 buffers
+     * and it skipped everything. Removed; the storage-buffer SIZING fix below
+     * — buffers allocated to their declared size — addresses the real crash
+     * (a shader's dynamic index reading past a fixed 64 KiB buffer).) */
+    (void)resource_using;
 
     /* Vertex-input upload — SHARED by the resource-using and resource-free
      * translated paths. A vertex shader with stage-in attributes may be

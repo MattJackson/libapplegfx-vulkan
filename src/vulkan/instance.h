@@ -178,6 +178,16 @@ lagfx_status_t lagfx_vk_make_host_storage_buffer(struct lagfx_vk_state *vk,
                                                  VkBuffer *out_buf,
                                                  VkDeviceMemory *out_mem);
 
+/* M2: storage buffer of alloc_size bytes, first data_len from `data`, rest
+ * zero-padded — so a buffer can be sized to the guest's DECLARED size (dynamic
+ * index stays in bounds) with only data_len bytes of real content. */
+lagfx_status_t lagfx_vk_make_host_storage_buffer_padded(struct lagfx_vk_state *vk,
+                                                        const void *data,
+                                                        VkDeviceSize data_len,
+                                                        VkDeviceSize alloc_size,
+                                                        VkBuffer *out_buf,
+                                                        VkDeviceMemory *out_mem);
+
 /* M2 host-flatten step 2: host-visible storage buffer that also exposes a
  * VkDeviceAddress (for PhysicalStorageBuffer arg-buffer flattening). Requires
  * vk->have_buffer_device_address. */

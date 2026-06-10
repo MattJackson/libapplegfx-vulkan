@@ -114,6 +114,62 @@ lagfx_status_t lagfx_vk_make_host_storage_buffer(struct lagfx_vk_state *vk,
     return LAGFX_OK;
 }
 
+/* M2: a host-visible storage buffer of `alloc_size` bytes, with the first
+ * `data_len` bytes copied from `data` and the remainder ZERO-padded. Lets the
+ * host bind a buffer sized to the guest's DECLARED size (so a shader's dynamic
+ * index stays in bounds → no lavapipe OOB SIGSEGV) while only having `data_len`
+ * bytes of real content available. */
+lagfx_status_t lagfx_vk_make_host_storage_buffer_padded(struct lagfx_vk_state *vk,
+                                                        const void *data,
+                                                        VkDeviceSize data_len,
+                                                        VkDeviceSize alloc_size,
+                                                        VkBuffer *out_buf,
+                                                        VkDeviceMemory *out_mem) {
+    *out_buf = VK_NULL_HANDLE;
+    *out_mem = VK_NULL_HANDLE;
+    if (!vk || vk->device == VK_NULL_HANDLE || alloc_size == 0u) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    VkBufferCreateInfo bci = {
+        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size        = alloc_size,
+        .usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                     | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkBuffer buf = VK_NULL_HANDLE;
+    if (vkCreateBuffer(vk->device, &bci, NULL, &buf) != VK_SUCCESS) return LAGFX_ERR_BACKEND;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(vk->device, buf, &req);
+    uint32_t mt = find_memory_type(vk->phys_device, req.memoryTypeBits,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                   | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt == UINT32_MAX) { vkDestroyBuffer(vk->device, buf, NULL); return LAGFX_ERR_BACKEND; }
+    VkMemoryAllocateInfo mai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = req.size, .memoryTypeIndex = mt,
+    };
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    if (vkAllocateMemory(vk->device, &mai, NULL, &mem) != VK_SUCCESS) {
+        vkDestroyBuffer(vk->device, buf, NULL); return LAGFX_ERR_BACKEND;
+    }
+    if (vkBindBufferMemory(vk->device, buf, mem, 0) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, mem, NULL); vkDestroyBuffer(vk->device, buf, NULL);
+        return LAGFX_ERR_BACKEND;
+    }
+    void *mapped = NULL;
+    if (vkMapMemory(vk->device, mem, 0, alloc_size, 0, &mapped) == VK_SUCCESS && mapped) {
+        memset(mapped, 0, (size_t)alloc_size);
+        if (data && data_len > 0u) {
+            VkDeviceSize cp = data_len < alloc_size ? data_len : alloc_size;
+            memcpy(mapped, data, (size_t)cp);
+        }
+        vkUnmapMemory(vk->device, mem);
+    }
+    *out_buf = buf; *out_mem = mem;
+    return LAGFX_OK;
+}
+
 /* M2 host-flatten step 2: a host-visible storage buffer that also exposes a
  * VkDeviceAddress (SHADER_DEVICE_ADDRESS usage + DEVICE_ADDRESS allocate flag).
  * Returns the buffer + memory + its device address. The address is written into
