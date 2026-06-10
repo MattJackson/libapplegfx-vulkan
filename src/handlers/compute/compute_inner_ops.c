@@ -326,13 +326,18 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                     | probe[4] | probe[5] | probe[6] | probe[7])) {
                                 lagfx_read_virtual_besteffort(p, task, dva,
                                                               LAGFX_DRAW_DS_BUF_SZ, data);
-                                /* Size the VkBuffer to the declared range size
-                                 * (capped to 8 MiB) so a dynamic index into the
-                                 * real buffer stays in bounds — only the first
-                                 * 64 KiB has real content, the rest zero-pads. */
-                                if (rsize > LAGFX_DRAW_DS_BUF_SZ)
-                                    bind_alloc_sz = rsize > (8u*1024u*1024u)
-                                                      ? (8u*1024u*1024u) : rsize;
+                                /* Size the VkBuffer generously so ANY dynamic
+                                 * index the shader computes stays in bounds —
+                                 * the placement descriptor has MULTIPLE ranges
+                                 * (e.g. 128 KiB + 5 MiB) and the shader may index
+                                 * the larger one, while the matched range is the
+                                 * smaller; an under-sized buffer → lavapipe OOB.
+                                 * Use the max(matched range, 8 MiB), capped 8 MiB.
+                                 * Only the first 64 KiB has real content; the
+                                 * rest zero-pads (OOB reads return 0, no crash). */
+                                bind_alloc_sz = 8u * 1024u * 1024u;
+                                if (rsize > bind_alloc_sz) bind_alloc_sz = rsize > (16u*1024u*1024u)
+                                                                            ? (16u*1024u*1024u) : rsize;
                                 LAGFX_LOG("P6b M2: ref=0x%x rebound REAL data via descriptor "
                                           "PFN0x%llx (VA0x%llx+off0x%llx) size=%llu", bs->ref,
                                           (unsigned long long)pfn,
