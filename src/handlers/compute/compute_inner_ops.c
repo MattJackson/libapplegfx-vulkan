@@ -276,10 +276,22 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
         uint64_t bind_alloc_sz = LAGFX_DRAW_DS_BUF_SZ;
         if (slot < LAGFX_MAX_BINDING_SLOTS) {
             lagfx_binding_slot_t *bs = NULL;
-            if (task->bindings.fragment_buffers[slot].valid)
-                bs = &task->bindings.fragment_buffers[slot];
-            else if (task->bindings.vertex_buffers[slot].valid)
+            /* B8: VERTEX-FIRST. The pipeline reflection MERGES the vertex and
+             * fragment [[buffer(n)]] namespaces into one set-0 binding array, so
+             * binding N collides when BOTH stages bind buffer N (e.g. ColorFill:
+             * vertex ViewportToNDC binds positions at [[buffer(0)]] offset 0,
+             * fragment ColorFill binds its colour at [[buffer(0)]] offset 192 of
+             * the SAME guest buffer ref=0xe). Checking fragment first gave the
+             * VERTEX shader's binding-0 the fragment colour bytes → garbage
+             * positions → degenerate geometry → black frame (confirmed on
+             * ref=0xd: bind#0 read off0xc0=192 not off0=positions). Vertex MUST
+             * win: a wrong fragment colour only mis-tints; wrong vertex positions
+             * collapse the whole draw. So resolve vertex_buffers[slot] first and
+             * only fall back to fragment_buffers[slot] for fragment-only bindings. */
+            if (task->bindings.vertex_buffers[slot].valid)
                 bs = &task->bindings.vertex_buffers[slot];
+            else if (task->bindings.fragment_buffers[slot].valid)
+                bs = &task->bindings.fragment_buffers[slot];
             if (bs && bs->ref != 0u) {
                 uint8_t type = 0; uint64_t va = 0, gpa = 0;
                 if (lagfx_resolve_object_data(p, task, bs->ref, &type, &va, &gpa)
