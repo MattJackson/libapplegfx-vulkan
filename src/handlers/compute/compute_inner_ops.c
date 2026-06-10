@@ -271,13 +271,20 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                             if (px[q] | px[q+1] | px[q+2] | px[q+3]) nonzero++;
                         }
                     }
-                    LAGFX_LOG("P6b TEXPROBE ref=0x%x type=0x%02x resolved=%d leafPFN=0x%llx "
-                              "sz=%llu | of %zu px: nonblack=%u nonzero=%u first16=%02x%02x%02x%02x "
-                              "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                              tref, ttype, (int)resolved, (unsigned long long)leaf_pfn,
-                              (unsigned long long)leaf_sz, sizeof(px)/4, nonblack, nonzero,
-                              px[0],px[1],px[2],px[3],px[4],px[5],px[6],px[7],
-                              px[8],px[9],px[10],px[11],px[12],px[13],px[14],px[15]);
+                    LAGFX_LOG("P6b TEXPROBE ref=0x%x type=0x%02x resolved=%d va=0x%llx gpa=0x%llx "
+                              "leafPFN=0x%llx sz=%llu | of %zu px: nonblack=%u nonzero=%u",
+                              tref, ttype, (int)resolved, (unsigned long long)tva,
+                              (unsigned long long)tgpa, (unsigned long long)leaf_pfn,
+                              (unsigned long long)leaf_sz, sizeof(px)/4, nonblack, nonzero);
+                    /* Raw texture-object descriptor (first 64 B at tva) — the
+                     * format for type 0x03/0x05 texture objects is not yet RE'd;
+                     * dump as u64 words to decode width/height/format/backing. */
+                    LAGFX_LOG("P6b TEXPROBE ref=0x%x desc u64: %016llx %016llx %016llx %016llx "
+                              "%016llx %016llx %016llx %016llx", tref,
+                              (unsigned long long)lagfx_le64(tdesc+0),  (unsigned long long)lagfx_le64(tdesc+8),
+                              (unsigned long long)lagfx_le64(tdesc+16), (unsigned long long)lagfx_le64(tdesc+24),
+                              (unsigned long long)lagfx_le64(tdesc+32), (unsigned long long)lagfx_le64(tdesc+40),
+                              (unsigned long long)lagfx_le64(tdesc+48), (unsigned long long)lagfx_le64(tdesc+56));
                 }
                 LAGFX_LOG("P6b bind#%u slot=%u texture unresolved — skip draw (no crash)",
                           binding_no[i], slot);
