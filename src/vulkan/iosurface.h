@@ -42,6 +42,17 @@ lagfx_status_t lagfx_vk_iosurface_create(struct lagfx_vk_state *vk,
                                           uint32_t pixel_format,
                                           lagfx_vk_iosurface_t **out);
 
+/* Upload CPU pixel bytes (tightly-packed BGRA8/RGBA8 at ios->width×height) into
+ * an existing IOSurface VkImage via a staging buffer, then transition it to
+ * SHADER_READ_ONLY_OPTIMAL (sets ios->layout) so it is immediately sampleable.
+ * `data_len` shorter than the image is zero-padded; longer is truncated. Used to
+ * back a guest texture from its placement-descriptor memory so texture-sampling
+ * composites can sample real guest content. */
+lagfx_status_t lagfx_vk_iosurface_upload_pixels(struct lagfx_vk_state *vk,
+                                                lagfx_vk_iosurface_t *ios,
+                                                const uint8_t *data,
+                                                size_t data_len);
+
 /* Increment refcount on an existing iosurface backing. Use when
  * aliasing a backing across resource-registry entries (Import). */
 void lagfx_vk_iosurface_retain(lagfx_vk_iosurface_t *ios);

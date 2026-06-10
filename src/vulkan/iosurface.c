@@ -229,6 +229,118 @@ lagfx_status_t lagfx_vk_iosurface_create(struct lagfx_vk_state *vk,
     return LAGFX_OK;
 }
 
+lagfx_status_t lagfx_vk_iosurface_upload_pixels(struct lagfx_vk_state *vk,
+                                                lagfx_vk_iosurface_t *ios,
+                                                const uint8_t *data,
+                                                size_t data_len) {
+    if (!vk || !ios || !data || data_len == 0u) return LAGFX_ERR_INVALID_ARG;
+    if (vk->graphics_queue == VK_NULL_HANDLE || ios->image == VK_NULL_HANDLE)
+        return LAGFX_ERR_BACKEND;
+
+    const VkDeviceSize img_bytes = (VkDeviceSize)ios->width * ios->height * 4u;
+    VkDeviceSize copy_bytes = data_len < img_bytes ? (VkDeviceSize)data_len : img_bytes;
+
+    /* Host-visible staging buffer sized to the whole image (zero-padded). */
+    VkBuffer       sb = VK_NULL_HANDLE;
+    VkDeviceMemory sm = VK_NULL_HANDLE;
+    VkBufferCreateInfo bci = {
+        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size        = img_bytes,
+        .usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if (vkCreateBuffer(vk->device, &bci, NULL, &sb) != VK_SUCCESS)
+        return LAGFX_ERR_BACKEND;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(vk->device, sb, &req);
+    uint32_t mt = find_memory_type(vk->phys_device, req.memoryTypeBits,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                   | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt == UINT32_MAX) { vkDestroyBuffer(vk->device, sb, NULL); return LAGFX_ERR_BACKEND; }
+    VkMemoryAllocateInfo mai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = req.size, .memoryTypeIndex = mt,
+    };
+    if (vkAllocateMemory(vk->device, &mai, NULL, &sm) != VK_SUCCESS) {
+        vkDestroyBuffer(vk->device, sb, NULL); return LAGFX_ERR_BACKEND;
+    }
+    vkBindBufferMemory(vk->device, sb, sm, 0);
+    void *map = NULL;
+    if (vkMapMemory(vk->device, sm, 0, img_bytes, 0, &map) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, sm, NULL); vkDestroyBuffer(vk->device, sb, NULL);
+        return LAGFX_ERR_BACKEND;
+    }
+    memset(map, 0, (size_t)img_bytes);
+    memcpy(map, data, (size_t)copy_bytes);
+    vkUnmapMemory(vk->device, sm);
+
+    lagfx_status_t result = LAGFX_ERR_BACKEND;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    if (lagfx_vk_cmdbuf_alloc(vk, &cb) == LAGFX_OK) {
+        VkCommandBufferBeginInfo begin = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        VkImageSubresourceRange range = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1u, .layerCount = 1u,
+        };
+        if (vkBeginCommandBuffer(cb, &begin) == VK_SUCCESS) {
+            VkImageMemoryBarrier to_dst = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = ios->image, .subresourceRange = range,
+                .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            };
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &to_dst);
+            VkBufferImageCopy region = {
+                .bufferOffset = 0, .bufferRowLength = 0, .bufferImageHeight = 0,
+                .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1u },
+                .imageExtent = { ios->width, ios->height, 1u },
+            };
+            vkCmdCopyBufferToImage(cb, sb, ios->image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            VkImageMemoryBarrier to_ro = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = ios->image, .subresourceRange = range,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            };
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &to_ro);
+            if (vkEndCommandBuffer(cb) == VK_SUCCESS) {
+                VkFence fence = VK_NULL_HANDLE;
+                VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+                vkCreateFence(vk->device, &fci, NULL, &fence);
+                VkSubmitInfo si = {
+                    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                    .commandBufferCount = 1, .pCommandBuffers = &cb,
+                };
+                if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) == VK_SUCCESS) {
+                    vkWaitForFences(vk->device, 1, &fence, VK_TRUE, 1000ull*1000ull*1000ull);
+                    ios->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    result = LAGFX_OK;
+                    LAGFX_LOG("iosurface_upload: %ux%u uploaded %llu/%llu bytes → SHADER_READ_ONLY",
+                              ios->width, ios->height, (unsigned long long)copy_bytes,
+                              (unsigned long long)img_bytes);
+                }
+                if (fence != VK_NULL_HANDLE) vkDestroyFence(vk->device, fence, NULL);
+            }
+        }
+        lagfx_vk_cmdbuf_free(vk, cb);
+    }
+    vkFreeMemory(vk->device, sm, NULL);
+    vkDestroyBuffer(vk->device, sb, NULL);
+    return result;
+}
+
 void lagfx_vk_iosurface_retain(lagfx_vk_iosurface_t *ios) {
     if (!ios) return;
     /* BQL-serialised in steady-state; non-atomic is correct here.

@@ -240,6 +240,61 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                     }
                 }
             }
+            /* M1 TEXBACK: back the sampled guest texture from its memory. The
+             * texture object descriptor (type 0x03) is {size@0, PFN|flags@8} 16-B
+             * entries (flags in the PFN word's high 32 bits). Read the content at
+             * PFN<<12, create a sampleable VkImage of derived dimensions (BGRA8),
+             * upload, and register it so this + future draws sample real guest
+             * pixels instead of skipping → non-black content from the real
+             * translated composite shaders. Gated; created once per ref. */
+            if (view == VK_NULL_HANDLE && getenv("LAGFX_M1_TEXBACK") && tref != 0u) {
+                uint8_t tt = 0; uint64_t tva = 0, tgpa = 0;
+                uint8_t td[64] = {0};
+                uint64_t pfn = 0, sz = 0;
+                if (lagfx_resolve_object_data(p, task, tref, &tt, &tva, &tgpa)
+                    && tva != 0u
+                    && lagfx_task_read_virtual(p, task, tva, sizeof(td), td)) {
+                    for (int e = 0; e < 4; e++) {
+                        uint64_t es = lagfx_le64(td + (size_t)e * 16u);
+                        uint64_t ep = lagfx_le64(td + (size_t)e * 16u + 8u) & 0xffffffffull;
+                        if (ep < 0x10u || ep > 0xfffffu || es == 0u) continue;
+                        pfn = ep; sz = es; break;
+                    }
+                }
+                if (pfn != 0u && sz >= 4u) {
+                    uint32_t total_px = (uint32_t)(sz / 4u);
+                    uint32_t W = 1u, H = 1u;
+                    if (total_px >= 1310720u) { W = 1280u; H = 1024u; }
+                    else {
+                        for (uint32_t cand = 256u; cand >= 1u; cand >>= 1) {
+                            if (total_px % cand == 0u) { W = cand; H = total_px / cand; break; }
+                        }
+                    }
+                    size_t rd_len = (size_t)W * H * 4u;
+                    if (rd_len > 8u * 1024u * 1024u) rd_len = 8u * 1024u * 1024u;
+                    uint8_t *pix = malloc(rd_len);
+                    lagfx_vk_iosurface_t *ios = NULL;
+                    if (pix
+                        && lagfx_read_virtual_besteffort(p, task, pfn << 12, rd_len, pix)
+                        && lagfx_vk_iosurface_create(vk, W, H, 80u, &ios) == LAGFX_OK
+                        && lagfx_vk_iosurface_upload_pixels(vk, ios, pix, rd_len) == LAGFX_OK) {
+                        lagfx_resource_register(&p->resources, tref,
+                                                LAGFX_RESOURCE_TYPE_TEXTURE, task->id,
+                                                pfn << 12, sz);
+                        lagfx_resource_entry_t *ne =
+                            lagfx_resource_lookup_texture(&p->resources, tref);
+                        if (ne) { ne->host_handle = ios; ne->image = ios->image; ne->view = ios->view; }
+                        view = ios->view;
+                        lay  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        LAGFX_LOG("P6b TEXBACK ref=0x%x backed %ux%u from PFN0x%llx (%llu B) "
+                                  "→ sampleable, real content", tref, W, H,
+                                  (unsigned long long)pfn, (unsigned long long)sz);
+                    } else if (ios) {
+                        lagfx_vk_iosurface_destroy(vk, ios);
+                    }
+                    free(pix);
+                }
+            }
             if (view == VK_NULL_HANDLE) {
                 /* M1 TEXPROBE: the texture has no host VkImage backing. Resolve
                  * its guest memory (placement descriptor, same as buffers) and
