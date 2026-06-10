@@ -591,6 +591,27 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
      * fix, composite shaders now reflect their textures and go through that
      * path. */
 
+    /* Conservative crash guard (LAGFX_M2_SIMPLE_DRAW): the multi-buffer
+     * COMPOSITE pipelines still translate incompletely (live shaders drop some
+     * vertex-input/texture handling beyond the static-init fix) and SIGSEGV
+     * lavapipe with real data. The SIMPLE colour-fill pipelines (ColorFill =
+     * pipeline 0xd: exactly 1 storage buffer, no stage-in complications) render
+     * correctly. Until the composite translation is complete, draw only the
+     * simple (≤1 storage binding) pipelines so the system is stable AND
+     * ColorFill's real colour output is visible. Off by default. */
+    if (resource_using && getenv("LAGFX_M2_SIMPLE_DRAW")) {
+        uint32_t nstorage = 0;
+        for (uint32_t b = 0; b < task->pending_pipeline.n_spv_bindings && b < 16u; b++)
+            if (task->pending_pipeline.spv_binding_kind[b]
+                == (uint8_t)LAGFX_SPV_BINDING_STORAGE_BUFFER) nstorage++;
+        if (nstorage > 1u) {
+            LAGFX_LOG("%s: ref=0x%x %u storage bindings — composite (incomplete "
+                      "translation), skip for SIMPLE_DRAW (no crash)",
+                      op, task->pending_pipeline.reference, nstorage);
+            return;
+        }
+    }
+
     /* Vertex-input upload — SHARED by the resource-using and resource-free
      * translated paths. A vertex shader with stage-in attributes may be
      * resource-free (no [[buffer]] descriptors) — e.g. SkyLight ref=0x14/0x1d
