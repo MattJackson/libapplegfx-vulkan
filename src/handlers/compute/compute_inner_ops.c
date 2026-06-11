@@ -347,6 +347,18 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                 if (lagfx_resolve_object_data(p, task, tref, &tt, &tva, &tgpa)
                     && tva != 0u
                     && lagfx_task_read_virtual(p, task, tva, sizeof(td), td)) {
+                    /* M2 TEXDIM: dump the type-0x03 texture descriptor as u32 words
+                     * to find the real width/height (the byte-count guess is wrong
+                     * — 20480 B = 5120 px guessed 256×20, real ~64×80). The
+                     * MTLTextureDescriptor encodes W/H somewhere in these bytes. */
+                    if (getenv("LAGFX_M2_TEXDIM") && tt == 0x03u) {
+                        LAGFX_LOG("M2 TEXDIM ref=0x%x type=0x03 desc u32: "
+                                  "%u %u %u %u | %u %u %u %u | %u %u %u %u | %u %u %u %u", tref,
+                                  lagfx_le32(td+0),lagfx_le32(td+4),lagfx_le32(td+8),lagfx_le32(td+12),
+                                  lagfx_le32(td+16),lagfx_le32(td+20),lagfx_le32(td+24),lagfx_le32(td+28),
+                                  lagfx_le32(td+32),lagfx_le32(td+36),lagfx_le32(td+40),lagfx_le32(td+44),
+                                  lagfx_le32(td+48),lagfx_le32(td+52),lagfx_le32(td+56),lagfx_le32(td+60));
+                    }
                     for (int e = 0; e < 4; e++) {
                         uint64_t es = lagfx_le64(td + (size_t)e * 16u);
                         uint64_t ep = lagfx_le64(td + (size_t)e * 16u + 8u) & 0xffffffffull;
