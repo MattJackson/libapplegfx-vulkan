@@ -369,6 +369,22 @@ typedef struct lagfx_protocol {
     /* Resource registry (per CmdMapMemory2, CmdDeleteResource, etc.) */
     lagfx_resource_registry_t resources;
 
+    /* M2 backing-object lifecycle cache. A createBackingRefTexture VIEW
+     * references a backing object (e.g. login texture 0x30) that the guest
+     * registers transiently and EVICTS before the view's draw — so a draw-time
+     * resolve misses it. Capture {obj_id → (pfn, sz, task_id)} whenever an
+     * object resolves to a real texture backing, and reuse it when a later
+     * draw-time resolve fails. Small fixed cache (object ids are low + few);
+     * per-protocol (no file-static, per the standing rule). */
+    struct {
+        uint16_t obj_id;
+        uint16_t task_id;
+        uint32_t pfn;
+        uint64_t sz;
+        uint8_t  valid;
+    } m2_backing_cache[64];
+    uint32_t m2_backing_cache_n;
+
     /* Command counters (for diagnostics) */
     uint64_t total_cmds_seen;
     uint64_t total_cmds_completed;

@@ -339,20 +339,14 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                             if (cand == 0u || cand == tref || cand > 0xffffu) continue;
                             uint8_t ct = 0; uint64_t cva = 0, cgpa = 0;
                             const lagfx_task_entry_t *rtask = task;
-                            if (!lagfx_resolve_object_data(p, task, cand, &ct, &cva, &cgpa)
-                                || cva == 0u) {
-                                /* fall back to task-0 global */
-                                if (task0 && task0 != task
-                                    && lagfx_resolve_object_data(p, task0, cand, &ct, &cva, &cgpa)
-                                    && cva != 0u) {
-                                    rtask = task0;
-                                } else {
-                                    continue;
-                                }
-                            }
+                            bool live = lagfx_resolve_object_data(p, task, cand, &ct, &cva, &cgpa)
+                                        && cva != 0u;
+                            if (!live && task0 && task0 != task
+                                && lagfx_resolve_object_data(p, task0, cand, &ct, &cva, &cgpa)
+                                && cva != 0u) { live = true; rtask = task0; }
                             uint8_t cd[64] = {0};
                             uint64_t cpfn = 0, csz = 0;
-                            if (lagfx_task_read_virtual(p, rtask, cva, sizeof(cd), cd)) {
+                            if (live && lagfx_task_read_virtual(p, rtask, cva, sizeof(cd), cd)) {
                                 for (int e = 0; e < 4; e++) {
                                     uint64_t es = lagfx_le64(cd + (size_t)e * 16u);
                                     uint64_t ep = lagfx_le64(cd + (size_t)e * 16u + 8u) & 0xffffffffull;
@@ -360,21 +354,54 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                     cpfn = ep; csz = es; break;
                                 }
                             }
-                            LAGFX_LOG("P6b BACKREF ref=0x%x word[%d]=0x%x -> type=0x%02x "
-                                      "backing PFN0x%llx sz=%llu", tref, w, cand, ct,
-                                      (unsigned long long)cpfn, (unsigned long long)csz);
-                            /* Follow ONLY a real texture-backing kind: 0x01 (backing
-                             * buffer), 0x03 (texture), 0x04 (createBacking). SKIP
-                             * 0x06 (function/metallib) + 0x07 (pipeline) — those are
-                             * other refs in the descriptor, not the pixel source. The
-                             * size must be a plausible BGRA texture (multiple of 4,
-                             * ≤ 16 MiB). E.g. ref=0x17 → word[3]=0x30 type 0x01
-                             * 262144 B = 256×256. */
-                            if (pfn == 0u && cpfn != 0u && csz >= 256u
+                            bool is_tex_backing = (cpfn != 0u && csz >= 256u
                                 && csz <= 16u * 1024u * 1024u && (csz % 4u) == 0u
-                                && (ct == 0x01u || ct == 0x03u || ct == 0x04u)) {
-                                pfn = cpfn; sz = csz;  /* follow this backing for pixels */
-                                pix_task = rtask;      /* read pixels from the backing's task */
+                                && (ct == 0x01u || ct == 0x03u || ct == 0x04u));
+                            /* M2 LIFECYCLE CACHE: when a candidate resolves LIVE to a
+                             * real texture backing, persist {obj→pfn,sz,task} — the
+                             * guest evicts these (e.g. 0x30) before the view's draw,
+                             * so a draw-time resolve later misses. On a MISS, replay
+                             * the cached backing. This is the cross-draw resource
+                             * tracking the createBackingRefTexture path needs. */
+                            if (live && is_tex_backing) {
+                                bool found = false;
+                                for (uint32_t k = 0; k < p->m2_backing_cache_n; k++)
+                                    if (p->m2_backing_cache[k].obj_id == (uint16_t)cand) {
+                                        p->m2_backing_cache[k].pfn = (uint32_t)cpfn;
+                                        p->m2_backing_cache[k].sz = csz;
+                                        p->m2_backing_cache[k].task_id = (uint16_t)rtask->id;
+                                        p->m2_backing_cache[k].valid = 1u; found = true; break;
+                                    }
+                                if (!found && p->m2_backing_cache_n < 64u) {
+                                    uint32_t k = p->m2_backing_cache_n++;
+                                    p->m2_backing_cache[k].obj_id = (uint16_t)cand;
+                                    p->m2_backing_cache[k].pfn = (uint32_t)cpfn;
+                                    p->m2_backing_cache[k].sz = csz;
+                                    p->m2_backing_cache[k].task_id = (uint16_t)rtask->id;
+                                    p->m2_backing_cache[k].valid = 1u;
+                                }
+                            } else if (!is_tex_backing) {
+                                /* MISS (evicted / not a backing live) — replay cache. */
+                                for (uint32_t k = 0; k < p->m2_backing_cache_n; k++)
+                                    if (p->m2_backing_cache[k].valid
+                                        && p->m2_backing_cache[k].obj_id == (uint16_t)cand) {
+                                        cpfn = p->m2_backing_cache[k].pfn;
+                                        csz  = p->m2_backing_cache[k].sz;
+                                        lagfx_task_entry_t *ct0 =
+                                            lagfx_protocol_find_task(p, p->m2_backing_cache[k].task_id);
+                                        if (ct0) { rtask = ct0; is_tex_backing = true;
+                                            LAGFX_LOG("P6b BACKREF ref=0x%x CACHE-HIT obj 0x%x "
+                                                      "(PFN0x%llx %llu B)", tref, cand,
+                                                      (unsigned long long)cpfn, (unsigned long long)csz); }
+                                        break;
+                                    }
+                            }
+                            LAGFX_LOG("P6b BACKREF ref=0x%x word[%d]=0x%x -> type=0x%02x "
+                                      "backing PFN0x%llx sz=%llu live=%d", tref, w, cand, ct,
+                                      (unsigned long long)cpfn, (unsigned long long)csz, (int)live);
+                            if (pfn == 0u && is_tex_backing) {
+                                pfn = cpfn; sz = csz;
+                                pix_task = rtask;
                                 LAGFX_LOG("P6b BACKREF ref=0x%x FOLLOWING backing 0x%x "
                                           "(type 0x%02x, %llu B, task=%u)", tref, cand, ct,
                                           (unsigned long long)csz, rtask->id);
