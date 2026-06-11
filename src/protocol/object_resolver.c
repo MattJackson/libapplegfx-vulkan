@@ -315,6 +315,29 @@ lagfx_lookup_pipeline_function_refs(lagfx_protocol_t *p,
         return false;
     }
 
+    /* M2 step 1 (LAGFX_PSO_DUMP): dump the FULL pipeline-state descriptor blob (the
+     * serialized MTLRenderPipelineDescriptor; observed sizes 0x3c..0x154, so 128 B
+     * misses the tail where the MTLVertexDescriptor attribute layout lives). This
+     * captures the real bytes needed to decode the vertex-descriptor token format
+     * (per-attribute bufferIndex/offset/format + per-buffer stride) and replace M1's
+     * stride-round-8 heuristic. Read-only; gated off by default. */
+    if (getenv("LAGFX_PSO_DUMP")) {
+        uint8_t full[384] = {0};
+        if (dev_for_dma->desc.shell.read_memory(dev_for_dma->desc.shell.opaque,
+                                                bytes_gpa, sizeof(full), full)) {
+            for (uint32_t r = 0; r < sizeof(full); r += 32u) {
+                LAGFX_LOG("PSO_DUMP pso=0x%x @+%03u: "
+                          "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x "
+                          "%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+                          (unsigned)pipeline_object_id, r,
+                          full[r+0],full[r+1],full[r+2],full[r+3],full[r+4],full[r+5],full[r+6],full[r+7],
+                          full[r+8],full[r+9],full[r+10],full[r+11],full[r+12],full[r+13],full[r+14],full[r+15],
+                          full[r+16],full[r+17],full[r+18],full[r+19],full[r+20],full[r+21],full[r+22],full[r+23],
+                          full[r+24],full[r+25],full[r+26],full[r+27],full[r+28],full[r+29],full[r+30],full[r+31]);
+            }
+        }
+    }
+
     /* Step 7: scan for "0x04 XX" tokens at every byte offset.
      * Cites phase_b_step5_v2_4_MTLB_CONFIRMED.md line 57-58. */
     uint8_t vertex_ref = 0, fragment_ref = 0;
