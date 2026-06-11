@@ -342,8 +342,20 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                             LAGFX_LOG("P6b BACKREF ref=0x%x word[%d]=0x%x -> type=0x%02x "
                                       "backing PFN0x%llx sz=%llu", tref, w, cand, ct,
                                       (unsigned long long)cpfn, (unsigned long long)csz);
-                            if (cpfn != 0u && csz >= 4u && pfn == 0u) {
+                            /* Follow ONLY a real texture-backing kind: 0x01 (backing
+                             * buffer), 0x03 (texture), 0x04 (createBacking). SKIP
+                             * 0x06 (function/metallib) + 0x07 (pipeline) — those are
+                             * other refs in the descriptor, not the pixel source. The
+                             * size must be a plausible BGRA texture (multiple of 4,
+                             * ≤ 16 MiB). E.g. ref=0x17 → word[3]=0x30 type 0x01
+                             * 262144 B = 256×256. */
+                            if (pfn == 0u && cpfn != 0u && csz >= 256u
+                                && csz <= 16u * 1024u * 1024u && (csz % 4u) == 0u
+                                && (ct == 0x01u || ct == 0x03u || ct == 0x04u)) {
                                 pfn = cpfn; sz = csz;  /* follow this backing for pixels */
+                                LAGFX_LOG("P6b BACKREF ref=0x%x FOLLOWING backing 0x%x "
+                                          "(type 0x%02x, %llu B)", tref, cand, ct,
+                                          (unsigned long long)csz);
                             }
                         }
                     }
