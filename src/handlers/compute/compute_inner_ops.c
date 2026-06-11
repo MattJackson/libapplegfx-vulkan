@@ -218,6 +218,18 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
      * STORAGE → fragment_buffers[N]. */
     const bool m1_texcomp = getenv("LAGFX_M1_TEXCOMP") != NULL;
     uint32_t tex_ord = 0, fbuf_ord = 0;
+    /* M2 multi-texture: SAMPLED_IMAGE bindings are linear (0,1,2,…) but the guest
+     * binds textures at SPARSE Metal slots (e.g. 0 and 3 for login composites).
+     * Map the N-th SAMPLED_IMAGE to the N-th VALID fragment_texture slot so
+     * multi-texture composites resolve — the old `fragment_textures[tex_ord]`
+     * mis-hit the empty slots 1/2 → "texture unresolved" → skipped draw (the login
+     * UI elements). Gated with texcomp. */
+    uint8_t valid_tex_slots[LAGFX_MAX_BINDING_SLOTS]; uint32_t n_valid_tex = 0;
+    if (m1_texcomp) {
+        for (uint32_t s = 0; s < LAGFX_MAX_BINDING_SLOTS; s++)
+            if (task->bindings.fragment_textures[s].valid)
+                valid_tex_slots[n_valid_tex++] = (uint8_t)s;
+    }
     for (uint32_t i = 0; i < n && i < 16u; i++) {
         uint32_t slot = binding_no[i];
         /* M1 (c): texture (SAMPLED_IMAGE) binding — resolve the guest's bound
@@ -228,8 +240,11 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
         if (binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLED_IMAGE) {
             VkImageView view = VK_NULL_HANDLE;
             VkImageLayout lay = VK_IMAGE_LAYOUT_GENERAL;
-            /* Textures are fragment-stage; resolve by ordinal under texcomp. */
-            uint32_t tex_idx = m1_texcomp ? tex_ord : slot;
+            /* Textures are fragment-stage; map the N-th SAMPLED_IMAGE to the N-th
+             * VALID guest texture slot (sparse), not linearly to slot N. */
+            uint32_t tex_idx = m1_texcomp
+                ? (tex_ord < n_valid_tex ? valid_tex_slots[tex_ord] : LAGFX_MAX_BINDING_SLOTS)
+                : slot;
             tex_ord++;
             uint32_t tref = 0;
             if (tex_idx < LAGFX_MAX_BINDING_SLOTS
