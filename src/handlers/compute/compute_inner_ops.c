@@ -321,7 +321,8 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * backing; recurse one level to its pixels. Read-only probe
                      * first (logs candidates); the follow uses the first backing
                      * whose pixels are non-black. */
-                    if (getenv("LAGFX_M2_BACKREF") && tt == 0x05u && pfn == 0u) {
+                    if (getenv("LAGFX_M2_BACKREF") && tt == 0x05u && sz < 4u) {
+                        pfn = 0u; sz = 0u;  /* the entry was a ref, not pixels — re-find via backing */
                         for (int w = 0; w < 16; w++) {
                             uint32_t cand = lagfx_le32(td + (size_t)w * 4u);
                             if (cand == 0u || cand == tref || cand > 0xffffu) continue;
