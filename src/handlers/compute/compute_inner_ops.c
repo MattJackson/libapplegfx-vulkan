@@ -462,13 +462,21 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                 if (pfn != 0u && sz >= 4u) {
                     uint32_t total_px = (uint32_t)(sz / 4u);
                     uint32_t W = 1u, H = 1u;
-                    if (total_px >= 1310720u) { W = 1280u; H = 1024u; }
+                    /* REAL dimensions from the texture descriptor: word[4] (offset
+                     * 16) = bytesPerRow → width = bytesPerRow/4, height =
+                     * sz/bytesPerRow. Validated: cursor 4096 B bpr128 → 32×32; UI
+                     * 20480 B bpr256 → 64×80; framebuffer bpr5120 → 1280×1024. This
+                     * replaces the byte-count guess (which mis-shaped UI textures →
+                     * scrambled UVs → no visible content). Only for a real texture
+                     * descriptor (type 0x03); the backing-follow path keeps the
+                     * heuristic since it has no descriptor of its own. */
+                    uint32_t bpr = (tt == 0x03u) ? lagfx_le32(td + 16) : 0u;
+                    if (bpr >= 4u && (bpr % 4u) == 0u && (sz % bpr) == 0u
+                        && (sz / bpr) <= 8192u && (bpr / 4u) <= 8192u) {
+                        W = bpr / 4u; H = (uint32_t)(sz / bpr);
+                    } else if (total_px >= 1310720u) { W = 1280u; H = 1024u; }
                     else {
-                        /* Prefer a SQUARE texture (UI textures/atlases are usually
-                         * square, e.g. 4096 B = 1024 px = 32×32). A wrong aspect
-                         * (e.g. 256×4) maps the composite's UVs to the wrong texels
-                         * → samples the black/zero regions → black output. Use isqrt
-                         * when total_px is a perfect square; else fall back to the
+                        /* Fallback (no usable bytesPerRow): prefer SQUARE, else the
                          * largest dividing power-of-2 width. */
                         uint32_t s = 1u; while (s * s < total_px) s++;
                         if (s * s == total_px) { W = s; H = s; }
