@@ -1725,6 +1725,36 @@ static int op_set_fragment_textures(lagfx_protocol_t *p,
             LAGFX_LOG("compute_inner: 0x72 SetFragmentTextures [%u] ref=0x%x valid=%s",
                       slot_index, ref, ref != 0u ? "true" : "false");
         }
+
+        /* M2 TEXSCAN (LAGFX_M2_TEXSCAN): probe EVERY bound fragment texture's
+         * type + pixel content at bind time — incl. the slot-3 login textures
+         * (0x25/0x2a/0x2e/0x32) the composites sample but we never reached via
+         * the SAMPLED_IMAGE path. Tells us which login-UI textures are real
+         * (type 0x03/0x04) with non-black pixels = directly backable for the
+         * avatar/field/wallpaper. Read-only; gated. */
+        if (ref != 0u && getenv("LAGFX_M2_TEXSCAN")) {
+            uint8_t xt = 0; uint64_t xva = 0, xgpa = 0;
+            uint8_t xd[64] = {0};
+            uint64_t xpfn = 0, xsz = 0;
+            if (lagfx_resolve_object_data(p, task, ref, &xt, &xva, &xgpa)
+                && xva != 0u && lagfx_task_read_virtual(p, task, xva, sizeof(xd), xd)) {
+                for (int e = 0; e < 4; e++) {
+                    uint64_t es = lagfx_le64(xd + (size_t)e * 16u);
+                    uint64_t ep = lagfx_le64(xd + (size_t)e * 16u + 8u) & 0xffffffffull;
+                    if (ep < 0x10u || ep > 0xfffffu || es < 4u) continue;
+                    xpfn = ep; xsz = es; break;
+                }
+            }
+            uint32_t xnb = 0; uint8_t xpix[4096] = {0};
+            if (xpfn != 0u
+                && lagfx_task_read_virtual(p, task, xpfn << 12, sizeof(xpix), xpix)) {
+                for (size_t q = 0; q + 4 <= sizeof(xpix); q += 4)
+                    if (xpix[q] | xpix[q+1] | xpix[q+2]) xnb++;
+            }
+            LAGFX_LOG("M2 TEXSCAN tex[%u] ref=0x%x type=0x%02x PFN0x%llx sz=%llu "
+                      "nonblack=%u/%zu", slot_index, ref, xt,
+                      (unsigned long long)xpfn, (unsigned long long)xsz, xnb, sizeof(xpix)/4);
+        }
     }
 
     /* TODO: Stage 70 — translate to vkCmdBindDescriptorSets (sampled image descriptors). */
