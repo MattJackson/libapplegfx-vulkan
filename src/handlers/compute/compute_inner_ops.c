@@ -311,6 +311,41 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                         if (ep < 0x10u || ep > 0xfffffu || es == 0u) continue;
                         pfn = ep; sz = es; break;
                     }
+                    /* M2 BACKREF (LAGFX_M2_BACKREF): a type-0x05 texture is a
+                     * createBackingRefTexture — a VIEW whose APVObjectRefTexture
+                     * descriptor references a BACKING texture (the real pixels),
+                     * not its own (sz=2 = a ref, not data). To resolve it, find the
+                     * backing object ref in the descriptor + follow it. The struct
+                     * layout isn't RE'd, so SCAN the descriptor's u32 words for any
+                     * that resolve to a DIFFERENT texture object → that's the
+                     * backing; recurse one level to its pixels. Read-only probe
+                     * first (logs candidates); the follow uses the first backing
+                     * whose pixels are non-black. */
+                    if (getenv("LAGFX_M2_BACKREF") && tt == 0x05u && pfn == 0u) {
+                        for (int w = 0; w < 16; w++) {
+                            uint32_t cand = lagfx_le32(td + (size_t)w * 4u);
+                            if (cand == 0u || cand == tref || cand > 0xffffu) continue;
+                            uint8_t ct = 0; uint64_t cva = 0, cgpa = 0;
+                            if (!lagfx_resolve_object_data(p, task, cand, &ct, &cva, &cgpa)
+                                || cva == 0u) continue;
+                            uint8_t cd[64] = {0};
+                            uint64_t cpfn = 0, csz = 0;
+                            if (lagfx_task_read_virtual(p, task, cva, sizeof(cd), cd)) {
+                                for (int e = 0; e < 4; e++) {
+                                    uint64_t es = lagfx_le64(cd + (size_t)e * 16u);
+                                    uint64_t ep = lagfx_le64(cd + (size_t)e * 16u + 8u) & 0xffffffffull;
+                                    if (ep < 0x10u || ep > 0xfffffu || es < 4u) continue;
+                                    cpfn = ep; csz = es; break;
+                                }
+                            }
+                            LAGFX_LOG("P6b BACKREF ref=0x%x word[%d]=0x%x -> type=0x%02x "
+                                      "backing PFN0x%llx sz=%llu", tref, w, cand, ct,
+                                      (unsigned long long)cpfn, (unsigned long long)csz);
+                            if (cpfn != 0u && csz >= 4u && pfn == 0u) {
+                                pfn = cpfn; sz = csz;  /* follow this backing for pixels */
+                            }
+                        }
+                    }
                 }
                 if (pfn != 0u && sz >= 4u) {
                     uint32_t total_px = (uint32_t)(sz / 4u);
