@@ -226,9 +226,47 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
      * UI elements). Gated with texcomp. */
     uint8_t valid_tex_slots[LAGFX_MAX_BINDING_SLOTS]; uint32_t n_valid_tex = 0;
     if (m1_texcomp) {
-        for (uint32_t s = 0; s < LAGFX_MAX_BINDING_SLOTS; s++)
-            if (task->bindings.fragment_textures[s].valid)
-                valid_tex_slots[n_valid_tex++] = (uint8_t)s;
+        /* M2 UITEX: build the valid-texture-slot list PREFERENCE-ORDERED so a
+         * SAMPLED_IMAGE binds the real login-UI texture, not the cursor/black
+         * framebuffer. The translator loses the Metal [[texture(n)]] index
+         * (emits sequential bindings), so the N-th-valid-slot map picks the
+         * wrong texture for multi-texture login composites. TEXSCAN proved the
+         * login UI lives in SMALL type-0x03 textures (ref=0x25/0x2a/0x2e/0x32,
+         * 20480 B, non-black) bound at slot 3, while slot 0 holds the 5 MiB BLACK
+         * framebuffer (ref=0x10) or the cursor. Prefer slots resolving to a
+         * small (≤1 MiB) type-0x03 texture; append the rest. The cursor composite
+         * (only ref=0x16, a small type-0x03) is unchanged. Gated; falls back to
+         * plain valid order when off. */
+        bool uitex = getenv("LAGFX_M2_UITEX") != NULL;
+        if (uitex) {
+            for (int pass = 0; pass < 2; pass++) {
+                for (uint32_t s = 0; s < LAGFX_MAX_BINDING_SLOTS; s++) {
+                    if (!task->bindings.fragment_textures[s].valid) continue;
+                    uint32_t r = task->bindings.fragment_textures[s].ref;
+                    uint8_t rt = 0; uint64_t rva = 0, rgpa = 0;
+                    uint8_t rd[16] = {0}; uint64_t rsz = 0;
+                    bool small_tex = false;
+                    if (lagfx_resolve_object_data(p, task, r, &rt, &rva, &rgpa)
+                        && rva != 0u && rt == 0x03u
+                        && lagfx_task_read_virtual(p, task, rva, sizeof(rd), rd)) {
+                        rsz = lagfx_le64(rd);
+                        small_tex = (rsz >= 4096u && rsz <= 1024u * 1024u);
+                    }
+                    bool want = (pass == 0) ? small_tex : !small_tex;
+                    if (want && n_valid_tex < LAGFX_MAX_BINDING_SLOTS) {
+                        /* dedup */
+                        bool seen = false;
+                        for (uint32_t k = 0; k < n_valid_tex; k++)
+                            if (valid_tex_slots[k] == (uint8_t)s) { seen = true; break; }
+                        if (!seen) valid_tex_slots[n_valid_tex++] = (uint8_t)s;
+                    }
+                }
+            }
+        } else {
+            for (uint32_t s = 0; s < LAGFX_MAX_BINDING_SLOTS; s++)
+                if (task->bindings.fragment_textures[s].valid)
+                    valid_tex_slots[n_valid_tex++] = (uint8_t)s;
+        }
     }
     for (uint32_t i = 0; i < n && i < 16u; i++) {
         uint32_t slot = binding_no[i];
