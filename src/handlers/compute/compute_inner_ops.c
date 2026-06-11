@@ -302,6 +302,10 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                 uint8_t tt = 0; uint64_t tva = 0, tgpa = 0;
                 uint8_t td[64] = {0};
                 uint64_t pfn = 0, sz = 0;
+                /* The task whose page table the backing pixels live in — defaults
+                 * to the current task, set to task-0 when a BACKREF follow resolves
+                 * the backing in the global task. */
+                const lagfx_task_entry_t *pix_task = task;
                 if (lagfx_resolve_object_data(p, task, tref, &tt, &tva, &tgpa)
                     && tva != 0u
                     && lagfx_task_read_virtual(p, task, tva, sizeof(td), td)) {
@@ -323,15 +327,32 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * whose pixels are non-black. */
                     if (getenv("LAGFX_M2_BACKREF") && tt == 0x05u && sz < 4u) {
                         pfn = 0u; sz = 0u;  /* the entry was a ref, not pixels — re-find via backing */
+                        /* The disasm of createBackingRefTexture says "Cannot get
+                         * backing from a non-zero task ID" → the backing object is
+                         * TASK-0 GLOBAL, not in the current task. Resolve candidates
+                         * against the current task first, then fall back to task 0 —
+                         * this is why backing 0x30 resolved intermittently (only when
+                         * the current task happened to alias it). */
+                        lagfx_task_entry_t *task0 = lagfx_protocol_find_task(p, 0u);
                         for (int w = 0; w < 16; w++) {
                             uint32_t cand = lagfx_le32(td + (size_t)w * 4u);
                             if (cand == 0u || cand == tref || cand > 0xffffu) continue;
                             uint8_t ct = 0; uint64_t cva = 0, cgpa = 0;
+                            const lagfx_task_entry_t *rtask = task;
                             if (!lagfx_resolve_object_data(p, task, cand, &ct, &cva, &cgpa)
-                                || cva == 0u) continue;
+                                || cva == 0u) {
+                                /* fall back to task-0 global */
+                                if (task0 && task0 != task
+                                    && lagfx_resolve_object_data(p, task0, cand, &ct, &cva, &cgpa)
+                                    && cva != 0u) {
+                                    rtask = task0;
+                                } else {
+                                    continue;
+                                }
+                            }
                             uint8_t cd[64] = {0};
                             uint64_t cpfn = 0, csz = 0;
-                            if (lagfx_task_read_virtual(p, task, cva, sizeof(cd), cd)) {
+                            if (lagfx_task_read_virtual(p, rtask, cva, sizeof(cd), cd)) {
                                 for (int e = 0; e < 4; e++) {
                                     uint64_t es = lagfx_le64(cd + (size_t)e * 16u);
                                     uint64_t ep = lagfx_le64(cd + (size_t)e * 16u + 8u) & 0xffffffffull;
@@ -353,9 +374,10 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                 && csz <= 16u * 1024u * 1024u && (csz % 4u) == 0u
                                 && (ct == 0x01u || ct == 0x03u || ct == 0x04u)) {
                                 pfn = cpfn; sz = csz;  /* follow this backing for pixels */
+                                pix_task = rtask;      /* read pixels from the backing's task */
                                 LAGFX_LOG("P6b BACKREF ref=0x%x FOLLOWING backing 0x%x "
-                                          "(type 0x%02x, %llu B)", tref, cand, ct,
-                                          (unsigned long long)csz);
+                                          "(type 0x%02x, %llu B, task=%u)", tref, cand, ct,
+                                          (unsigned long long)csz, rtask->id);
                             }
                         }
                     }
@@ -384,7 +406,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                     uint8_t *pix = malloc(rd_len);
                     lagfx_vk_iosurface_t *ios = NULL;
                     if (pix
-                        && lagfx_read_virtual_besteffort(p, task, pfn << 12, rd_len, pix)
+                        && lagfx_read_virtual_besteffort(p, pix_task, pfn << 12, rd_len, pix)
                         && lagfx_vk_iosurface_create(vk, W, H, 80u, &ios) == LAGFX_OK
                         && lagfx_vk_iosurface_upload_pixels(vk, ios, pix, rd_len) == LAGFX_OK) {
                         lagfx_resource_register(&p->resources, tref,
