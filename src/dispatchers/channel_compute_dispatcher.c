@@ -29,6 +29,7 @@
 #include "../common/log.h"
 #include "protocol/opcodes.h"
 #include "protocol/state.h"
+#include "protocol/object_resolver.h"
 #include "handlers/handlers.h"
 #include "handlers/iosurface/iosurface.h"
 
@@ -195,6 +196,76 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                     LAGFX_LOG("compute: 0x25 registered objectId=0x%x (count=%u) in task=%u (active=%u)",
                               object_id, count, task->id,
                               task->active_objects.count);
+                    /* M2 CREATEBACK (LAGFX_M2_CREATEBACK): capture the view->backing
+                     * relationship at OBJECT-CREATION time, while the backing is still
+                     * live. The draw-time BACKREF resolve in compute_inner_ops misses
+                     * because the guest EVICTS the backing before the view's draw; the
+                     * 0x25 registration is the earliest host-visible signal. Read the
+                     * object's descriptor: log its type, and for a type-0x05 VIEW scan
+                     * its descriptor words for a backing object that resolves to a real
+                     * texture, then persist {backing_obj -> pfn,sz,task} into the same
+                     * m2_backing_cache the draw path consults. Falsifiable probe: the
+                     * log shows whether render-target views (0x7/0x9/...) pass through
+                     * 0x25 and whether their backing matches a SAMPLED ref. Gated;
+                     * read-only + cache-populate, no render-path behavior change. */
+                    if (getenv("LAGFX_M2_CREATEBACK")) {
+                        uint8_t ot = 0; uint64_t ova = 0, ogpa = 0;
+                        uint8_t od[64] = {0};
+                        if (lagfx_resolve_object_data(p, task, object_id, &ot, &ova, &ogpa)
+                            && ova != 0u
+                            && lagfx_task_read_virtual(p, task, ova, sizeof(od), od)) {
+                            uint64_t e0sz = lagfx_le64(od + 0);
+                            uint64_t e0pf = lagfx_le64(od + 8) & 0xffffffffull;
+                            LAGFX_LOG("compute: 0x25 CREATEBACK obj=0x%x type=0x%02x "
+                                      "e0sz=%llu e0pfn=0x%llx", object_id, ot,
+                                      (unsigned long long)e0sz, (unsigned long long)e0pf);
+                            if (ot == 0x05u) {
+                                for (int w = 0; w < 16; w++) {
+                                    uint32_t cand = lagfx_le32(od + (size_t)w * 4u);
+                                    if (cand == 0u || cand == object_id || cand > 0xffffu) continue;
+                                    uint8_t ct = 0; uint64_t cva = 0, cgpa = 0;
+                                    uint8_t cd[64] = {0};
+                                    uint64_t cpfn = 0, csz = 0;
+                                    if (lagfx_resolve_object_data(p, task, cand, &ct, &cva, &cgpa)
+                                        && cva != 0u
+                                        && lagfx_task_read_virtual(p, task, cva, sizeof(cd), cd)) {
+                                        for (int e = 0; e < 4; e++) {
+                                            uint64_t es = lagfx_le64(cd + (size_t)e * 16u);
+                                            uint64_t ep = lagfx_le64(cd + (size_t)e * 16u + 8u) & 0xffffffffull;
+                                            if (ep < 0x10u || ep > 0xfffffu || es < 4u) continue;
+                                            cpfn = ep; csz = es; break;
+                                        }
+                                        bool is_back = (cpfn != 0u && csz >= 256u
+                                            && csz <= 16u * 1024u * 1024u && (csz % 4u) == 0u
+                                            && (ct == 0x01u || ct == 0x03u || ct == 0x04u));
+                                        LAGFX_LOG("compute: 0x25 CREATEBACK view=0x%x word[%d]=0x%x "
+                                                  "-> type=0x%02x pfn0x%llx sz=%llu backing=%d",
+                                                  object_id, w, cand, ct,
+                                                  (unsigned long long)cpfn,
+                                                  (unsigned long long)csz, (int)is_back);
+                                        if (is_back) {
+                                            bool found = false;
+                                            for (uint32_t k = 0; k < p->m2_backing_cache_n; k++)
+                                                if (p->m2_backing_cache[k].obj_id == (uint16_t)cand) {
+                                                    p->m2_backing_cache[k].pfn = (uint32_t)cpfn;
+                                                    p->m2_backing_cache[k].sz = csz;
+                                                    p->m2_backing_cache[k].task_id = (uint16_t)task->id;
+                                                    p->m2_backing_cache[k].valid = 1u; found = true; break;
+                                                }
+                                            if (!found && p->m2_backing_cache_n < 64u) {
+                                                uint32_t k = p->m2_backing_cache_n++;
+                                                p->m2_backing_cache[k].obj_id = (uint16_t)cand;
+                                                p->m2_backing_cache[k].pfn = (uint32_t)cpfn;
+                                                p->m2_backing_cache[k].sz = csz;
+                                                p->m2_backing_cache[k].task_id = (uint16_t)task->id;
+                                                p->m2_backing_cache[k].valid = 1u;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else {
                     LAGFX_WARN("compute: 0x25 no live task to register objectId=0x%x", object_id);
                 }
