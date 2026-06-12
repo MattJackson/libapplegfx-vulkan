@@ -610,8 +610,14 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                               (unsigned long long)lagfx_le64(tdesc+32), (unsigned long long)lagfx_le64(tdesc+40),
                               (unsigned long long)lagfx_le64(tdesc+48), (unsigned long long)lagfx_le64(tdesc+56));
                 }
-                LAGFX_LOG("P6b bind#%u slot=%u texture unresolved — skip draw (no crash)",
-                          binding_no[i], slot);
+                lagfx_resource_entry_t *dbg_te =
+                    tref ? lagfx_resource_lookup_texture(&p->resources, tref) : NULL;
+                LAGFX_LOG("P6b bind#%u slot=%u texture unresolved — skip draw (no crash) "
+                          "[ref=0x%x pipe=0x%x tex_idx=%u tex_ord=%u n_valid=%u "
+                          "te=%d te_view=%d]",
+                          binding_no[i], slot, tref, task->pending_pipeline.reference,
+                          tex_idx, tex_ord, n_valid_tex, dbg_te ? 1 : 0,
+                          (dbg_te && dbg_te->view != VK_NULL_HANDLE) ? 1 : 0);
                 for (uint32_t k = 0; k < *out_n; k++) {
                     vkDestroyBuffer(vk->device, out_bufs[k], NULL);
                     vkFreeMemory(vk->device, out_mems[k], NULL);
