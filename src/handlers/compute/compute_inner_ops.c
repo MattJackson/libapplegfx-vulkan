@@ -1450,6 +1450,14 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
     }
     uint32_t vertex_start = lagfx_le32(body + 0);
     uint32_t vertex_count = lagfx_le32(body + 4);
+    /* WIRE FIX (LAGFX_M2_DRAWCOUNT16): PGCmdDrawPrimitives16's vertexCount is a
+     * 16-bit field at byte offset 6, NOT a u32 at offset 4. Proven by raw dump:
+     * `03 00 00 00 | 00 00 | 06 00` = vertexStart=3, vertexCount=le16@6=6 (one
+     * quad); `…18 00` = 24 (4 quads). The old le32@4 read 0x00060000=393216 →
+     * 1024 clamped garbage verts → the on-screen band. Gated so M1 is preserved
+     * until verified; enable for M2 so draws rasterize only the real geometry. */
+    if (getenv("LAGFX_M2_DRAWCOUNT16"))
+        vertex_count = lagfx_le16(body + 6);
 
     /* DUMP_SPV: hex-dump the raw payload to decode the real field layout — the
      * "vertexCount=0x60000" reading is a misparse (the band = garbage triangles).
