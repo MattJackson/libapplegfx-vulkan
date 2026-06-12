@@ -1647,6 +1647,46 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
         }
         LAGFX_LOG("0x1a RP_TARGET vc=%u target-refs+backingPFN: %s", view_count, hl ? hits : "(none)");
     }
+    /* M2 VIEW_DESC: for each render-target ref in the attachment region, dump its
+     * FULL heap descriptor (u32 words) + FOLLOW the handle one level — read the
+     * content at its first PFN and resolve any object refs there — to find the
+     * REAL backing object/GPA. Decisive: if a render-target view's real backing
+     * GPA == a sampled texture's backing GPA (ref=0x10 → 0x741000), per-pass RTs
+     * are implementable keyed by backing-GPA (render the wallpaper pass into that
+     * VkImage; the composite samples the same GPA). */
+    if (getenv("LAGFX_VIEW_DESC") != NULL && view_count > 0u) {
+        for (size_t off = 48u; off + 4u <= body_len && off < 96u; off += 4u) {
+            uint32_t v = lagfx_le32(body + off);
+            if (v == 0u || v > 0xffffu) continue;
+            uint8_t tt = 0; uint64_t tva = 0, tgpa = 0;
+            if (!(lagfx_resolve_object_data(p, task, v, &tt, &tva, &tgpa) && tva != 0u)) continue;
+            if (tt != 0x05u && tt != 0x03u) continue;  /* views + textures only */
+            uint8_t d[64] = {0};
+            if (!lagfx_task_read_virtual(p, task, tva, sizeof(d), d)) continue;
+            LAGFX_LOG("VIEW_DESC ref=0x%x t%02x desc u32: %x %x %x %x | %x %x %x %x | %x %x %x %x | %x %x %x %x",
+                      v, tt, lagfx_le32(d+0),lagfx_le32(d+4),lagfx_le32(d+8),lagfx_le32(d+12),
+                      lagfx_le32(d+16),lagfx_le32(d+20),lagfx_le32(d+24),lagfx_le32(d+28),
+                      lagfx_le32(d+32),lagfx_le32(d+36),lagfx_le32(d+40),lagfx_le32(d+44),
+                      lagfx_le32(d+48),lagfx_le32(d+52),lagfx_le32(d+56),lagfx_le32(d+60));
+            /* follow handle: read the first PFN's page, resolve any object refs */
+            uint64_t hpfn = lagfx_le64(d + 8) & 0xffffffffull;
+            if (hpfn >= 0x10u && hpfn <= 0xfffffu) {
+                uint8_t h[32] = {0};
+                if (lagfx_task_read_virtual(p, task, hpfn << 12, sizeof(h), h)) {
+                    char fb[160]; size_t fl = 0;
+                    for (int w = 0; w < 8; w++) {
+                        uint32_t cv = lagfx_le32(h + w*4);
+                        if (cv == 0u || cv > 0xffffu) continue;
+                        uint8_t ct = 0; uint64_t cva = 0, cgpa = 0;
+                        if (lagfx_resolve_object_data(p, task, cv, &ct, &cva, &cgpa) && cva != 0u)
+                            fl += (size_t)snprintf(fb+fl, sizeof(fb)-fl, "0x%x(t%02x) ", cv, ct);
+                    }
+                    LAGFX_LOG("VIEW_DESC ref=0x%x handle@PFN0x%llx resolves: %s", v,
+                              (unsigned long long)hpfn, fl ? fb : "(none)");
+                }
+            }
+        }
+    }
     /* M2 RP-RAW (LAGFX_RP_RAW): raw u32 dump of the attachment region (48..176) so
      * the 6-attachment layout can be decoded by hand — each color attachment slot
      * (view_count=6, ~89 B span) should carry its target IOSurface ref + load/store
