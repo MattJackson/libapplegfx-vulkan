@@ -1619,19 +1619,33 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
      * resource (a plausible target ref) and log them with their byte offset, so
      * we can pin the attachment-ref field. */
     if (getenv("LAGFX_RP_TARGET") != NULL && view_count > 0u) {
-        char hits[256]; size_t hl = 0;
-        for (size_t off = 48u; off + 4u <= body_len && hl < sizeof(hits) - 24u; off += 4u) {
+        char hits[384]; size_t hl = 0;
+        for (size_t off = 48u; off + 4u <= body_len && hl < sizeof(hits) - 48u; off += 4u) {
             uint32_t v = lagfx_le32(body + off);
             if (v == 0u || v > 0xffffu) continue;
-            lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, v);
             uint8_t tt = 0; uint64_t tva = 0, tgpa = 0;
-            bool is_obj = lagfx_resolve_object_data(p, task, v, &tt, &tva, &tgpa) && tva != 0u;
-            if (te || is_obj)
-                hl += (size_t)snprintf(hits + hl, sizeof(hits) - hl,
-                                       "@%zu=0x%x(t%02x) ", off, v, tt);
+            if (!(lagfx_resolve_object_data(p, task, v, &tt, &tva, &tgpa) && tva != 0u)) continue;
+            /* Resolve the target ref's BACKING PFN (scan its descriptor like
+             * BACKREF) — the decisive test for keying per-pass render targets by
+             * backing-GPA: if a render TARGET (view 0x7/0x9) shares a backing PFN
+             * with a SAMPLED texture (ref=0x10, PFN0x741), then rendering into that
+             * backing fills what the composite samples → wallpaper renders. */
+            uint8_t td2[64] = {0}; uint64_t bpfn = 0;
+            if (lagfx_task_read_virtual(p, task, tva, sizeof(td2), td2)) {
+                for (int e = 0; e < 4; e++) {
+                    uint64_t es = lagfx_le64(td2 + (size_t)e*16u);
+                    uint64_t ep = lagfx_le64(td2 + (size_t)e*16u + 8u) & 0xffffffffull;
+                    if (ep < 0x10u || ep > 0xfffffu) continue;
+                    /* type-0x05 view: follow the {size,PFN} entry whose first words
+                     * point to a sub-object; else take the direct PFN. */
+                    if (es >= 4u) { bpfn = ep; break; }
+                }
+            }
+            hl += (size_t)snprintf(hits + hl, sizeof(hits) - hl,
+                                   "@%zu=0x%x(t%02x,bPFN0x%llx) ", off, v, tt,
+                                   (unsigned long long)bpfn);
         }
-        LAGFX_LOG("0x1a RP_TARGET view_count=%u body_len=%zu candidate-target-refs: %s",
-                  view_count, body_len, hl ? hits : "(none)");
+        LAGFX_LOG("0x1a RP_TARGET vc=%u target-refs+backingPFN: %s", view_count, hl ? hits : "(none)");
     }
     /* M2 RP-RAW (LAGFX_RP_RAW): raw u32 dump of the attachment region (48..176) so
      * the 6-attachment layout can be decoded by hand — each color attachment slot
