@@ -1611,6 +1611,28 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
                       off, (unsigned)w0, (unsigned)w1, d, off, (double)f0);
         }
     }
+    /* M2 RP-TARGET (LAGFX_RP_TARGET): the attachment descriptors (offset 48+)
+     * carry the TARGET IOSurface ref(s) for this render pass — needed for
+     * per-pass render targets (route the wallpaper draw into its IOSurface so a
+     * later composite samples real content, not black). The layout is un-RE'd;
+     * scan the full payload for small u32 words that match a registered texture
+     * resource (a plausible target ref) and log them with their byte offset, so
+     * we can pin the attachment-ref field. */
+    if (getenv("LAGFX_RP_TARGET") != NULL && view_count > 0u) {
+        char hits[256]; size_t hl = 0;
+        for (size_t off = 48u; off + 4u <= body_len && hl < sizeof(hits) - 24u; off += 4u) {
+            uint32_t v = lagfx_le32(body + off);
+            if (v == 0u || v > 0xffffu) continue;
+            lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, v);
+            uint8_t tt = 0; uint64_t tva = 0, tgpa = 0;
+            bool is_obj = lagfx_resolve_object_data(p, task, v, &tt, &tva, &tgpa) && tva != 0u;
+            if (te || is_obj)
+                hl += (size_t)snprintf(hits + hl, sizeof(hits) - hl,
+                                       "@%zu=0x%x(t%02x) ", off, v, tt);
+        }
+        LAGFX_LOG("0x1a RP_TARGET view_count=%u body_len=%zu candidate-target-refs: %s",
+                  view_count, body_len, hl ? hits : "(none)");
+    }
 
     /* TODO: Stage 70c — consume task->render_pass_desc to construct VkRenderingInfo at vkCmdBeginRendering. */
     return 0;
