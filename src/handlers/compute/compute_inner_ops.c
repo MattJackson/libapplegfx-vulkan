@@ -1857,6 +1857,65 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
                                       "type=0x%02x sz=%llu pfn=0x%llx", ref, bt,
                                       (unsigned long long)offset, w, h, ht,
                                       (unsigned long long)hsz, (unsigned long long)hpf);
+
+                            /* M2 ARGUPLOAD: the embedded handle resolves to a REAL
+                             * type-0x03 texture with live pixels at THIS (0x6e bind)
+                             * time — but draw-time TEXBACK fails to resolve it (the
+                             * eviction/timing gap). Upload the pixels NOW, while live,
+                             * and register under the handle ref so the later sampling
+                             * draw binds real content instead of black. Reuses the
+                             * TEXBACK derivation (bytesPerRow @ desc word[4]) + upload.
+                             * Once per handle (skip if already host-backed). Gated. */
+                            if (getenv("LAGFX_M2_ARGUPLOAD") && ht == 0x03u
+                                && hpf >= 0x10u && hpf <= 0xfffffu
+                                && hsz >= 256u && hsz <= 16u * 1024u * 1024u
+                                && (hsz % 4u) == 0u) {
+                                lagfx_resource_entry_t *ex =
+                                    lagfx_resource_lookup_texture(&p->resources, h);
+                                if (!(ex && ex->view != VK_NULL_HANDLE)) {
+                                    lagfx_device_t *dwv = (lagfx_device_t *)p->dev;
+                                    if (dwv && dwv->vk && dwv->vk->initialized) {
+                                        uint32_t bpr = lagfx_le32(hd + 16);
+                                        uint32_t total_px = (uint32_t)(hsz / 4u);
+                                        uint32_t W = 1u, H = 1u;
+                                        if (bpr >= 4u && (bpr % 4u) == 0u && (hsz % bpr) == 0u
+                                            && (hsz / bpr) <= 8192u && (bpr / 4u) <= 8192u) {
+                                            W = bpr / 4u; H = (uint32_t)(hsz / bpr);
+                                        } else {
+                                            uint32_t s = 1u; while (s * s < total_px) s++;
+                                            if (s * s == total_px) { W = s; H = s; }
+                                            else for (uint32_t c = 256u; c >= 1u; c >>= 1)
+                                                if (total_px % c == 0u) { W = c; H = total_px / c; break; }
+                                        }
+                                        size_t rl = (size_t)W * H * 4u;
+                                        if (rl > 8u * 1024u * 1024u) rl = 8u * 1024u * 1024u;
+                                        uint8_t *pix = malloc(rl);
+                                        lagfx_vk_iosurface_t *ios = NULL;
+                                        if (pix
+                                            && lagfx_read_virtual_besteffort(p, task, hpf << 12, rl, pix)
+                                            && lagfx_vk_iosurface_create(dwv->vk, W, H, 80u, &ios) == LAGFX_OK
+                                            && lagfx_vk_iosurface_upload_pixels(dwv->vk, ios, pix, rl) == LAGFX_OK) {
+                                            lagfx_resource_register(&p->resources, h,
+                                                                    LAGFX_RESOURCE_TYPE_TEXTURE,
+                                                                    task->id, hpf << 12, hsz);
+                                            lagfx_resource_entry_t *ne =
+                                                lagfx_resource_lookup_texture(&p->resources, h);
+                                            if (ne) { ne->host_handle = ios;
+                                                      ne->image = ios->image; ne->view = ios->view; }
+                                            uint32_t nb = 0;
+                                            for (size_t q = 0; q + 4 <= rl; q += 4)
+                                                if (pix[q] | pix[q+1] | pix[q+2]) nb++;
+                                            LAGFX_LOG("M2 ARGUPLOAD handle=0x%x backed %ux%u from "
+                                                      "PFN0x%llx (%llu B) nonblack_px=%u/%zu", h, W, H,
+                                                      (unsigned long long)hpf,
+                                                      (unsigned long long)hsz, nb, rl / 4);
+                                        } else if (ios) {
+                                            lagfx_vk_iosurface_destroy(dwv->vk, ios);
+                                        }
+                                        free(pix);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
