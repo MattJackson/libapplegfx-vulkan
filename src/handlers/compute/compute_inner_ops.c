@@ -699,8 +699,20 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * single interleaved stage-in buffer). Proven: composites cover
                      * nothing while ColorFill (no stage-in) covers fullscreen. */
                     uint32_t vslot = slot;
+                    /* Skip the stage-in vertex buffer slot(s) so the MVP storage
+                     * buffer resolves to the right guest slot. PROVEN (STORDUMP):
+                     * the UberComposite viewport matrix is at SetVertexBuffers[2]
+                     * (ref 0xe off 128) — there are TWO stage-in buffers (ref 0x14
+                     * + ref 0x13) to skip, so binding 0 → vertex_buffers[2], not [1].
+                     * The +1 heuristic landed on the screen-dims buffer (off 0/64) →
+                     * gl_Position.y constant → quad collapses to a band (the black
+                     * bar). Env-tunable skip count (default keeps the old +1) until
+                     * the stage-in buffer count is derived from the vertex descriptor. */
+                    uint32_t skip = 1u;
+                    const char *vsk = getenv("LAGFX_M2_VSLOT_SKIP");
+                    if (vsk) { unsigned long s = strtoul(vsk, NULL, 0); if (s <= 8u) skip = (uint32_t)s; }
                     if (task->pending_pipeline.n_vtx_inputs > 0u)
-                        vslot = slot + 1u;
+                        vslot = slot + skip;
                     if (vslot < LAGFX_MAX_BINDING_SLOTS
                         && task->bindings.vertex_buffers[vslot].valid)
                         bs = &task->bindings.vertex_buffers[vslot];
