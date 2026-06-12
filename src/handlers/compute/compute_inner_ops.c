@@ -819,6 +819,21 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                  * garbage. Falls back to VA read when gate off (M1). */
                                 lagfx_read_resource_backing(p, task, dva,
                                                             LAGFX_DRAW_DS_BUF_SZ, data);
+                                /* DRAW-TIME storage-buffer dump (gated DUMP_SPV):
+                                 * the matrix/uniforms that transform the vertex
+                                 * positions. If this is zero at draw time, gl_Position
+                                 * collapses → degenerate quad → uniform gray. */
+                                if (getenv("LAGFX_DUMP_SPV")) {
+                                    float mf[8]; uint32_t mu;
+                                    for (int q = 0; q < 8; q++) {
+                                        mu = lagfx_le32(data + q*4); memcpy(&mf[q], &mu, 4);
+                                    }
+                                    LAGFX_LOG("STORDUMP ref=0x%x bind%u off=%llu floats[0..7]: "
+                                              "%.4g %.4g %.4g %.4g | %.4g %.4g %.4g %.4g",
+                                              bs->ref, binding_no[i],
+                                              (unsigned long long)bs->offset,
+                                              mf[0],mf[1],mf[2],mf[3],mf[4],mf[5],mf[6],mf[7]);
+                                }
                                 /* Size the VkBuffer to the matched range (cap 16 MiB,
                                  * floor 8 MiB) so any dynamic shader index stays in
                                  * bounds (OOB reads zero-pad, no lavapipe crash). */
