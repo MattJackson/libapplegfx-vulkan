@@ -1265,12 +1265,43 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
      * read_frame serves the wallpaper on noVNC. Bypasses the unfinished compositor
      * — shows the real background while per-pass compositing is built. Gated. */
     if (getenv("LAGFX_M2_WALLPAPER")) {
+        /* Pick the LINEAR-COHERENT large texture (the real wallpaper photo), not the
+         * first large one (which is a GPU-tiled intermediate → static). Score each
+         * candidate by row-to-row pixel diff on its guest backing: a real photo has
+         * LOW diff; tiled/noise surfaces have HIGH diff. Present the lowest-score one. */
         lagfx_vk_iosurface_t *wp = NULL;
+        uint64_t best_score = (uint64_t)-1;
         for (uint32_t ri = 0; ri < p->resources.count; ri++) {
             lagfx_resource_entry_t *re = &p->resources.entries[ri];
             lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)re->host_handle;
-            if (ios && ios->image != VK_NULL_HANDLE && ios->width >= 1024u
-                && ios->height >= 512u) { wp = ios; break; }
+            if (!(ios && ios->image != VK_NULL_HANDLE && ios->width >= 1024u
+                  && ios->height >= 512u && re->gpu_addr != 0u))
+                continue;
+            uint32_t W = ios->width, rows = 64u;
+            size_t rlen = (size_t)W * 4u * rows;
+            if (rlen > 1u*1024u*1024u) rlen = 1u*1024u*1024u;
+            uint8_t *sb = malloc(rlen);
+            uint64_t score = (uint64_t)-1;
+            if (sb && lagfx_read_resource_backing(p, task, re->gpu_addr, (uint32_t)rlen, sb)) {
+                uint64_t tot = 0; uint32_t cnt = 0; size_t stride = (size_t)W * 4u;
+                for (uint32_t y = 0; y + 1u < rows; y++)
+                    for (uint32_t x = 0; x < W; x += 16u) {
+                        size_t i = (size_t)y*stride + (size_t)x*4u;
+                        size_t j = i + stride;
+                        if (j + 3 >= rlen) break;
+                        tot += (uint64_t)abs((int)sb[i]-(int)sb[j])
+                             + (uint64_t)abs((int)sb[i+1]-(int)sb[j+1])
+                             + (uint64_t)abs((int)sb[i+2]-(int)sb[j+2]);
+                        cnt++;
+                    }
+                if (cnt) score = tot / cnt;
+            }
+            free(sb);
+            if (getenv("LAGFX_M2_WALLPAPER_DBG"))
+                LAGFX_LOG("%s M2 WP-CAND ref=0x%x %ux%u gpa=0x%llx rowdiff=%llu", op,
+                          re->ref, ios->width, ios->height,
+                          (unsigned long long)re->gpu_addr, (unsigned long long)score);
+            if (score < best_score) { best_score = score; wp = ios; }
         }
         if (wp) {
             lagfx_status_t pst = lagfx_vk_display_present_surface(
