@@ -161,7 +161,7 @@ static bool lagfx_read_virtual_besteffort(lagfx_protocol_t *p,
  * best-effort read so any genuinely VA-backed resource still resolves. Returns
  * true if either path produced data. Proven 2026-06-11: raw GPA 0x741000 =
  * 73.5% nonblack wallpaper; virtual read of the same pfn<<12 = 0% (mistranslated). */
-static bool lagfx_read_texture_backing(lagfx_protocol_t *p,
+static bool lagfx_read_resource_backing(lagfx_protocol_t *p,
                                        const lagfx_task_entry_t *task,
                                        uint64_t gpa, uint32_t len, uint8_t *buf) {
     /* GATED (LAGFX_M2_RAWGPA): the raw-GPA read is strictly more correct (the
@@ -361,7 +361,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                             if (rl > 8u * 1024u * 1024u) rl = 8u * 1024u * 1024u;
                             uint8_t *rp = malloc(rl);
                             if (rp) {
-                                if (lagfx_read_texture_backing(p, task, te->gpu_addr, rl, rp)) {
+                                if (lagfx_read_resource_backing(p, task, te->gpu_addr, rl, rp)) {
                                     uint32_t nb = 0;
                                     for (size_t q = 0; q + 4 <= rl; q += 4)
                                         if (rp[q] | rp[q+1] | rp[q+2]) nb++;
@@ -539,7 +539,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                     uint8_t *pix = malloc(rd_len);
                     lagfx_vk_iosurface_t *ios = NULL;
                     if (pix
-                        && lagfx_read_texture_backing(p, pix_task, pfn << 12, rd_len, pix)
+                        && lagfx_read_resource_backing(p, pix_task, pfn << 12, rd_len, pix)
                         && lagfx_vk_iosurface_create(vk, W, H, 80u, &ios) == LAGFX_OK
                         && lagfx_vk_iosurface_upload_pixels(vk, ios, pix, rd_len) == LAGFX_OK) {
                         lagfx_resource_register(&p->resources, tref,
@@ -801,8 +801,13 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                             if (bs->offset < acc + rsize) {
                                 uint64_t local = bs->offset - acc;
                                 uint64_t dva = (pfn << 12) + local;
-                                lagfx_read_virtual_besteffort(p, task, dva,
-                                                              LAGFX_DRAW_DS_BUF_SZ, data);
+                                /* SAME root cause: pfn is guest-PHYSICAL, dva is a
+                                 * GPA — read raw (gated LAGFX_M2_RAWGPA), not
+                                 * VA-translated, so the composite's storage buffers
+                                 * (UVs, MVP transforms, uniforms) are correct, not
+                                 * garbage. Falls back to VA read when gate off (M1). */
+                                lagfx_read_resource_backing(p, task, dva,
+                                                            LAGFX_DRAW_DS_BUF_SZ, data);
                                 /* Size the VkBuffer to the matched range (cap 16 MiB,
                                  * floor 8 MiB) so any dynamic shader index stays in
                                  * bounds (OOB reads zero-pad, no lavapipe crash). */
@@ -1024,7 +1029,13 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
         if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
         if (vbs->offset < vacc + rsize) {
             uint64_t dva = (pfn << 12) + (vbs->offset - vacc);
-            if (lagfx_read_virtual_besteffort(p, task, dva, LAGFX_DRAW_DS_BUF_SZ, vdata)) {
+            /* SAME root cause as the texture backing: the placement descriptor's
+             * PFN is a guest-PHYSICAL frame, so dva=(pfn<<12)+off is a GPA — read
+             * it raw (gated LAGFX_M2_RAWGPA), NOT VA-translated, else the vertex
+             * positions come back garbage/zero → degenerate geometry (the wallpaper
+             * draw maps to a band instead of full-screen). Falls back to the VA
+             * read when the gate is off, preserving M1. */
+            if (lagfx_read_resource_backing(p, task, dva, LAGFX_DRAW_DS_BUF_SZ, vdata)) {
                 VkBuffer vb = VK_NULL_HANDLE;
                 if (lagfx_vk_make_host_storage_buffer(vk, vdata, LAGFX_DRAW_DS_BUF_SZ,
                                                       &vb, out_mem) == LAGFX_OK) {
@@ -1930,7 +1941,7 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
                                         uint8_t *pix = malloc(rl);
                                         lagfx_vk_iosurface_t *ios = NULL;
                                         if (pix
-                                            && lagfx_read_texture_backing(p, task, hpf << 12, rl, pix)
+                                            && lagfx_read_resource_backing(p, task, hpf << 12, rl, pix)
                                             && lagfx_vk_iosurface_create(dwv->vk, W, H, 80u, &ios) == LAGFX_OK
                                             && lagfx_vk_iosurface_upload_pixels(dwv->vk, ios, pix, rl) == LAGFX_OK) {
                                             lagfx_resource_register(&p->resources, h,
