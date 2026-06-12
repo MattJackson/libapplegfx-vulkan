@@ -898,15 +898,20 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                  * positions. If this is zero at draw time, gl_Position
                                  * collapses → degenerate quad → uniform gray. */
                                 if (getenv("LAGFX_DUMP_SPV")) {
-                                    float mf[8]; uint32_t mu;
-                                    for (int q = 0; q < 8; q++) {
+                                    float mf[16]; uint32_t mu;
+                                    for (int q = 0; q < 16; q++) {
                                         mu = lagfx_le32(data + q*4); memcpy(&mf[q], &mu, 4);
                                     }
-                                    LAGFX_LOG("STORDUMP ref=0x%x bind%u off=%llu floats[0..7]: "
-                                              "%.4g %.4g %.4g %.4g | %.4g %.4g %.4g %.4g",
+                                    /* 4 vec4 columns: col0[0..3] col1[4..7] col2[8..11]
+                                     * col3[12..15]. The shader uses col0,col1,col3; col3
+                                     * is the translation/w — if (… ,1) then w=1 (ok); if
+                                     * all-zero then gl_Position.w=0 → degenerate. */
+                                    LAGFX_LOG("STORDUMP ref=0x%x bind%u off=%llu col0[%.4g %.4g %.4g %.4g] "
+                                              "col1[%.4g %.4g %.4g %.4g] col3[%.4g %.4g %.4g %.4g]",
                                               bs->ref, binding_no[i],
                                               (unsigned long long)bs->offset,
-                                              mf[0],mf[1],mf[2],mf[3],mf[4],mf[5],mf[6],mf[7]);
+                                              mf[0],mf[1],mf[2],mf[3], mf[4],mf[5],mf[6],mf[7],
+                                              mf[12],mf[13],mf[14],mf[15]);
                                 }
                                 /* Size the VkBuffer to the matched range (cap 16 MiB,
                                  * floor 8 MiB) so any dynamic shader index stays in
