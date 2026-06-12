@@ -651,6 +651,25 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                               (unsigned long long)lagfx_le64(tdesc+32), (unsigned long long)lagfx_le64(tdesc+40),
                               (unsigned long long)lagfx_le64(tdesc+48), (unsigned long long)lagfx_le64(tdesc+56));
                 }
+                /* M2 UIRENDER: rather than SKIP a loginwindow UI draw whose sampled
+                 * texture is unresolved (→ black screen, the whole UI vanishes),
+                 * bind any already-backed sampleable texture as a fallback so the
+                 * draw RENDERS (geometry + a real, if wrong, texture). The login UI
+                 * is many small textured quads; skipping any one drops the whole
+                 * draw. A fallback lets the UI shapes appear (toward a recognizable
+                 * loginwindow) instead of nothing. Gated. */
+                if (view == VK_NULL_HANDLE && getenv("LAGFX_M2_UIRENDER")) {
+                    for (uint32_t ri = 0; ri < p->resources.count; ri++) {
+                        lagfx_vk_iosurface_t *fb =
+                            (lagfx_vk_iosurface_t *)p->resources.entries[ri].host_handle;
+                        if (fb && fb->view != VK_NULL_HANDLE
+                            && (fb->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                || fb->layout == VK_IMAGE_LAYOUT_GENERAL)) {
+                            view = fb->view; lay = fb->layout; break;
+                        }
+                    }
+                }
+                if (view != VK_NULL_HANDLE) goto uirender_bound;
                 lagfx_resource_entry_t *dbg_te =
                     tref ? lagfx_resource_lookup_texture(&p->resources, tref) : NULL;
                 LAGFX_LOG("P6b bind#%u slot=%u texture unresolved — skip draw (no crash) "
@@ -667,6 +686,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                 *out_n = 0;
                 return VK_NULL_HANDLE;
             }
+          uirender_bound:
             iinfos[nw] = (VkDescriptorImageInfo){ .imageView = view, .imageLayout = lay };
             writes[nw] = (VkWriteDescriptorSet){
                 .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
