@@ -1501,6 +1501,57 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
     return 0;
 }
 
+/* 0x00 DrawPrimitives64 — the suspected FULL-SCREEN draw, previously UNHANDLED
+ * (silently dropped at TRACE). If the wallpaper/background is drawn via 0x00,
+ * not handling it = black background. Raw-dump the payload to decode the count
+ * field (RE: 20 B), then emit the draw via the shared path. Always logs when it
+ * fires so we learn whether 0x00 is even used. */
+static int op_draw_primitives_64(lagfx_protocol_t *p,
+                                   uint32_t          encoder_type,
+                                   uint32_t          task_id,
+                                   const uint8_t    *body,
+                                   size_t            body_len) {
+    (void)encoder_type;
+    if (body_len < 8u) {
+        LAGFX_WARN("compute_inner: 0x00 DrawPrimitives64 payload too small (%zu)", body_len);
+        return 1;
+    }
+    if (task_id >= LAGFX_MAX_TASKS) return 1;
+    lagfx_task_entry_t *task = &p->tasks[task_id];
+    if (!task->live) return 1;
+
+    char hx[160]; size_t hn = 0;
+    for (size_t q = 0; q < body_len && q < 32u && hn + 3 < sizeof(hx); q++)
+        hn += (size_t)snprintf(hx + hn, sizeof(hx) - hn, "%02x ", body[q]);
+    /* Candidate count fields (decode from the dump): u32@0, u32@4, u32@8,
+     * u16@6 (matching the 0x01 layout). Default to u32@4 (vertexCount slot). */
+    uint32_t f0 = lagfx_le32(body + 0);
+    uint32_t f4 = body_len >= 8 ? lagfx_le32(body + 4) : 0;
+    uint32_t f8 = body_len >= 12 ? lagfx_le32(body + 8) : 0;
+    uint32_t c16 = body_len >= 8 ? lagfx_le16(body + 6) : 0;
+    LAGFX_LOG("compute_inner: 0x00 DrawPrimitives64 FIRES len=%zu words=%u %u %u u16@6=%u bytes: %s",
+              body_len, f0, f4, f8, c16, hx);
+
+    /* Heuristic count: prefer the u16@6 (proven for 0x01) if it's a sane small
+     * count, else f4. Env override to probe (LAGFX_M2_DC64_FIELD = 0/4/6). */
+    uint32_t vcount = (c16 > 0u && c16 < 0x10000u) ? c16 : f4;
+    const char *fld = getenv("LAGFX_M2_DC64_FIELD");
+    if (fld) { uint32_t which = (uint32_t)strtoul(fld, NULL, 0);
+        vcount = which == 0u ? f0 : which == 6u ? c16 : f4; }
+
+    task->pending_draw.valid = true;
+    task->pending_draw.indexed = false;
+    task->pending_draw.index_count = vcount;
+    task->pending_draw.base_vertex = 0;
+    task->pending_draw.instance_count = 1u;
+    task->pending_draw.first_instance = 0u;
+#ifdef LAGFX_HAVE_VULKAN
+    if (getenv("LAGFX_M2_DRAW64"))
+        lagfx_emit_pending_draw(p, task, "op_0x00", vcount);
+#endif
+    return 0;
+}
+
 static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
                                               uint32_t          encoder_type,
                                               uint32_t          task_id,
@@ -3080,6 +3131,7 @@ static const lagfx_compute_inner_op_desc_t compute_inner_op_table[] = {
     { 0x0006, "DrawIndexedPrimitives64",         op_draw_indexed_primitives_64 },
     { 0x006f, "SetFragmentBufferOffset",         op_set_fragment_buffer_offset },
     { 0x0001, "DrawPrimitives16",                op_draw_primitives_16 },
+    { 0x0000, "DrawPrimitives64",                op_draw_primitives_64 },
 };
 
 #define LAGFX_COMPUTE_INNER_OP_COUNT \
