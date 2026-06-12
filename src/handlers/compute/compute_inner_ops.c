@@ -164,6 +164,18 @@ static bool lagfx_read_virtual_besteffort(lagfx_protocol_t *p,
 static bool lagfx_read_texture_backing(lagfx_protocol_t *p,
                                        const lagfx_task_entry_t *task,
                                        uint64_t gpa, uint32_t len, uint8_t *buf) {
+    /* GATED (LAGFX_M2_RAWGPA): the raw-GPA read is strictly more correct (the
+     * descriptor PFN is a guest-physical frame), but it surfaces REAL texture
+     * data that the downstream M2 render path can't yet sample correctly — the
+     * full-screen wallpaper draw mis-renders to white + a scrambled band (the
+     * vertexCount=393216 geometry misparse). With the old VA read the same
+     * textures read black, so M1's "recognizable" dark frame stays intact. Keep
+     * the fix OPT-IN until the M2 rendering layer (texture dims + full-screen
+     * sample geometry) is ready, so M1 production does NOT regress. Default:
+     * old virtual best-effort read (M1 frame unchanged). */
+    if (!getenv("LAGFX_M2_RAWGPA")) {
+        return lagfx_read_virtual_besteffort(p, task, gpa, len, buf);
+    }
     lagfx_device_t *dev = p ? (lagfx_device_t *)p->dev : NULL;
     if (dev && dev->desc.shell.read_memory
         && dev->desc.shell.read_memory(dev->desc.shell.opaque, gpa, len, buf)) {
