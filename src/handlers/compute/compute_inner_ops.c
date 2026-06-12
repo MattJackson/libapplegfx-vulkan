@@ -1002,6 +1002,22 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
         *out_n = 0;
         return VK_NULL_HANDLE;
     }
+    /* M2 SKIPALLFILL: skip EVERY no-texture buffer-only composite (any colour),
+     * not just black. The wallpaper texture composite (pipe 0x14, samples 0x10)
+     * IS drawn correctly, but a no-texture buffer-fill (e.g. the uniform GRAY
+     * 224 fill) renders AFTER it into the shared loadOp=LOAD RT and OVERPAINTS
+     * the wallpaper. Suppressing all flat fills lets the texture composites
+     * (wallpaper + UI) show. This is a compositing-order workaround until proper
+     * per-pass RTs land; gated so it's opt-in for the wallpaper bring-up. */
+    if (getenv("LAGFX_M2_SKIPALLFILL") && !sbf_had_tex) {
+        for (uint32_t k = 0; k < *out_n; k++) {
+            vkDestroyBuffer(vk->device, out_bufs[k], NULL);
+            vkFreeMemory(vk->device, out_mems[k], NULL);
+        }
+        vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
+        *out_n = 0;
+        return VK_NULL_HANDLE;
+    }
     vkUpdateDescriptorSets(vk->device, nw, writes, 0, NULL);
     return set;
 }
