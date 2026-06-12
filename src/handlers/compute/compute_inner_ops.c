@@ -150,6 +150,32 @@ static bool lagfx_read_virtual_besteffort(lagfx_protocol_t *p,
     return any;
 }
 
+/* Read a TEXTURE BACKING whose descriptor PFN is a guest-PHYSICAL frame number
+ * (gpa = pfn<<12). The texture-object descriptor's PFN|flags word is a physical
+ * frame, NOT a task-virtual address — so it must be read with a raw guest-
+ * physical read (shell.read_memory), the same primitive the ring dispatchers
+ * use, NOT lagfx_task_read_virtual (which page-table-translates and lands on the
+ * wrong page → all-zeros for e.g. the 1280×1024 wallpaper texture 0x10, whose
+ * pixels pmemsave proves live at the raw GPA). Reads raw GPA first; if that
+ * yields all-zeros (or no read_memory callback), falls back to the virtual
+ * best-effort read so any genuinely VA-backed resource still resolves. Returns
+ * true if either path produced data. Proven 2026-06-11: raw GPA 0x741000 =
+ * 73.5% nonblack wallpaper; virtual read of the same pfn<<12 = 0% (mistranslated). */
+static bool lagfx_read_texture_backing(lagfx_protocol_t *p,
+                                       const lagfx_task_entry_t *task,
+                                       uint64_t gpa, uint32_t len, uint8_t *buf) {
+    lagfx_device_t *dev = p ? (lagfx_device_t *)p->dev : NULL;
+    if (dev && dev->desc.shell.read_memory
+        && dev->desc.shell.read_memory(dev->desc.shell.opaque, gpa, len, buf)) {
+        uint32_t nb = 0;
+        for (uint32_t q = 0; q + 4u <= len; q += 4u)
+            if (buf[q] | buf[q + 1] | buf[q + 2]) { nb = 1; break; }
+        if (nb) return true;   /* raw GPA had real content — the correct path */
+    }
+    /* Raw read empty/unavailable — fall back to VA-translated best-effort. */
+    return lagfx_read_virtual_besteffort(p, task, gpa, len, buf);
+}
+
 /* Stage 85b — build a descriptor set for a translated resource-using pipeline,
  * populated from the guest's bound storage buffers. Returns VK_NULL_HANDLE on
  * any failure (caller falls back to substitute). out_bufs/out_mems[0..*out_n)
@@ -323,7 +349,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                             if (rl > 8u * 1024u * 1024u) rl = 8u * 1024u * 1024u;
                             uint8_t *rp = malloc(rl);
                             if (rp) {
-                                if (lagfx_read_virtual_besteffort(p, task, te->gpu_addr, rl, rp)) {
+                                if (lagfx_read_texture_backing(p, task, te->gpu_addr, rl, rp)) {
                                     uint32_t nb = 0;
                                     for (size_t q = 0; q + 4 <= rl; q += 4)
                                         if (rp[q] | rp[q+1] | rp[q+2]) nb++;
@@ -501,7 +527,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                     uint8_t *pix = malloc(rd_len);
                     lagfx_vk_iosurface_t *ios = NULL;
                     if (pix
-                        && lagfx_read_virtual_besteffort(p, pix_task, pfn << 12, rd_len, pix)
+                        && lagfx_read_texture_backing(p, pix_task, pfn << 12, rd_len, pix)
                         && lagfx_vk_iosurface_create(vk, W, H, 80u, &ios) == LAGFX_OK
                         && lagfx_vk_iosurface_upload_pixels(vk, ios, pix, rd_len) == LAGFX_OK) {
                         lagfx_resource_register(&p->resources, tref,
@@ -1892,7 +1918,7 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
                                         uint8_t *pix = malloc(rl);
                                         lagfx_vk_iosurface_t *ios = NULL;
                                         if (pix
-                                            && lagfx_read_virtual_besteffort(p, task, hpf << 12, rl, pix)
+                                            && lagfx_read_texture_backing(p, task, hpf << 12, rl, pix)
                                             && lagfx_vk_iosurface_create(dwv->vk, W, H, 80u, &ios) == LAGFX_OK
                                             && lagfx_vk_iosurface_upload_pixels(dwv->vk, ios, pix, rl) == LAGFX_OK) {
                                             lagfx_resource_register(&p->resources, h,
