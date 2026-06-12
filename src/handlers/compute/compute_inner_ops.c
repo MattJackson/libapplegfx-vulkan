@@ -1066,18 +1066,27 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                 VkBuffer vb = VK_NULL_HANDLE;
                 if (lagfx_vk_make_host_storage_buffer(vk, vdata, LAGFX_DRAW_DS_BUF_SZ,
                                                       &vb, out_mem) == LAGFX_OK) {
-                    /* Dump first 3 vertices as floats assuming tight pack
-                     * [pos.xy(8), tex.xy(8), perspective(4)] stride 20. Reveals
-                     * whether the _tex UVs are valid [0,1] or degenerate (→ the
-                     * composite samples black). */
-                    float vf[15];
-                    for (int q = 0; q < 15; q++) {
-                        uint32_t u = lagfx_le32(vdata + q*4); memcpy(&vf[q], &u, 4);
+                    /* Dump 6 vertices at the REAL stride 24 ([pos.xy@0, tex.xy@8,
+                     * float@16], stride = (20+7)&~7 = 24 per pipeline_build). Reveals
+                     * whether the quad's positions + texcoords span a real range or
+                     * are degenerate (all ~one value → the composite samples one
+                     * texel → uniform output). Gated dump (LAGFX_DUMP_SPV reused). */
+                    if (getenv("LAGFX_DUMP_SPV")) {
+                        for (int vtx = 0; vtx < 6; vtx++) {
+                            size_t bo = (size_t)vtx * 24u;
+                            if (bo + 24u > LAGFX_DRAW_DS_BUF_SZ) break;
+                            float px, py, tx, ty, fz;
+                            uint32_t u;
+                            u = lagfx_le32(vdata+bo+0);  memcpy(&px,&u,4);
+                            u = lagfx_le32(vdata+bo+4);  memcpy(&py,&u,4);
+                            u = lagfx_le32(vdata+bo+8);  memcpy(&tx,&u,4);
+                            u = lagfx_le32(vdata+bo+12); memcpy(&ty,&u,4);
+                            u = lagfx_le32(vdata+bo+16); memcpy(&fz,&u,4);
+                            LAGFX_LOG("VTX24 ref=0x%x off=%llu v%d[pos %.4g,%.4g tex %.4g,%.4g f %.4g]",
+                                      vbs->ref, (unsigned long long)vbs->offset, vtx,
+                                      px, py, tx, ty, fz);
+                        }
                     }
-                    LAGFX_LOG("VTX: ref=0x%x off=%llu PFN0x%llx v0[pos %.3g,%.3g tex %.3g,%.3g] "
-                              "v1@20[%.3g,%.3g %.3g,%.3g] (stride20 assumed)", vbs->ref,
-                              (unsigned long long)vbs->offset, (unsigned long long)pfn,
-                              vf[0],vf[1],vf[2],vf[3], vf[5],vf[6],vf[7],vf[8]);
                     return vb;
                 }
             }
