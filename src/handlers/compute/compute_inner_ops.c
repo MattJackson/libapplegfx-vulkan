@@ -188,6 +188,46 @@ static bool lagfx_read_resource_backing(lagfx_protocol_t *p,
     return lagfx_read_virtual_besteffort(p, task, gpa, len, buf);
 }
 
+/* Read a binding slot's actual buffer content (resolve ref → placement descriptor
+ * → walk ranges to the slot's offset → raw-GPA read). Returns false if the slot
+ * is invalid/unresolvable. Used to SCAN candidate vertex-buffer slots for the one
+ * carrying the viewport matrix (the vertex MVP), since the reflected-binding →
+ * guest-slot map is ambiguous for multi-buffer composites. */
+static bool lagfx_read_binding_slot(lagfx_protocol_t *p, lagfx_task_entry_t *task,
+                                    const lagfx_binding_slot_t *bs,
+                                    uint8_t *out, size_t len) {
+    if (!bs || !bs->valid || bs->ref == 0u) return false;
+    uint8_t type = 0; uint64_t va = 0, gpa = 0;
+    if (!lagfx_resolve_object_data(p, task, bs->ref, &type, &va, &gpa) || va == 0u)
+        return false;
+    uint8_t desc[64];
+    if (!lagfx_task_read_virtual(p, task, va, sizeof(desc), desc)) return false;
+    uint64_t acc = 0;
+    for (int e = 0; e < 4; e++) {
+        uint64_t rsize = lagfx_le64(desc + (size_t)e * 16u);
+        uint64_t pfn = lagfx_le64(desc + (size_t)e * 16u + 8u) & 0xffffffffull;
+        if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
+        if (bs->offset < acc + rsize) {
+            uint64_t dva = (pfn << 12) + (bs->offset - acc);
+            return lagfx_read_resource_backing(p, task, dva, (uint32_t)len, out);
+        }
+        acc += rsize;
+    }
+    return false;
+}
+
+/* True if `data`'s first 32 bytes look like a viewport/MVP transform matrix:
+ * column 1's y-component (float[5]) is a small non-zero scale (~ -2/H). The
+ * WRONG buffer (screen dims) has float[5]==0 → gl_Position.y constant → the
+ * quad collapses to a band. This signature robustly distinguishes the matrix
+ * from the screen-dims / colour buffers regardless of slot index. */
+static bool lagfx_looks_like_mvp_matrix(const uint8_t *data) {
+    float c1y; uint32_t u = lagfx_le32(data + 20); memcpy(&c1y, &u, 4);
+    float c0x; uint32_t u0 = lagfx_le32(data + 0); memcpy(&c0x, &u0, 4);
+    float ac1 = c1y < 0 ? -c1y : c1y, ac0 = c0x < 0 ? -c0x : c0x;
+    return (ac1 > 1e-6f && ac1 < 1.0f) && (ac0 > 1e-6f && ac0 < 1.0f);
+}
+
 /* Stage 85b — build a descriptor set for a translated resource-using pipeline,
  * populated from the guest's bound storage buffers. Returns VK_NULL_HANDLE on
  * any failure (caller falls back to substitute). out_bufs/out_mems[0..*out_n)
@@ -718,6 +758,28 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                         bs = &task->bindings.vertex_buffers[vslot];
                     else if (task->bindings.vertex_buffers[slot].valid)
                         bs = &task->bindings.vertex_buffers[slot];
+                    /* M2 MTXSCAN: the fixed skip is fragile (per-draw binding varies).
+                     * For the vertex MVP binding (binding 0), scan ALL vertex-buffer
+                     * slots for the one whose content has the viewport-matrix signature
+                     * (col1.y != 0) and bind THAT — robust against slot reordering.
+                     * Only overrides binding 0 (the MVP); other bindings keep the skip
+                     * heuristic. Gated. */
+                    if (getenv("LAGFX_M2_MTXSCAN") && binding_no[i] == 0u
+                        && task->pending_pipeline.n_vtx_inputs > 0u) {
+                        uint8_t probe[64];
+                        for (uint32_t cs = 0; cs < LAGFX_MAX_BINDING_SLOTS && cs < 8u; cs++) {
+                            if (!task->bindings.vertex_buffers[cs].valid) continue;
+                            if (lagfx_read_binding_slot(p, task,
+                                    &task->bindings.vertex_buffers[cs], probe, sizeof(probe))
+                                && lagfx_looks_like_mvp_matrix(probe)) {
+                                bs = &task->bindings.vertex_buffers[cs];
+                                LAGFX_LOG("M2 MTXSCAN: vertex MVP binding0 -> vbuf slot %u "
+                                          "(ref=0x%x off=%llu, viewport-matrix signature)",
+                                          cs, bs->ref, (unsigned long long)bs->offset);
+                                break;
+                            }
+                        }
+                    }
                 }
             } else {
                 /* B8: VERTEX-FIRST (no binding offset). The pipeline reflection
