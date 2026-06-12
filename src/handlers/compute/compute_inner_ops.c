@@ -1828,6 +1828,40 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
             LAGFX_LOG("compute_inner: 0x6e SetFragmentBuffers [%u] ref=0x%x offset=%llu valid=%s",
                       slot_index, ref, (unsigned long long)offset, ref != 0u ? "true" : "false");
         }
+
+        /* M2 ARGBUF (LAGFX_M2_ARGBUF): test the argument-buffer/bindless hypothesis —
+         * the wallpaper texture handle is likely embedded INSIDE a fragment argument
+         * buffer (a guest buffer of resource handles the shader indexes), never bound
+         * as a 0x72 texture ref. Read the bound buffer's contents and scan its u32
+         * words for any that resolve to a real texture object; log the resolved
+         * type+size. A wallpaper-sized hit (MBs) here CONFIRMS bindless and yields the
+         * handle→texture resolution path. Slots >=1 only (slot 0 = small uniforms).
+         * Gated, read-only probe — no binding/render change. */
+        if (getenv("LAGFX_M2_ARGBUF") && ref != 0u && slot_index >= 1u) {
+            uint8_t bt = 0; uint64_t bva = 0, bgpa = 0;
+            if (lagfx_resolve_object_data(p, task, ref, &bt, &bva, &bgpa) && bva != 0u) {
+                uint8_t abuf[256] = {0};
+                if (lagfx_task_read_virtual(p, task, bva + offset, sizeof(abuf), abuf)) {
+                    for (int w = 0; w < 64; w++) {
+                        uint32_t h = lagfx_le32(abuf + (size_t)w * 4u);
+                        if (h == 0u || h == ref || h > 0xffffu) continue;
+                        uint8_t ht = 0; uint64_t hva = 0, hgpa = 0;
+                        if (lagfx_resolve_object_data(p, task, h, &ht, &hva, &hgpa) && hva != 0u
+                            && (ht == 0x03u || ht == 0x04u || ht == 0x05u)) {
+                            uint8_t hd[64] = {0}; uint64_t hsz = 0, hpf = 0;
+                            if (lagfx_task_read_virtual(p, task, hva, sizeof(hd), hd)) {
+                                hsz = lagfx_le64(hd + 0);
+                                hpf = lagfx_le64(hd + 8) & 0xffffffffull;
+                            }
+                            LAGFX_LOG("M2 ARGBUF buf=0x%x(t%02x)+%llu word[%d]=0x%x -> tex "
+                                      "type=0x%02x sz=%llu pfn=0x%llx", ref, bt,
+                                      (unsigned long long)offset, w, h, ht,
+                                      (unsigned long long)hsz, (unsigned long long)hpf);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /* TODO: Stage 70 — translate to vkCmdBindDescriptorBuffersEXT once descriptor buffer support added. */
