@@ -1625,15 +1625,22 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
      * (the color attachment surface, type 0x05 view / 0x03 texture). Take the
      * first ref in the region that resolves to a renderable surface object
      * (type 0x03/0x05); 0 = scanout. This selects where the pass's draws go. */
+    /* NOTE: view_count/render_area are MIS-PARSED (0x1a wire format PARTIAL — Apple
+     * uses doubles; observed view_count=0 + render_area=0x0 even for real draw
+     * passes). So do NOT gate target parsing on view_count. Scan the attachment
+     * region (offset 48..128; RP_RAW showed target refs @60/@76/@80) for the first
+     * ref resolving to a renderable surface (type 0x03/0x05). */
     task->render_pass_desc.target_ref = 0u;
-    if (view_count > 0u) {
-        for (size_t off = 48u; off + 4u <= body_len && off < 96u; off += 4u) {
+    if (body_len >= 52u) {
+        for (size_t off = 48u; off + 4u <= body_len && off < 128u; off += 4u) {
             uint32_t v = lagfx_le32(body + off);
             if (v == 0u || v > 0xffffu) continue;
             uint8_t rt = 0; uint64_t rva = 0, rgpa = 0;
             if (lagfx_resolve_object_data(p, task, v, &rt, &rva, &rgpa) && rva != 0u
                 && (rt == 0x03u || rt == 0x05u)) {
                 task->render_pass_desc.target_ref = v;
+                if (getenv("LAGFX_M2_PERPASS"))
+                    LAGFX_LOG("0x1a target_ref=0x%x (t%02x) @off=%zu", v, rt, off);
                 break;
             }
         }
