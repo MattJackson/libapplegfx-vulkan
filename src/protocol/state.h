@@ -107,6 +107,13 @@ typedef struct {
     uint32_t   render_area_w;   /* Render area extent width */
     uint32_t   render_area_h;   /* Render area extent height */
     uint32_t   view_count;      /* Number of color attachments (usually 1) */
+    /* M2 per-pass RT: the IOSurface/object ref this pass renders INTO (the color
+     * attachment target), parsed from the 0x1a attachment descriptor. 0 = the
+     * default scanout (display->rt). A non-zero target means the pass renders an
+     * intermediate layer (e.g. the wallpaper) into that surface, which a later
+     * composite samples — so we route the pass's draws into that surface's
+     * VkImage instead of the single scanout. */
+    uint32_t   target_ref;
 } lagfx_render_pass_desc_t;
 
 /* === Pending draw description (per-task) =========================

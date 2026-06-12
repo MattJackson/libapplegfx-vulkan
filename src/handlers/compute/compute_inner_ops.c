@@ -1585,6 +1585,25 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
     task->render_pass_desc.render_area_w = render_area_w;
     task->render_pass_desc.render_area_h = render_area_h;
 
+    /* M2 per-pass RT: parse the color-attachment TARGET ref from the attachment
+     * region (offset 48+). RP_RAW decode showed target refs at fixed offsets
+     * (the color attachment surface, type 0x05 view / 0x03 texture). Take the
+     * first ref in the region that resolves to a renderable surface object
+     * (type 0x03/0x05); 0 = scanout. This selects where the pass's draws go. */
+    task->render_pass_desc.target_ref = 0u;
+    if (view_count > 0u) {
+        for (size_t off = 48u; off + 4u <= body_len && off < 96u; off += 4u) {
+            uint32_t v = lagfx_le32(body + off);
+            if (v == 0u || v > 0xffffu) continue;
+            uint8_t rt = 0; uint64_t rva = 0, rgpa = 0;
+            if (lagfx_resolve_object_data(p, task, v, &rt, &rva, &rgpa) && rva != 0u
+                && (rt == 0x03u || rt == 0x05u)) {
+                task->render_pass_desc.target_ref = v;
+                break;
+            }
+        }
+    }
+
     /* OPEN: The remaining 536 B (584 - 48) contain attachment descriptor arrays.
      * Exact field ordering not yet RE'd from guest trace. Log byte at offset 48 for later analysis. */
     if (body_len >= 48u + 4u) {
