@@ -1076,6 +1076,41 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
         LAGFX_WARN("%s: no render target available", op);
         return;
     }
+    /* M2 PER-PASS RT (LAGFX_M2_PERPASS): if this render pass targets a non-scanout
+     * surface (render_pass_desc.target_ref != 0), route its draws INTO that
+     * surface's VkImage instead of the single display->rt. A later composite that
+     * SAMPLES the same surface then reads real rendered content (the wallpaper /
+     * intermediate layer) instead of black. The target IOSurface is created on
+     * first use, sized to the render area, and registered in the resource registry
+     * under target_ref so the texture-bind path finds it when sampled. The
+     * scanout (target_ref==0) keeps using display->rt. Gated; on any failure,
+     * fall back to display->rt (never crash). */
+    lagfx_vk_render_target_t perpass_rt;
+    lagfx_vk_render_target_t *active_rt = &display->rt;
+    if (getenv("LAGFX_M2_PERPASS") && task->render_pass_desc.target_ref != 0u) {
+        uint32_t tref = task->render_pass_desc.target_ref;
+        lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, tref);
+        lagfx_vk_iosurface_t *ios = te ? (lagfx_vk_iosurface_t *)te->host_handle : NULL;
+        if (!ios) {
+            uint32_t W = task->render_pass_desc.render_area_w ? task->render_pass_desc.render_area_w : 1920u;
+            uint32_t H = task->render_pass_desc.render_area_h ? task->render_pass_desc.render_area_h : 1080u;
+            if (W < 16u) W = 1920u; if (H < 16u) H = 1080u;
+            if (lagfx_vk_iosurface_create(dev_with_vk->vk, W, H, 80u, &ios) == LAGFX_OK && ios) {
+                lagfx_resource_register(&p->resources, tref, LAGFX_RESOURCE_TYPE_TEXTURE,
+                                        task->id, 0u, 0u);
+                lagfx_resource_entry_t *ne = lagfx_resource_lookup_texture(&p->resources, tref);
+                if (ne) { ne->host_handle = ios; ne->image = ios->image; ne->view = ios->view; }
+                LAGFX_LOG("%s PERPASS: created RT IOSurface for target ref=0x%x %ux%u", op, tref, W, H);
+            }
+        }
+        if (ios && ios->image != VK_NULL_HANDLE
+            && lagfx_vk_render_target_wrap(ios->image, ios->view, ios->memory,
+                                           ios->width, ios->height, ios->format,
+                                           &perpass_rt) == LAGFX_OK) {
+            active_rt = &perpass_rt;
+            ios->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; /* sampleable after render */
+        }
+    }
     bool resource_using = task->pending_pipeline.translated
                           && task->pending_pipeline.descriptor_set_layout != 0
                           && task->pending_pipeline.pipeline_layout != 0;
@@ -1159,7 +1194,7 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
                 st = lagfx_vk_draw_record_and_submit_bound(
                     dev_with_vk->vk, pipeline,
                     (VkPipelineLayout)task->pending_pipeline.pipeline_layout, ds,
-                    &display->rt, false, vc, 1, 0, 0, 0, vbuf);
+                    active_rt, false, vc, 1, 0, 0, 0, vbuf);
             }
             if (st == LAGFX_OK) {
                 LAGFX_LOG("%s P6b: drew TRANSLATED resource pipeline ref=0x%x verts=%u bindings=%u",
@@ -1184,7 +1219,7 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
          * is the SkyLight ref=0x14/0x1d case — stage-in attrs, no [[buffer]]. */
         st = lagfx_vk_draw_record_and_submit_bound(
             dev_with_vk->vk, pipeline, VK_NULL_HANDLE, VK_NULL_HANDLE,
-            &display->rt, false, vc, 1, 0, 0, 0, vbuf);
+            active_rt, false, vc, 1, 0, 0, 0, vbuf);
         if (st == LAGFX_OK) {
             LAGFX_LOG("%s VTX: drew TRANSLATED vertex-input pipeline ref=0x%x verts=%u stride=%u",
                       op, task->pending_pipeline.reference, vc, vstride);
@@ -1199,7 +1234,7 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
     } else if (!(!task->pending_pipeline.translated && getenv("LAGFX_NO_SUBSTITUTE"))) {
         /* Substitute / resource-free path: bundled 3-vertex triangle. */
         st = lagfx_vk_draw_record_and_submit(
-            dev_with_vk->vk, pipeline, &display->rt, false, 3, 1, 0, 0, 0);
+            dev_with_vk->vk, pipeline, active_rt, false, 3, 1, 0, 0, 0);
         if (st == LAGFX_OK) {
             LAGFX_LOG("%s: drew substitute triangle (guest req count=%u)", op, count);
             lagfx_display_signal_frame_ready(display);
