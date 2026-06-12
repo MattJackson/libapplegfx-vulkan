@@ -1633,6 +1633,19 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
         LAGFX_LOG("0x1a RP_TARGET view_count=%u body_len=%zu candidate-target-refs: %s",
                   view_count, body_len, hl ? hits : "(none)");
     }
+    /* M2 RP-RAW (LAGFX_RP_RAW): raw u32 dump of the attachment region (48..176) so
+     * the 6-attachment layout can be decoded by hand — each color attachment slot
+     * (view_count=6, ~89 B span) should carry its target IOSurface ref + load/store
+     * op + clear. The resolve-filtered scan misses targets not yet in the registry. */
+    if (getenv("LAGFX_RP_RAW") != NULL && view_count >= 1u) {
+        for (size_t base = 48u; base + 32u <= body_len && base < 176u; base += 32u) {
+            LAGFX_LOG("0x1a RP_RAW @%03zu: %08x %08x %08x %08x %08x %08x %08x %08x", base,
+                      lagfx_le32(body+base+0),  lagfx_le32(body+base+4),
+                      lagfx_le32(body+base+8),  lagfx_le32(body+base+12),
+                      lagfx_le32(body+base+16), lagfx_le32(body+base+20),
+                      lagfx_le32(body+base+24), lagfx_le32(body+base+28));
+        }
+    }
 
     /* TODO: Stage 70c — consume task->render_pass_desc to construct VkRenderingInfo at vkCmdBeginRendering. */
     return 0;
