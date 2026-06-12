@@ -1280,8 +1280,15 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
         /* vtx-input pipeline but no real vertex data → skip (no unbound fault). */
         LAGFX_LOG("%s VTX: ref=0x%x no real vertex data — skip (no crash)",
                   op, task->pending_pipeline.reference);
-    } else if (!(!task->pending_pipeline.translated && getenv("LAGFX_NO_SUBSTITUTE"))) {
-        /* Substitute / resource-free path: bundled 3-vertex triangle. */
+    } else if (!getenv("LAGFX_NO_SUBSTITUTE")) {
+        /* Substitute / resource-free path: bundled 3-vertex triangle.
+         * NO_SUBSTITUTE now skips this ENTIRELY (translated or not): a TRANSLATED
+         * pipeline that fell through here (no descriptor layout, no vtx input)
+         * still drew a full-screen WHITE substitute triangle via the white-fill
+         * fallback, clobbering the real translated composite draws (e.g. the
+         * wallpaper ref=0x19) underneath. Suppressing it lets the real content
+         * show. (The old guard only skipped substitutes for UNtranslated
+         * pipelines — that was the white-screen-over-wallpaper bug.) */
         st = lagfx_vk_draw_record_and_submit(
             dev_with_vk->vk, pipeline, active_rt, false, 3, 1, 0, 0, 0);
         if (st == LAGFX_OK) {
