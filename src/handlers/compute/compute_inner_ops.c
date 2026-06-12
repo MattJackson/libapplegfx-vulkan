@@ -2674,6 +2674,19 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                 else            f_mod = mod;
                 LAGFX_LOG("op_0x74 P6a: translated %s shader → VkShaderModule=%p (spv=%zu B)",
                           stage == 0 ? "vertex" : "fragment", (void *)mod, spv_sz);
+                /* M2 DUMP_SPV: write the translated SPIR-V to /tmp so it can be
+                 * spirv-dis'd offline — to verify whether the UberComposite vertex
+                 * shader actually WRITES the texcoord Output varying (else the
+                 * fragment's UV is constant → uniform sample). Gated, write-once
+                 * per ref+stage. */
+                if (getenv("LAGFX_DUMP_SPV")) {
+                    char path[64];
+                    snprintf(path, sizeof(path), "/tmp/spv-0x%x-%s.spv",
+                             reference, stage == 0 ? "vtx" : "frag");
+                    FILE *df = fopen(path, "wb");
+                    if (df) { fwrite(spv, 1, spv_sz, df); fclose(df);
+                        LAGFX_LOG("op_0x74 DUMP_SPV wrote %s (%zu B)", path, spv_sz); }
+                }
             }
 
             /* Both stages successful → commit to pending_pipeline.
