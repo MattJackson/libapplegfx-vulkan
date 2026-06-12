@@ -1451,6 +1451,20 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
     uint32_t vertex_start = lagfx_le32(body + 0);
     uint32_t vertex_count = lagfx_le32(body + 4);
 
+    /* DUMP_SPV: hex-dump the raw payload to decode the real field layout — the
+     * "vertexCount=0x60000" reading is a misparse (the band = garbage triangles).
+     * Show all words so swap / packed / wrong-offset can be identified. */
+    if (getenv("LAGFX_DUMP_SPV")) {
+        char hx[160]; size_t hn = 0;
+        for (size_t q = 0; q < body_len && q < 32u && hn + 3 < sizeof(hx); q++)
+            hn += (size_t)snprintf(hx + hn, sizeof(hx) - hn, "%02x ", body[q]);
+        LAGFX_LOG("DRAWRAW 0x01 len=%zu enc=%u words[0..3]=%u %u %u %u | bytes: %s",
+                  body_len, encoder_type, lagfx_le32(body+0),
+                  body_len>=8?lagfx_le32(body+4):0,
+                  body_len>=12?lagfx_le32(body+8):0,
+                  body_len>=16?lagfx_le32(body+12):0, hx);
+    }
+
     if (task_id >= LAGFX_MAX_TASKS) {
         LAGFX_WARN("compute_inner: 0x01 DrawPrimitives16 task_id=%u out of range", task_id);
         return 1;
