@@ -47,6 +47,7 @@
 #include "device.h"
 #include "protocol/state.h"
 #include "vulkan/iosurface.h"
+#include "vulkan/display_blit.h"
 #include "vulkan/pipeline_build.h"
 #include "vulkan/draw_record.h"
 #include "vulkan/descriptor_layout.h"
@@ -1254,6 +1255,40 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
     if (!(display && display->rt_ready && display->rt.image != VK_NULL_HANDLE)) {
         LAGFX_WARN("%s: no render target available", op);
         return;
+    }
+    /* M2 WALLPAPER (LAGFX_M2_WALLPAPER): direct wallpaper present. The desktop is
+     * composited from many small per-pass draws that we cannot yet assemble
+     * (per-pass sample-back not built), so the scanout is black. As a concrete
+     * path to a RECOGNIZABLE frame, present the large guest WALLPAPER texture
+     * (the real 1280×1024 photo, backed in the registry) straight to the scanout:
+     * blit it (scaled) into display->rt via the existing present-surface path, so
+     * read_frame serves the wallpaper on noVNC. Bypasses the unfinished compositor
+     * — shows the real background while per-pass compositing is built. Gated. */
+    if (getenv("LAGFX_M2_WALLPAPER")) {
+        lagfx_vk_iosurface_t *wp = NULL;
+        for (uint32_t ri = 0; ri < p->resources.count; ri++) {
+            lagfx_resource_entry_t *re = &p->resources.entries[ri];
+            lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)re->host_handle;
+            if (ios && ios->image != VK_NULL_HANDLE && ios->width >= 1024u
+                && ios->height >= 512u) { wp = ios; break; }
+        }
+        if (wp) {
+            lagfx_status_t pst = lagfx_vk_display_present_surface(
+                dev_with_vk->vk, &display->rt, wp->image, &wp->layout,
+                wp->width, wp->height, display->rt.width, display->rt.height,
+                display->scanout_gpa, display->scanout_length,
+                dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory);
+            if (pst == LAGFX_OK) {
+                static int wp_logged = 0;
+                if (!wp_logged) { wp_logged = 1;
+                    LAGFX_LOG("%s M2 WALLPAPER: presented %ux%u guest wallpaper texture "
+                              "to scanout %ux%u", op, wp->width, wp->height,
+                              display->rt.width, display->rt.height); }
+                lagfx_display_signal_frame_ready(display);
+            } else {
+                LAGFX_WARN("%s M2 WALLPAPER: present failed (%d)", op, (int)pst);
+            }
+        }
     }
     /* M2 PER-PASS RT (LAGFX_M2_PERPASS): if this render pass targets a non-scanout
      * surface (render_pass_desc.target_ref != 0), route its draws INTO that
