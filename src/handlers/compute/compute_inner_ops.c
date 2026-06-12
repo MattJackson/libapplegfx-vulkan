@@ -635,6 +635,11 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                 .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                 .pImageInfo      = &iinfos[nw],
             };
+            /* Diagnostic: a draw SUCCESSFULLY bound a texture. Reveals whether the
+             * wallpaper (ref=0x10) is ever sampled (→ overpaint problem) or never
+             * (→ translator drops the sample). */
+            LAGFX_LOG("P6b TEXBIND ok pipe=0x%x bind#%u tref=0x%x layout=%d",
+                      task->pending_pipeline.reference, binding_no[i], tref, (int)lay);
             nw++;
             continue;
         }
