@@ -1359,6 +1359,7 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
      * last-rendered per-pass surface's content visible. */
     lagfx_vk_iosurface_t *perpass_ios = NULL;
     uint32_t perpass_tref = 0u;
+    bool perpass_real_draw = false;  /* set only when a TRANSLATED draw lands in it */
     if (getenv("LAGFX_M2_PERPASS") && task->render_pass_desc.target_ref != 0u) {
         uint32_t tref = task->render_pass_desc.target_ref;
         lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, tref);
@@ -1474,6 +1475,7 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
                 LAGFX_LOG("%s P6b: drew TRANSLATED resource pipeline ref=0x%x verts=%u bindings=%u",
                           op, task->pending_pipeline.reference, vc,
                           task->pending_pipeline.n_spv_bindings);
+                if (active_rt == &perpass_rt) perpass_real_draw = true;
                 lagfx_display_signal_frame_ready(display);
             } else {
                 LAGFX_WARN("%s P6b: bound draw failed (%d)", op, (int)st);
@@ -1497,6 +1499,7 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
         if (st == LAGFX_OK) {
             LAGFX_LOG("%s VTX: drew TRANSLATED vertex-input pipeline ref=0x%x verts=%u stride=%u",
                       op, task->pending_pipeline.reference, vc, vstride);
+            if (active_rt == &perpass_rt) perpass_real_draw = true;
             lagfx_display_signal_frame_ready(display);
         } else {
             LAGFX_WARN("%s VTX: vertex-input draw failed (%d)", op, (int)st);
@@ -1505,15 +1508,20 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
         /* vtx-input pipeline but no real vertex data → skip (no unbound fault). */
         LAGFX_LOG("%s VTX: ref=0x%x no real vertex data — skip (no crash)",
                   op, task->pending_pipeline.reference);
-    } else if (!getenv("LAGFX_NO_SUBSTITUTE")) {
+    } else if (!getenv("LAGFX_NO_SUBSTITUTE")
+               && !(getenv("LAGFX_M2_ASMBLIT") && active_rt == &perpass_rt)) {
         /* Substitute / resource-free path: bundled 3-vertex triangle.
-         * NO_SUBSTITUTE now skips this ENTIRELY (translated or not): a TRANSLATED
+         * NO_SUBSTITUTE skips this ENTIRELY (translated or not): a TRANSLATED
          * pipeline that fell through here (no descriptor layout, no vtx input)
          * still drew a full-screen WHITE substitute triangle via the white-fill
          * fallback, clobbering the real translated composite draws (e.g. the
          * wallpaper ref=0x19) underneath. Suppressing it lets the real content
          * show. (The old guard only skipped substitutes for UNtranslated
-         * pipelines — that was the white-screen-over-wallpaper bug.) */
+         * pipelines — that was the white-screen-over-wallpaper bug.)
+         * M2a: additionally, under ASMBLIT, DON'T draw the substitute into a
+         * per-pass surface — it would pollute the surface with a fake triangle
+         * and (being the last draw) win the scanout blit over the real composite
+         * layers. The substitute still renders to display->rt directly. */
         st = lagfx_vk_draw_record_and_submit(
             dev_with_vk->vk, pipeline, active_rt, false, 3, 1, 0, 0, 0);
         if (st == LAGFX_OK) {
@@ -1533,7 +1541,8 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
      * Reuses the tested wallpaper-present path. Crash-proof: on any failure the
      * display->rt is left as-is (never crash; suite stays green). */
     if (getenv("LAGFX_M2_ASMBLIT") && active_rt == &perpass_rt
-        && perpass_ios && perpass_ios->image != VK_NULL_HANDLE && st == LAGFX_OK) {
+        && perpass_ios && perpass_ios->image != VK_NULL_HANDLE
+        && perpass_real_draw && st == LAGFX_OK) {
         lagfx_status_t bst = lagfx_vk_display_present_surface(
             dev_with_vk->vk, &display->rt, perpass_ios->image, &perpass_ios->layout,
             perpass_ios->width, perpass_ios->height,
