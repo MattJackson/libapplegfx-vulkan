@@ -1352,6 +1352,13 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
      * fall back to display->rt (never crash). */
     lagfx_vk_render_target_t perpass_rt;
     lagfx_vk_render_target_t *active_rt = &display->rt;
+    /* M2a SCANOUT-ASSEMBLY (LAGFX_M2_ASMBLIT): track the per-pass surface this
+     * draw renders into, so that after a successful per-pass draw we can blit it
+     * to display->rt (the scanned-out target). Per-pass routing lands every pass
+     * in an intermediate → nothing reaches the scanout → black. This makes the
+     * last-rendered per-pass surface's content visible. */
+    lagfx_vk_iosurface_t *perpass_ios = NULL;
+    uint32_t perpass_tref = 0u;
     if (getenv("LAGFX_M2_PERPASS") && task->render_pass_desc.target_ref != 0u) {
         uint32_t tref = task->render_pass_desc.target_ref;
         lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, tref);
@@ -1374,6 +1381,8 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
                                            &perpass_rt) == LAGFX_OK) {
             active_rt = &perpass_rt;
             ios->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; /* sampleable after render */
+            perpass_ios = ios;      /* M2a: candidate for the scanout-assembly blit */
+            perpass_tref = tref;
         }
     }
     bool resource_using = task->pending_pipeline.translated
@@ -1512,6 +1521,32 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
             lagfx_display_signal_frame_ready(display);
         } else {
             LAGFX_WARN("%s: substitute draw failed (%d)", op, (int)st);
+        }
+    }
+
+    /* M2a SCANOUT-ASSEMBLY BLIT (LAGFX_M2_ASMBLIT): if this draw rendered into a
+     * per-pass surface (not display->rt directly) and it succeeded, blit that
+     * surface to display->rt so its content reaches the scanout. Per-pass draws
+     * otherwise land only in intermediates and the scanout stays black. The
+     * last-rendered per-pass surface of the frame wins (each blit overwrites
+     * display->rt), which for the guest's compositor is the final composite pass.
+     * Reuses the tested wallpaper-present path. Crash-proof: on any failure the
+     * display->rt is left as-is (never crash; suite stays green). */
+    if (getenv("LAGFX_M2_ASMBLIT") && active_rt == &perpass_rt
+        && perpass_ios && perpass_ios->image != VK_NULL_HANDLE && st == LAGFX_OK) {
+        lagfx_status_t bst = lagfx_vk_display_present_surface(
+            dev_with_vk->vk, &display->rt, perpass_ios->image, &perpass_ios->layout,
+            perpass_ios->width, perpass_ios->height,
+            display->rt.width, display->rt.height,
+            display->scanout_gpa, display->scanout_length,
+            dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory);
+        if (bst == LAGFX_OK) {
+            LAGFX_LOG("%s ASMBLIT: blitted per-pass surface 0x%x (%ux%u) -> display->rt %ux%u",
+                      op, perpass_tref, perpass_ios->width, perpass_ios->height,
+                      display->rt.width, display->rt.height);
+            lagfx_display_signal_frame_ready(display);
+        } else {
+            LAGFX_WARN("%s ASMBLIT: present failed (%d) — display->rt unchanged", op, (int)bst);
         }
     }
 
