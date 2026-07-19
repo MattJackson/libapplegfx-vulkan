@@ -1131,6 +1131,12 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
     /* Real-shader translation is default-on; LAGFX_DISABLE_PHASE6_TRANSLATE
      * reverts to the substitute path. */
     bool p6_enabled = LAGFX_POLICY("PHASE6_TRANSLATE");
+    if (getenv("LAGFX_HEAPDUMP"))
+        LAGFX_LOG("op_0x74 P6a GATE ref=0x%x t%u p6=%d vk=%d init=%d heap_pfn=0x%llx",
+                  reference, task->id, p6_enabled ? 1 : 0,
+                  (dev_with_vk && dev_with_vk->vk) ? 1 : 0,
+                  (dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized) ? 1 : 0,
+                  (unsigned long long)task->heap_pfn);
     if (p6_enabled &&
         dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized &&
         task->heap_pfn != 0u) {
@@ -1138,6 +1144,10 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
         uint8_t vert_ref = 0, frag_ref = 0;
         bool lookup_ok = lagfx_lookup_pipeline_function_refs(p, task, reference,
                                                               &vert_ref, &frag_ref);
+        if (getenv("LAGFX_HEAPDUMP"))
+            LAGFX_LOG("op_0x74 P6a LOOKUP ref=0x%x t%u heap=0x%llx ok=%d vref=0x%x fref=0x%x",
+                      reference, task->id, (unsigned long long)task->heap_pfn,
+                      lookup_ok ? 1 : 0, vert_ref, frag_ref);
         if (!lookup_ok) {
             LAGFX_LOG("op_0x74 P6a: lookup_pipeline_function_refs failed for ref=0x%x (heap_pfn=0x%llx) — falling back",
                       reference, (unsigned long long)task->heap_pfn);
