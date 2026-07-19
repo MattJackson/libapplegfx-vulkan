@@ -21,6 +21,67 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <stdio.h>
+#include "../../vulkan/render_target.h"
+
+#ifdef LAGFX_HAVE_VULKAN
+/* LAGFX_DUMP_PASSES: read back every per-pass IOSurface (+ display->rt) to a PPM
+ * under /tmp/lagfx-passes/ so we can SEE which surface holds the forest / UI /
+ * black — turning the pass-DAG trace from inference into looking. Gated. */
+static void lagfx_dump_one_surface(struct lagfx_vk_state *vk, VkImage img,
+                                   VkImageView view, VkDeviceMemory mem,
+                                   uint32_t w, uint32_t h, VkFormat fmt,
+                                   const char *label) {
+    if (!vk || img == VK_NULL_HANDLE || w == 0 || h == 0) return;
+    lagfx_vk_render_target_t rt;
+    if (lagfx_vk_render_target_wrap(img, view, mem, w, h, fmt, &rt) != LAGFX_OK)
+        return;
+    size_t need = (size_t)w * h * 4u;
+    uint8_t *buf = malloc(need);
+    if (!buf) return;
+    size_t stride = 0;
+    if (lagfx_vk_render_target_readback(vk, &rt, buf, need, &stride) == LAGFX_OK) {
+        char path[160];
+        snprintf(path, sizeof(path), "/tmp/lagfx-passes/%s-%ux%u.ppm", label, w, h);
+        FILE *f = fopen(path, "wb");
+        if (f) {
+            fprintf(f, "P6\n%u %u\n255\n", w, h);
+            /* readback is BGRA8; write RGB */
+            for (uint32_t y = 0; y < h; y++) {
+                const uint8_t *row = buf + (size_t)y * stride;
+                for (uint32_t x = 0; x < w; x++) {
+                    const uint8_t *px = row + (size_t)x * 4u;
+                    uint8_t rgb[3] = { px[2], px[1], px[0] };
+                    fwrite(rgb, 1, 3, f);
+                }
+            }
+            fclose(f);
+            LAGFX_LOG("DUMP_PASSES wrote %s", path);
+        }
+    }
+    free(buf);
+}
+
+static void lagfx_dump_all_passes(lagfx_protocol_t *p, lagfx_display_t *disp) {
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    if (!dev || !dev->vk) return;
+    system("mkdir -p /tmp/lagfx-passes");
+    /* every registered IOSurface = a per-pass render target or texture */
+    for (uint32_t i = 0; i < p->resources.count; i++) {
+        lagfx_resource_entry_t *e = &p->resources.entries[i];
+        lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)e->host_handle;
+        if (!ios || ios->image == VK_NULL_HANDLE) continue;
+        char label[48];
+        snprintf(label, sizeof(label), "ref-0x%x", e->ref);
+        lagfx_dump_one_surface(dev->vk, ios->image, ios->view, ios->memory,
+                               ios->width, ios->height, ios->format, label);
+    }
+    if (disp && disp->rt_ready && disp->rt.image != VK_NULL_HANDLE)
+        lagfx_dump_one_surface(dev->vk, disp->rt.image, disp->rt.view,
+                               disp->rt.memory, disp->rt.width, disp->rt.height,
+                               disp->rt.format, "display-rt");
+}
+#endif /* LAGFX_HAVE_VULKAN */
 
 /* Present-by-id: the vchan present opcodes (0x06/0x07) carry the surface the
  * guest wants scanned out. Resolve it (registry first, then realize from its
@@ -464,6 +525,12 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
                                (uint64_t)LAGFX_DISPLAY_DEFAULT_BYTES_PER_PIXEL);
             }
 
+#ifdef LAGFX_HAVE_VULKAN
+            if (getenv("LAGFX_DUMP_PASSES")) {
+                static int dumped = 0;
+                if (dumped < 3) { dumped++; lagfx_dump_all_passes(p, disp); }
+            }
+#endif
             /* The draw path composites the per-pass surfaces into display->rt
              * as they render; a present marks a frame boundary, so reset the
              * queue here to start the next frame's composition fresh. */
