@@ -881,28 +881,38 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
         return LAGFX_ERR_INVALID_ARG;
     }
 
-    /* Present-to-present frame timing: one present == one call here. Log a
-     * rolling fps/min/max every 60 presents so a live run reports steady-state
-     * frame cost against the 30fps target without flooding the log. */
+    /* Present-to-present cadence (guest-driven; sparse on an idle guest) — log a
+     * rolling avg every 8 presents so even a low-present-rate guest reports. The
+     * host per-present WORK cost (the true fps ceiling, cadence-independent) is
+     * timed around the readback+DMA below and logged as PERF work. */
+    struct timespec _p_enter;
+    clock_gettime(CLOCK_MONOTONIC, &_p_enter);
     {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        double t = (double)now.tv_sec * 1000.0 + (double)now.tv_nsec / 1.0e6;
+        double t = (double)_p_enter.tv_sec * 1000.0 + (double)_p_enter.tv_nsec / 1.0e6;
         static double last_ms, sum_ms, min_ms = 1e9, max_ms; static unsigned n;
         if (last_ms > 0.0) {
             double d = t - last_ms;
             sum_ms += d; n++;
             if (d < min_ms) min_ms = d;
             if (d > max_ms) max_ms = d;
-            if (n >= 60u) {
+            if (n >= 8u) {
                 double avg = sum_ms / (double)n;
-                LAGFX_LOG("PERF present: %u frames avg=%.2fms (%.1f fps) min=%.2f max=%.2f",
+                LAGFX_LOG("PERF cadence: %u presents avg=%.2fms (%.1f fps) min=%.2f max=%.2f",
                           n, avg, avg > 0.0 ? 1000.0 / avg : 0.0, min_ms, max_ms);
                 sum_ms = 0.0; n = 0u; min_ms = 1e9; max_ms = 0.0;
             }
         }
         last_ms = t;
     }
+    /* Host per-present work cost — logged on EVERY present so sparse guests
+     * still yield the number that determines the fps ceiling. */
+    #define LAGFX_PERF_WORK_END()                                                  \
+        do { struct timespec _e; clock_gettime(CLOCK_MONOTONIC, &_e);              \
+             double _ms = ((double)_e.tv_sec - (double)_p_enter.tv_sec) * 1000.0 + \
+                          ((double)_e.tv_nsec - (double)_p_enter.tv_nsec) / 1.0e6; \
+             LAGFX_LOG("PERF work: present host cost %.2fms (ceiling %.0f fps)",    \
+                       _ms, _ms > 0.0 ? 1000.0 / _ms : 0.0);                        \
+        } while (0)
 
 #ifdef LAGFX_HAVE_VULKAN
    /* Fallback path when macOS hasn't registered a scanout buffer:
@@ -972,6 +982,7 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
         }
 
         set_frame_ready(display);
+        LAGFX_PERF_WORK_END();
         return LAGFX_OK;
     }
 
@@ -1209,11 +1220,14 @@ cleanup_rendered:
     if (cb != VK_NULL_HANDLE) {
         lagfx_vk_cmdbuf_free(vk, cb);
     }
+    LAGFX_PERF_WORK_END();
     return result;
 #else
     (void)scanout_gpa;
     (void)scanout_length;
     set_frame_ready(display);
+    LAGFX_PERF_WORK_END();
     return LAGFX_OK;
 #endif
+    #undef LAGFX_PERF_WORK_END
 }
