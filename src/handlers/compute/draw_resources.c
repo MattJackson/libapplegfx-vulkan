@@ -313,6 +313,18 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
         lagfx_vk_iosurface_destroy(vk, ios);
         free(raw); free(via); return NULL;
     }
+    /* Content-richness score (distinct color buckets, stride-sampled) BEFORE the
+     * free — pick aliases raw/via. Photo scores high; a clear/fill scores 1-2. */
+    uint32_t nbk = 0; {
+        uint32_t buckets[64];
+        for (uint32_t px = 0; px < npx && nbk < 64u; px += (npx / 512u) + 1u) {
+            uint32_t c = lagfx_le32(pick + (size_t)px * 4u) & 0xf8f8f8u;
+            bool seen = false;
+            for (uint32_t b = 0; b < nbk; b++)
+                if (buckets[b] == c) { seen = true; break; }
+            if (!seen) buckets[nbk++] = c;
+        }
+    }
     free(raw); free(via);
     lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, tref);
     if (!te) {
@@ -325,20 +337,8 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
         lagfx_vk_iosurface_destroy(vk, ios);
         return NULL;
     }
-    {
-        /* Content-richness score: distinct color buckets over a stride sample.
-         * A photo scores hundreds; a clear/fill scores 1-2. */
-        uint32_t buckets[64]; uint32_t nbk = 0;
-        for (uint32_t px = 0; px < npx && nbk < 64u; px += (npx / 512u) + 1u) {
-            uint32_t c = lagfx_le32(pick + (size_t)px * 4u) & 0xf8f8f8u;
-            bool seen = false;
-            for (uint32_t b = 0; b < nbk; b++)
-                if (buckets[b] == c) { seen = true; break; }
-            if (!seen) buckets[nbk++] = c;
-        }
-        LAGFX_LOG("TEXREAL: ref=0x%x %ux%u from %uB backing (read=%s nonblack=%u/%u rich=%u%s)",
-                  tref, W, H, want, how, nb, npx, nbk, nbk >= 64u ? "+" : "");
-    }
+    LAGFX_LOG("TEXREAL: ref=0x%x %ux%u from %uB backing (read=%s nonblack=%u/%u rich=%u%s)",
+              tref, W, H, want, how, nb, npx, nbk, nbk >= 64u ? "+" : "");
     return ios;
 }
 
