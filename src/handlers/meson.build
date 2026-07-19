@@ -19,6 +19,9 @@ lagfx_sources += files(
   'compute/render_pass.c',        # 0x1a RenderPassDescriptor parser
   'compute/blit_inner_ops.c',     # encType=4 blit inner-opcode table (24+7)
   'compute/compute_inner_ops.c',  # encType=0/1 inner-opcode dispatch (Stage 30 Task 6 prep)
+  'compute/draw_resources.c',     # draw-path guest-memory reads + content scoring
+  'compute/draw_descriptors.c',   # descriptor-set construction for translated draws
+  'compute/draw_emit.c',          # pipeline cache, vertex upload, draw emission
 
   # IOSurface outer-FIFO handlers (opcodes 0x26-0x2a)
   'iosurface/iosurface.c',
