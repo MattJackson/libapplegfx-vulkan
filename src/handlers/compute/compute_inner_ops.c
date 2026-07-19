@@ -1269,6 +1269,21 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                     *out_size = want;
                     LAGFX_LOG("VTXSRC: uploading slot=%u ref=0x%x how=%s score=%u filled=%u",
                               s, cs->ref, how, score, ffill);
+                    /* VTX24-style dump of the CHOSEN source (stride 24) so the
+                     * actual uploaded positions are visible. */
+                    if (getenv("LAGFX_DUMP_SPV")) {
+                        for (int vt = 0; vt < 6; vt++) {
+                            size_t bo = (size_t)vt * 24u;
+                            if (bo + 24u > (size_t)want) break;
+                            float px2, py2, tx2, ty2; uint32_t u2;
+                            u2 = lagfx_le32(full+bo+0);  memcpy(&px2,&u2,4);
+                            u2 = lagfx_le32(full+bo+4);  memcpy(&py2,&u2,4);
+                            u2 = lagfx_le32(full+bo+8);  memcpy(&tx2,&u2,4);
+                            u2 = lagfx_le32(full+bo+12); memcpy(&ty2,&u2,4);
+                            LAGFX_LOG("VTXSRC24 ref=0x%x v%d[%.4g,%.4g|%.4g,%.4g]",
+                                      cs->ref, vt, px2, py2, tx2, ty2);
+                        }
+                    }
                     free(full);
                     return svb;
                 }
