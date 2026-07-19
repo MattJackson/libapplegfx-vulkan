@@ -46,21 +46,10 @@ extern char **environ;
 /* ---- Helper: find llc binary ----------------------------------- */
 
 static char *find_llc_binary(void) {
-    /* Prefer env LAGFX_LLC if set. */
-    const char *env_llc = getenv("LAGFX_LLC");
-    if (env_llc && env_llc[0]) {
-        struct stat st;
-        if (stat(env_llc, &st) == 0 && S_ISREG(st.st_mode)) {
-            char *copy = strdup(env_llc);
-            if (copy) return copy;
-        }
-    }
-
     /* llc resolution order:
-     *   1. LAGFX_LLC env var (test override)
-     *   2. /opt/homebrew/opt/llvm@20/bin/llc  (pinned to a working version)
-     *   3. /opt/homebrew/opt/llvm/bin/llc      (fallback; may be newer & broken)
-     *   4. `which llc` from $PATH
+     *   1. /opt/homebrew/opt/llvm@20/bin/llc  (pinned to a working version)
+     *   2. /opt/homebrew/opt/llvm/bin/llc      (fallback; may be newer & broken)
+     *   3. `which llc` from $PATH
      * brew llvm 22.x SPIR-V backend rejects retargeted triangle bitcode
      * ("LLVM ERROR: Unable to meet SPIR-V requirements for this target");
      * llvm@20 is the Phase 3.C.2 reference version. See
@@ -228,7 +217,7 @@ lagfx_status_t lagfx_shader_translate_run(
     char *llc_path = find_llc_binary();
     if (!llc_path) {
         LAGFX_ERR("shader_translate: llc binary not found; "
-                  "set LAGFX_LLC or ensure 'llc' is in PATH");
+                  "ensure 'llc' is in PATH");
         free(retargeted_bc);
         return LAGFX_ERR_BACKEND;
     }

@@ -56,15 +56,10 @@ lagfx_air2spv_translate_module(const lagfx_air_module_t *m,
     lagfx_translate_stage_t stage = discover_stage(m);
     int rc = -1;
 
-    /* Phase 5 per-function body translator is now the default path
-     * for modules with a non-prototype function. Triangle produces
-     * a spirv-val-clean SPIR-V module via this route. Set
-     * LAGFX_PHASE5_BODY=0 to fall back to the legacy reference
-     * emitters (useful if a regression surfaces while we extend
-     * coverage). */
-    const char *phase5 = getenv("LAGFX_PHASE5_BODY");
-    bool phase5_enabled = !(phase5 && phase5[0] == '0');
-    if (phase5_enabled) {
+    /* Per-function body translation is the default path for modules with a
+     * non-prototype function; the legacy reference emitters remain the
+     * fallback when it fails. */
+    {
         uint32_t n_fns = 0;
         const lagfx_air_function_t *fns = lagfx_air_module_functions(m, &n_fns);
         uint32_t body_fn = (uint32_t)-1;
@@ -89,7 +84,7 @@ lagfx_air2spv_translate_module(const lagfx_air_module_t *m,
             lagfx_xlate_stage_t xs = (stage == LAGFX_TRANS_STAGE_VERTEX)
                                        ? LAGFX_XLATE_STAGE_VERTEX
                                        : LAGFX_XLATE_STAGE_FRAGMENT;
-            LAGFX_TRACE("air2spv: LAGFX_PHASE5_BODY=1 — translating fn[%u]", body_fn);
+            LAGFX_TRACE("air2spv: translating fn[%u]", body_fn);
             lagfx_status_t bst = lagfx_air2spv_translate_function(m, body_fn, xs,
                                                                     out_blob, out_size_bytes);
             if (bst == LAGFX_OK) return LAGFX_OK;

@@ -58,47 +58,6 @@ register_active_object(lagfx_task_entry_t *task, uint32_t object_id) {
     task->active_objects.object_ids[task->active_objects.count++] = object_id;
 }
 
-/* Phase 6b reconnaissance: env-gated hex-dump of 0x24/0x25 payload
- * bytes. The current 0x24 (CmdSetObjectList) + 0x25
- * (CmdSetObjectAndPlacementList) handlers are log+ack stubs; the
- * wire format is OPEN (see paravirt-re/library/apv-object-entry-
- * parser-scoping-2026-05-17.md). This helper writes the payload as
- * hex to lagfx.log when LAGFX_PHASE_B2_CAPTURE is set, capped at 8
- * captures total. Consumed by senior-side wire RE. */
-static void
-capture_object_list_payload_b2(uint16_t opcode, const lagfx_cmd_header_t *hdr) {
-    static uint32_t cap_count = 0u;
-    if (cap_count >= 48u) return;  /* M2 RE: raised from 8 so 0x34/0x39 get captured too */
-    const char *env = getenv("LAGFX_PHASE_B2_CAPTURE");
-    if (!env || env[0] == '0' || env[0] == '\0') return;
-    if (!hdr || !hdr->payload || hdr->payload_size == 0u) return;
-
-    uint16_t n = hdr->payload_size;
-    if (n > 256u) n = 256u;  /* clamp per-line; full payload may exceed */
-
-    /* Emit a single LAGFX_LOG line per 16-byte chunk. */
-    char hex[16 * 3 + 1];
-    uint16_t off = 0;
-    while (off < n) {
-        uint16_t chunk = (uint16_t)((n - off) < 16u ? (n - off) : 16u);
-        for (uint16_t i = 0; i < chunk; i++) {
-            static const char H[] = "0123456789abcdef";
-            uint8_t b = hdr->payload[off + i];
-            hex[i * 3 + 0] = H[(b >> 4) & 0xFu];
-            hex[i * 3 + 1] = H[b & 0xFu];
-            hex[i * 3 + 2] = ' ';
-        }
-        hex[chunk * 3] = '\0';
-        LAGFX_LOG("B2_CAPTURE op=0x%02x stamp=0x%08x +0x%03x: %s",
-                  opcode, hdr->stamp, off, hex);
-        off += chunk;
-    }
-    if (hdr->payload_size > n) {
-        LAGFX_LOG("B2_CAPTURE op=0x%02x stamp=0x%08x truncated (full %u)",
-                  opcode, hdr->stamp, (unsigned)hdr->payload_size);
-    }
-    cap_count++;
-}
 
 #define LAGFX_COMPUTE_DRAIN_MAX_CMDS 128u
 #define LAGFX_COMPUTE_MAX_CMD_BYTES  4096u
@@ -156,12 +115,10 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
              * `objectArray[], count`. Phase 6b will parse the
              * objectArray (APVObjectEntry records) to register
              * pipeline-state metallib bytes. Today: log+ack discards
-             * the payload. With LAGFX_PHASE_B2_CAPTURE=1, the payload
-             * is hex-dumped to lagfx.log for offline RE. */
+             * the payload. */
             LAGFX_LOG("compute: 0x24 CmdSetObjectList ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);
-            capture_object_list_payload_b2(0x24u, hdr);
             break;
         case LAGFX_OP_SET_OBJECT_PLACEMENT:   /* 0x25 CmdSetObjectAndPlacementList */
             /* Phase 6b — wire data captured 2026-05-28 confirmed
@@ -169,8 +126,7 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
              * array TLV ENTRY-007 anticipated). Decode the objectId
              * and register it in the per-task active-objects set so
              * op_0x74 can query active membership before doing the
-             * heap-VA lookup. With LAGFX_PHASE_B2_CAPTURE=1, the
-             * payload is also hex-dumped for further RE.
+             * heap-VA lookup.
              *
              * Mislabeled enum kept for backwards-compatibility —
              * 0x25 carries object+placement together, not just
@@ -178,7 +134,6 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
             LAGFX_LOG("compute: 0x25 CmdSetObjectAndPlacementList ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);
-            capture_object_list_payload_b2(0x25u, hdr);
             if (hdr->payload && hdr->payload_size >= 8u) {
                 uint32_t count     = lagfx_le32(hdr->payload + 0);
                 uint32_t object_id = lagfx_le32(hdr->payload + 4);
@@ -196,76 +151,6 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                     LAGFX_LOG("compute: 0x25 registered objectId=0x%x (count=%u) in task=%u (active=%u)",
                               object_id, count, task->id,
                               task->active_objects.count);
-                    /* M2 CREATEBACK (LAGFX_M2_CREATEBACK): capture the view->backing
-                     * relationship at OBJECT-CREATION time, while the backing is still
-                     * live. The draw-time BACKREF resolve in compute_inner_ops misses
-                     * because the guest EVICTS the backing before the view's draw; the
-                     * 0x25 registration is the earliest host-visible signal. Read the
-                     * object's descriptor: log its type, and for a type-0x05 VIEW scan
-                     * its descriptor words for a backing object that resolves to a real
-                     * texture, then persist {backing_obj -> pfn,sz,task} into the same
-                     * m2_backing_cache the draw path consults. Falsifiable probe: the
-                     * log shows whether render-target views (0x7/0x9/...) pass through
-                     * 0x25 and whether their backing matches a SAMPLED ref. Gated;
-                     * read-only + cache-populate, no render-path behavior change. */
-                    if (getenv("LAGFX_M2_CREATEBACK")) {
-                        uint8_t ot = 0; uint64_t ova = 0, ogpa = 0;
-                        uint8_t od[64] = {0};
-                        if (lagfx_resolve_object_data(p, task, object_id, &ot, &ova, &ogpa)
-                            && ova != 0u
-                            && lagfx_task_read_virtual(p, task, ova, sizeof(od), od)) {
-                            uint64_t e0sz = lagfx_le64(od + 0);
-                            uint64_t e0pf = lagfx_le64(od + 8) & 0xffffffffull;
-                            LAGFX_LOG("compute: 0x25 CREATEBACK obj=0x%x type=0x%02x "
-                                      "e0sz=%llu e0pfn=0x%llx", object_id, ot,
-                                      (unsigned long long)e0sz, (unsigned long long)e0pf);
-                            if (ot == 0x05u) {
-                                for (int w = 0; w < 16; w++) {
-                                    uint32_t cand = lagfx_le32(od + (size_t)w * 4u);
-                                    if (cand == 0u || cand == object_id || cand > 0xffffu) continue;
-                                    uint8_t ct = 0; uint64_t cva = 0, cgpa = 0;
-                                    uint8_t cd[64] = {0};
-                                    uint64_t cpfn = 0, csz = 0;
-                                    if (lagfx_resolve_object_data(p, task, cand, &ct, &cva, &cgpa)
-                                        && cva != 0u
-                                        && lagfx_task_read_virtual(p, task, cva, sizeof(cd), cd)) {
-                                        for (int e = 0; e < 4; e++) {
-                                            uint64_t es = lagfx_le64(cd + (size_t)e * 16u);
-                                            uint64_t ep = lagfx_le64(cd + (size_t)e * 16u + 8u) & 0xffffffffull;
-                                            if (ep < 0x10u || ep > 0xfffffu || es < 4u) continue;
-                                            cpfn = ep; csz = es; break;
-                                        }
-                                        bool is_back = (cpfn != 0u && csz >= 256u
-                                            && csz <= 16u * 1024u * 1024u && (csz % 4u) == 0u
-                                            && (ct == 0x01u || ct == 0x03u || ct == 0x04u));
-                                        LAGFX_LOG("compute: 0x25 CREATEBACK view=0x%x word[%d]=0x%x "
-                                                  "-> type=0x%02x pfn0x%llx sz=%llu backing=%d",
-                                                  object_id, w, cand, ct,
-                                                  (unsigned long long)cpfn,
-                                                  (unsigned long long)csz, (int)is_back);
-                                        if (is_back) {
-                                            bool found = false;
-                                            for (uint32_t k = 0; k < p->m2_backing_cache_n; k++)
-                                                if (p->m2_backing_cache[k].obj_id == (uint16_t)cand) {
-                                                    p->m2_backing_cache[k].pfn = (uint32_t)cpfn;
-                                                    p->m2_backing_cache[k].sz = csz;
-                                                    p->m2_backing_cache[k].task_id = (uint16_t)task->id;
-                                                    p->m2_backing_cache[k].valid = 1u; found = true; break;
-                                                }
-                                            if (!found && p->m2_backing_cache_n < 64u) {
-                                                uint32_t k = p->m2_backing_cache_n++;
-                                                p->m2_backing_cache[k].obj_id = (uint16_t)cand;
-                                                p->m2_backing_cache[k].pfn = (uint32_t)cpfn;
-                                                p->m2_backing_cache[k].sz = csz;
-                                                p->m2_backing_cache[k].task_id = (uint16_t)task->id;
-                                                p->m2_backing_cache[k].valid = 1u;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
                 } else {
                     LAGFX_WARN("compute: 0x25 no live task to register objectId=0x%x", object_id);
                 }
@@ -286,17 +171,8 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
             LAGFX_LOG("compute: channel_event 0x%02x ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)hdr->opcode, (unsigned)p->current_chan_id,
                       hdr->stamp, (unsigned)hdr->payload_size);
-            /* M2 RE: 0x34 may be PAGE_BACKING (AppleParavirtResource::pageBacking
-             * emits FIFO 0x34 carrying hostMappedBaseVA + a 3-record range
-             * descriptor sequence). Capture its full payload to confirm whether
-             * the compute-channel 0x34 publishes resource backing GPAs (the
-             * missing data-GPA source) or is just a scheduler ping. */
-            capture_object_list_payload_b2(hdr->opcode, hdr);
             break;
         case LAGFX_OP_MAP_MEMORY_IMMEDIATE:   /* 0x39 — CmdMapMemoryImmediate */
-            /* M2 RE: capture the full 0x39 payload too — it builds the per-task
-             * page table and is a candidate for the buffer data-GPA mapping. */
-            capture_object_list_payload_b2(0x39u, hdr);
             LAGFX_LOG("compute: 0x39 CmdMapMemoryImmediate ch=%u stamp=0x%08x payload_size=%u",
                       (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);

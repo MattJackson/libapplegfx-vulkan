@@ -290,34 +290,6 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
     VkDescriptorBufferInfo  binfos[16];
     VkDescriptorImageInfo   iinfos[16];
     uint32_t nw = 0;
-    /* Diagnostic (LAGFX_SKIP_TEX): skip any pipeline that samples a fragment
-     * texture, so the pure-geometry (buffer + vertex) pipelines render without
-     * the lavapipe NULL-deref that an unbacked IOSurface sample causes once
-     * real storage data drives the shader down its texturing branch. Isolates
-     * whether the MVP+vertex geometry path itself produces visible pixels. */
-    if (getenv("LAGFX_SKIP_TEX")) {
-        for (uint32_t i = 0; i < n && i < 16u; i++) {
-            if (binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLED_IMAGE
-                || binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLER) {
-                vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
-                return VK_NULL_HANDLE;
-            }
-        }
-    }
-    /* Diagnostic (LAGFX_TEXCOMP_ONLY): draw ONLY texture-sampling composites
-     * (pipelines with a SAMPLED_IMAGE binding), skipping the buffer-only fills
-     * (ColorFill draws fullscreen black 18× and dominates the shared render
-     * target, burying the 1× composite). Isolates whether the translated
-     * composite + backed guest texture produces VISIBLE non-black content. */
-    if (getenv("LAGFX_TEXCOMP_ONLY")) {
-        bool has_img = false;
-        for (uint32_t i = 0; i < n && i < 16u; i++)
-            if (binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLED_IMAGE) { has_img = true; break; }
-        if (!has_img) {
-            vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
-            return VK_NULL_HANDLE;
-        }
-    }
     /* M1 texture-composite: when fragment bindings are offset (LAGFX_M1_TEXCOMP),
      * the reflected binding number no longer equals the Metal resource index.
      * Demux per stage/kind: bindings < FRAG_BASE are vertex; >= FRAG_BASE are
@@ -421,266 +393,12 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * that killed the M2 runs once real data drove the shader. */
                     if (ios && (ios->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                                 || ios->layout == VK_IMAGE_LAYOUT_GENERAL)) {
-                        /* REFRESH: the guest texture content changes over time, but
-                         * the backing is created ONCE and cached — a stale first
-                         * backing may be black while the guest has since drawn real
-                         * content. Re-upload the CURRENT guest bytes each draw so we
-                         * sample live content. (Gated with TEXBACK.) */
-                        if (getenv("LAGFX_M1_TEXBACK") && te->gpu_addr != 0u
-                            && ios->width && ios->height) {
-                            size_t rl = (size_t)ios->width * ios->height * 4u;
-                            if (rl > 8u * 1024u * 1024u) rl = 8u * 1024u * 1024u;
-                            uint8_t *rp = malloc(rl);
-                            if (rp) {
-                                if (lagfx_read_resource_backing(p, task, te->gpu_addr, rl, rp)) {
-                                    uint32_t nb = 0;
-                                    for (size_t q = 0; q + 4 <= rl; q += 4)
-                                        if (rp[q] | rp[q+1] | rp[q+2]) nb++;
-                                    lagfx_vk_iosurface_upload_pixels(vk, ios, rp, rl);
-                                    LAGFX_LOG("P6b TEXREFRESH ref=0x%x %ux%u nonblack_px=%u/%zu",
-                                              tref, ios->width, ios->height, nb, rl/4);
-                                }
-                                free(rp);
-                            }
-                        }
                         view = te->view;
                         lay  = ios->layout;
                     }
                 }
             }
-            /* M1 TEXBACK: back the sampled guest texture from its memory. The
-             * texture object descriptor (type 0x03) is {size@0, PFN|flags@8} 16-B
-             * entries (flags in the PFN word's high 32 bits). Read the content at
-             * PFN<<12, create a sampleable VkImage of derived dimensions (BGRA8),
-             * upload, and register it so this + future draws sample real guest
-             * pixels instead of skipping → non-black content from the real
-             * translated composite shaders. Gated; created once per ref. */
-            if (view == VK_NULL_HANDLE && getenv("LAGFX_M1_TEXBACK") && tref != 0u) {
-                uint8_t tt = 0; uint64_t tva = 0, tgpa = 0;
-                uint8_t td[64] = {0};
-                uint64_t pfn = 0, sz = 0;
-                /* The task whose page table the backing pixels live in — defaults
-                 * to the current task, set to task-0 when a BACKREF follow resolves
-                 * the backing in the global task. */
-                const lagfx_task_entry_t *pix_task = task;
-                if (lagfx_resolve_object_data(p, task, tref, &tt, &tva, &tgpa)
-                    && tva != 0u
-                    && lagfx_task_read_virtual(p, task, tva, sizeof(td), td)) {
-                    /* M2 TEXDIM: dump the type-0x03 texture descriptor as u32 words
-                     * to find the real width/height (the byte-count guess is wrong
-                     * — 20480 B = 5120 px guessed 256×20, real ~64×80). The
-                     * MTLTextureDescriptor encodes W/H somewhere in these bytes. */
-                    if (getenv("LAGFX_M2_TEXDIM") && tt == 0x03u) {
-                        LAGFX_LOG("M2 TEXDIM ref=0x%x type=0x03 desc u32: "
-                                  "%u %u %u %u | %u %u %u %u | %u %u %u %u | %u %u %u %u", tref,
-                                  lagfx_le32(td+0),lagfx_le32(td+4),lagfx_le32(td+8),lagfx_le32(td+12),
-                                  lagfx_le32(td+16),lagfx_le32(td+20),lagfx_le32(td+24),lagfx_le32(td+28),
-                                  lagfx_le32(td+32),lagfx_le32(td+36),lagfx_le32(td+40),lagfx_le32(td+44),
-                                  lagfx_le32(td+48),lagfx_le32(td+52),lagfx_le32(td+56),lagfx_le32(td+60));
-                    }
-                    for (int e = 0; e < 4; e++) {
-                        uint64_t es = lagfx_le64(td + (size_t)e * 16u);
-                        uint64_t ep = lagfx_le64(td + (size_t)e * 16u + 8u) & 0xffffffffull;
-                        if (ep < 0x10u || ep > 0xfffffu || es == 0u) continue;
-                        pfn = ep; sz = es; break;
-                    }
-                    /* M2 BACKREF (LAGFX_M2_BACKREF): a type-0x05 texture is a
-                     * createBackingRefTexture — a VIEW whose APVObjectRefTexture
-                     * descriptor references a BACKING texture (the real pixels),
-                     * not its own (sz=2 = a ref, not data). To resolve it, find the
-                     * backing object ref in the descriptor + follow it. The struct
-                     * layout isn't RE'd, so SCAN the descriptor's u32 words for any
-                     * that resolve to a DIFFERENT texture object → that's the
-                     * backing; recurse one level to its pixels. Read-only probe
-                     * first (logs candidates); the follow uses the first backing
-                     * whose pixels are non-black. */
-                    if (getenv("LAGFX_M2_BACKREF") && tt == 0x05u && sz < 4u) {
-                        pfn = 0u; sz = 0u;  /* the entry was a ref, not pixels — re-find via backing */
-                        /* The disasm of createBackingRefTexture says "Cannot get
-                         * backing from a non-zero task ID" → the backing object is
-                         * TASK-0 GLOBAL, not in the current task. Resolve candidates
-                         * against the current task first, then fall back to task 0 —
-                         * this is why backing 0x30 resolved intermittently (only when
-                         * the current task happened to alias it). */
-                        lagfx_task_entry_t *task0 = lagfx_protocol_find_task(p, 0u);
-                        for (int w = 0; w < 16; w++) {
-                            uint32_t cand = lagfx_le32(td + (size_t)w * 4u);
-                            if (cand == 0u || cand == tref || cand > 0xffffu) continue;
-                            uint8_t ct = 0; uint64_t cva = 0, cgpa = 0;
-                            const lagfx_task_entry_t *rtask = task;
-                            bool live = lagfx_resolve_object_data(p, task, cand, &ct, &cva, &cgpa)
-                                        && cva != 0u;
-                            if (!live && task0 && task0 != task
-                                && lagfx_resolve_object_data(p, task0, cand, &ct, &cva, &cgpa)
-                                && cva != 0u) { live = true; rtask = task0; }
-                            uint8_t cd[64] = {0};
-                            uint64_t cpfn = 0, csz = 0;
-                            if (live && lagfx_task_read_virtual(p, rtask, cva, sizeof(cd), cd)) {
-                                for (int e = 0; e < 4; e++) {
-                                    uint64_t es = lagfx_le64(cd + (size_t)e * 16u);
-                                    uint64_t ep = lagfx_le64(cd + (size_t)e * 16u + 8u) & 0xffffffffull;
-                                    if (ep < 0x10u || ep > 0xfffffu || es < 4u) continue;
-                                    cpfn = ep; csz = es; break;
-                                }
-                            }
-                            bool is_tex_backing = (cpfn != 0u && csz >= 256u
-                                && csz <= 16u * 1024u * 1024u && (csz % 4u) == 0u
-                                && (ct == 0x01u || ct == 0x03u || ct == 0x04u));
-                            /* M2 LIFECYCLE CACHE: when a candidate resolves LIVE to a
-                             * real texture backing, persist {obj→pfn,sz,task} — the
-                             * guest evicts these (e.g. 0x30) before the view's draw,
-                             * so a draw-time resolve later misses. On a MISS, replay
-                             * the cached backing. This is the cross-draw resource
-                             * tracking the createBackingRefTexture path needs. */
-                            if (live && is_tex_backing) {
-                                bool found = false;
-                                for (uint32_t k = 0; k < p->m2_backing_cache_n; k++)
-                                    if (p->m2_backing_cache[k].obj_id == (uint16_t)cand) {
-                                        p->m2_backing_cache[k].pfn = (uint32_t)cpfn;
-                                        p->m2_backing_cache[k].sz = csz;
-                                        p->m2_backing_cache[k].task_id = (uint16_t)rtask->id;
-                                        p->m2_backing_cache[k].valid = 1u; found = true; break;
-                                    }
-                                if (!found && p->m2_backing_cache_n < 64u) {
-                                    uint32_t k = p->m2_backing_cache_n++;
-                                    p->m2_backing_cache[k].obj_id = (uint16_t)cand;
-                                    p->m2_backing_cache[k].pfn = (uint32_t)cpfn;
-                                    p->m2_backing_cache[k].sz = csz;
-                                    p->m2_backing_cache[k].task_id = (uint16_t)rtask->id;
-                                    p->m2_backing_cache[k].valid = 1u;
-                                }
-                            } else if (!is_tex_backing) {
-                                /* MISS (evicted / not a backing live) — replay cache. */
-                                for (uint32_t k = 0; k < p->m2_backing_cache_n; k++)
-                                    if (p->m2_backing_cache[k].valid
-                                        && p->m2_backing_cache[k].obj_id == (uint16_t)cand) {
-                                        cpfn = p->m2_backing_cache[k].pfn;
-                                        csz  = p->m2_backing_cache[k].sz;
-                                        lagfx_task_entry_t *ct0 =
-                                            lagfx_protocol_find_task(p, p->m2_backing_cache[k].task_id);
-                                        if (ct0) { rtask = ct0; is_tex_backing = true;
-                                            LAGFX_LOG("P6b BACKREF ref=0x%x CACHE-HIT obj 0x%x "
-                                                      "(PFN0x%llx %llu B)", tref, cand,
-                                                      (unsigned long long)cpfn, (unsigned long long)csz); }
-                                        break;
-                                    }
-                            }
-                            LAGFX_LOG("P6b BACKREF ref=0x%x word[%d]=0x%x -> type=0x%02x "
-                                      "backing PFN0x%llx sz=%llu live=%d", tref, w, cand, ct,
-                                      (unsigned long long)cpfn, (unsigned long long)csz, (int)live);
-                            if (pfn == 0u && is_tex_backing) {
-                                pfn = cpfn; sz = csz;
-                                pix_task = rtask;
-                                LAGFX_LOG("P6b BACKREF ref=0x%x FOLLOWING backing 0x%x "
-                                          "(type 0x%02x, %llu B, task=%u)", tref, cand, ct,
-                                          (unsigned long long)csz, rtask->id);
-                            }
-                        }
-                    }
-                }
-                if (pfn != 0u && sz >= 4u) {
-                    uint32_t total_px = (uint32_t)(sz / 4u);
-                    uint32_t W = 1u, H = 1u;
-                    /* REAL dimensions from the texture descriptor: word[4] (offset
-                     * 16) = bytesPerRow → width = bytesPerRow/4, height =
-                     * sz/bytesPerRow. Validated: cursor 4096 B bpr128 → 32×32; UI
-                     * 20480 B bpr256 → 64×80; framebuffer bpr5120 → 1280×1024. This
-                     * replaces the byte-count guess (which mis-shaped UI textures →
-                     * scrambled UVs → no visible content). Only for a real texture
-                     * descriptor (type 0x03); the backing-follow path keeps the
-                     * heuristic since it has no descriptor of its own. */
-                    uint32_t bpr = (tt == 0x03u) ? lagfx_le32(td + 16) : 0u;
-                    if (bpr >= 4u && (bpr % 4u) == 0u && (sz % bpr) == 0u
-                        && (sz / bpr) <= 8192u && (bpr / 4u) <= 8192u) {
-                        W = bpr / 4u; H = (uint32_t)(sz / bpr);
-                    } else if (total_px >= 1310720u) { W = 1280u; H = 1024u; }
-                    else {
-                        /* Fallback (no usable bytesPerRow): prefer SQUARE, else the
-                         * largest dividing power-of-2 width. */
-                        uint32_t s = 1u; while (s * s < total_px) s++;
-                        if (s * s == total_px) { W = s; H = s; }
-                        else {
-                            for (uint32_t cand = 256u; cand >= 1u; cand >>= 1) {
-                                if (total_px % cand == 0u) { W = cand; H = total_px / cand; break; }
-                            }
-                        }
-                    }
-                    size_t rd_len = (size_t)W * H * 4u;
-                    if (rd_len > 8u * 1024u * 1024u) rd_len = 8u * 1024u * 1024u;
-                    uint8_t *pix = malloc(rd_len);
-                    lagfx_vk_iosurface_t *ios = NULL;
-                    if (pix
-                        && lagfx_read_resource_backing(p, pix_task, pfn << 12, rd_len, pix)
-                        && lagfx_vk_iosurface_create(vk, W, H, 80u, &ios) == LAGFX_OK
-                        && lagfx_vk_iosurface_upload_pixels(vk, ios, pix, rd_len) == LAGFX_OK) {
-                        lagfx_resource_register(&p->resources, tref,
-                                                LAGFX_RESOURCE_TYPE_TEXTURE, task->id,
-                                                pfn << 12, sz);
-                        lagfx_resource_entry_t *ne =
-                            lagfx_resource_lookup_texture(&p->resources, tref);
-                        if (ne) { ne->host_handle = ios; ne->image = ios->image; ne->view = ios->view; }
-                        view = ios->view;
-                        lay  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                        uint32_t nb = 0;
-                        for (size_t q = 0; q + 4 <= rd_len; q += 4)
-                            if (pix[q] | pix[q+1] | pix[q+2]) nb++;
-                        LAGFX_LOG("P6b TEXBACK ref=0x%x backed %ux%u from PFN0x%llx (%llu B) "
-                                  "nonblack_px=%u/%zu", tref, W, H,
-                                  (unsigned long long)pfn, (unsigned long long)sz, nb, rd_len/4);
-                    } else if (ios) {
-                        lagfx_vk_iosurface_destroy(vk, ios);
-                    }
-                    free(pix);
-                }
-            }
             if (view == VK_NULL_HANDLE) {
-                /* M1 TEXPROBE: the texture has no host VkImage backing. Resolve
-                 * its guest memory (placement descriptor, same as buffers) and
-                 * histogram the first leaf page as BGRA8 — does the guest texture
-                 * hold real (non-black) content (CPU-uploaded image/atlas) that a
-                 * future backing would surface, or is it an empty GPU render
-                 * target? Decides whether texture-backing is viable at this guest
-                 * state. Read-only; gated. */
-                if (getenv("LAGFX_M1_TEXPROBE") && tref != 0u) {
-                    uint8_t ttype = 0; uint64_t tva = 0, tgpa = 0;
-                    bool resolved = lagfx_resolve_object_data(p, task, tref, &ttype, &tva, &tgpa);
-                    uint8_t tdesc[64] = {0};
-                    uint64_t leaf_pfn = 0, leaf_sz = 0;
-                    if (resolved && tva != 0u
-                        && lagfx_task_read_virtual(p, task, tva, sizeof(tdesc), tdesc)) {
-                        for (int e = 0; e < 4; e++) {
-                            uint64_t es = lagfx_le64(tdesc + (size_t)e * 16u);
-                            uint64_t raw = lagfx_le64(tdesc + (size_t)e * 16u + 8u);
-                            /* Texture objects carry FLAGS in the PFN word's high 32
-                             * bits (e.g. 0x0001000100000741 → PFN 0x741); mask low. */
-                            uint64_t ep = raw & 0xffffffffull;
-                            if (ep < 0x10u || ep > 0xfffffu || es == 0u) continue;
-                            leaf_pfn = ep; leaf_sz = es; break;
-                        }
-                    }
-                    uint32_t nonblack = 0, nonzero = 0; uint8_t px[4096] = {0};
-                    if (leaf_pfn
-                        && lagfx_task_read_virtual(p, task, leaf_pfn << 12, sizeof(px), px)) {
-                        for (size_t q = 0; q + 4 <= sizeof(px); q += 4) {
-                            if (px[q] | px[q+1] | px[q+2]) nonblack++;
-                            if (px[q] | px[q+1] | px[q+2] | px[q+3]) nonzero++;
-                        }
-                    }
-                    LAGFX_LOG("P6b TEXPROBE ref=0x%x type=0x%02x resolved=%d va=0x%llx gpa=0x%llx "
-                              "leafPFN=0x%llx sz=%llu | of %zu px: nonblack=%u nonzero=%u",
-                              tref, ttype, (int)resolved, (unsigned long long)tva,
-                              (unsigned long long)tgpa, (unsigned long long)leaf_pfn,
-                              (unsigned long long)leaf_sz, sizeof(px)/4, nonblack, nonzero);
-                    /* Raw texture-object descriptor (first 64 B at tva) — the
-                     * format for type 0x03/0x05 texture objects is not yet RE'd;
-                     * dump as u64 words to decode width/height/format/backing. */
-                    LAGFX_LOG("P6b TEXPROBE ref=0x%x desc u64: %016llx %016llx %016llx %016llx "
-                              "%016llx %016llx %016llx %016llx", tref,
-                              (unsigned long long)lagfx_le64(tdesc+0),  (unsigned long long)lagfx_le64(tdesc+8),
-                              (unsigned long long)lagfx_le64(tdesc+16), (unsigned long long)lagfx_le64(tdesc+24),
-                              (unsigned long long)lagfx_le64(tdesc+32), (unsigned long long)lagfx_le64(tdesc+40),
-                              (unsigned long long)lagfx_le64(tdesc+48), (unsigned long long)lagfx_le64(tdesc+56));
-                }
                 /* M2 UIRENDER: rather than SKIP a loginwindow UI draw whose sampled
                  * texture is unresolved (→ black screen, the whole UI vanishes),
                  * bind any already-backed sampleable texture as a fallback so the
@@ -837,13 +555,9 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * + ref 0x13) to skip, so binding 0 → vertex_buffers[2], not [1].
                      * The +1 heuristic landed on the screen-dims buffer (off 0/64) →
                      * gl_Position.y constant → quad collapses to a band (the black
-                     * bar). Env-tunable skip count (default keeps the old +1) until
-                     * the stage-in buffer count is derived from the vertex descriptor. */
-                    uint32_t skip = 1u;
-                    const char *vsk = getenv("LAGFX_M2_VSLOT_SKIP");
-                    if (vsk) { unsigned long s = strtoul(vsk, NULL, 0); if (s <= 8u) skip = (uint32_t)s; }
+                     * bar). MTXSCAN below overrides binding 0 by content signature. */
                     if (task->pending_pipeline.n_vtx_inputs > 0u)
-                        vslot = slot + skip;
+                        vslot = slot + 1u;
                     if (vslot < LAGFX_MAX_BINDING_SLOTS
                         && task->bindings.vertex_buffers[vslot].valid)
                         bs = &task->bindings.vertex_buffers[vslot];
@@ -909,23 +623,15 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * rebind the real bytes. Crash-proof: on any miss, keep the
                      * descriptor bytes already in `data`. */
                     uint8_t desc[64];
-                    /* GATED (LAGFX_M2_REBIND): binding the descriptor's first
-                     * non-zero PFN range is a heuristic — it often picks the
-                     * WRONG indirection level (the arg-buffer needs following to
-                     * the actual resource), and wrong-but-real data drives the
-                     * shader to crash lavapipe (hard SIGSEGV in Mesa, mid-draw,
-                     * uncatchable). Off by default keeps production stable
-                     * (degenerate-but-no-crash); the M2 work iterates with it on. */
                     /* Bind the buffer's REAL data (the MVP matrix, vertex data,
-                     * etc.) instead of the placement descriptor. Active when
-                     * LAGFX_M2_REBIND or LAGFX_VTX_INPUT is set — the vertex
+                     * etc.) instead of the placement descriptor — the vertex
                      * shaders compute position = MVP * vertex_input, so the MVP
-                     * [[buffer]] MUST be real or every position collapses to 0.
+                     * [[buffer]] must be real or every position collapses to 0.
                      * The descriptor is (size@e*16, PFN@e*16+8) 16-byte entries;
                      * the data is at PFN<<12 read as a guest VA (translate). The
                      * 64 KiB best-effort read zero-pads the tail so a fixed 64 B
                      * MVP binds AND a dynamic over-read returns zeros (no crash). */
-                    if ((getenv("LAGFX_M2_REBIND") || LAGFX_POLICY("VTX_INPUT"))
+                    if (LAGFX_POLICY("VTX_INPUT")
                         && lagfx_task_read_virtual(p, task, va, sizeof(desc), desc)) {
                         /* GROUND-TRUTH dump (LAGFX_M2_DUMP): the full placement
                          * descriptor (4× {size,PFN}) plus the leaf-page bytes at
@@ -1016,18 +722,6 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                                           (unsigned long long)bs->offset, e,
                                           (unsigned long long)pfn, (unsigned long long)local,
                                           (unsigned long long)rsize);
-                                /* LAGFX_SIMPLE_ONLY: skip large (arg-buffer/heap)
-                                 * ranges — only plain small uniform buffers bind raw. */
-                                if (getenv("LAGFX_SIMPLE_ONLY") && rsize > 512u) {
-                                    vkFreeDescriptorSets(vk->device,
-                                                         vk->draw_desc_pool, 1, &set);
-                                    for (uint32_t k = 0; k < *out_n; k++) {
-                                        vkDestroyBuffer(vk->device, out_bufs[k], NULL);
-                                        vkFreeMemory(vk->device, out_mems[k], NULL);
-                                    }
-                                    *out_n = 0;
-                                    return VK_NULL_HANDLE;
-                                }
                                 break;
                             }
                             acc += rsize;
@@ -1179,22 +873,6 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
      * texture-composite UI layer in the shared RT. The dark login bg comes from
      * the texture composites; coloured fills (blue strip) keep sbf_nonblack=true. */
     if (m2_skipblackfill && !sbf_had_tex && !sbf_nonblack) {
-        for (uint32_t k = 0; k < *out_n; k++) {
-            vkDestroyBuffer(vk->device, out_bufs[k], NULL);
-            vkFreeMemory(vk->device, out_mems[k], NULL);
-        }
-        vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
-        *out_n = 0;
-        return VK_NULL_HANDLE;
-    }
-    /* M2 SKIPALLFILL: skip EVERY no-texture buffer-only composite (any colour),
-     * not just black. The wallpaper texture composite (pipe 0x14, samples 0x10)
-     * IS drawn correctly, but a no-texture buffer-fill (e.g. the uniform GRAY
-     * 224 fill) renders AFTER it into the shared loadOp=LOAD RT and OVERPAINTS
-     * the wallpaper. Suppressing all flat fills lets the texture composites
-     * (wallpaper + UI) show. This is a compositing-order workaround until proper
-     * per-pass RTs land; gated so it's opt-in for the wallpaper bring-up. */
-    if (getenv("LAGFX_M2_SKIPALLFILL") && !sbf_had_tex) {
         for (uint32_t k = 0; k < *out_n; k++) {
             vkDestroyBuffer(vk->device, out_bufs[k], NULL);
             vkFreeMemory(vk->device, out_mems[k], NULL);
@@ -1466,41 +1144,6 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
         vacc += rsize;
     }
     if (filled == 0u) { free(vdata); return VK_NULL_HANDLE; }
-    /* M2c FIXEDVTX (LAGFX_M2_FIXEDVTX): some composite pipelines' vertex streams
-     * are 16.16 FIXED-POINT pixel coords, not float32 — live VBDBG/VTX24 decode
-     * (2026-07-18): ref=0x16's "denormal garbage" dwords are 0x00650000=101.0,
-     * 0x006D0000=109.0; ref=0x18's "-nan" is 0xFFC00000=-64.0 — all clean 16.16
-     * integers, while ref=0x14 is genuine float32 (0.0/6.0 tiles). Fetched as
-     * float they're denormals/NaN → degenerate geometry → ZERO coverage (the M2b
-     * 100%-teal result). Detect per upload: sample nonzero dwords; if most are
-     * ABSURD as f32 (denormal/NaN/huge) but PLAUSIBLE as 16.16 (|v| ≤ 32768),
-     * convert every dword (int32_t)d/65536.0f. The MTXSCAN viewport matrix maps
-     * the resulting pixel coords to NDC. Gated; float32 streams (0x14) are left
-     * untouched by the signature test. */
-    if (getenv("LAGFX_M2_FIXEDVTX")) {
-        uint32_t sampled = 0, absurd = 0;
-        for (uint32_t o = 0; o + 4u <= filled && sampled < 64u; o += 4u) {
-            uint32_t d = lagfx_le32(vdata + o);
-            if (d == 0u) continue;
-            sampled++;
-            float f; memcpy(&f, &d, 4);
-            float mag = f < 0 ? -f : f;
-            int f32_absurd = (f != f) || mag < 1e-30f || mag > 1.0e6f;
-            float fx = (float)(int32_t)d / 65536.0f;
-            float fxmag = fx < 0 ? -fx : fx;
-            if (f32_absurd && fxmag <= 32768.0f) absurd++;
-        }
-        if (sampled >= 4u && absurd * 10u >= sampled * 6u) {  /* ≥60% absurd-as-f32 */
-            for (uint32_t o = 0; o + 4u <= filled; o += 4u) {
-                uint32_t d = lagfx_le32(vdata + o);
-                float fx = (float)(int32_t)d / 65536.0f;
-                uint32_t bits; memcpy(&bits, &fx, 4);
-                lagfx_put_le32(vdata + o, bits);
-            }
-            LAGFX_LOG("FIXEDVTX ref=0x%x: converted 16.16 fixed -> float (%u/%u sampled absurd)",
-                      vbs->ref, absurd, sampled);
-        }
-    }
     VkBuffer vb = VK_NULL_HANDLE;
     if (lagfx_vk_make_host_storage_buffer(vk, vdata, want, &vb, out_mem) != LAGFX_OK) {
         free(vdata);
@@ -1607,71 +1250,6 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
     if (!(display && display->rt_ready && display->rt.image != VK_NULL_HANDLE)) {
         LAGFX_WARN("%s: no render target available", op);
         return;
-    }
-    /* M2 WALLPAPER (LAGFX_M2_WALLPAPER): direct wallpaper present. The desktop is
-     * composited from many small per-pass draws that we cannot yet assemble
-     * (per-pass sample-back not built), so the scanout is black. As a concrete
-     * path to a RECOGNIZABLE frame, present the large guest WALLPAPER texture
-     * (the real 1280×1024 photo, backed in the registry) straight to the scanout:
-     * blit it (scaled) into display->rt via the existing present-surface path, so
-     * read_frame serves the wallpaper on noVNC. Bypasses the unfinished compositor
-     * — shows the real background while per-pass compositing is built. Gated. */
-    if (getenv("LAGFX_M2_WALLPAPER")) {
-        /* Pick the LINEAR-COHERENT large texture (the real wallpaper photo), not the
-         * first large one (which is a GPU-tiled intermediate → static). Score each
-         * candidate by row-to-row pixel diff on its guest backing: a real photo has
-         * LOW diff; tiled/noise surfaces have HIGH diff. Present the lowest-score one. */
-        lagfx_vk_iosurface_t *wp = NULL;
-        uint64_t best_score = (uint64_t)-1;
-        for (uint32_t ri = 0; ri < p->resources.count; ri++) {
-            lagfx_resource_entry_t *re = &p->resources.entries[ri];
-            lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)re->host_handle;
-            if (!(ios && ios->image != VK_NULL_HANDLE && ios->width >= 1024u
-                  && ios->height >= 512u && re->gpu_addr != 0u))
-                continue;
-            uint32_t W = ios->width, rows = 64u;
-            size_t rlen = (size_t)W * 4u * rows;
-            if (rlen > 1u*1024u*1024u) rlen = 1u*1024u*1024u;
-            uint8_t *sb = malloc(rlen);
-            uint64_t score = (uint64_t)-1;
-            if (sb && lagfx_read_resource_backing(p, task, re->gpu_addr, (uint32_t)rlen, sb)) {
-                uint64_t tot = 0; uint32_t cnt = 0; size_t stride = (size_t)W * 4u;
-                for (uint32_t y = 0; y + 1u < rows; y++)
-                    for (uint32_t x = 0; x < W; x += 16u) {
-                        size_t i = (size_t)y*stride + (size_t)x*4u;
-                        size_t j = i + stride;
-                        if (j + 3 >= rlen) break;
-                        tot += (uint64_t)abs((int)sb[i]-(int)sb[j])
-                             + (uint64_t)abs((int)sb[i+1]-(int)sb[j+1])
-                             + (uint64_t)abs((int)sb[i+2]-(int)sb[j+2]);
-                        cnt++;
-                    }
-                if (cnt) score = tot / cnt;
-            }
-            free(sb);
-            if (getenv("LAGFX_M2_WALLPAPER_DBG"))
-                LAGFX_LOG("%s M2 WP-CAND ref=0x%x %ux%u gpa=0x%llx rowdiff=%llu", op,
-                          re->ref, ios->width, ios->height,
-                          (unsigned long long)re->gpu_addr, (unsigned long long)score);
-            if (score < best_score) { best_score = score; wp = ios; }
-        }
-        if (wp) {
-            lagfx_status_t pst = lagfx_vk_display_present_surface(
-                dev_with_vk->vk, &display->rt, wp->image, &wp->layout,
-                wp->width, wp->height, display->rt.width, display->rt.height,
-                display->scanout_gpa, display->scanout_length,
-                dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory);
-            if (pst == LAGFX_OK) {
-                static int wp_logged = 0;
-                if (!wp_logged) { wp_logged = 1;
-                    LAGFX_LOG("%s M2 WALLPAPER: presented %ux%u guest wallpaper texture "
-                              "to scanout %ux%u", op, wp->width, wp->height,
-                              display->rt.width, display->rt.height); }
-                lagfx_display_signal_frame_ready(display);
-            } else {
-                LAGFX_WARN("%s M2 WALLPAPER: present failed (%d)", op, (int)pst);
-            }
-        }
     }
     /* M2 PER-PASS RT (LAGFX_M2_PERPASS): if this render pass targets a non-scanout
      * surface (render_pass_desc.target_ref != 0), route its draws INTO that
@@ -2563,98 +2141,6 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
                       slot_index, ref, (unsigned long long)offset, ref != 0u ? "true" : "false");
         }
 
-        /* M2 ARGBUF (LAGFX_M2_ARGBUF): test the argument-buffer/bindless hypothesis —
-         * the wallpaper texture handle is likely embedded INSIDE a fragment argument
-         * buffer (a guest buffer of resource handles the shader indexes), never bound
-         * as a 0x72 texture ref. Read the bound buffer's contents and scan its u32
-         * words for any that resolve to a real texture object; log the resolved
-         * type+size. A wallpaper-sized hit (MBs) here CONFIRMS bindless and yields the
-         * handle→texture resolution path. Slots >=1 only (slot 0 = small uniforms).
-         * Gated, read-only probe — no binding/render change. */
-        if (getenv("LAGFX_M2_ARGBUF") && ref != 0u && slot_index >= 1u) {
-            uint8_t bt = 0; uint64_t bva = 0, bgpa = 0;
-            if (lagfx_resolve_object_data(p, task, ref, &bt, &bva, &bgpa) && bva != 0u) {
-                uint8_t abuf[256] = {0};
-                if (lagfx_task_read_virtual(p, task, bva + offset, sizeof(abuf), abuf)) {
-                    for (int w = 0; w < 64; w++) {
-                        uint32_t h = lagfx_le32(abuf + (size_t)w * 4u);
-                        if (h == 0u || h == ref || h > 0xffffu) continue;
-                        uint8_t ht = 0; uint64_t hva = 0, hgpa = 0;
-                        if (lagfx_resolve_object_data(p, task, h, &ht, &hva, &hgpa) && hva != 0u
-                            && (ht == 0x03u || ht == 0x04u || ht == 0x05u)) {
-                            uint8_t hd[64] = {0}; uint64_t hsz = 0, hpf = 0;
-                            if (lagfx_task_read_virtual(p, task, hva, sizeof(hd), hd)) {
-                                hsz = lagfx_le64(hd + 0);
-                                hpf = lagfx_le64(hd + 8) & 0xffffffffull;
-                            }
-                            LAGFX_LOG("M2 ARGBUF buf=0x%x(t%02x)+%llu word[%d]=0x%x -> tex "
-                                      "type=0x%02x sz=%llu pfn=0x%llx", ref, bt,
-                                      (unsigned long long)offset, w, h, ht,
-                                      (unsigned long long)hsz, (unsigned long long)hpf);
-
-                            /* M2 ARGUPLOAD: the embedded handle resolves to a REAL
-                             * type-0x03 texture with live pixels at THIS (0x6e bind)
-                             * time — but draw-time TEXBACK fails to resolve it (the
-                             * eviction/timing gap). Upload the pixels NOW, while live,
-                             * and register under the handle ref so the later sampling
-                             * draw binds real content instead of black. Reuses the
-                             * TEXBACK derivation (bytesPerRow @ desc word[4]) + upload.
-                             * Once per handle (skip if already host-backed). Gated. */
-                            if (getenv("LAGFX_M2_ARGUPLOAD") && ht == 0x03u
-                                && hpf >= 0x10u && hpf <= 0xfffffu
-                                && hsz >= 256u && hsz <= 16u * 1024u * 1024u
-                                && (hsz % 4u) == 0u) {
-                                lagfx_resource_entry_t *ex =
-                                    lagfx_resource_lookup_texture(&p->resources, h);
-                                if (!(ex && ex->view != VK_NULL_HANDLE)) {
-                                    lagfx_device_t *dwv = (lagfx_device_t *)p->dev;
-                                    if (dwv && dwv->vk && dwv->vk->initialized) {
-                                        uint32_t bpr = lagfx_le32(hd + 16);
-                                        uint32_t total_px = (uint32_t)(hsz / 4u);
-                                        uint32_t W = 1u, H = 1u;
-                                        if (bpr >= 4u && (bpr % 4u) == 0u && (hsz % bpr) == 0u
-                                            && (hsz / bpr) <= 8192u && (bpr / 4u) <= 8192u) {
-                                            W = bpr / 4u; H = (uint32_t)(hsz / bpr);
-                                        } else {
-                                            uint32_t s = 1u; while (s * s < total_px) s++;
-                                            if (s * s == total_px) { W = s; H = s; }
-                                            else for (uint32_t c = 256u; c >= 1u; c >>= 1)
-                                                if (total_px % c == 0u) { W = c; H = total_px / c; break; }
-                                        }
-                                        size_t rl = (size_t)W * H * 4u;
-                                        if (rl > 8u * 1024u * 1024u) rl = 8u * 1024u * 1024u;
-                                        uint8_t *pix = malloc(rl);
-                                        lagfx_vk_iosurface_t *ios = NULL;
-                                        if (pix
-                                            && lagfx_read_resource_backing(p, task, hpf << 12, rl, pix)
-                                            && lagfx_vk_iosurface_create(dwv->vk, W, H, 80u, &ios) == LAGFX_OK
-                                            && lagfx_vk_iosurface_upload_pixels(dwv->vk, ios, pix, rl) == LAGFX_OK) {
-                                            lagfx_resource_register(&p->resources, h,
-                                                                    LAGFX_RESOURCE_TYPE_TEXTURE,
-                                                                    task->id, hpf << 12, hsz);
-                                            lagfx_resource_entry_t *ne =
-                                                lagfx_resource_lookup_texture(&p->resources, h);
-                                            if (ne) { ne->host_handle = ios;
-                                                      ne->image = ios->image; ne->view = ios->view; }
-                                            uint32_t nb = 0;
-                                            for (size_t q = 0; q + 4 <= rl; q += 4)
-                                                if (pix[q] | pix[q+1] | pix[q+2]) nb++;
-                                            LAGFX_LOG("M2 ARGUPLOAD handle=0x%x backed %ux%u from "
-                                                      "PFN0x%llx (%llu B) nonblack_px=%u/%zu", h, W, H,
-                                                      (unsigned long long)hpf,
-                                                      (unsigned long long)hsz, nb, rl / 4);
-                                        } else if (ios) {
-                                            lagfx_vk_iosurface_destroy(dwv->vk, ios);
-                                        }
-                                        free(pix);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /* TODO: Stage 70 — translate to vkCmdBindDescriptorBuffersEXT once descriptor buffer support added. */
@@ -3022,141 +2508,6 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
 
     LAGFX_LOG("compute_inner: 0x74 SetRenderPipelineState ref=0x%x registry=%s type=%s active=%s",
               reference, registry_status, type_str, obj_active ? "yes" : "no");
-
-    /* Phase B step 6/7: env-gated diagnostic using new object resolver helpers. */
-    if (getenv("LAGFX_PHASE_B_LOOKUP") != NULL && task->heap_pfn != 0u) {
-        static uint32_t lookup_count = 0u;
-        if (lookup_count < 20u) {
-            uint8_t vert_ref = 0, frag_ref = 0;
-            if (lagfx_lookup_pipeline_function_refs(p, task, reference, &vert_ref, &frag_ref)) {
-                uint64_t v_gpa = 0; uint32_t v_len = 0;
-                uint64_t f_gpa = 0; uint32_t f_len = 0;
-                bool got_v = lagfx_lookup_function_bytes(p, task, vert_ref, &v_gpa, &v_len, NULL);
-                bool got_f = (frag_ref != 0) ? lagfx_lookup_function_bytes(p, task, frag_ref, &f_gpa, &f_len, NULL) : false;
-                LAGFX_LOG("Phase B lookup pipeline_ref=0x%x vert=0x%x %s(gpa=0x%llx len=%u) frag=0x%x %s(gpa=0x%llx len=%u)",
-                          reference, vert_ref, got_v ? "OK" : "FAIL", (unsigned long long)v_gpa, v_len,
-                          frag_ref, got_f ? "OK" : (frag_ref == 0 ? "N/A" : "FAIL"), (unsigned long long)f_gpa, f_len);
-                lookup_count++;
-            }
-        }
-    }
-
-    /* Phase C step 1: env-gated metallib bytes capture to disk. */
-    if (getenv("LAGFX_PHASE_C_CAPTURE") != NULL && task->heap_pfn != 0u) {
-        static uint32_t capture_count = 0u;
-        static bool dir_created = false;
-        if (capture_count < 20u) {
-            uint8_t vert_ref = 0, frag_ref = 0;
-            if (lagfx_lookup_pipeline_function_refs(p, task, reference, &vert_ref, &frag_ref)) {
-                /* Create output directory on first capture. */
-                if (!dir_created) {
-                    if (mkdir("/tmp/lagfx-metallibs", 0755) != 0 && errno != EEXIST) {
-                        LAGFX_WARN("Phase C: mkdir /tmp/lagfx-metallibs failed: %s", strerror(errno));
-                    } else {
-                        dir_created = true;
-                    }
-                }
-
-                if (dir_created) {
-                    /* Capture vertex metallib. */
-                    uint64_t vert_gpa = 0, frag_gpa = 0;
-                    uint32_t vert_len = 0, frag_len = 0;
-                    uint64_t vert_va = 0, frag_va = 0;
-
-                    bool got_vert = lagfx_lookup_function_bytes(p, task, vert_ref, &vert_gpa, &vert_len, &vert_va);
-                    if (got_vert && vert_len > 0) {
-                        /* Allocate buffer on heap — metallibs are ~4-6 KB. */
-                        uint8_t *buf = (uint8_t *)malloc(vert_len);
-                        if (buf != NULL) {
-                            /* Page-aware read: the metallib is virtually
-                             * contiguous but its GPA pages are not, so a flat
-                             * read past the first page boundary is corrupt. */
-                            bool ok_read = lagfx_task_read_virtual(
-                                p, task, vert_va, vert_len, buf);
-
-                            if (ok_read) {
-                                /* Build filename: task<TASK_ID>_pipeline<PIPELINE_REF>_vert_func<VERT_REF>_size<LEN>.metallib */
-                                char filename[256];
-                                int ret = snprintf(filename, sizeof(filename),
-                                    "/tmp/lagfx-metallibs/task%d_pipeline0x%x_vert_func0x%x_size%u.metallib",
-                                    (int)task->id, (int)reference, (int)vert_ref, (unsigned)vert_len);
-                                
-                                if (ret > 0 && ret < (int)sizeof(filename)) {
-                                    int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                                    if (fd >= 0) {
-                                        ssize_t written = write(fd, buf, vert_len);
-                                        close(fd);
-                                        if ((size_t)written == vert_len) {
-                                            LAGFX_LOG("Phase C: captured vertex metallib %s (%u bytes)", filename, (unsigned)vert_len);
-                                        } else {
-                                            LAGFX_WARN("Phase C: write failed for %s (wrote %zd/%u)", filename, written, (unsigned)vert_len);
-                                        }
-                                    } else {
-                                        LAGFX_WARN("Phase C: open failed for %s", filename);
-                                    }
-                                } else {
-                                    LAGFX_WARN("Phase C: filename truncation or overflow");
-                                }
-                            } else {
-                                LAGFX_WARN("Phase C: read_memory failed for vertex metallib gpa=0x%llx len=%u",
-                                           (unsigned long long)vert_gpa, vert_len);
-                            }
-                            free(buf);
-                        } else {
-                            LAGFX_WARN("Phase C: malloc(%u) failed for vertex metallib", vert_len);
-                        }
-                    }
-
-                    /* Capture fragment metallif if present. */
-                    bool got_frag = false;
-                    if (frag_ref != 0) {
-                        got_frag = lagfx_lookup_function_bytes(p, task, frag_ref, &frag_gpa, &frag_len, &frag_va);
-                    }
-
-                    if (got_frag && frag_len > 0 && frag_ref != 0) {
-                        uint8_t *buf = (uint8_t *)malloc(frag_len);
-                        if (buf != NULL) {
-                            /* Page-aware read (see vertex capture above). */
-                            bool ok_read = lagfx_task_read_virtual(
-                                p, task, frag_va, frag_len, buf);
-
-                            if (ok_read) {
-                                char filename[256];
-                                int ret = snprintf(filename, sizeof(filename),
-                                    "/tmp/lagfx-metallibs/task%d_pipeline0x%x_frag_func0x%x_size%u.metallib",
-                                    (int)task->id, (int)reference, (int)frag_ref, (unsigned)frag_len);
-
-                                if (ret > 0 && ret < (int)sizeof(filename)) {
-                                    int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                                    if (fd >= 0) {
-                                        ssize_t written = write(fd, buf, frag_len);
-                                        close(fd);
-                                        if ((size_t)written == frag_len) {
-                                            LAGFX_LOG("Phase C: captured fragment metallib %s (%u bytes)", filename, (unsigned)frag_len);
-                                        } else {
-                                            LAGFX_WARN("Phase C: write failed for %s (wrote %zd/%u)", filename, written, (unsigned)frag_len);
-                                        }
-                                    } else {
-                                        LAGFX_WARN("Phase C: open failed for %s", filename);
-                                    }
-                                } else {
-                                    LAGFX_WARN("Phase C: filename truncation or overflow");
-                                }
-                            } else {
-                                LAGFX_WARN("Phase C: read_memory failed for fragment metallib gpa=0x%llx len=%u",
-                                           (unsigned long long)frag_gpa, frag_len);
-                            }
-                            free(buf);
-                        } else {
-                            LAGFX_WARN("Phase C: malloc(%u) failed for fragment metallib", frag_len);
-                        }
-                    }
-
-                    capture_count++;
-                }
-            }
-        }
-    }
 
 #ifdef LAGFX_HAVE_VULKAN
     lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
