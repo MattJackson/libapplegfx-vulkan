@@ -410,13 +410,11 @@ typedef struct lagfx_protocol {
      * translated composite fragments' alpha-discard never fires. */
     uintptr_t white_fb_ios;
 
-    /* M2c C1 (audit B1 fix): per-frame scanout-assembly blit QUEUE. Draws
-     * into per-pass surfaces ENQUEUE their surface here (draw order, dedup);
-     * the guest's display present (vchan_display_submit) blits the queue in
-     * order into display->rt and clears it. Replaces the per-draw immediate
-     * blit whose last-blit-wins semantics let a later near-empty surface
-     * wipe an earlier content-bearing one (audit finding B1). Entries are
-     * lagfx_vk_iosurface_t* stored as uintptr_t (vulkan.h-free header). */
+    /* Per-frame scanout-assembly blit queue. Draws into per-pass surfaces
+     * enqueue their surface (draw order, dedup); the display present blits
+     * the queue in order into display->rt and clears it, so a later
+     * near-empty surface can never wipe an earlier content-bearing one.
+     * Entries are lagfx_vk_iosurface_t* as uintptr_t (vulkan.h-free). */
     uintptr_t frame_blit_queue[16];
     uint32_t  frame_blit_n;
 

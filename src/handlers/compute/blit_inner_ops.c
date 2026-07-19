@@ -314,5 +314,4 @@ int lagfx_blit_inner_dispatch(lagfx_protocol_t *p,
     return d->handler(p, payload, len);
 }
 
-/* (C6/audit B5: lagfx_blit_inner_op_name removed — it had no callers and
- * returned a file-static buffer, the worst R23 violation in the tree.) */
+

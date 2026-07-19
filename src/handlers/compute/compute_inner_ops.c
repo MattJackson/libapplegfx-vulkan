@@ -44,6 +44,7 @@
 
 #include "common/le.h"
 #include "common/log.h"
+#include "common/policy.h"
 #include "device.h"
 #include "protocol/state.h"
 #include "vulkan/iosurface.h"
@@ -174,7 +175,7 @@ static bool lagfx_read_resource_backing(lagfx_protocol_t *p,
      * vs 0), while 0xe/0x14/0x781 read fine raw. The old "raw unless all-zero"
      * arbitration keeps nonzero garbage. Read BOTH and keep the buffer with the
      * higher plausibility-as-float score (ties → raw, preserving behavior). */
-    if (getenv("LAGFX_M2_READARB") && getenv("LAGFX_M2_RAWGPA") && task) {
+    if (LAGFX_POLICY("M2_READARB") && getenv("LAGFX_M2_RAWGPA") && task) {
         lagfx_device_t *adev = p ? (lagfx_device_t *)p->dev : NULL;
         bool raw_ok = adev && adev->desc.shell.read_memory
                       && adev->desc.shell.read_memory(adev->desc.shell.opaque,
@@ -324,7 +325,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
      * so resolve by per-kind ORDINAL among the (sorted) fragment bindings —
      * the N-th fragment SAMPLED_IMAGE → fragment_textures[N], N-th fragment
      * STORAGE → fragment_buffers[N]. */
-    const bool m1_texcomp = getenv("LAGFX_M1_TEXCOMP") != NULL;
+    const bool m1_texcomp = LAGFX_POLICY("M1_TEXCOMP");
     uint32_t tex_ord = 0, fbuf_ord = 0;
     /* M2 multi-texture: SAMPLED_IMAGE bindings are linear (0,1,2,…) but the guest
      * binds textures at SPARSE Metal slots (e.g. 0 and 3 for login composites).
@@ -345,7 +346,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
          * small (≤1 MiB) type-0x03 texture; append the rest. The cursor composite
          * (only ref=0x16, a small type-0x03) is unchanged. Gated; falls back to
          * plain valid order when off. */
-        bool uitex = getenv("LAGFX_M2_UITEX") != NULL;
+        bool uitex = LAGFX_POLICY("M2_UITEX");
         if (uitex) {
             for (int pass = 0; pass < 2; pass++) {
                 for (uint32_t s = 0; s < LAGFX_MAX_BINDING_SLOTS; s++) {
@@ -384,7 +385,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
      * the pipeline binds a texture and whether any fragment colour is non-black;
      * skip the draw if it's an all-black no-texture fill. Gated. */
     bool sbf_had_tex = false, sbf_nonblack = false;
-    const bool m2_skipblackfill = getenv("LAGFX_M2_SKIPBLACKFILL") != NULL;
+    const bool m2_skipblackfill = LAGFX_POLICY("M2_SKIPBLACKFILL");
     for (uint32_t i = 0; i < n && i < 16u; i++) {
         uint32_t slot = binding_no[i];
         /* M1 (c): texture (SAMPLED_IMAGE) binding — resolve the guest's bound
@@ -694,7 +695,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                  * alpha-threshold discard, on alpha-0 fallback textures).
                  * Opaque white guarantees alpha=1 → no discard → the real
                  * fragment's computed output becomes visible. */
-                if (view == VK_NULL_HANDLE && getenv("LAGFX_M2_WHITEFB")) {
+                if (view == VK_NULL_HANDLE && LAGFX_POLICY("M2_WHITEFB")) {
                     lagfx_vk_iosurface_t *wfb =
                         (lagfx_vk_iosurface_t *)p->white_fb_ios;
                     if (!wfb) {
@@ -718,7 +719,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                         view = wfb->view; lay = wfb->layout;
                     }
                 }
-                if (view == VK_NULL_HANDLE && getenv("LAGFX_M2_UIRENDER")) {
+                if (view == VK_NULL_HANDLE && LAGFX_POLICY("M2_UIRENDER")) {
                     /* M2c: PREFER textures with a REAL guest backing (gpu_addr
                      * != 0) — the registry also holds PERPASS-created empty
                      * surfaces (alpha 0); sampling one makes the composite's
@@ -854,7 +855,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * (col1.y != 0) and bind THAT — robust against slot reordering.
                      * Only overrides binding 0 (the MVP); other bindings keep the skip
                      * heuristic. Gated. */
-                    if (getenv("LAGFX_M2_MTXSCAN") && binding_no[i] == 0u
+                    if (LAGFX_POLICY("M2_MTXSCAN") && binding_no[i] == 0u
                         && task->pending_pipeline.n_vtx_inputs > 0u) {
                         uint8_t probe[64];
                         for (uint32_t cs = 0; cs < LAGFX_MAX_BINDING_SLOTS && cs < 8u; cs++) {
@@ -924,7 +925,7 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * the data is at PFN<<12 read as a guest VA (translate). The
                      * 64 KiB best-effort read zero-pads the tail so a fixed 64 B
                      * MVP binds AND a dynamic over-read returns zeros (no crash). */
-                    if ((getenv("LAGFX_M2_REBIND") || getenv("LAGFX_VTX_INPUT"))
+                    if ((getenv("LAGFX_M2_REBIND") || LAGFX_POLICY("VTX_INPUT"))
                         && lagfx_task_read_virtual(p, task, va, sizeof(desc), desc)) {
                         /* GROUND-TRUTH dump (LAGFX_M2_DUMP): the full placement
                          * descriptor (4× {size,PFN}) plus the leaf-page bytes at
@@ -1308,7 +1309,7 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
      * Sample each bound slot (BACKUPD-VA preferred, else placement walk), score
      * plausibility-as-float32, upload the first slot scoring ≥50. Falls through
      * to the legacy slot-0 path when off or when nothing scores. */
-    if (getenv("LAGFX_M2_VTXSRC")) {
+    if (LAGFX_POLICY("M2_VTXSRC")) {
         uint32_t want = getenv("LAGFX_M2_BIGVERTS")
                             ? LAGFX_BIGVERTS_BUF_SZ : LAGFX_DRAW_DS_BUF_SZ;
         for (uint32_t sm = 0; sm < 6u; sm++) {
@@ -1589,7 +1590,7 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
      * this the positions read unbound → 0 → degenerate → black. */
     bool vtx_input_on = task->pending_pipeline.translated
                         && task->pending_pipeline.n_vtx_inputs > 0u
-                        && getenv("LAGFX_VTX_INPUT") != NULL;
+                        && LAGFX_POLICY("VTX_INPUT");
     if (vtx_input_on) {
         pdesc.n_vtx_inputs = task->pending_pipeline.n_vtx_inputs;
         for (uint32_t a = 0; a < pdesc.n_vtx_inputs && a < 8u; a++) {
@@ -1691,7 +1692,7 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
     lagfx_vk_iosurface_t *perpass_ios = NULL;
     uint32_t perpass_tref = 0u;
     bool perpass_real_draw = false;  /* set only when a TRANSLATED draw lands in it */
-    if (getenv("LAGFX_M2_PERPASS") && task->render_pass_desc.target_ref != 0u) {
+    if (LAGFX_POLICY("M2_PERPASS") && task->render_pass_desc.target_ref != 0u) {
         uint32_t tref = task->render_pass_desc.target_ref;
         lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, tref);
         lagfx_vk_iosurface_t *ios = te ? (lagfx_vk_iosurface_t *)te->host_handle : NULL;
@@ -1707,9 +1708,9 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
                     ne->host_handle = ios; ne->image = ios->image; ne->view = ios->view;
                     LAGFX_LOG("%s PERPASS: created RT IOSurface for target ref=0x%x %ux%u", op, tref, W, H);
                 } else {
-                    /* C4 (audit B3): registry full/register failed — without an
-                     * owning entry the ~8 MB image would leak AND be recreated
-                     * per draw. Destroy and fall through to display->rt. */
+                    /* Registry register failed — without an owning entry the
+                     * image would leak and be recreated per draw. Destroy and
+                     * fall through to display->rt. */
                     LAGFX_WARN("%s PERPASS: registry register failed for ref=0x%x — surface destroyed",
                                op, tref);
                     lagfx_vk_iosurface_destroy(dev_with_vk->vk, ios);
@@ -1854,8 +1855,8 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
         /* vtx-input pipeline but no real vertex data → skip (no unbound fault). */
         LAGFX_LOG("%s VTX: ref=0x%x no real vertex data — skip (no crash)",
                   op, task->pending_pipeline.reference);
-    } else if (!getenv("LAGFX_NO_SUBSTITUTE")
-               && !(getenv("LAGFX_M2_ASMBLIT") && active_rt == &perpass_rt)) {
+    } else if ((getenv("LAGFX_SUBSTITUTE") != NULL)
+               && !(LAGFX_POLICY("M2_ASMBLIT") && active_rt == &perpass_rt)) {
         /* Substitute / resource-free path: bundled 3-vertex triangle.
          * NO_SUBSTITUTE skips this ENTIRELY (translated or not): a TRANSLATED
          * pipeline that fell through here (no descriptor layout, no vtx input)
@@ -1878,17 +1879,15 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
         }
     }
 
-    /* M2a/C1 SCANOUT-ASSEMBLY (LAGFX_M2_ASMBLIT): a per-pass draw ENQUEUES its
+    /* Scanout assembly: a per-pass draw ENQUEUES its
      * surface for the frame-blit queue; the guest's display present
      * (vchan_display_submit) blits the queue IN DRAW ORDER into display->rt and
-     * clears it. This replaces the per-draw immediate blit whose last-blit-wins
-     * let a later near-empty surface wipe an earlier content-bearing one (audit
-     * B1 — it only worked because the fullscreen composite happened to target
-     * the last-blitted surface). Dedup: a surface already queued keeps its
+     * clears it, so a later near-empty surface can never wipe an earlier
+     * content-bearing one. Dedup: a surface already queued keeps its
      * FIRST-draw position (guest pass order). Crash-proof: queue-full drops the
      * oldest-duplicate-free entry silently (16 passes/frame is far above the
      * live ~4). */
-    if (getenv("LAGFX_M2_ASMBLIT") && active_rt == &perpass_rt
+    if (LAGFX_POLICY("M2_ASMBLIT") && active_rt == &perpass_rt
         && perpass_ios && perpass_ios->image != VK_NULL_HANDLE
         && perpass_real_draw && st == LAGFX_OK) {
         bool queued = false;
@@ -1932,7 +1931,7 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
      * quad); `…18 00` = 24 (4 quads). The old le32@4 read 0x00060000=393216 →
      * 1024 clamped garbage verts → the on-screen band. Gated so M1 is preserved
      * until verified; enable for M2 so draws rasterize only the real geometry. */
-    if (getenv("LAGFX_M2_DRAWCOUNT16"))
+    if (LAGFX_POLICY("M2_DRAWCOUNT16"))
         vertex_count = lagfx_le16(body + 6);
 
     /* DUMP_SPV: hex-dump the raw payload to decode the real field layout — the
@@ -2374,7 +2373,7 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
             if (lagfx_resolve_object_data(p, task, v, &rt, &rva, &rgpa) && rva != 0u
                 && (rt == 0x03u || rt == 0x05u)) {
                 task->render_pass_desc.target_ref = v;
-                if (getenv("LAGFX_M2_PERPASS"))
+                if (LAGFX_POLICY("M2_PERPASS"))
                     LAGFX_LOG("0x1a target_ref=0x%x (t%02x) @off=%zu", v, rt, off);
                 break;
             }
@@ -2516,7 +2515,7 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p,
         LAGFX_WARN("compute_inner: 0x6e SetFragmentBuffers payload too small (%zu < 8)", body_len);
         return 1;
     }
-    if (getenv("LAGFX_PHASE6_TRANSLATE")) {
+    if (LAGFX_POLICY("PHASE6_TRANSLATE")) {
         char _hx[160]; size_t _hn = 0;
         for (size_t _k = 0; _k < body_len && _hn + 3 < sizeof(_hx); _k++)
             _hn += (size_t)snprintf(_hx + _hn, sizeof(_hx) - _hn, "%02x ", body[_k]);
@@ -2747,7 +2746,7 @@ static int op_set_fragment_textures(lagfx_protocol_t *p,
         LAGFX_WARN("compute_inner: 0x72 SetFragmentTextures payload too small (%zu < 8)", body_len);
         return 1;
     }
-    if (getenv("LAGFX_PHASE6_TRANSLATE")) {
+    if (LAGFX_POLICY("PHASE6_TRANSLATE")) {
         char _hx[160]; size_t _hn = 0;
         for (size_t _k = 0; _k < body_len && _hn + 3 < sizeof(_hx); _k++)
             _hn += (size_t)snprintf(_hx + _hn, sizeof(_hx) - _hn, "%02x ", body[_k]);
@@ -2842,7 +2841,7 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p,
         LAGFX_WARN("compute_inner: 0x7d SetVertexBuffers payload too small (%zu < 8)", body_len);
         return 1;
     }
-    if (getenv("LAGFX_PHASE6_TRANSLATE")) {
+    if (LAGFX_POLICY("PHASE6_TRANSLATE")) {
         char _hx[160]; size_t _hn = 0;
         for (size_t _k = 0; _k < body_len && _hn + 3 < sizeof(_hx); _k++)
             _hn += (size_t)snprintf(_hx + _hn, sizeof(_hx) - _hn, "%02x ", body[_k]);
@@ -2896,7 +2895,7 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p,
          * the input to draw-time descriptor binding. */
         if (ref != 0u && i < 4u &&
             (getenv("LAGFX_RE_BUFFERS") != NULL ||
-             getenv("LAGFX_PHASE6_TRANSLATE") != NULL)) {
+             LAGFX_POLICY("PHASE6_TRANSLATE"))) {
             uint8_t btype = 0; uint64_t bva = 0, bgpa = 0;
             if (lagfx_resolve_object_data(p, task, ref, &btype, &bva, &bgpa)) {
                 uint8_t data[64] = {0};
@@ -3178,14 +3177,9 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
      * hardcoded defaults (matching the substitute path). Phase 6b
      * will land the descriptor decoder. */
     bool phase6_translated = false;
-    const char *p6_env = getenv("LAGFX_PHASE6_TRANSLATE");
-    /* Treat only "1" as enabled. Bare set-but-empty / "0" / anything
-     * else stays on the substitute path. compose.test.yml has
-     * `LAGFX_PHASE6_TRANSLATE=${LAGFX_PHASE6_TRANSLATE:-""}` which
-     * delivers an empty string when the host shell var is unset —
-     * `getenv != NULL` was true even in that case, making P6a
-     * silently always-on. */
-    bool p6_enabled = (p6_env && p6_env[0] == '1');
+    /* Real-shader translation is default-on; LAGFX_DISABLE_PHASE6_TRANSLATE
+     * reverts to the substitute path. */
+    bool p6_enabled = LAGFX_POLICY("PHASE6_TRANSLATE");
     if (p6_enabled &&
         dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized &&
         task->heap_pfn != 0u) {
@@ -3299,7 +3293,7 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                  * texture/colour binding → composites flagged inconsistent and
                  * substituted (no real content ever drawn). The draw site
                  * demuxes on the same LAGFX_FRAG_BINDING_BASE. */
-                if (stage == 1 && getenv("LAGFX_M1_TEXCOMP")) {
+                if (stage == 1 && LAGFX_POLICY("M1_TEXCOMP")) {
                     lagfx_spv_offset_bindings(spv, spv_sz, LAGFX_FRAG_BINDING_BASE);
                 }
 

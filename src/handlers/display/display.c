@@ -390,7 +390,7 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
             }
 
 #ifdef LAGFX_HAVE_VULKAN
-            /* M2c C1 (audit B1): drain the frame-blit queue IN DRAW ORDER into
+            /* Drain the frame-blit queue in draw order into
              * display->rt before scanning out — the per-pass surfaces drawn
              * since the last present compose here (earlier passes first, the
              * final composite last), replacing the old last-blit-wins per-draw

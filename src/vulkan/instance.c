@@ -134,7 +134,7 @@ static VkBool32 VKAPI_PTR lagfx_debug_callback(
     if (messageSeverity == VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT) {
         return VK_FALSE;
     }
-    LAGFX_WARN("validation: %s", pCallbackData->pMessage);  /* C6/B6: stderr is dropped in-container */
+    LAGFX_WARN("validation: %s", pCallbackData->pMessage);  /* stderr is dropped in-container */
     return VK_FALSE;
 }
 
