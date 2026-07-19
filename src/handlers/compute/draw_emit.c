@@ -370,7 +370,7 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
      * in an intermediate → nothing reaches the scanout → black. This makes the
      * last-rendered per-pass surface's content visible. */
     lagfx_vk_iosurface_t *perpass_ios = NULL;
-    uint32_t perpass_tref = 0u;
+    uint32_t perpass_tref = 0u; (void)perpass_tref;
     bool perpass_real_draw = false;  /* set only when a TRANSLATED draw lands in it */
     if (LAGFX_POLICY("M2_PERPASS") && task->render_pass_desc.target_ref != 0u) {
         uint32_t tref = task->render_pass_desc.target_ref;

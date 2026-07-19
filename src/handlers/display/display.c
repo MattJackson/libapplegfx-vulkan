@@ -466,7 +466,7 @@ lagfx_handler_status_t lagfx_display_vchan_present(
 
     uint32_t display_index = lagfx_le32(hdr->payload + 0);
     uint32_t surface_id    = lagfx_le32(hdr->payload + 4);
-    uint32_t plane_id      = lagfx_le32(hdr->payload + 8);
+    uint32_t plane_id      = lagfx_le32(hdr->payload + 8); (void)plane_id;
 
     LAGFX_LOG("vchan_present: display[%u] surface=0x%x plane=%u stamp=0x%08x",
               display_index, surface_id, plane_id, hdr->stamp);
