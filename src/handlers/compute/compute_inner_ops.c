@@ -688,13 +688,22 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                  * draw. A fallback lets the UI shapes appear (toward a recognizable
                  * loginwindow) instead of nothing. Gated. */
                 if (view == VK_NULL_HANDLE && getenv("LAGFX_M2_UIRENDER")) {
-                    for (uint32_t ri = 0; ri < p->resources.count; ri++) {
-                        lagfx_vk_iosurface_t *fb =
-                            (lagfx_vk_iosurface_t *)p->resources.entries[ri].host_handle;
-                        if (fb && fb->view != VK_NULL_HANDLE
-                            && (fb->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                || fb->layout == VK_IMAGE_LAYOUT_GENERAL)) {
-                            view = fb->view; lay = fb->layout; break;
+                    /* M2c: PREFER textures with a REAL guest backing (gpu_addr
+                     * != 0) — the registry also holds PERPASS-created empty
+                     * surfaces (alpha 0); sampling one makes the composite's
+                     * output invisible (the post-SOLIDFRAG fragment-stage kill).
+                     * Pass 0: real-backed only; pass 1: any sampleable. */
+                    for (int fbpass = 0; fbpass < 2 && view == VK_NULL_HANDLE; fbpass++) {
+                        for (uint32_t ri = 0; ri < p->resources.count; ri++) {
+                            lagfx_resource_entry_t *fre = &p->resources.entries[ri];
+                            lagfx_vk_iosurface_t *fb =
+                                (lagfx_vk_iosurface_t *)fre->host_handle;
+                            if (fbpass == 0 && fre->gpu_addr == 0u) continue;
+                            if (fb && fb->view != VK_NULL_HANDLE
+                                && (fb->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                    || fb->layout == VK_IMAGE_LAYOUT_GENERAL)) {
+                                view = fb->view; lay = fb->layout; break;
+                            }
                         }
                     }
                 }
