@@ -250,6 +250,31 @@ uint32_t lagfx_read_vtx_source(lagfx_protocol_t *p, lagfx_task_entry_t *task,
  * aspect lands in [0.4, 2.5] — the 20 KiB login-UI textures resolve to
  * 64x80, the 4 KiB cursor to 32x32. The surface is registered under the
  * ref so later draws bind it directly. Returns NULL on any miss. */
+/* Photo-vs-noise discriminator: 0..1000, higher = more photo-like. A photo has
+ * strong neighbour correlation (small adjacent-pixel deltas); random heap read
+ * as pixels has ~uniform deltas (mean ~85/channel). Samples the buffer as BGRA
+ * at a plausible row width and averages |px[i]-px[i+1]| over each channel; the
+ * score is 1000*(1 - meandelta/128) clamped. Rejects the noise regions that a
+ * pure nonblack/color-count metric cannot distinguish from a real image. */
+static uint32_t photo_correlation_score(const uint8_t *buf, uint32_t bytes) {
+    if (!buf || bytes < 4096u) return 0u;
+    uint64_t sum = 0; uint32_t n = 0;
+    uint32_t px = bytes / 4u;
+    uint32_t step = (px / 4096u) + 1u;   /* sample ~4k adjacent pairs */
+    for (uint32_t i = 0; i + 1u < px && n < 4096u; i += step) {
+        const uint8_t *a = buf + (size_t)i * 4u;
+        const uint8_t *b = a + 4u;
+        sum += (uint32_t)abs((int)a[0]-(int)b[0])
+             + (uint32_t)abs((int)a[1]-(int)b[1])
+             + (uint32_t)abs((int)a[2]-(int)b[2]);
+        n += 3u;
+    }
+    if (!n) return 0u;
+    uint32_t mean = (uint32_t)(sum / n);         /* 0 (flat) .. ~85 (noise) */
+    if (mean >= 128u) return 0u;
+    return 1000u - (mean * 1000u) / 128u;
+}
+
 lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
                                             lagfx_task_entry_t *task,
                                             struct lagfx_vk_state *vk,
@@ -298,28 +323,37 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     if (nb == 0u && want >= 2u * 1024u * 1024u && p->big_maps_n > 0u) {
         lagfx_device_t *dev = (lagfx_device_t *)p->dev;
         if (dev && dev->desc.shell.read_memory) {
-            uint8_t *best = NULL; uint32_t best_nb = 0;
+            /* Pick the 0x39 region that looks most like a PHOTO (high spatial
+             * correlation), not merely the most non-black — a nonblack/colour
+             * count cannot tell a photo from random heap noise (noise maxes it),
+             * which bound noise bands. Require a real photo score AND coverage. */
+            uint8_t *best = NULL; uint32_t best_score = 0, best_nb = 0;
             uint8_t *scan = calloc(1u, want);
             for (uint32_t bm = 0; scan && bm < p->big_maps_n && bm < 16u; bm++) {
                 if (p->big_maps[bm].size < want) continue;
                 if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
                                                  p->big_maps[bm].gpa, want, scan))
                     continue;
+                uint32_t score = photo_correlation_score(scan, want);
                 uint32_t cnt = 0;
                 for (uint32_t o = 0; o + 4u <= want; o += 256u)
                     if (scan[o] | scan[o+1] | scan[o+2]) cnt++;
-                if (cnt > best_nb) {
-                    best_nb = cnt;
+                LAGFX_LOG("TEXREAL: 0x39 region[%u] gpa=0x%llx photo=%u nonblack=%u",
+                          bm, (unsigned long long)p->big_maps[bm].gpa, score, cnt);
+                if (score > best_score && cnt > 0u) {
+                    best_score = score; best_nb = cnt;
                     if (!best) best = calloc(1u, want);
                     if (best) memcpy(best, scan, want);
                 }
             }
             free(scan);
-            if (best && best_nb > 0u) {
+            /* Bind only a genuinely photo-like region; a noise band is worse
+             * than the black placement read. */
+            if (best && best_score >= 500u) {
                 free(raw); free(via);
                 raw = best; via = NULL; pick = best; how = "mapmem"; nb = best_nb;
-                LAGFX_LOG("TEXREAL: ref=0x%x wallpaper recovered from 0x39 map (nonblack~%u)",
-                          tref, best_nb);
+                LAGFX_LOG("TEXREAL: ref=0x%x wallpaper recovered from 0x39 map (photo=%u nonblack~%u)",
+                          tref, best_score, best_nb);
             } else {
                 free(best);
             }
@@ -437,10 +471,14 @@ void lagfx_texture_refresh(lagfx_protocol_t *p, lagfx_task_entry_t *task,
             if (!seen) buckets[nbk++] = c;
         }
     }
-    if (nbk > te->realize_rich
+    /* Only accept a richer re-read that is also photo-like (spatial correlation)
+     * — a colour-count alone promotes noise. */
+    uint32_t pscore = photo_correlation_score(pick, want);
+    if (nbk > te->realize_rich && (want < 2u*1024u*1024u || pscore >= 500u)
         && lagfx_vk_iosurface_upload_pixels(vk, ios, pick, want) == LAGFX_OK) {
-        LAGFX_LOG("TEXFRESH: ref=0x%x re-read %uB (read=%s) rich %u -> %u%s",
-                  tref, want, how, te->realize_rich, nbk, nbk >= 64u ? "+ PHOTO" : "");
+        LAGFX_LOG("TEXFRESH: ref=0x%x re-read %uB (read=%s) rich %u -> %u photo=%u%s",
+                  tref, want, how, te->realize_rich, nbk, pscore,
+                  nbk >= 64u ? "+ PHOTO" : "");
         te->realize_rich = (uint16_t)nbk;
     }
     free(raw); free(via);
