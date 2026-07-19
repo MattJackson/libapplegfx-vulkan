@@ -659,9 +659,14 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
      * the 6-attachment layout can be decoded by hand — each color attachment slot
      * (view_count=6, ~89 B span) should carry its target IOSurface ref + load/store
      * op + clear. The resolve-filtered scan misses targets not yet in the registry. */
-    if (getenv("LAGFX_RP_RAW") != NULL && view_count >= 1u) {
-        for (size_t base = 48u; base + 32u <= body_len && base < 176u; base += 32u) {
-            LAGFX_LOG("0x1a RP_RAW @%03zu: %08x %08x %08x %08x %08x %08x %08x %08x", base,
+    /* Dump from offset 0 (header included) ungated by view_count — which itself
+     * misparses to 0 for the wallpaper pass, so the old view_count>=1 gate hid the
+     * exact pass we need. task_id stamped so it correlates with the 0x75 scissor
+     * (known 1280x1024 = 0x500 x 0x400) on the same task. */
+    if (getenv("LAGFX_RP_RAW") != NULL) {
+        for (size_t base = 0u; base + 32u <= body_len && base < 192u; base += 32u) {
+            LAGFX_LOG("0x1a RP_RAW t%u len=%zu @%03zu: %08x %08x %08x %08x %08x %08x %08x %08x",
+                      task_id, body_len, base,
                       lagfx_le32(body+base+0),  lagfx_le32(body+base+4),
                       lagfx_le32(body+base+8),  lagfx_le32(body+base+12),
                       lagfx_le32(body+base+16), lagfx_le32(body+base+20),
@@ -1485,7 +1490,7 @@ static int op_set_scissor_rect(lagfx_protocol_t *p,
                                  uint32_t          task_id,
                                  const uint8_t    *body,
                                  size_t            body_len) {
-    (void)p; (void)encoder_type; (void)task_id;
+    (void)p; (void)encoder_type;
     /* RE: render-decoder-handlers.md line 119 — PGCmdSetScissorRect (32 B == MTLScissorRect), POD family */
     if (body_len < 32u) {
         LAGFX_WARN("compute_inner: 0x75 SetScissorRect payload too small (%zu < 32)", body_len);
@@ -1495,8 +1500,8 @@ static int op_set_scissor_rect(lagfx_protocol_t *p,
     uint64_t y = lagfx_le64(body + 8);
     uint64_t w = lagfx_le64(body + 16);
     uint64_t h = lagfx_le64(body + 24);
-    LAGFX_LOG("compute_inner: 0x75 SetScissorRect origin=(%llu,%llu) size=%llux%llu",
-              x, y, w, h);
+    LAGFX_LOG("compute_inner: 0x75 SetScissorRect t%u origin=(%llu,%llu) size=%llux%llu",
+              task_id, x, y, w, h);
     /* TODO: Stage 70 — translate to vkCmdSetScissor. */
     return 0;
 }
