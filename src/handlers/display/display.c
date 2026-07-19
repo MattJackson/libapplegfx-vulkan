@@ -42,13 +42,8 @@ static void lagfx_display_present_surface_by_id(lagfx_protocol_t *p,
     if (!re) re = lagfx_resource_lookup(&p->resources, surface_id, 0u);
     if (re && re->host_handle)
         ios = (lagfx_vk_iosurface_t *)re->host_handle;
-    if (!ios) {
-        for (uint32_t t = 0; t < LAGFX_MAX_TASKS; t++) {
-            if (!p->tasks[t].live) continue;
-            ios = lagfx_texture_realize(p, &p->tasks[t], dev->vk, surface_id);
-            break;
-        }
-    }
+    /* Registry-only: the presented surface is realized by the draw path; do NOT
+     * realize here (display channel lacks the owning task's page-table context). */
     if (ios && ios->image != VK_NULL_HANDLE) {
         bool queued = false;
         for (uint32_t qi = 0; qi < p->frame_blit_n; qi++)
