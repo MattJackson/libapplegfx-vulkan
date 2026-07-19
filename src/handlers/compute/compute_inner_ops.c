@@ -1868,31 +1868,31 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
         }
     }
 
-    /* M2a SCANOUT-ASSEMBLY BLIT (LAGFX_M2_ASMBLIT): if this draw rendered into a
-     * per-pass surface (not display->rt directly) and it succeeded, blit that
-     * surface to display->rt so its content reaches the scanout. Per-pass draws
-     * otherwise land only in intermediates and the scanout stays black. The
-     * last-rendered per-pass surface of the frame wins (each blit overwrites
-     * display->rt), which for the guest's compositor is the final composite pass.
-     * Reuses the tested wallpaper-present path. Crash-proof: on any failure the
-     * display->rt is left as-is (never crash; suite stays green). */
+    /* M2a/C1 SCANOUT-ASSEMBLY (LAGFX_M2_ASMBLIT): a per-pass draw ENQUEUES its
+     * surface for the frame-blit queue; the guest's display present
+     * (vchan_display_submit) blits the queue IN DRAW ORDER into display->rt and
+     * clears it. This replaces the per-draw immediate blit whose last-blit-wins
+     * let a later near-empty surface wipe an earlier content-bearing one (audit
+     * B1 — it only worked because the fullscreen composite happened to target
+     * the last-blitted surface). Dedup: a surface already queued keeps its
+     * FIRST-draw position (guest pass order). Crash-proof: queue-full drops the
+     * oldest-duplicate-free entry silently (16 passes/frame is far above the
+     * live ~4). */
     if (getenv("LAGFX_M2_ASMBLIT") && active_rt == &perpass_rt
         && perpass_ios && perpass_ios->image != VK_NULL_HANDLE
         && perpass_real_draw && st == LAGFX_OK) {
-        lagfx_status_t bst = lagfx_vk_display_present_surface(
-            dev_with_vk->vk, &display->rt, perpass_ios->image, &perpass_ios->layout,
-            perpass_ios->width, perpass_ios->height,
-            display->rt.width, display->rt.height,
-            display->scanout_gpa, display->scanout_length,
-            dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory);
-        if (bst == LAGFX_OK) {
-            LAGFX_LOG("%s ASMBLIT: blitted per-pass surface 0x%x (%ux%u) -> display->rt %ux%u",
+        bool queued = false;
+        for (uint32_t qi = 0; qi < p->frame_blit_n; qi++)
+            if (p->frame_blit_queue[qi] == (uintptr_t)perpass_ios) { queued = true; break; }
+        if (!queued && p->frame_blit_n < 16u) {
+            p->frame_blit_queue[p->frame_blit_n++] = (uintptr_t)perpass_ios;
+            LAGFX_LOG("%s ASMBLIT: queued per-pass surface 0x%x (%ux%u) pos=%u",
                       op, perpass_tref, perpass_ios->width, perpass_ios->height,
-                      display->rt.width, display->rt.height);
-            lagfx_display_signal_frame_ready(display);
-        } else {
-            LAGFX_WARN("%s ASMBLIT: present failed (%d) — display->rt unchanged", op, (int)bst);
+                      p->frame_blit_n - 1u);
         }
+        /* Keep the frame-ready signal so the shell repaints even before the
+         * next guest present drains the queue. */
+        lagfx_display_signal_frame_ready(display);
     }
 
     if (vbuf != VK_NULL_HANDLE) {

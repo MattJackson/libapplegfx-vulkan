@@ -10,6 +10,11 @@
 #include "../../display.h"  /* LAGFX_DISPLAY_DEFAULT_W / _H / _BPP */
 #include "common/le.h"
 #include "common/log.h"
+#ifdef LAGFX_HAVE_VULKAN
+#include "../../device.h"             /* dev->vk for the C1 frame-blit drain */
+#include "../../vulkan/display_blit.h"
+#include "../../vulkan/iosurface.h"
+#endif
 
 #include <string.h>
 
@@ -384,6 +389,34 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
                                (uint64_t)LAGFX_DISPLAY_DEFAULT_BYTES_PER_PIXEL);
             }
 
+#ifdef LAGFX_HAVE_VULKAN
+            /* M2c C1 (audit B1): drain the frame-blit queue IN DRAW ORDER into
+             * display->rt before scanning out — the per-pass surfaces drawn
+             * since the last present compose here (earlier passes first, the
+             * final composite last), replacing the old last-blit-wins per-draw
+             * blit. Failures skip that surface; the present proceeds. */
+            if (p->frame_blit_n > 0u && dev->vk && disp->rt_ready
+                && disp->rt.image != VK_NULL_HANDLE) {
+                for (uint32_t qi = 0; qi < p->frame_blit_n && qi < 16u; qi++) {
+                    lagfx_vk_iosurface_t *qios =
+                        (lagfx_vk_iosurface_t *)p->frame_blit_queue[qi];
+                    if (!qios || qios->image == VK_NULL_HANDLE) continue;
+                    lagfx_status_t qst = lagfx_vk_display_present_surface(
+                        dev->vk, &disp->rt, qios->image, &qios->layout,
+                        qios->width, qios->height,
+                        disp->rt.width, disp->rt.height,
+                        0u, 0u, /* no per-surface scanout write — the final
+                                   submit below does the readback+scanout */
+                        dev->desc.shell.opaque, dev->desc.shell.write_memory);
+                    if (qst != LAGFX_OK)
+                        LAGFX_WARN("vchan_display_submit: ASMBLIT queue[%u] blit failed (%d)",
+                                   qi, (int)qst);
+                }
+                LAGFX_LOG("vchan_display_submit: ASMBLIT drained %u queued surfaces in draw order",
+                          p->frame_blit_n);
+                p->frame_blit_n = 0u;
+            }
+#endif
             lagfx_status_t st = lagfx_display_submit_rendered_frame(
                 disp, fb_base, scanout_len);
             if (st != LAGFX_OK) {
