@@ -269,7 +269,7 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
         if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
         total += rsize;
     }
-    if (total < 4096u || total > 1024u * 1024u) return NULL;  /* UI-texture band */
+    if (total < 4096u || total > 8u * 1024u * 1024u) return NULL;
     uint32_t want = (uint32_t)total;
     uint8_t *raw = calloc(1u, want), *via = calloc(1u, want);
     if (!raw || !via) { free(raw); free(via); return NULL; }
@@ -287,7 +287,8 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     if (!pick || nb == 0u) { free(raw); free(via); return NULL; }
     /* dims: first preferred width dividing the pixel count with sane aspect */
     uint32_t npx = want / 4u, W = 0, H = 0;
-    static const uint32_t widths[] = {64u, 128u, 32u, 256u, 16u, 512u};
+    static const uint32_t widths[] = {64u, 128u, 32u, 256u, 16u, 512u,
+                                      1280u, 1920u, 1024u, 2048u};
     for (size_t wi = 0; wi < sizeof(widths)/sizeof(widths[0]); wi++) {
         uint32_t w = widths[wi];
         if (npx % w) continue;

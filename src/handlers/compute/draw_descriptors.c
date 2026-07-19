@@ -145,6 +145,7 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
             sbf_had_tex = true;
             VkImageView view = VK_NULL_HANDLE;
             VkImageLayout lay = VK_IMAGE_LAYOUT_GENERAL;
+            const char *tex_src = "none";
             /* Textures are fragment-stage; map the N-th SAMPLED_IMAGE to the N-th
              * VALID guest texture slot (sparse), not linearly to slot N. */
             uint32_t tex_idx = m1_texcomp
@@ -171,6 +172,7 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                                 || ios->layout == VK_IMAGE_LAYOUT_GENERAL)) {
                         view = te->view;
                         lay  = ios->layout;
+                        tex_src = "direct";
                     }
                 }
             }
@@ -184,6 +186,7 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                     && (rt_ios->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                         || rt_ios->layout == VK_IMAGE_LAYOUT_GENERAL)) {
                     view = rt_ios->view; lay = rt_ios->layout;
+                    tex_src = "realized";
                 }
             }
             if (view == VK_NULL_HANDLE) {
@@ -223,6 +226,7 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                     }
                     if (wfb && wfb->view != VK_NULL_HANDLE) {
                         view = wfb->view; lay = wfb->layout;
+                        tex_src = "whitefb";
                     }
                 }
                 if (view == VK_NULL_HANDLE && LAGFX_POLICY("M2_UIRENDER")) {
@@ -240,7 +244,9 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                             if (fb && fb->view != VK_NULL_HANDLE
                                 && (fb->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                                     || fb->layout == VK_IMAGE_LAYOUT_GENERAL)) {
-                                view = fb->view; lay = fb->layout; break;
+                                view = fb->view; lay = fb->layout;
+                                tex_src = "uirender";
+                                break;
                             }
                         }
                     }
@@ -263,6 +269,9 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                 return VK_NULL_HANDLE;
             }
           uirender_bound:
+            if (getenv("LAGFX_DUMP_SPV"))
+                LAGFX_LOG("TEXBIND: pipe=0x%x bind=%u tref=0x%x src=%s",
+                          task->pending_pipeline.reference, binding_no[i], tref, tex_src);
             iinfos[nw] = (VkDescriptorImageInfo){ .imageView = view, .imageLayout = lay };
             writes[nw] = (VkWriteDescriptorSet){
                 .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
