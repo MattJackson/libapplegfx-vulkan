@@ -497,6 +497,22 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
     if (vcap) { unsigned long v = strtoul(vcap, NULL, 0); if (v && (uint32_t)v < vmax) vmax = (uint32_t)v; }
     if (vc > vmax) vc = vmax;
 
+    /* Per-draw correlation: task, target view, route (perpass vs scanout),
+     * pipeline ref, translate + resource status. Maps the wallpaper pass's
+     * draw (target view 0x17/0x32) to its execution outcome. Gated. */
+    if (getenv("LAGFX_DRAWMAP")) {
+        LAGFX_LOG("DRAWMAP t%u tgt=0x%x route=%s pipe=0x%x xlated=%d res_using=%d "
+                  "nbind=%u nvtx=%u verts=%u scissor=%ux%u",
+                  task->id, task->render_pass_desc.target_ref,
+                  (active_rt == &perpass_rt) ? "perpass" : "scanout",
+                  task->pending_pipeline.reference,
+                  task->pending_pipeline.translated ? 1 : 0,
+                  resource_using ? 1 : 0,
+                  task->pending_pipeline.n_spv_bindings,
+                  task->pending_pipeline.n_vtx_inputs, vc,
+                  task->scissor_w, task->scissor_h);
+    }
+
     if (resource_using) {
         /* Bind the guest's storage buffers into a descriptor set matching the
          * reflected layout, then draw the guest geometry. Failure → skip (no crash). */
