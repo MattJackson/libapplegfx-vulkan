@@ -1165,63 +1165,60 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
              * AIR for that stage → translate → vkCreateShaderModule.
              * On failure returns VK_NULL_HANDLE. */
             for (int stage = 0; stage < 2; stage++) {
-                uint8_t fn_ref = (stage == 0) ? vert_ref : frag_ref;
-                if (fn_ref == 0u) continue;
-
-                uint64_t mlib_gpa = 0; uint32_t mlib_len = 0; uint64_t mlib_va = 0;
-                if (!lagfx_lookup_function_bytes(p, task, fn_ref, &mlib_gpa, &mlib_len, &mlib_va)) {
-                    LAGFX_WARN("op_0x74 P6a: lookup_function_bytes failed for %s ref=0x%x",
-                               stage == 0 ? "vert" : "frag", fn_ref);
-                    break;
-                }
-                if (mlib_len == 0u || mlib_len > (1u << 20)) {
-                    LAGFX_WARN("op_0x74 P6a: metallib len %u out of range", mlib_len);
-                    break;
-                }
-
-                uint8_t *mlib_buf = (uint8_t *)malloc(mlib_len);
-                if (!mlib_buf) break;
-                /* Page-aware read: the metallib is contiguous in the task's
-                 * VIRTUAL address space but its GPA pages are not, so a flat
-                 * read_memory(gpa, len) corrupts the bitcode past the first
-                 * page boundary -> the reader/translate then chokes (and can
-                 * crash) on a real multi-page guest shader. */
-                if (!lagfx_task_read_virtual(p, task, mlib_va, mlib_len, mlib_buf)) {
-                    LAGFX_WARN("op_0x74 P6a: read_virtual failed va=0x%llx len=%u",
-                               (unsigned long long)mlib_va, mlib_len);
-                    free(mlib_buf);
-                    break;
-                }
-
-                /* Extract AIR bitcode for this stage from the MTLB
-                 * container. We probe with capacity=8 — Apple
-                 * metallibs we've seen carry ≤4 functions. */
-                lagfx_metallib_function_t fns[8] = {0};
-                size_t fn_count = 0;
-                lagfx_status_t ext_st = lagfx_metallib_extract_functions(
-                    mlib_buf, mlib_len, fns, 8, &fn_count);
-                if (ext_st != LAGFX_OK || fn_count == 0u) {
-                    LAGFX_WARN("op_0x74 P6a: metallib_extract failed (st=%d count=%zu)",
-                               (int)ext_st, fn_count);
-                    free(mlib_buf);
-                    break;
-                }
-
-                /* Pick the matching stage. Apple stores both vertex
-                 * and fragment in the SAME metallib for many
-                 * pipelines; per-fn_ref lookup may return the whole
-                 * blob and we filter here by stage_raw. */
                 lagfx_metallib_stage_t want =
                     (stage == 0) ? LAGFX_METALLIB_STAGE_VERTEX
                                  : LAGFX_METALLIB_STAGE_FRAGMENT;
+                /* The pipeline descriptor's function-ref order is NOT a reliable
+                 * vertex/fragment split — some pipelines (e.g. the wallpaper
+                 * composites) carry the refs swapped, so the assigned ref's
+                 * metallib lacks the wanted stage. Try the assigned ref first,
+                 * then the sibling; bind each stage from whichever metallib
+                 * actually contains that stage. */
+                uint8_t cand_refs[2] = {
+                    (stage == 0) ? vert_ref : frag_ref,
+                    (stage == 0) ? frag_ref : vert_ref,
+                };
+                uint8_t *mlib_buf = NULL;
+                lagfx_metallib_function_t fns[8] = {0};
                 const lagfx_metallib_function_t *fn = NULL;
-                for (size_t i = 0; i < fn_count && i < 8; i++) {
-                    if (fns[i].stage == want) { fn = &fns[i]; break; }
+                for (int ci = 0; ci < 2 && !fn; ci++) {
+                    uint8_t fn_ref = cand_refs[ci];
+                    if (fn_ref == 0u) continue;
+                    uint64_t mlib_gpa = 0; uint32_t mlib_len = 0; uint64_t mlib_va = 0;
+                    if (!lagfx_lookup_function_bytes(p, task, fn_ref, &mlib_gpa, &mlib_len, &mlib_va))
+                        continue;
+                    if (mlib_len == 0u || mlib_len > (1u << 20)) continue;
+                    uint8_t *buf = (uint8_t *)malloc(mlib_len);
+                    if (!buf) continue;
+                    /* Page-aware read: the metallib is contiguous in the task's
+                     * VIRTUAL address space but its GPA pages are not, so a flat
+                     * read_memory(gpa,len) corrupts the bitcode past the first
+                     * page boundary. */
+                    if (!lagfx_task_read_virtual(p, task, mlib_va, mlib_len, buf)) {
+                        free(buf); continue;
+                    }
+                    lagfx_metallib_function_t tmpf[8] = {0};
+                    size_t fn_count = 0;
+                    if (lagfx_metallib_extract_functions(buf, mlib_len, tmpf, 8, &fn_count) != LAGFX_OK
+                        || fn_count == 0u) {
+                        free(buf); continue;
+                    }
+                    const lagfx_metallib_function_t *found = NULL;
+                    for (size_t i = 0; i < fn_count && i < 8; i++)
+                        if (tmpf[i].stage == want) { found = &tmpf[i]; break; }
+                    if (!found || !found->bitcode || found->bitcode_len == 0u) {
+                        free(buf); continue;
+                    }
+                    /* Keep this metallib + its function table alive for translate. */
+                    memcpy(fns, tmpf, sizeof(fns));
+                    mlib_buf = buf;
+                    for (size_t i = 0; i < fn_count && i < 8; i++)
+                        if (fns[i].stage == want) { fn = &fns[i]; break; }
                 }
-                if (!fn || !fn->bitcode || fn->bitcode_len == 0u) {
-                    LAGFX_LOG("op_0x74 P6a: no %s function in metallib (count=%zu)",
-                              stage == 0 ? "vertex" : "fragment", fn_count);
-                    free(mlib_buf);
+                if (!fn) {
+                    LAGFX_LOG("op_0x74 P6a: no %s function in metallib (ref=0x%x/0x%x)",
+                              stage == 0 ? "vertex" : "fragment",
+                              cand_refs[0], cand_refs[1]);
                     break;
                 }
 
