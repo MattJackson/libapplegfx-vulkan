@@ -180,10 +180,10 @@ typedef struct {
     uint64_t render_target_height;
     uint64_t render_target_array_length;
     uint32_t visibility_result_buffer_ref;
-} lagfx_render_pass_desc_t;
+} lagfx_render_pass_full_desc_t;
 
 int lagfx_parse_render_pass_descriptor(const uint8_t *payload,
                                        size_t         len,
-                                       lagfx_render_pass_desc_t *out);
+                                       lagfx_render_pass_full_desc_t *out);
 
 #endif /* LIBAPPLEGFX_PROTOCOL_RENDER_PASS_H */

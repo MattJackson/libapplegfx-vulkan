@@ -293,15 +293,14 @@ int lagfx_blit_inner_dispatch(lagfx_protocol_t *p,
                                uint32_t          opcode,
                                const uint8_t    *payload,
                                size_t            len) {
-    static unsigned long s_unknown_opcodes = 0;
-    s_unknown_opcodes++;
+    p->diag.unknown_blit_ops++;
     
     const lagfx_blit_inner_op_desc_t *d = table_lookup(opcode);
     if (!d) {
-        if (s_unknown_opcodes <= 10) {
+        if (p->diag.unknown_blit_ops <= 10) {
             LAGFX_WARN("blit inner: unknown opcode 0x%03x len=%zu — absorbed (count=%lu)",
-                       (unsigned)(opcode & 0xfffu), len, s_unknown_opcodes);
-        } else if (s_unknown_opcodes == 11) {
+                       (unsigned)(opcode & 0xfffu), len, p->diag.unknown_blit_ops);
+        } else if (p->diag.unknown_blit_ops == 11) {
             LAGFX_WARN("blit inner: suppressing further unknown opcode logs");
         }
         return 0;

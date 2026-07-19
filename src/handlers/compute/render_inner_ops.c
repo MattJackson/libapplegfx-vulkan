@@ -32,6 +32,7 @@
 #include "render_inner_ops.h"
 #include "protocol/render_pass.h"
 #include "protocol/opcodes.h"  /* For LAGFX_HANDLER_OK enum */
+#include "protocol/state.h"
 #include "common/le.h"
 #include "common/log.h"
 
@@ -306,7 +307,7 @@ static int op_describe_render_pass(lagfx_protocol_t *p, const uint8_t *payload, 
         return 0;
     }
 
-    lagfx_render_pass_desc_t desc;
+    lagfx_render_pass_full_desc_t desc;
     memset(&desc, 0, sizeof(desc));
     int rc = lagfx_parse_render_pass_descriptor(payload, len, &desc);
     if (rc != 0) {
@@ -1054,15 +1055,14 @@ int lagfx_render_inner_dispatch(lagfx_protocol_t *p,
                                  uint32_t          opcode,
                                  const uint8_t    *payload,
                                  size_t            len) {
-    static unsigned long s_unknown_opcodes = 0;
-    s_unknown_opcodes++;
+    p->diag.unknown_render_ops++;
     
     const lagfx_render_inner_op_desc_t *d = table_lookup(opcode);
     if (!d) {
-        if (s_unknown_opcodes <= 10) {
+        if (p->diag.unknown_render_ops <= 10) {
             LAGFX_WARN("render inner: unknown opcode 0x%03x len=%zu — absorbed (count=%lu)",
-                       (unsigned)(opcode & 0xfffu), len, s_unknown_opcodes);
-        } else if (s_unknown_opcodes == 11) {
+                       (unsigned)(opcode & 0xfffu), len, p->diag.unknown_render_ops);
+        } else if (p->diag.unknown_render_ops == 11) {
             LAGFX_WARN("render inner: suppressing further unknown opcode logs");
         }
         return 0;

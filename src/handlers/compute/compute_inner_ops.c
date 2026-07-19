@@ -342,9 +342,8 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
      * Cites: src/protocol/state.h line 96-107 (lagfx_render_pass_desc_t),
      *        line 131-140 (lagfx_pending_draw_t),
      *        line 159-172 (lagfx_bindings_t). */
-    static int s_first_draw_dumped = 0;
-    if (!s_first_draw_dumped) {
-        s_first_draw_dumped = 1;
+    if (!p->diag.first_draw_dumped) {
+        p->diag.first_draw_dumped = 1;
         LAGFX_LOG("=== first draw observed: full per-task state dump ===");
         LAGFX_LOG("  render_pass: valid=%d color_fmt=%u depth_fmt=%u clear=[%g,%g,%g,%g]",
                   (int)task->render_pass_desc.valid,

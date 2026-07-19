@@ -321,9 +321,8 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
      * giving us a periodic sighting of what the kext is asking us to
      * scan out. */
     if (arg2 != 0u && dev && dev->desc.shell.read_memory && display_index < 8u) {
-        static unsigned probe_count;
-        probe_count++;
-        if (probe_count <= 4 || probe_count % 100 == 0) {
+        p->diag.submit_probe_count++;
+        if (p->diag.submit_probe_count <= 4 || p->diag.submit_probe_count % 100 == 0) {
             uint64_t fb_base = (uint64_t)arg2 << 12;
             uint8_t probe[16] = {0};
             bool ok = dev->desc.shell.read_memory(

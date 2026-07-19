@@ -403,6 +403,17 @@ typedef struct lagfx_protocol {
     uintptr_t frame_blit_queue[16];
     uint32_t  frame_blit_n;
 
+    /* One-shot / capped diagnostic flags and counters (protocol-owned so
+     * handlers stay free of file-static state). */
+    struct {
+        uint32_t unknown_blit_ops;
+        uint32_t unknown_render_ops;
+        uint8_t  first_draw_dumped;
+        uint8_t  resource_buf_dumped;
+        uint8_t  desc_table_dumped;
+        uint32_t submit_probe_count;
+    } diag;
+
     /* Command counters (for diagnostics) */
     uint64_t total_cmds_seen;
     uint64_t total_cmds_completed;

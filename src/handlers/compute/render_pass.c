@@ -19,7 +19,7 @@
  * RE-verified original; only the file location moved.
  *
  * Parses the 584-byte PGCmdDescribeRenderPass wire struct into a
- * host-side lagfx_render_pass_desc_t. Called from
+ * host-side lagfx_render_pass_full_desc_t. Called from
  * render_inner_ops.c's op_describe_render_pass on inner opcode 0x1a.
  */
 
@@ -53,7 +53,7 @@ static double rdf64(const uint8_t *p) {
 
 int lagfx_parse_render_pass_descriptor(const uint8_t *payload,
                                        size_t         len,
-                                       lagfx_render_pass_desc_t *out) {
+                                       lagfx_render_pass_full_desc_t *out) {
     if (!payload || !out) {
         LAGFX_ERR("parse_render_pass: NULL payload or out");
         return -1;

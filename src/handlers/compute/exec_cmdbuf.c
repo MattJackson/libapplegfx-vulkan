@@ -385,9 +385,8 @@ static void exec_walk_resource(lagfx_protocol_t *p,
     if (to_read == 0u) return;
 
     /* One-time hexdump of first CmdExecIndirect2 resource buffer bytes (buf). */
-    static int s_resource_buf_dumped = 0;
-    if (!s_resource_buf_dumped && to_read > 0) {
-        s_resource_buf_dumped = 1;
+    if (!p->diag.resource_buf_dumped && to_read > 0) {
+        p->diag.resource_buf_dumped = 1;
         size_t n = to_read < 256 ? to_read : 256;
         LAGFX_LOG("=== first CmdExecIndirect2 resource buffer hexdump (len=%u, showing %zu) ===",
                   to_read, n);
@@ -473,9 +472,8 @@ lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagf
     }
 
     /* One-time hexdump of first CmdExecIndirect2 descriptor table */
-    static int s_desc_table_dumped = 0;
-    if (!s_desc_table_dumped && descriptor_count > 0) {
-        s_desc_table_dumped = 1;
+    if (!p->diag.desc_table_dumped && descriptor_count > 0) {
+        p->diag.desc_table_dumped = 1;
         const uint8_t *desc_start = hdr->payload + 12u;
         size_t total_bytes = (size_t)descriptor_count * 24u;
         size_t n = total_bytes < 256 ? total_bytes : 256;
