@@ -359,6 +359,39 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
 
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
 
+    /* One-shot registry census: dump EVERY registered backing (not just
+     * draw-sampled ones) with size + a raw-GPA content probe, to locate a
+     * photo-sized rich allocation the composite path never samples. */
+    if (getenv("LAGFX_DUMP_SPV") && dev && dev->desc.shell.read_memory) {
+        static int census_done = 0;
+        if (!census_done && p->total_cmds_seen > 50u) {
+            census_done = 1;
+            for (uint32_t ri = 0; ri < p->resources.count; ri++) {
+                lagfx_resource_entry_t *re = &p->resources.entries[ri];
+                uint32_t nb = 0, rich = 0; uint32_t buckets[32]; uint32_t nbk = 0;
+                if (re->gpu_addr) {
+                    uint8_t probe[8192];
+                    if (dev->desc.shell.read_memory(dev->desc.shell.opaque,
+                                                    re->gpu_addr, sizeof(probe), probe)) {
+                        for (uint32_t o = 0; o + 4u <= sizeof(probe); o += 4u) {
+                            uint32_t c = lagfx_le32(probe + o);
+                            if (c & 0xffffffu) nb++;
+                            uint32_t k = c & 0xf8f8f8u; bool seen = false;
+                            for (uint32_t b = 0; b < nbk; b++)
+                                if (buckets[b] == k) { seen = true; break; }
+                            if (!seen && nbk < 32u) buckets[nbk++] = k;
+                        }
+                        rich = nbk;
+                    }
+                }
+                LAGFX_LOG("RESCENSUS[%u/%u] ref=0x%x type=%d size=%lluB gpa=0x%llx realized=%d probe_nonblack=%u/2048 rich=%u",
+                          ri, p->resources.count, re->ref, (int)re->type,
+                          (unsigned long long)re->size, (unsigned long long)re->gpu_addr,
+                          re->host_handle ? 1 : 0, nb, rich);
+            }
+        }
+    }
+
     /* Probe framebuffer to verify guest rendered content. Kept as the
      * first-N + every-100th sample so the log stays readable while still
      * giving us a periodic sighting of what the kext is asking us to
