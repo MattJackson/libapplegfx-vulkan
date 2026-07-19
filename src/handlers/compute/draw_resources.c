@@ -331,7 +331,12 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
      * read is fully black lives elsewhere — the guest CPU-decodes it into one
      * of the 0x39-mapped guest-physical regions. Scan those for the richest
      * (photo-content) region and bind THAT instead. */
-    if (nb == 0u && want >= 2u * 1024u * 1024u && p->big_maps_n > 0u) {
+    /* RAM-scan wallpaper recovery is REFUTED as a source (no coherent photo
+     * exists in guest RAM; the forest is GPU-produced into a view backing).
+     * Gated diagnostic only — off the production path per the OEM-driver
+     * contract (draw what the guest declares; never scan RAM for pixels). */
+    if (getenv("LAGFX_M2_RAMSCAN")
+        && nb == 0u && want >= 2u * 1024u * 1024u && p->big_maps_n > 0u) {
         lagfx_device_t *dev = (lagfx_device_t *)p->dev;
         if (dev && dev->desc.shell.read_memory) {
             /* Pick the 0x39 region that looks most like a PHOTO (high spatial
