@@ -589,7 +589,8 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                     qios->width, qios->height, display->rt.width, display->rt.height,
                     0u, 0u,
                     dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory);
-            } else if (qios->view != VK_NULL_HANDLE) {
+            } else if (qios->view != VK_NULL_HANDLE
+                       && !getenv("LAGFX_BG_ONLY")) {
                 lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, qios->view);
             }
         }
