@@ -46,19 +46,20 @@ The public C API uses `lagfx_*` to avoid trademark friction with Apple's PG bran
 ## Milestones
 
 Work is gated by the M-series milestones tracked in
-[mos-docs/overview/project-status.md](https://github.com/MattJackson/mos-docs/blob/main/overview/project-status.md):
+`mos-docs/overview/project-status.md` (the mos documentation
+library; public publication in progress):
 
 - M1 — build green + kext attaches (closed 2026-04-21)
 - M2 — IOAccelerator class tree visible (closed 2026-04-21)
 - M3 — `MTLCreateSystemDefaultDevice` non-nil (closed 2026-05-03)
 - M4 — `CmdExecIndirect2` inner parsing + 3-level radix VA→GPA (closed 2026-04-26)
-- **M5** — first visible pixel via Vulkan/lavapipe (stage 20% in progress)
+- **M5** — first visible pixel via Vulkan/lavapipe (closed 2026-05-18)
 - M6 — multi-display
 - M7 — compute pipeline
 - M8 — full Metal feature compatibility
 
 Each stage of M5 has a single binary gate and a single test (see
-[whitepaper 04](https://github.com/MattJackson/mos-docs/blob/main/whitepapers/04-m5-first-pixel.md)).
+whitepaper 04 in mos-docs).
 Map new work items to a milestone; if a change cross-cuts
 multiple, flag it for discussion before landing.
 
@@ -79,9 +80,10 @@ defensible:
   Behavioral observations, byte-exact field layouts, and dispatch
   tables read from `__DATA_CONST` are fine. Pasted decompiler-
   reconstructed C is not. When in doubt, paraphrase.
-- **Primary RE notes belong in `../mos/paravirt-re/library/`.**
-  Code comments may summarize and link; do not duplicate the full
-  RE narrative inline.
+- **Primary RE notes belong in the project's RE notebook** (the
+  `paravirt-re/library/` tree in the mos meta-repo, kept private
+  until sanitized). Code comments may summarize; do not duplicate
+  the full RE narrative inline.
 - **Trademark caution.** Public symbols use `lagfx_*`. Repo prose
   may say "ParavirtualizedGraphics" / "PGDevice" / "PVG" for
   discoverability — that's intentional. Do not rename exported

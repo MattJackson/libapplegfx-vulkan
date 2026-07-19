@@ -227,27 +227,25 @@ running mos-docker VM.
 ## Background reading
 
 The whitepapers in mos-docs explain the mechanisms this library
-implements. Read these *first* if you want to contribute:
+implements. The docs library is being published; until it lands,
+the titles below name what to look for:
 
-- [Whitepaper 02 — The opcode catalog](https://github.com/MattJackson/mos-docs/blob/main/whitepapers/02-opcode-catalog.md)
+- Whitepaper 02 — The opcode catalog
   — 95 Render + 32 Compute + 24 Blit opcodes inside `CmdExecIndirect2`
-- [Whitepaper 03 — Vulkan, not Metal](https://github.com/MattJackson/mos-docs/blob/main/whitepapers/03-vulkan-not-metal.md)
+- Whitepaper 03 — Vulkan, not Metal
   — backend-choice rationale
-- [Whitepaper 04 — M5 stage 20%, first pixel](https://github.com/MattJackson/mos-docs/blob/main/whitepapers/04-m5-first-pixel.md)
+- Whitepaper 04 — M5, first pixel
   — the milestone progression
-- [Whitepaper 05 — The stamp slot mechanism](https://github.com/MattJackson/mos-docs/blob/main/whitepapers/05-stamp-slot-mechanism.md)
+- Whitepaper 05 — The stamp slot mechanism
   — synchronization primitive
-- [Whitepaper 06 — The radix page table](https://github.com/MattJackson/mos-docs/blob/main/whitepapers/06-radix-page-table.md)
+- Whitepaper 06 — The radix page table
   — task-VA → guest-PA translation
-- [Whitepaper 07 — Virtual channels](https://github.com/MattJackson/mos-docs/blob/main/whitepapers/07-virtual-channels.md)
+- Whitepaper 07 — Virtual channels
   — per-stream child rings, doorbell routing
 
-Reference (byte layouts, opcode tables):
-
-- [apple-gfx-pci MMIO map](https://github.com/MattJackson/mos-docs/blob/main/reference/apple-gfx-pci-mmio.md)
-- [Render opcode table](https://github.com/MattJackson/mos-docs/blob/main/reference/opcode-table-render.md)
-- [Compute opcode table](https://github.com/MattJackson/mos-docs/blob/main/reference/opcode-table-compute.md)
-- [Blit opcode table](https://github.com/MattJackson/mos-docs/blob/main/reference/opcode-table-blit.md)
+Reference (byte layouts, opcode tables): the apple-gfx-pci MMIO
+map plus the Render / Compute / Blit opcode tables, also in
+mos-docs.
 
 In-tree internal docs:
 
@@ -259,8 +257,7 @@ In-tree internal docs:
 
 | Repo | Role |
 |---|---|
-| [mos-docs](https://github.com/MattJackson/mos-docs) | Documentation library: overview, guides, architecture, whitepapers, reference |
-| [mos](https://github.com/MattJackson/mos) | Project meta-repo: RE notes (`paravirt-re/`), milestones, memory |
+| mos-docs | Documentation library: overview, guides, architecture, whitepapers, reference (publication in progress) |
 | [mos-docker](https://github.com/MattJackson/mos-docker) | Production runtime container |
 | [mos-qemu](https://github.com/MattJackson/mos-qemu) | QEMU 10.2.2 fork — `apple-gfx-pci-linux`, `applesmc`, `dev-hid`, `vmware_vga` patches |
 | [mos-patcher](https://github.com/MattJackson/mos-patcher) | Lilu-style kext: per-instance vtable swap on Sequoia |
