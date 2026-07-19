@@ -576,29 +576,32 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         if (!queued && p->frame_blit_n < 16u)
             p->frame_blit_queue[p->frame_blit_n++] = (uintptr_t)perpass_ios;
 
+        /* Layer compositor (LAGFX_M2_COMPOSITE, opt-in): background replace-blit
+         * + MAX-blend upper layers. The infrastructure is correct, but the
+         * current per-pass/wallpaper source surfaces still hold un-decoded
+         * (GPU-tiled/scrambled) content — compositing them yields noise, so this
+         * is gated off until the surface-content decode lands, keeping the
+         * default frame at the faithful M2d dark composite (replace-blit). */
+        bool composite = getenv("LAGFX_M2_COMPOSITE") != NULL;
         for (uint32_t qi = 0; qi < p->frame_blit_n && qi < 16u; qi++) {
             lagfx_vk_iosurface_t *qios =
                 (lagfx_vk_iosurface_t *)p->frame_blit_queue[qi];
             if (!qios || qios->image == VK_NULL_HANDLE) continue;
-            /* Background (qi 0) replace-blits into the rt (no scanout yet);
-             * upper layers MAX-blend composite so bright UI/clock overlays the
-             * wallpaper and near-black layer regions keep it. */
-            if (qi == 0u) {
+            if (composite && qi != 0u && qios->view != VK_NULL_HANDLE) {
+                lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, qios->view);
+            } else {
                 lagfx_vk_display_present_surface(
                     dev_with_vk->vk, &display->rt, qios->image, &qios->layout,
                     qios->width, qios->height, display->rt.width, display->rt.height,
-                    0u, 0u,
+                    display->scanout_gpa, display->scanout_length,
                     dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory);
-            } else if (qios->view != VK_NULL_HANDLE
-                       && !getenv("LAGFX_BG_ONLY")) {
-                lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, qios->view);
             }
         }
-        /* Carry the fully composited rt to the scanout/fallback once. */
-        lagfx_display_submit_rendered_frame(display, display->scanout_gpa,
-                                            display->scanout_length);
-        LAGFX_LOG("%s ASMBLIT: composited %u layers (bg + MAX-blend) -> display->rt",
-                  op, p->frame_blit_n);
+        if (composite)
+            lagfx_display_submit_rendered_frame(display, display->scanout_gpa,
+                                                display->scanout_length);
+        LAGFX_LOG("%s ASMBLIT: %u layers -> display->rt (composite=%d)",
+                  op, p->frame_blit_n, composite ? 1 : 0);
         /* Cursor on top of the composited set — read_frame serves display->rt
          * directly on the sparse-present guest, so overlay here too. */
         (void)lagfx_display_overlay_cursor(display);
