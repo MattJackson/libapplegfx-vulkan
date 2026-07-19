@@ -32,6 +32,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef LAGFX_HAVE_VULKAN
 #  include <vulkan/vulkan.h>
@@ -878,6 +879,29 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
     uint64_t scanout_length) {
     if (!display || display->magic != LAGFX_DISPLAY_MAGIC) {
         return LAGFX_ERR_INVALID_ARG;
+    }
+
+    /* Present-to-present frame timing: one present == one call here. Log a
+     * rolling fps/min/max every 60 presents so a live run reports steady-state
+     * frame cost against the 30fps target without flooding the log. */
+    {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double t = (double)now.tv_sec * 1000.0 + (double)now.tv_nsec / 1.0e6;
+        static double last_ms, sum_ms, min_ms = 1e9, max_ms; static unsigned n;
+        if (last_ms > 0.0) {
+            double d = t - last_ms;
+            sum_ms += d; n++;
+            if (d < min_ms) min_ms = d;
+            if (d > max_ms) max_ms = d;
+            if (n >= 60u) {
+                double avg = sum_ms / (double)n;
+                LAGFX_LOG("PERF present: %u frames avg=%.2fms (%.1f fps) min=%.2f max=%.2f",
+                          n, avg, avg > 0.0 ? 1000.0 / avg : 0.0, min_ms, max_ms);
+                sum_ms = 0.0; n = 0u; min_ms = 1e9; max_ms = 0.0;
+            }
+        }
+        last_ms = t;
     }
 
 #ifdef LAGFX_HAVE_VULKAN
