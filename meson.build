@@ -1,5 +1,5 @@
 project('libapplegfx-vulkan', 'c',
-  version : '0.0.1',
+  version : '0.1.0',
   license : 'MIT',
   default_options : [
     'c_std=c11',
@@ -83,17 +83,18 @@ else
 endif
 
 # --- Library --------------------------------------------------------------
-libapplegfx_vulkan = library('applegfx-vulkan',
+libapplegfx_vulkan = both_libraries('applegfx-vulkan',
   lagfx_sources,
   include_directories : [include_dir, internal_include_dir,
                          shader_catalog_build_inc],
   dependencies : lagfx_deps,
   version : meson.project_version(),
   soversion : version_major,
+  gnu_symbol_visibility : 'hidden',
   install : true)
 
 libapplegfx_vulkan_dep = declare_dependency(
-  link_with : libapplegfx_vulkan,
+  link_with : libapplegfx_vulkan.get_static_lib(),
   include_directories : include_dir)
 
 # pkg-config file so downstream consumers (mos-qemu) can locate us.
@@ -103,7 +104,7 @@ libapplegfx_vulkan_dep = declare_dependency(
 # ('applegfx-vulkan'), producing applegfx-vulkan.pc and a silent dependency
 # miss in downstream consumers. See M1 dry-run audit (docker-macos/docs).
 pkg = import('pkgconfig')
-pkg.generate(libapplegfx_vulkan,
+pkg.generate(libapplegfx_vulkan.get_shared_lib(),
   name : 'libapplegfx-vulkan',
   filebase : 'libapplegfx-vulkan',
   description : 'Linux impl of Apple PVG framework (Vulkan backend)',
@@ -112,6 +113,8 @@ pkg.generate(libapplegfx_vulkan,
 
 # --- Public header install -----------------------------------------------
 install_headers('include/libapplegfx-vulkan.h')
+install_headers('include/applegfx/export.h', 'include/applegfx/version.h',
+                subdir : 'applegfx')
 
 # --- Tools ---------------------------------------------------------------
 subdir('tools')

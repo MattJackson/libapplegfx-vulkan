@@ -45,6 +45,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "applegfx/export.h"
+#include "applegfx/version.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -151,21 +154,21 @@ typedef struct {
  * writes the reserved base to *base_out and returns an opaque task
  * handle. On failure returns NULL. The reserved range is initially
  * PROT_NONE. */
-lagfx_task_t *lagfx_task_create(size_t vm_size, void **base_out);
+LAGFX_EXPORT lagfx_task_t *lagfx_task_create(size_t vm_size, void **base_out);
 
 /* Destroy the task and release the reserved VA range. Safe on NULL. */
-void lagfx_task_destroy(lagfx_task_t *task);
+LAGFX_EXPORT void lagfx_task_destroy(lagfx_task_t *task);
 
 /* Map host-process memory into the task's reserved range at
  * `vm_offset`. `host_addr` may be NULL (leaves mapping zeroed);
  * non-NULL contents are copied in. `read_only` requests PROT_READ
  * mapping. Returns true on success. */
-bool lagfx_task_map_host_memory(lagfx_task_t *task, uint64_t vm_offset,
+LAGFX_EXPORT bool lagfx_task_map_host_memory(lagfx_task_t *task, uint64_t vm_offset,
                                  void *host_addr, uint64_t len,
                                  bool read_only);
 
 /* Unmap a range (replaces it with fresh PROT_NONE pages). */
-bool lagfx_task_unmap(lagfx_task_t *task, uint64_t vm_offset,
+LAGFX_EXPORT bool lagfx_task_unmap(lagfx_task_t *task, uint64_t vm_offset,
                       uint64_t len);
 
 /* Return the base host-virtual address of the task's reserved VA window.
@@ -173,7 +176,7 @@ bool lagfx_task_unmap(lagfx_task_t *task, uint64_t vm_offset,
  * pointer that map_memory aliases guest pages into; consumers can
  * compute (base + virtual_offset) to get a host pointer to any
  * mapped guest range. */
-void *lagfx_task_get_base_ptr(const lagfx_task_t *task);
+LAGFX_EXPORT void *lagfx_task_get_base_ptr(const lagfx_task_t *task);
 
 /* === Display descriptor =======================================
  * Per-display configuration + callbacks for display-plane events
@@ -276,15 +279,15 @@ typedef struct {
  * In Phase 1.A.1 this is a no-op object: allocates state, copies in
  * descriptor fields, marks it live. Vulkan init and protocol state
  * come in 1.A.2+. */
-lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
+LAGFX_EXPORT lagfx_device_t *lagfx_device_new(const lagfx_device_descriptor_t *desc,
                                   char **errp_out);
 
 /* Destroy the device and all associated displays. Safe on NULL. */
-void lagfx_device_free(lagfx_device_t *device);
+LAGFX_EXPORT void lagfx_device_free(lagfx_device_t *device);
 
 /* Reset device state — clear in-flight command buffers, reset
  * internal state, preserving the configured callbacks. */
-void lagfx_device_reset(lagfx_device_t *device);
+LAGFX_EXPORT void lagfx_device_reset(lagfx_device_t *device);
 
 /* === MMIO dispatch ============================================
  * The QEMU shell calls these on every guest MMIO access to the
@@ -299,26 +302,26 @@ void lagfx_device_reset(lagfx_device_t *device);
  * ------------------------------------------------------------- */
 
 /* 4-byte read (Apple's protocol is 4-byte aligned per their docs). */
-uint32_t lagfx_mmio_read(lagfx_device_t *device, uint64_t offset);
+LAGFX_EXPORT uint32_t lagfx_mmio_read(lagfx_device_t *device, uint64_t offset);
 
 /* 4-byte write. */
-void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
+LAGFX_EXPORT void lagfx_mmio_write(lagfx_device_t *device, uint64_t offset,
                        uint32_t value);
 
 /* === Display ================================================== */
 
 /* Attach a display to a device. Returns handle or NULL (with
  * *errp_out set to a malloc'd string if non-NULL). */
-lagfx_display_t *lagfx_display_new(lagfx_device_t *device,
+LAGFX_EXPORT lagfx_display_t *lagfx_display_new(lagfx_device_t *device,
                                     const lagfx_display_descriptor_t *desc,
                                     uint32_t port, uint32_t serial_num,
                                     char **errp_out);
 
 /* Detach + free. Safe on NULL. */
-void lagfx_display_free(lagfx_display_t *display);
+LAGFX_EXPORT void lagfx_display_free(lagfx_display_t *display);
 
 /* Shell queries current cursor position. */
-lagfx_coord_t lagfx_display_cursor_position(lagfx_display_t *display);
+LAGFX_EXPORT lagfx_coord_t lagfx_display_cursor_position(lagfx_display_t *display);
 
 /* Read the current display surface into a caller-provided buffer.
  * Returns pixels in BGRA8 (matches QEMU's DisplaySurface format by
@@ -330,7 +333,7 @@ lagfx_coord_t lagfx_display_cursor_position(lagfx_display_t *display);
  * Returns LAGFX_ERR_NO_FRAME if no new frame is available yet
  * (normal during Phase 1.A.1 because no rendering is wired).
  * new_frame_out, stride_out may be NULL. */
-lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
+LAGFX_EXPORT lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
                                          void *dst,
                                          size_t dst_size_bytes,
                                          size_t *stride_out,
@@ -339,7 +342,7 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
 /* Advance the display shared-state vblank counter and DMA-write it
  * to the guest. The shell should call this at ~60 Hz from a timer.
  * Returns false if the shared state hasn't been installed yet. */
-bool lagfx_timer_tick_vblank(
+LAGFX_EXPORT bool lagfx_timer_tick_vblank(
     lagfx_device_t *dev,
     void *shell_opaque,
     bool (*write_memory)(void *, uint64_t, uint64_t, const void *),
@@ -375,14 +378,14 @@ typedef enum {
  * table. Called from lagfx_device_new; exposed for tests that
  * want to simulate a fresh device without going through the full
  * lifecycle. */
-lagfx_status_t lagfx_device_register_shader_catalog(lagfx_device_t *device);
+LAGFX_EXPORT lagfx_status_t lagfx_device_register_shader_catalog(lagfx_device_t *device);
 
 /* === Capability / introspection =============================== */
 
-int lagfx_version_major(void);
-int lagfx_version_minor(void);
-int lagfx_version_patch(void);
-const char *lagfx_build_info(void);  /* short build/ident string */
+LAGFX_EXPORT int lagfx_version_major(void);
+LAGFX_EXPORT int lagfx_version_minor(void);
+LAGFX_EXPORT int lagfx_version_patch(void);
+LAGFX_EXPORT const char *lagfx_build_info(void);  /* short build/ident string */
 
 #ifdef __cplusplus
 } /* extern "C" */

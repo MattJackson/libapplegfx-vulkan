@@ -263,6 +263,26 @@ In-tree internal docs:
 | [mos-patcher](https://github.com/MattJackson/mos-patcher) | Lilu-style kext: per-instance vtable swap on Sequoia |
 | [mos-opencore](https://github.com/MattJackson/mos-opencore) | OpenCore EFI image build script |
 
+## ABI & consuming the library
+
+From **v0.1.0** the installed API is a stable, semver-governed surface:
+
+- **Public header:** `libapplegfx-vulkan.h` (plus `applegfx/export.h`,
+  `applegfx/version.h`). Opaque handle types only — no Vulkan or internal
+  types cross the boundary. Exactly the `LAGFX_EXPORT`-annotated functions
+  are exported; everything else is hidden.
+- **Discovery:** `pkg-config --cflags --libs libapplegfx-vulkan`
+  (this is what QEMU's configure probes).
+- **Versioning:** semver. Patch/minor releases keep ABI compatibility
+  (soname `libapplegfx-vulkan.so.0`); breaking changes bump the major and
+  the soname. `lagfx_version_major()/_minor()/_patch()` report the linked
+  library at runtime; `LAGFX_VERSION_*` macros report the headers.
+
+```sh
+meson setup build && meson install -C build
+cc app.c $(pkg-config --cflags --libs libapplegfx-vulkan)
+```
+
 ## License
 
 **[MIT](LICENSE).** The whole tree — including the clean-room

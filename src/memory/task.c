@@ -20,6 +20,7 @@
 #endif
 
 #include "task.h"
+#include "libapplegfx-vulkan.h"
 
 #include "../common/log.h"
 

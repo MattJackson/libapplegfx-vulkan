@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `apple-gfx-pci-linux` device) should pin to a specific commit
 > rather than a version range.
 
+## v0.1.0 — 2026-07-19
+
+First ABI-stable release. Public API frozen to the 20 exported
+`lagfx_*` symbols consumed by the QEMU `apple-gfx-pci` device (device
+lifecycle, MMIO entry, task memory, display/read_frame, vblank tick,
+shader catalog, version introspection). Default-hidden symbol
+visibility with `LAGFX_EXPORT` annotations; `applegfx/` public header
+subdir; pkg-config `libapplegfx-vulkan.pc`; soname `.so.0`. Semver
+from here on.
+
 ## [Unreleased]
 
 ### Added

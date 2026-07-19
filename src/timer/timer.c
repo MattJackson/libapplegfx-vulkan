@@ -7,6 +7,7 @@
  */
 
 #include "timer.h"
+#include "libapplegfx-vulkan.h"
 #include "../common/log.h"
 
 #define LAGFX_MAX_DISPLAYS 8u

@@ -21,6 +21,7 @@
  */
 
 #include "device.h"
+#include "libapplegfx-vulkan.h"
 #include "display.h"
 #include "protocol/ops_display.h"
 #include "vulkan/instance.h"

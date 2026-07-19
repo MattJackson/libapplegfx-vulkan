@@ -13,6 +13,7 @@
  */
 
 #include "device.h"
+#include "libapplegfx-vulkan.h"
 #include "doorbell.h"
 #include "display.h"
 #include "protocol/state.h"  /* lagfx_protocol_t typedef */
