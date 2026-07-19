@@ -1519,9 +1519,19 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
         return;
     }
     VkDevice device = dev_with_vk->vk->device;
+    /* M2c SOLIDFRAG (LAGFX_M2_SOLIDFRAG): split-test — draw the REAL translated
+     * vertex geometry with the SUBSTITUTE solid-colour fragment. If colour
+     * appears where black/teal persisted, the geometry+transform chain is
+     * proven and the blocker is fragment-stage (texture alpha/blend/uniform);
+     * if still nothing, the kill is vertex/raster-side. Diagnostic, gated. */
+    bool solidfrag = getenv("LAGFX_M2_SOLIDFRAG") != NULL
+                     && task->pending_pipeline.translated
+                     && dev_with_vk->triangle_fragment_module != VK_NULL_HANDLE;
     lagfx_pipeline_desc_t pdesc = {
         .vertex_shader        = (VkShaderModule)task->pending_pipeline.vertex_shader,
-        .fragment_shader      = (VkShaderModule)task->pending_pipeline.fragment_shader,
+        .fragment_shader      = solidfrag
+                                  ? dev_with_vk->triangle_fragment_module
+                                  : (VkShaderModule)task->pending_pipeline.fragment_shader,
         /* Resource-using translated pipelines use their reflected pipeline
          * layout; substitute/resource-free use the device empty layout. */
         .layout               = (task->pending_pipeline.translated
@@ -1529,7 +1539,8 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
                                   ? (VkPipelineLayout)task->pending_pipeline.pipeline_layout
                                   : dev_with_vk->vk->empty_layout,
         .vertex_entry_point   = task->pending_pipeline.translated ? "main" : "triangle_vertex",
-        .fragment_entry_point = task->pending_pipeline.translated ? "main" : "triangle_fragment",
+        .fragment_entry_point = (task->pending_pipeline.translated && !solidfrag)
+                                  ? "main" : "triangle_fragment",
         .color_format         = (VkFormat)task->render_pass_desc.color_format,
         .depth_format         = (VkFormat)task->render_pass_desc.depth_format,
     };
