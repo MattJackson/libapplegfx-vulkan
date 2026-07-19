@@ -1141,11 +1141,19 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
  * placement descriptor PFN<<12 + page-table translate — the M2 path) into a
  * host VkBuffer for vertex-input binding. Returns VK_NULL_HANDLE if there is no
  * real vertex data; the caller frees the returned buffer + *out_mem. */
+/* M2c BIGVERTS: full-tile-stream upload ceiling. The login/wallpaper composite is
+ * ~65536 tiny quads (vertexCount≈393216 × stride 24 ≈ 9.4 MB); the default 64 KiB
+ * upload holds ~2730 verts → a sliver. Gated LAGFX_M2_BIGVERTS raises the upload
+ * (heap) to this ceiling so the whole tile stream can rasterize. */
+#define LAGFX_BIGVERTS_BUF_SZ (16u * 1024u * 1024u)
+
 static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                                                  lagfx_task_entry_t *task,
                                                  struct lagfx_vk_state *vk,
-                                                 VkDeviceMemory *out_mem) {
+                                                 VkDeviceMemory *out_mem,
+                                                 uint32_t *out_size) {
     *out_mem = VK_NULL_HANDLE;
+    *out_size = LAGFX_DRAW_DS_BUF_SZ;
     if (!task->bindings.vertex_buffers[0].valid
         || task->bindings.vertex_buffers[0].ref == 0u)
         return VK_NULL_HANDLE;
@@ -1168,60 +1176,81 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                   (unsigned long long)lagfx_le64(vdesc+32), (unsigned long long)(lagfx_le64(vdesc+40) & 0xffffffffull),
                   (unsigned long long)lagfx_le64(vdesc+48), (unsigned long long)(lagfx_le64(vdesc+56) & 0xffffffffull));
     }
-    uint8_t vdata[LAGFX_DRAW_DS_BUF_SZ];
     /* B8: LOGICAL scatter-gather walk (same as the descriptor-binding path) — the
      * placement descriptor's {size,PFN} entries tile the buffer's LOGICAL address
      * space; read vbs->offset by accumulating sizes and reading PFN<<12 + (offset -
      * range_start). The old first-non-zero-probe mis-bound to the wrong physical
      * range when an entry's page started with zero bytes (a leading-zero vertex
      * attribute) → garbage vertex data → degenerate geometry. Mask the PFN's high
-     * 32 bits (flags live there for some object types). */
-    uint64_t vacc = 0;
-    for (int e = 0; e < 4; e++) {
+     * 32 bits (flags live there for some object types).
+     *
+     * M2c: the gather now (a) spans MULTIPLE entries (LAGFX_M2_BIGVERTS needs the
+     * full ~9.4 MB tile stream, which no single entry covers), and (b) caps each
+     * chunk at the entry's remaining size — the old code read a flat 64 KiB from
+     * the chosen entry regardless of its size, over-reading past small entries
+     * into unrelated physical memory (a garbage-vertex source). Unread tail stays
+     * zero-filled. Heap buffer (16 MiB is too big for the stack). */
+    bool bigverts = getenv("LAGFX_M2_BIGVERTS") != NULL;
+    uint32_t want = bigverts ? LAGFX_BIGVERTS_BUF_SZ : LAGFX_DRAW_DS_BUF_SZ;
+    uint8_t *vdata = calloc(1u, want);
+    if (!vdata)
+        return VK_NULL_HANDLE;
+    uint64_t vacc = 0, logical = vbs->offset;
+    uint32_t filled = 0;
+    for (int e = 0; e < 4 && filled < want; e++) {
         uint64_t rsize = lagfx_le64(vdesc + (size_t)e * 16u);
         uint64_t pfn = lagfx_le64(vdesc + (size_t)e * 16u + 8u) & 0xffffffffull;
         if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
-        if (vbs->offset < vacc + rsize) {
-            uint64_t dva = (pfn << 12) + (vbs->offset - vacc);
+        if (logical < vacc + rsize) {
+            uint64_t within = logical - vacc;
+            uint64_t avail = rsize - within;
+            uint32_t chunk = (avail < (uint64_t)(want - filled))
+                                 ? (uint32_t)avail : (want - filled);
             /* SAME root cause as the texture backing: the placement descriptor's
              * PFN is a guest-PHYSICAL frame, so dva=(pfn<<12)+off is a GPA — read
              * it raw (gated LAGFX_M2_RAWGPA), NOT VA-translated, else the vertex
-             * positions come back garbage/zero → degenerate geometry (the wallpaper
-             * draw maps to a band instead of full-screen). Falls back to the VA
-             * read when the gate is off, preserving M1. */
-            if (lagfx_read_resource_backing(p, task, dva, LAGFX_DRAW_DS_BUF_SZ, vdata)) {
-                VkBuffer vb = VK_NULL_HANDLE;
-                if (lagfx_vk_make_host_storage_buffer(vk, vdata, LAGFX_DRAW_DS_BUF_SZ,
-                                                      &vb, out_mem) == LAGFX_OK) {
-                    /* Dump 6 vertices at the REAL stride 24 ([pos.xy@0, tex.xy@8,
-                     * float@16], stride = (20+7)&~7 = 24 per pipeline_build). Reveals
-                     * whether the quad's positions + texcoords span a real range or
-                     * are degenerate (all ~one value → the composite samples one
-                     * texel → uniform output). Gated dump (LAGFX_DUMP_SPV reused). */
-                    if (getenv("LAGFX_DUMP_SPV")) {
-                        for (int vtx = 0; vtx < 6; vtx++) {
-                            size_t bo = (size_t)vtx * 24u;
-                            if (bo + 24u > LAGFX_DRAW_DS_BUF_SZ) break;
-                            float px, py, tx, ty, fz;
-                            uint32_t u;
-                            u = lagfx_le32(vdata+bo+0);  memcpy(&px,&u,4);
-                            u = lagfx_le32(vdata+bo+4);  memcpy(&py,&u,4);
-                            u = lagfx_le32(vdata+bo+8);  memcpy(&tx,&u,4);
-                            u = lagfx_le32(vdata+bo+12); memcpy(&ty,&u,4);
-                            u = lagfx_le32(vdata+bo+16); memcpy(&fz,&u,4);
-                            LAGFX_LOG("VTX24 ref=0x%x off=%llu v%d[pos %.4g,%.4g tex %.4g,%.4g f %.4g]",
-                                      vbs->ref, (unsigned long long)vbs->offset, vtx,
-                                      px, py, tx, ty, fz);
-                        }
-                    }
-                    return vb;
-                }
+             * positions come back garbage/zero → degenerate geometry. */
+            uint64_t dva = (pfn << 12) + within;
+            if (!lagfx_read_resource_backing(p, task, dva, chunk, vdata + filled)) {
+                if (filled == 0u) { free(vdata); return VK_NULL_HANDLE; }
+                break; /* partial gather: keep what we have, tail stays zero */
             }
-            return VK_NULL_HANDLE;
+            filled += chunk;
+            logical += chunk;
         }
         vacc += rsize;
     }
-    return VK_NULL_HANDLE;
+    if (filled == 0u) { free(vdata); return VK_NULL_HANDLE; }
+    VkBuffer vb = VK_NULL_HANDLE;
+    if (lagfx_vk_make_host_storage_buffer(vk, vdata, want, &vb, out_mem) != LAGFX_OK) {
+        free(vdata);
+        return VK_NULL_HANDLE;
+    }
+    *out_size = want;
+    /* Dump 6 vertices at the REAL stride 24 ([pos.xy@0, tex.xy@8, float@16],
+     * stride = (20+7)&~7 = 24 per pipeline_build). Reveals whether the quad's
+     * positions + texcoords span a real range or are degenerate (all ~one value
+     * → the composite samples one texel → uniform output). Gated dump. */
+    if (getenv("LAGFX_DUMP_SPV")) {
+        for (int vtx = 0; vtx < 6; vtx++) {
+            size_t bo = (size_t)vtx * 24u;
+            if (bo + 24u > (size_t)want) break;
+            float px, py, tx, ty, fz;
+            uint32_t u;
+            u = lagfx_le32(vdata+bo+0);  memcpy(&px,&u,4);
+            u = lagfx_le32(vdata+bo+4);  memcpy(&py,&u,4);
+            u = lagfx_le32(vdata+bo+8);  memcpy(&tx,&u,4);
+            u = lagfx_le32(vdata+bo+12); memcpy(&ty,&u,4);
+            u = lagfx_le32(vdata+bo+16); memcpy(&fz,&u,4);
+            LAGFX_LOG("VTX24 ref=0x%x off=%llu v%d[pos %.4g,%.4g tex %.4g,%.4g f %.4g]",
+                      vbs->ref, (unsigned long long)vbs->offset, vtx,
+                      px, py, tx, ty, fz);
+        }
+        LAGFX_LOG("VBGATHER ref=0x%x want=%u filled=%u bigverts=%d",
+                  vbs->ref, want, filled, bigverts ? 1 : 0);
+    }
+    free(vdata);
+    return vb;
 }
 
 /* M1 (a) — shared resource-aware draw emission for ALL draw opcodes
@@ -1438,13 +1467,15 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
      * resource-free vtx pipelines fell through to the substitute triangle).
      * stride = sum(comp*4) (tightly-packed, matching pipeline_build). */
     uint32_t vstride = 16u;
+    uint32_t vbuf_size = LAGFX_DRAW_DS_BUF_SZ;
     VkBuffer vbuf = VK_NULL_HANDLE; VkDeviceMemory vbmem = VK_NULL_HANDLE;
     if (vtx_input_on) {
         vstride = 0u;
         for (uint32_t a = 0; a < task->pending_pipeline.n_vtx_inputs && a < 8u; a++)
             vstride += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
         if (vstride == 0u) vstride = 16u;
-        vbuf = lagfx_upload_guest_vertex_buffer(p, task, dev_with_vk->vk, &vbmem);
+        vbuf = lagfx_upload_guest_vertex_buffer(p, task, dev_with_vk->vk, &vbmem,
+                                                &vbuf_size);
     }
     /* M2: real data makes the shader actually fetch; cap the vertex count to
      * what the 4096B upload holds (BUF_SZ/stride) so a vertex_id index stays in
@@ -1455,7 +1486,10 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
     /* Hard buffer-safe cap: a vertex fetch reads vc*vstride bytes from the
      * 64 KiB vertex buffer; vc > BUF_SZ/vstride reads OOB → lavapipe SIGSEGV.
      * LAGFX_MAX_DRAW_VERTS may only LOWER this, never raise it past safe. */
-    uint32_t vmax = LAGFX_DRAW_DS_BUF_SZ / vstride;
+    /* M2c BIGVERTS: the cap scales with the ACTUAL allocated vertex buffer
+     * (vbuf_size = 16 MiB under LAGFX_M2_BIGVERTS, 64 KiB default) — buffer grown
+     * BEFORE the cap is raised, so a vertex fetch can never read OOB. */
+    uint32_t vmax = vbuf_size / vstride;
     const char *vcap = getenv("LAGFX_MAX_DRAW_VERTS");
     if (vcap) { unsigned long v = strtoul(vcap, NULL, 0); if (v && (uint32_t)v < vmax) vmax = (uint32_t)v; }
     if (vc > vmax) vc = vmax;
