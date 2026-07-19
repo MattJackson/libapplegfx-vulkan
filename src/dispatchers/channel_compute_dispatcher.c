@@ -355,6 +355,35 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
             break;
         }
 
+        case 0x3b: {
+            /* M2c wire RE (2026-07-19): per-ref BACKING/RESIDENCY UPDATE.
+             * Payload {u32 seq, u32 ref, u32 =5, u32 =6, u64 addr} (24 B).
+             * Live refs 0x13/0x8/0xa/0xc/0xe with addr ~0x226e14. Was dropped
+             * entirely before the ring-wrap fix; store latest addr per ref so
+             * the resolve paths (gated LAGFX_M2_BACKUPD) can prefer it over
+             * the stale placement-table PFN walk. */
+            if (hdr->payload && hdr->payload_size >= 24u) {
+                uint32_t bseq = lagfx_le32(hdr->payload + 0);
+                uint32_t bref = lagfx_le32(hdr->payload + 4);
+                uint64_t baddr = lagfx_le64(hdr->payload + 16);
+                uint32_t sl = 0; bool found = false;
+                for (; sl < p->backing_update_n && sl < 64u; sl++)
+                    if (p->backing_update[sl].valid
+                        && p->backing_update[sl].ref == bref) { found = true; break; }
+                if (!found && p->backing_update_n < 64u)
+                    sl = p->backing_update_n++;
+                if (sl < 64u) {
+                    p->backing_update[sl].ref = bref;
+                    p->backing_update[sl].addr = baddr;
+                    p->backing_update[sl].valid = 1u;
+                }
+                LAGFX_LOG("compute: 0x3b BackingUpdate ch=%u seq=%u ref=0x%x addr=0x%llx",
+                          (unsigned)p->current_chan_id, bseq, bref,
+                          (unsigned long long)baddr);
+            }
+            break;
+        }
+
         default:
             LAGFX_WARN("compute dispatch: ch=%u unknown opcode 0x%04x stamp=0x%08x",
                        (unsigned)p->current_chan_id, hdr->opcode, hdr->stamp);

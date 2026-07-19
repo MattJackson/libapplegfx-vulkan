@@ -392,6 +392,18 @@ typedef struct lagfx_protocol {
     } m2_backing_cache[64];
     uint32_t m2_backing_cache_n;
 
+    /* M2c: 0x3b per-ref backing/residency updates (wire: {u32 seq, u32 ref,
+     * u32 5, u32 6, u64 addr}). Latest addr per ref; consulted (gated
+     * LAGFX_M2_BACKUPD) by the vertex-upload resolve in preference to the
+     * (stale for some refs) placement-table PFN walk. Per-protocol state
+     * (standing rule: no file-statics in handlers). */
+    struct {
+        uint32_t ref;
+        uint64_t addr;
+        uint8_t  valid;
+    } backing_update[64];
+    uint32_t backing_update_n;
+
     /* Command counters (for diagnostics) */
     uint64_t total_cmds_seen;
     uint64_t total_cmds_completed;

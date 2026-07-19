@@ -1158,6 +1158,40 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
         || task->bindings.vertex_buffers[0].ref == 0u)
         return VK_NULL_HANDLE;
     lagfx_binding_slot_t *vbs = &task->bindings.vertex_buffers[0];
+    /* M2c BACKUPD (LAGFX_M2_BACKUPD): if a 0x3b backing update recorded a data
+     * address for this ref, read the vertex bytes from THAT (task VA, page-aware)
+     * instead of the placement-table PFN walk — the placement is stale for some
+     * refs (0x15/0x16/0x18 slabs read as boot-log text/poison). */
+    if (getenv("LAGFX_M2_BACKUPD")) {
+        for (uint32_t bi = 0; bi < p->backing_update_n && bi < 64u; bi++) {
+            if (!p->backing_update[bi].valid
+                || p->backing_update[bi].ref != vbs->ref) continue;
+            uint32_t bwant = getenv("LAGFX_M2_BIGVERTS")
+                                 ? LAGFX_BIGVERTS_BUF_SZ : LAGFX_DRAW_DS_BUF_SZ;
+            uint8_t *bdata = calloc(1u, bwant);
+            if (!bdata) return VK_NULL_HANDLE;
+            uint64_t src = p->backing_update[bi].addr + vbs->offset;
+            if (lagfx_task_read_virtual(p, task, src, bwant, bdata)) {
+                VkBuffer bvb = VK_NULL_HANDLE;
+                if (lagfx_vk_make_host_storage_buffer(vk, bdata, bwant,
+                                                      &bvb, out_mem) == LAGFX_OK) {
+                    *out_size = bwant;
+                    if (getenv("LAGFX_DUMP_SPV")) {
+                        float b0, b1; uint32_t u;
+                        u = lagfx_le32(bdata+0); memcpy(&b0,&u,4);
+                        u = lagfx_le32(bdata+4); memcpy(&b1,&u,4);
+                        LAGFX_LOG("BACKUPD ref=0x%x addr=0x%llx off=%llu v0=[%.4g,%.4g]",
+                                  vbs->ref, (unsigned long long)p->backing_update[bi].addr,
+                                  (unsigned long long)vbs->offset, b0, b1);
+                    }
+                    free(bdata);
+                    return bvb;
+                }
+            }
+            free(bdata);
+            break; /* update present but read failed → fall through to placement */
+        }
+    }
     uint8_t vtype = 0; uint64_t vva = 0, vgpa = 0;
     if (!lagfx_resolve_object_data(p, task, vbs->ref, &vtype, &vva, &vgpa) || vva == 0u)
         return VK_NULL_HANDLE;
