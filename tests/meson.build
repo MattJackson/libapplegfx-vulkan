@@ -873,6 +873,28 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-type-section-ordering-unit.c
     workdir : meson.current_source_dir() / '..')
 endif
 
+# Login-screen SkyLight compositor corpus: the 7 real AIR shaders the
+# macOS 15.7.5 login screen submits (captured live, pipelines 0xd/0x14/
+# 0x1d/0x20/0x23/0x28/0x2c). Each must translate valid + role-correct —
+# texture fragments must keep their OpImageSampleImplicitLod (dropped
+# sample = black wallpaper), vertices must keep BuiltIn Position. Guards
+# the wallpaper/composite path end-to-end against silent mistranslation.
+if fs.is_file(meson.current_source_dir() / 'air2spv-login-corpus-unit.c')
+  air2spv_login_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    air2spv_login_deps += [vulkan_dep]
+  endif
+  air2spv_login_test = executable('air2spv-login-corpus-unit',
+    'air2spv-login-corpus-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : air2spv_login_deps,
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv login-screen shader corpus (unit)', air2spv_login_test,
+    workdir : meson.current_source_dir() / '..')
+endif
+
 # AIR-type-index-0-vs-unknown sentinel: float (type index 0) was read as
 # "unknown", mis-dispatching CMP/SELECT/BINOP. Real compositor shader
 # (clear vertex) must emit a typed OpSelect, not drop or mis-type it.
