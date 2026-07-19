@@ -17,6 +17,7 @@
 #include "display.h"
 #include "protocol/state.h"  /* lagfx_protocol_t typedef */
 #include "vulkan/instance.h"
+#include "vulkan/iosurface.h"   /* C4/B4: white_fb teardown */
 #include "shaders/catalog.h"
 #include "common/log.h"
 #include "common/crash_handler.h"
@@ -420,7 +421,18 @@ void lagfx_device_free(lagfx_device_t *device) {
      * lagfx_protocol_new; mirror the lifetime here so ASAN doesn't
      * report a leak on device teardown. */
     if (device->protocol_state) {
-        lagfx_protocol_free((lagfx_protocol_t *)device->protocol_state);
+        lagfx_protocol_t *pfree = (lagfx_protocol_t *)device->protocol_state;
+#ifdef LAGFX_HAVE_VULKAN
+        /* C4 (audit B4): the lazily-created opaque-white fallback texture is
+         * protocol-owned but Vulkan-backed — destroy it here (while vk is
+         * still alive) before the protocol struct is freed. */
+        if (pfree->white_fb_ios && device->vk) {
+            lagfx_vk_iosurface_destroy(device->vk,
+                                       (lagfx_vk_iosurface_t *)pfree->white_fb_ios);
+            pfree->white_fb_ios = 0;
+        }
+#endif
+        lagfx_protocol_free(pfree);
         device->protocol_state = NULL;
     }
 

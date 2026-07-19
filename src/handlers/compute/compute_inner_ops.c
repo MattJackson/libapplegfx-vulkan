@@ -1703,8 +1703,18 @@ static void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *tas
                 lagfx_resource_register(&p->resources, tref, LAGFX_RESOURCE_TYPE_TEXTURE,
                                         task->id, 0u, 0u);
                 lagfx_resource_entry_t *ne = lagfx_resource_lookup_texture(&p->resources, tref);
-                if (ne) { ne->host_handle = ios; ne->image = ios->image; ne->view = ios->view; }
-                LAGFX_LOG("%s PERPASS: created RT IOSurface for target ref=0x%x %ux%u", op, tref, W, H);
+                if (ne) {
+                    ne->host_handle = ios; ne->image = ios->image; ne->view = ios->view;
+                    LAGFX_LOG("%s PERPASS: created RT IOSurface for target ref=0x%x %ux%u", op, tref, W, H);
+                } else {
+                    /* C4 (audit B3): registry full/register failed — without an
+                     * owning entry the ~8 MB image would leak AND be recreated
+                     * per draw. Destroy and fall through to display->rt. */
+                    LAGFX_WARN("%s PERPASS: registry register failed for ref=0x%x — surface destroyed",
+                               op, tref);
+                    lagfx_vk_iosurface_destroy(dev_with_vk->vk, ios);
+                    ios = NULL;
+                }
             }
         }
         if (ios && ios->image != VK_NULL_HANDLE
