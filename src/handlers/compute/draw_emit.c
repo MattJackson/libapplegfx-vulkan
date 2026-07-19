@@ -393,6 +393,22 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                 if (ne) {
                     ne->host_handle = ios; ne->image = ios->image; ne->view = ios->view;
                     LAGFX_LOG("%s PERPASS: created RT IOSurface for target ref=0x%x %ux%u", op, tref, W, H);
+                    /* VIEWALIAS probe: the wallpaper render pass targets a VIEW
+                     * (0x17/0x32) that ALIASES the sampled wallpaper backing
+                     * texture 0x10 — the guest renders the forest into the view,
+                     * a later composite samples 0x10. Point 0x10's registry entry
+                     * at this per-pass image (dim match 1280x1024) so the sample
+                     * reads the drawn forest. Validates the view->backing theory
+                     * before the full view-descriptor decode. Gated. */
+                    if (getenv("LAGFX_M2_VIEWALIAS") && W == 1280u && H == 1024u) {
+                        lagfx_resource_entry_t *wp =
+                            lagfx_resource_lookup_texture(&p->resources, 0x10u);
+                        if (wp) {
+                            wp->host_handle = ios; wp->image = ios->image; wp->view = ios->view;
+                            LAGFX_LOG("%s VIEWALIAS: aliased sampled tex 0x10 -> per-pass view 0x%x (%ux%u)",
+                                      op, tref, W, H);
+                        }
+                    }
                 } else {
                     /* Registry register failed — without an owning entry the
                      * image would leak and be recreated per draw. Destroy and
