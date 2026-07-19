@@ -376,6 +376,18 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     }
     LAGFX_LOG("TEXREAL: ref=0x%x %ux%u from %uB backing (read=%s nonblack=%u/%u rich=%u%s)",
               tref, W, H, want, how, nb, npx, nbk, nbk >= 64u ? "+" : "");
+    /* A recovered full-screen background (the wallpaper: mapmem-sourced, photo-
+     * rich) is loaded AFTER the guest's one-shot composite already sampled the
+     * black version, and the guest then idles — so it never re-composites.
+     * Enqueue it at the FRONT of the frame-blit queue (background layer) so the
+     * next display present carries it to the scanout under the UI layers. */
+    if (how && how[0] == 'm' && nbk >= 32u && p->frame_blit_n < 16u) {
+        for (uint32_t q = p->frame_blit_n; q > 0u; q--)
+            p->frame_blit_queue[q] = p->frame_blit_queue[q - 1u];
+        p->frame_blit_queue[0] = (uintptr_t)ios;
+        p->frame_blit_n++;
+        LAGFX_LOG("TEXREAL: wallpaper 0x%x enqueued as background layer", tref);
+    }
     return ios;
 }
 
