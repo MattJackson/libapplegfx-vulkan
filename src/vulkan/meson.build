@@ -13,6 +13,7 @@ lagfx_sources += files(
   'descriptor_layout.c',
   'render_target.c',
   'cursor.c',
+  'composite.c',
   'iosurface.c',
   'display_blit.c',
   'draw_record.c',

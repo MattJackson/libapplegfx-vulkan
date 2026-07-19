@@ -118,6 +118,15 @@ struct lagfx_vk_state {
     VkDescriptorPool      cursor_desc_pool;
     VkDescriptorSet       cursor_desc_set;
 
+    /* Layer compositor (MAX-blend overlay of per-pass surfaces onto rt). */
+    VkPipeline            composite_pipeline;
+    VkPipelineLayout      composite_layout;
+    VkDescriptorSetLayout composite_dsl;
+    VkDescriptorPool      composite_pool;
+    VkDescriptorSet       composite_set;
+    VkSampler             composite_sampler;
+    bool                  composite_ready;
+
     VkImage          cursor_glyph_image;
     VkImageView      cursor_glyph_view;
     VkDeviceMemory   cursor_glyph_mem;

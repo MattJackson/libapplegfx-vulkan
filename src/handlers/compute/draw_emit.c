@@ -17,6 +17,7 @@
 #include "protocol/state.h"
 #include "vulkan/iosurface.h"
 #include "vulkan/display_blit.h"
+#include "vulkan/composite.h"
 #include "vulkan/pipeline_build.h"
 #include "vulkan/draw_record.h"
 #include "vulkan/descriptor_layout.h"
@@ -579,13 +580,23 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
             lagfx_vk_iosurface_t *qios =
                 (lagfx_vk_iosurface_t *)p->frame_blit_queue[qi];
             if (!qios || qios->image == VK_NULL_HANDLE) continue;
-            lagfx_vk_display_present_surface(
-                dev_with_vk->vk, &display->rt, qios->image, &qios->layout,
-                qios->width, qios->height, display->rt.width, display->rt.height,
-                display->scanout_gpa, display->scanout_length,
-                dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory);
+            /* Background (qi 0) replace-blits into the rt (no scanout yet);
+             * upper layers MAX-blend composite so bright UI/clock overlays the
+             * wallpaper and near-black layer regions keep it. */
+            if (qi == 0u) {
+                lagfx_vk_display_present_surface(
+                    dev_with_vk->vk, &display->rt, qios->image, &qios->layout,
+                    qios->width, qios->height, display->rt.width, display->rt.height,
+                    0u, 0u,
+                    dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory);
+            } else if (qios->view != VK_NULL_HANDLE) {
+                lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, qios->view);
+            }
         }
-        LAGFX_LOG("%s ASMBLIT: composited %u per-pass surfaces in draw order -> display->rt",
+        /* Carry the fully composited rt to the scanout/fallback once. */
+        lagfx_display_submit_rendered_frame(display, display->scanout_gpa,
+                                            display->scanout_length);
+        LAGFX_LOG("%s ASMBLIT: composited %u layers (bg + MAX-blend) -> display->rt",
                   op, p->frame_blit_n);
         /* Cursor on top of the composited set — read_frame serves display->rt
          * directly on the sparse-present guest, so overlay here too. */

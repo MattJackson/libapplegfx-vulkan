@@ -51,6 +51,7 @@
 #include "instance.h"
 #include "command.h"
 #include "pipeline.h"
+#include "composite.h"
 #include "common/log.h"
 
 #include <stdio.h>
@@ -631,6 +632,7 @@ void lagfx_vk_shutdown(struct lagfx_vk_state *state) {
         vkDestroyPipelineLayout(state->device, state->empty_layout, NULL);
         state->empty_layout = VK_NULL_HANDLE;
     }
+    lagfx_vk_composite_shutdown(state);
     lagfx_vk_pipeline_shutdown(state);
     lagfx_vk_command_pool_destroy(state);
     if (state->device != VK_NULL_HANDLE) {
