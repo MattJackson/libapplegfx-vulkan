@@ -1170,16 +1170,24 @@ static uint32_t lagfx_vtx_float_plausibility(const uint8_t *b, uint32_t len) {
  * Returns bytes filled (0 = fail). */
 static uint32_t lagfx_read_vtx_source(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                                       uint32_t ref, uint64_t offset,
-                                      uint32_t want, uint8_t *out, const char **how) {
+                                      uint32_t want, uint8_t *out, const char **how,
+                                      int mode) {
+    /* mode 0: 0x3b BACKUPD addr (VA) preferred, else placement walk with the
+     *         standard (RAWGPA-gated) read — the legacy behavior.
+     * mode 1: placement walk but read (pfn<<12)+within as a TASK VA through the
+     *         per-task radix (lead 3: the slab address may be virtual for some
+     *         refs — the raw-GPA read lands on boot-log text for 0x15/0x16/0x18). */
     *how = "none";
-    for (uint32_t bi = 0; bi < p->backing_update_n && bi < 64u; bi++) {
-        if (!p->backing_update[bi].valid || p->backing_update[bi].ref != ref) continue;
-        if (lagfx_task_read_virtual(p, task, p->backing_update[bi].addr + offset,
-                                    want, out)) {
-            *how = "backupd-va";
-            return want;
+    if (mode == 0) {
+        for (uint32_t bi = 0; bi < p->backing_update_n && bi < 64u; bi++) {
+            if (!p->backing_update[bi].valid || p->backing_update[bi].ref != ref) continue;
+            if (lagfx_task_read_virtual(p, task, p->backing_update[bi].addr + offset,
+                                        want, out)) {
+                *how = "backupd-va";
+                return want;
+            }
+            break;
         }
-        break;
     }
     uint8_t vtype = 0; uint64_t vva = 0, vgpa = 0;
     if (!lagfx_resolve_object_data(p, task, ref, &vtype, &vva, &vgpa) || vva == 0u)
@@ -1198,15 +1206,18 @@ static uint32_t lagfx_read_vtx_source(lagfx_protocol_t *p, lagfx_task_entry_t *t
             uint64_t avail = rsize - within;
             uint32_t chunk = (avail < (uint64_t)(want - filled))
                                  ? (uint32_t)avail : (want - filled);
-            if (!lagfx_read_resource_backing(p, task, (pfn << 12) + within,
-                                             chunk, out + filled))
-                break;
+            bool ok = (mode == 1)
+                          ? lagfx_task_read_virtual(p, task, (pfn << 12) + within,
+                                                    chunk, out + filled)
+                          : lagfx_read_resource_backing(p, task, (pfn << 12) + within,
+                                                        chunk, out + filled);
+            if (!ok) break;
             filled += chunk;
             logical += chunk;
         }
         vacc += rsize;
     }
-    if (filled) *how = "placement";
+    if (filled) *how = (mode == 1) ? "placement-va" : "placement";
     return filled;
 }
 
@@ -1231,22 +1242,26 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
     if (getenv("LAGFX_M2_VTXSRC")) {
         uint32_t want = getenv("LAGFX_M2_BIGVERTS")
                             ? LAGFX_BIGVERTS_BUF_SZ : LAGFX_DRAW_DS_BUF_SZ;
-        for (uint32_t s = 0; s < 3u; s++) {
+        for (uint32_t sm = 0; sm < 6u; sm++) {
+            /* slot-major, then mode: s0/m0, s0/m1, s1/m0, s1/m1, s2/m0, s2/m1 —
+             * mode 1 = VA-translated placement read (lead 3). */
+            uint32_t s = sm / 2u;
+            int mode = (int)(sm % 2u);
             lagfx_binding_slot_t *cs = &task->bindings.vertex_buffers[s];
             if (!cs->valid || cs->ref == 0u) continue;
             uint8_t sample[256];
             const char *how = "none";
             uint32_t got = lagfx_read_vtx_source(p, task, cs->ref, cs->offset,
-                                                 sizeof(sample), sample, &how);
+                                                 sizeof(sample), sample, &how, mode);
             uint32_t score = got ? lagfx_vtx_float_plausibility(sample, got) : 0u;
             if (getenv("LAGFX_DUMP_SPV"))
-                LAGFX_LOG("VTXSRC slot=%u ref=0x%x off=%llu how=%s score=%u",
-                          s, cs->ref, (unsigned long long)cs->offset, how, score);
+                LAGFX_LOG("VTXSRC slot=%u mode=%d ref=0x%x off=%llu how=%s score=%u",
+                          s, mode, cs->ref, (unsigned long long)cs->offset, how, score);
             if (score < 50u) continue;
             uint8_t *full = calloc(1u, want);
             if (!full) break;
             uint32_t ffill = lagfx_read_vtx_source(p, task, cs->ref, cs->offset,
-                                                   want, full, &how);
+                                                   want, full, &how, mode);
             if (ffill) {
                 VkBuffer svb = VK_NULL_HANDLE;
                 if (lagfx_vk_make_host_storage_buffer(vk, full, want,
