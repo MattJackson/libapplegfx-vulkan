@@ -1209,3 +1209,31 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-bitcast-as-type-unit.c')
 endif
 
 
+
+# Ring-wrap header read: a 12-byte header straddling a ring-page boundary
+# across NON-contiguous physical pages must resolve each chunk via the
+# PFN-array (red-on-revert guard for the flat-read drain-stop fix).
+if fs.is_file(meson.current_source_dir() / 'ring-wrap-header-unit.c')
+  ring_wrap_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    ring_wrap_deps += [vulkan_dep]
+  endif
+  ring_wrap_test = executable('ring-wrap-header-unit',
+    'ring-wrap-header-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : ring_wrap_deps,
+    build_by_default : true,
+  )
+  test('ring-wrap header read (unit)', ring_wrap_test)
+endif
+
+# Vertex float-plausibility scorer: text/poison score ~0, real floats ~100.
+if fs.is_file(meson.current_source_dir() / 'vtx-plausibility-unit.c') and vulkan_dep.found()
+  vtx_plaus_test = executable('vtx-plausibility-unit',
+    'vtx-plausibility-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : [libapplegfx_vulkan_dep, vulkan_dep],
+    build_by_default : true,
+  )
+  test('vtx float plausibility (unit)', vtx_plaus_test)
+endif
