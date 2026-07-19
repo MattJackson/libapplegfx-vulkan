@@ -441,7 +441,12 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
      * black version, and the guest then idles — so it never re-composites.
      * Enqueue it at the FRONT of the frame-blit queue (background layer) so the
      * next display present carries it to the scanout under the UI layers. */
-    if (how && how[0] == 'm' && nbk >= 32u && p->frame_blit_n < 16u) {
+    /* The recovered 0x39 wallpaper region is TILED (correlated in memory but
+     * 2D-scrambled → renders as noise bands), so keep it out of the default
+     * scanout — gate the background enqueue behind LAGFX_M2_COMPOSITE until the
+     * tile layout is decoded, preserving the faithful dark default frame. */
+    if (how && how[0] == 'm' && nbk >= 32u && p->frame_blit_n < 16u
+        && getenv("LAGFX_M2_COMPOSITE")) {
         for (uint32_t q = p->frame_blit_n; q > 0u; q--)
             p->frame_blit_queue[q] = p->frame_blit_queue[q - 1u];
         p->frame_blit_queue[0] = (uintptr_t)ios;
