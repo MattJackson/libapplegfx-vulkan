@@ -364,7 +364,7 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
      * photo-sized rich allocation the composite path never samples. */
     if (getenv("LAGFX_DUMP_SPV") && dev && dev->desc.shell.read_memory) {
         static int census_done = 0;
-        if (!census_done && p->total_cmds_seen > 50u) {
+        if (!census_done && p->resources.count >= 6u) {
             census_done = 1;
             for (uint32_t ri = 0; ri < p->resources.count; ri++) {
                 lagfx_resource_entry_t *re = &p->resources.entries[ri];
