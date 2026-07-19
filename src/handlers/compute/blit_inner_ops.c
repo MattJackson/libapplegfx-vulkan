@@ -307,6 +307,16 @@ int lagfx_blit_inner_dispatch(lagfx_protocol_t *p,
     }
     LAGFX_TRACE("blit inner: op=0x%03x (%s) len=%zu",
                 (unsigned)(d->opcode & 0xfffu), d->name, len);
+    /* Diagnostic: dump every blit op + leading refs to map which op uploads
+     * texture content (dst ref 0x10 = wallpaper). Gated. */
+    if (getenv("LAGFX_BLIT_DUMP")) {
+        uint32_t w0 = len >= 4 ? lagfx_le32(payload + 0) : 0;
+        uint32_t w1 = len >= 8 ? lagfx_le32(payload + 4) : 0;
+        uint32_t w2 = len >= 12 ? lagfx_le32(payload + 8) : 0;
+        uint32_t w3 = len >= 16 ? lagfx_le32(payload + 12) : 0;
+        LAGFX_LOG("BLITDUMP op=0x%03x (%s) len=%zu w[%u,%u,%u,%u]",
+                  (unsigned)(d->opcode & 0xfffu), d->name, len, w0, w1, w2, w3);
+    }
     if (!d->handler) {
         return 0;
     }
