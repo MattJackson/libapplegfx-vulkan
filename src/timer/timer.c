@@ -28,6 +28,20 @@ bool lagfx_timer_tick_vblank(
         return false;
     }
 
+#ifdef LAGFX_HAVE_VULKAN
+    /* LAGFX_DUMP_PASSES: dump every per-pass IOSurface once, ~12s in — well after
+     * the composite draw burst has created + filled the per-pass views. */
+    if (getenv("LAGFX_DUMP_PASSES")) {
+        extern void lagfx_dump_all_passes(lagfx_protocol_t *, lagfx_display_t *);
+        static uint32_t tk = 0; static int done = 0;
+        if (!done && ++tk == 720u) {
+            done = 1;
+            lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+            if (p) lagfx_dump_all_passes(p, dev->displays[0]);
+        }
+    }
+#endif
+
     bool irq_raised = false;
 
     /* Check each display for enable() completion (ss[+0x104] == 0xC).

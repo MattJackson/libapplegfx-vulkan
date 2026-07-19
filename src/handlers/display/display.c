@@ -62,7 +62,8 @@ static void lagfx_dump_one_surface(struct lagfx_vk_state *vk, VkImage img,
     free(buf);
 }
 
-static void lagfx_dump_all_passes(lagfx_protocol_t *p, lagfx_display_t *disp) {
+void lagfx_dump_all_passes(lagfx_protocol_t *p, lagfx_display_t *disp);
+void lagfx_dump_all_passes(lagfx_protocol_t *p, lagfx_display_t *disp) {
     lagfx_device_t *dev = (lagfx_device_t *)p->dev;
     if (!dev || !dev->vk) return;
     system("mkdir -p /tmp/lagfx-passes");
