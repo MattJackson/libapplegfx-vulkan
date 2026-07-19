@@ -587,6 +587,9 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         }
         LAGFX_LOG("%s ASMBLIT: composited %u per-pass surfaces in draw order -> display->rt",
                   op, p->frame_blit_n);
+        /* Cursor on top of the composited set — read_frame serves display->rt
+         * directly on the sparse-present guest, so overlay here too. */
+        (void)lagfx_display_overlay_cursor(display);
         lagfx_display_signal_frame_ready(display);
     }
 

@@ -873,6 +873,131 @@ static lagfx_status_t display_staging_ring_ensure(lagfx_display_t *display,
 }
 #endif
 
+#ifdef LAGFX_HAVE_VULKAN
+/* Draw the guest cursor (alpha-blended glyph quad) over the composited
+ * display->rt, loadOp=LOAD so the frame content underneath survives. The
+ * glyph/show state arrives via display opcodes 0x13/0x14; without a captured
+ * glyph this is a no-op. Runs before readback so both the DMA and fallback
+ * paths scan out the cursor. */
+lagfx_status_t lagfx_display_overlay_cursor(lagfx_display_t *display) {
+    if (!display || display->magic != LAGFX_DISPLAY_MAGIC) {
+        return LAGFX_ERR_INVALID_ARG;
+    }
+    if (!display->rt_ready || !display->device
+        || !display->device->vk || !display->device->vk->initialized) {
+        return LAGFX_OK;
+    }
+    struct lagfx_vk_state *vk = display->device->vk;
+
+    const lagfx_cursor_show_state_t  *cs =
+        lagfx_device_last_cursor_show(display->device);
+    const lagfx_cursor_glyph_state_t *cg =
+        lagfx_device_last_cursor_glyph(display->device);
+    if (!(cs && cs->visible && cg && cg->captured_len > 0)) {
+        return LAGFX_OK;
+    }
+    if (!vk->cursor_glyph_valid) {
+        lagfx_status_t up_st = lagfx_vk_cursor_upload_glyph(
+            vk, cg->bytes, cg->width, cg->height, cg->bytes_per_row);
+        if (up_st != LAGFX_OK) {
+            return LAGFX_OK;   /* no glyph, nothing to draw */
+        }
+    }
+
+    uint32_t rt_w, rt_h;
+    LAGFX_DISPLAY_RT_LOCK(display);
+    rt_w = display->rt_width;
+    rt_h = display->rt_height;
+    LAGFX_DISPLAY_RT_UNLOCK(display);
+
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    lagfx_status_t cb_st = lagfx_vk_cmdbuf_alloc(vk, &cb);
+    if (cb_st != LAGFX_OK) return cb_st;
+
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS) {
+        lagfx_vk_cmdbuf_free(vk, cb);
+        return LAGFX_ERR_BACKEND;
+    }
+
+    lagfx_vk_render_target_t *rt = &display->rt;
+    VkAccessFlags src_access = 0;
+    VkPipelineStageFlags src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    if (rt->layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        src_access = VK_ACCESS_TRANSFER_READ_BIT;
+        src_stage  = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    VkImageMemoryBarrier barrier = {
+        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask       = src_access,
+        .dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout           = rt->layout,
+        .newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image               = rt->image,
+        .subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(cb, src_stage,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         0, 0, NULL, 0, NULL, 1, &barrier);
+    rt->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkRenderingAttachmentInfo color_att = {
+        .sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView   = rt->view,
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp      = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp     = VK_ATTACHMENT_STORE_OP_STORE,
+    };
+    VkRenderingInfo ri = {
+        .sType                = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea           = { { 0, 0 }, { rt->width, rt->height } },
+        .layerCount           = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments    = &color_att,
+    };
+    vkCmdBeginRendering(cb, &ri);
+    lagfx_vk_cursor_draw(vk, cb, rt_w, rt_h,
+                         cs->x, cs->y, cs->hot_x, cs->hot_y);
+    vkCmdEndRendering(cb);
+
+    if (vkEndCommandBuffer(cb) != VK_SUCCESS) {
+        lagfx_vk_cmdbuf_free(vk, cb);
+        return LAGFX_ERR_BACKEND;
+    }
+    VkFence fence = VK_NULL_HANDLE;
+    VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    if (vkCreateFence(vk->device, &fci, NULL, &fence) != VK_SUCCESS) {
+        lagfx_vk_cmdbuf_free(vk, cb);
+        return LAGFX_ERR_BACKEND;
+    }
+    VkSubmitInfo si = {
+        .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers    = &cb,
+    };
+    VkResult vr = vkQueueSubmit(vk->graphics_queue, 1, &si, fence);
+    if (vr == VK_SUCCESS) {
+        vkWaitForFences(vk->device, 1, &fence, VK_TRUE,
+                        1000ull * 1000ull * 1000ull);
+        static int overlay_logged;
+        if (!overlay_logged) {
+            overlay_logged = 1;
+            LAGFX_LOG("cursor overlay: drawn at (%d,%d) glyph %ux%u onto rt %ux%u",
+                      (int)cs->x, (int)cs->y, (unsigned)cg->width,
+                      (unsigned)cg->height, rt_w, rt_h);
+        }
+    }
+    vkDestroyFence(vk->device, fence, NULL);
+    lagfx_vk_cmdbuf_free(vk, cb);
+    return (vr == VK_SUCCESS) ? LAGFX_OK : LAGFX_ERR_BACKEND;
+}
+#endif /* LAGFX_HAVE_VULKAN */
+
 lagfx_status_t lagfx_display_submit_rendered_frame(
     lagfx_display_t *display,
     uint64_t scanout_gpa,
@@ -915,6 +1040,9 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
         } while (0)
 
 #ifdef LAGFX_HAVE_VULKAN
+    /* Cursor overlay before any readback so both scanout paths carry it. */
+    (void)lagfx_display_overlay_cursor(display);
+
    /* Fallback path when macOS hasn't registered a scanout buffer:
       * CmdDisplaySwapMapping (opcode 0x12) not received yet. Read back
       * the render target directly and let QEMU's frame_ready callback

@@ -412,6 +412,7 @@ typedef struct lagfx_protocol {
         uint8_t  resource_buf_dumped;
         uint8_t  desc_table_dumped;
         uint32_t submit_probe_count;
+        uint8_t  bench_done;
     } diag;
 
     /* Command counters (for diagnostics) */

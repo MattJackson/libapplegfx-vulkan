@@ -173,4 +173,8 @@ lagfx_status_t lagfx_display_submit_rendered_frame(
  * scanout isn't wired yet). Internal API, no-op on NULL display. */
 void lagfx_display_signal_frame_ready(lagfx_display_t *display);
 
+/* Alpha-blend the captured guest cursor glyph over the composited rt
+ * (loadOp=LOAD). No-op without a captured glyph / visible state. */
+lagfx_status_t lagfx_display_overlay_cursor(lagfx_display_t *display);
+
 #endif /* LIBAPPLEGFX_DISPLAY_INTERNAL_H */

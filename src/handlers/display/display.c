@@ -17,6 +17,8 @@
 #endif
 
 #include <string.h>
+#include <stdlib.h>
+#include <time.h>
 
 lagfx_handler_status_t lagfx_display_ack(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) {
@@ -395,6 +397,46 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
 
             lagfx_status_t st = lagfx_display_submit_rendered_frame(
                 disp, fb_base, scanout_len);
+            /* Sustained present bench (LAGFX_BENCH_PRESENTS=N, once): the idle
+             * guest presents too sparsely for a representative fps number, so
+             * drive the FULL production present path (cursor overlay + composite
+             * rt + 1080p readback + scanout DMA) in a tight loop and report
+             * sustained cost. */
+            if (st == LAGFX_OK && !p->diag.bench_done) {
+                const char *bn = getenv("LAGFX_BENCH_PRESENTS");
+                unsigned long n = bn ? strtoul(bn, NULL, 0) : 0ul;
+                if (n >= 10ul && n <= 100000ul) {
+                    p->diag.bench_done = 1u;
+                    struct timespec b0, b1;
+                    double sum = 0.0, mn = 1e9, mx = 0.0;
+                    clock_gettime(CLOCK_MONOTONIC, &b0);
+                    double prev = (double)b0.tv_sec * 1000.0
+                                + (double)b0.tv_nsec / 1.0e6;
+                    unsigned ok = 0;
+                    for (unsigned long i = 0; i < n; i++) {
+                        if (lagfx_display_submit_rendered_frame(
+                                disp, fb_base, scanout_len) != LAGFX_OK)
+                            break;
+                        ok++;
+                        clock_gettime(CLOCK_MONOTONIC, &b1);
+                        double t = (double)b1.tv_sec * 1000.0
+                                 + (double)b1.tv_nsec / 1.0e6;
+                        double d = t - prev;
+                        prev = t;
+                        sum += d;
+                        if (d < mn) mn = d;
+                        if (d > mx) mx = d;
+                    }
+                    if (ok) {
+                        double avg = sum / (double)ok;
+                        LAGFX_LOG("PERF bench: %u sustained presents avg=%.2fms "
+                                  "(%.1f fps) min=%.2f max=%.2f (full path: "
+                                  "overlay+readback+scanout)",
+                                  ok, avg, avg > 0.0 ? 1000.0 / avg : 0.0,
+                                  mn, mx);
+                    }
+                }
+            }
             if (st != LAGFX_OK) {
                 LAGFX_WARN("vchan_display_submit: scanout failed for "
                            "display[%u] fb=0x%llx (%d) — frame skipped",
