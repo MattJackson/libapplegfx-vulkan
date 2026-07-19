@@ -314,11 +314,5 @@ int lagfx_blit_inner_dispatch(lagfx_protocol_t *p,
     return d->handler(p, payload, len);
 }
 
-const char *lagfx_blit_inner_op_name(uint32_t opcode) {
-    const lagfx_blit_inner_op_desc_t *d = table_lookup(opcode);
-    if (d) return d->name;
-    static char unknown_buf[28];
-    snprintf(unknown_buf, sizeof(unknown_buf), "Unknown(0x%03x)",
-             (unsigned)(opcode & 0xfffu));
-    return unknown_buf;
-}
+/* (C6/audit B5: lagfx_blit_inner_op_name removed — it had no callers and
+ * returned a file-static buffer, the worst R23 violation in the tree.) */

@@ -33,6 +33,5 @@ int lagfx_blit_inner_dispatch(lagfx_protocol_t *p,
                               const uint8_t    *payload,
                               size_t            len);
 
-const char *lagfx_blit_inner_op_name(uint32_t opcode);
 
 #endif /* LAGFX_HANDLERS_COMPUTE_BLIT_INNER_OPS_H */
