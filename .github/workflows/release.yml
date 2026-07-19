@@ -13,8 +13,11 @@ jobs:
       - name: deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build pkg-config glslang-tools \
-            libvulkan-dev
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build pkg-config clang \
+            libvulkan-dev vulkan-tools \
+            vulkan-validationlayers mesa-vulkan-drivers \
+            glslang-tools spirv-tools
       - name: build + test
         run: |
           meson setup build
