@@ -119,6 +119,17 @@ lagfx_handler_status_t lagfx_iosurface_create_backing2(
     uint32_t bytes_per_row = lagfx_le32(hdr->payload + 16);
     uint64_t size          = lagfx_le64(hdr->payload + 20);
 
+    /* Wire RE: fields beyond +28 are unparsed and may carry the backing
+     * GPA/PFN list — dump raw so the wallpaper surface's true backing can
+     * be decoded offline. */
+    if (getenv("LAGFX_DUMP_SPV") && hdr->payload_size > 28u) {
+        char hx[200]; size_t hn = 0;
+        uint32_t cap = hdr->payload_size < 64u ? hdr->payload_size : 64u;
+        for (uint32_t k = 28; k < cap && hn + 3 < sizeof(hx); k++)
+            hn += (size_t)snprintf(hx + hn, sizeof(hx) - hn, "%02x ", hdr->payload[k]);
+        LAGFX_LOG("IOSCREATE_RAW id=0x%x len=%u tail[28..]: %s",
+                  surface_id, (unsigned)hdr->payload_size, hx);
+    }
     LAGFX_LOG("CmdCreateIOSurfaceBacking2: surface_id=0x%x %ux%u fmt=0x%x bpr=%u size=%llu",
               surface_id, width, height, pixel_format, bytes_per_row,
               (unsigned long long)size);

@@ -332,14 +332,72 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
                                 task->id, tgpa, total);
         te = lagfx_resource_lookup_texture(&p->resources, tref);
     }
-    if (te) { te->host_handle = ios; te->image = ios->image; te->view = ios->view; }
-    else {
+    if (te) {
+        te->host_handle = ios; te->image = ios->image; te->view = ios->view;
+        te->realize_rich = (uint16_t)(nbk > 0xffffu ? 0xffffu : nbk);
+        te->realize_seen = 0u;
+    } else {
         lagfx_vk_iosurface_destroy(vk, ios);
         return NULL;
     }
     LAGFX_LOG("TEXREAL: ref=0x%x %ux%u from %uB backing (read=%s nonblack=%u/%u rich=%u%s)",
               tref, W, H, want, how, nb, npx, nbk, nbk >= 64u ? "+" : "");
     return ios;
+}
+
+/* Re-read a realized texture's guest backing and re-upload if the content got
+ * RICHER since the cached read. The wallpaper is CPU-decoded by the guest
+ * seconds into boot — a realize during the early draw burst caches the still-
+ * black buffer forever. Called from the sample-bind path while the cached
+ * score is below photo grade; rate-limited; uploads into the SAME VkImage so
+ * every later composite picks the new pixels up automatically. */
+void lagfx_texture_refresh(lagfx_protocol_t *p, lagfx_task_entry_t *task,
+                           struct lagfx_vk_state *vk, uint32_t tref) {
+    if (!p || !task || !vk || tref == 0u) return;
+    lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, tref);
+    if (!te || !te->host_handle) return;
+    if (te->realize_rich >= 64u) return;              /* already photo-grade */
+    if ((te->realize_seen++ & 7u) != 0u) return;      /* rate limit: 1 in 8 */
+    lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)te->host_handle;
+    if (ios->image == VK_NULL_HANDLE) return;
+    uint64_t total = te->size;
+    if (total < 4096u || total > 8u * 1024u * 1024u) {
+        total = (uint64_t)ios->width * ios->height * 4u;
+        if (total < 4096u || total > 8u * 1024u * 1024u) return;
+    }
+    uint32_t want = (uint32_t)total;
+    uint8_t *raw = calloc(1u, want), *via = calloc(1u, want);
+    if (!raw || !via) { free(raw); free(via); return; }
+    const char *how0 = "none", *how1 = "none";
+    uint32_t got0 = lagfx_read_vtx_source(p, task, tref, 0u, want, raw, &how0, 0);
+    uint32_t got1 = lagfx_read_vtx_source(p, task, tref, 0u, want, via, &how1, 1);
+    uint32_t nb0 = 0, nb1 = 0;
+    for (uint32_t o = 0; o + 4u <= want; o += 4u) {
+        if (raw[o] | raw[o+1] | raw[o+2]) nb0++;
+        if (via[o] | via[o+1] | via[o+2]) nb1++;
+    }
+    uint8_t *pick = NULL; const char *how = "none";
+    if (got1 && nb1 >= nb0)      { pick = via; how = "va"; }
+    else if (got0 && nb0 > 0u)   { pick = raw; how = "raw"; }
+    if (!pick) { free(raw); free(via); return; }
+    uint32_t npx = want / 4u, nbk = 0;
+    {
+        uint32_t buckets[64];
+        for (uint32_t px = 0; px < npx && nbk < 64u; px += (npx / 512u) + 1u) {
+            uint32_t c = lagfx_le32(pick + (size_t)px * 4u) & 0xf8f8f8u;
+            bool seen = false;
+            for (uint32_t b = 0; b < nbk; b++)
+                if (buckets[b] == c) { seen = true; break; }
+            if (!seen) buckets[nbk++] = c;
+        }
+    }
+    if (nbk > te->realize_rich
+        && lagfx_vk_iosurface_upload_pixels(vk, ios, pick, want) == LAGFX_OK) {
+        LAGFX_LOG("TEXFRESH: ref=0x%x re-read %uB (read=%s) rich %u -> %u%s",
+                  tref, want, how, te->realize_rich, nbk, nbk >= 64u ? "+ PHOTO" : "");
+        te->realize_rich = (uint16_t)nbk;
+    }
+    free(raw); free(via);
 }
 
 #endif /* LAGFX_HAVE_VULKAN */

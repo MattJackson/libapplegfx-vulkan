@@ -170,6 +170,12 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                      * that killed the M2 runs once real data drove the shader. */
                     if (ios && (ios->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                                 || ios->layout == VK_IMAGE_LAYOUT_GENERAL)) {
+                        /* Cached content may predate the guest's write of the
+                         * backing (wallpaper decodes seconds into boot) —
+                         * re-read while below photo grade so this and later
+                         * draws sample the real pixels. */
+                        if (te->realize_rich < 64u)
+                            lagfx_texture_refresh(p, task, vk, tref);
                         view = te->view;
                         lay  = ios->layout;
                         tex_src = "direct";

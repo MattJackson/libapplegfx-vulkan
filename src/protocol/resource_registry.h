@@ -52,6 +52,13 @@ typedef struct {
 #endif
     uint64_t gpu_addr;
     uint64_t size;
+    /* Realized-texture content tracking: richness score (distinct color
+     * buckets, 64 = photo-grade) of the last backing read, plus a call
+     * counter that rate-limits refresh re-reads. A texture realized BEFORE
+     * the guest finishes writing its backing (the wallpaper is CPU-decoded
+     * seconds into boot) caches stale content; refresh re-reads until rich. */
+    uint16_t realize_rich;
+    uint16_t realize_seen;
 } lagfx_resource_entry_t;
 
 typedef struct {

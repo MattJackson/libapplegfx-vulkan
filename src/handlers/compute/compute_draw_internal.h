@@ -54,6 +54,8 @@ uint32_t lagfx_read_vtx_source(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                                uint32_t ref, uint64_t offset,
                                uint32_t want, uint8_t *out, const char **how,
                                int mode);
+void lagfx_texture_refresh(lagfx_protocol_t *p, lagfx_task_entry_t *task,
+                           struct lagfx_vk_state *vk, uint32_t tref);
 lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
                                             lagfx_task_entry_t *task,
                                             struct lagfx_vk_state *vk,
