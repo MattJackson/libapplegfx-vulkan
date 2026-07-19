@@ -1156,6 +1156,18 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
     uint8_t vdesc[64];
     if (!lagfx_task_read_virtual(p, task, vva, sizeof(vdesc), vdesc))
         return VK_NULL_HANDLE;
+    /* M2c sub-problem 1 (LAGFX_DUMP_SPV): dump the placement descriptor + resolve
+     * so garbage/NaN vertex reads (ref=0x16/0x18) can be told apart from clean ones
+     * (ref=0x14). Shows vva/vgpa + the 4 {size,pfn} entries that scatter-gather. */
+    if (getenv("LAGFX_DUMP_SPV")) {
+        LAGFX_LOG("VBDBG ref=0x%x type=%u off=%llu vva=0x%llx vgpa=0x%llx ents[%llu:0x%llx %llu:0x%llx %llu:0x%llx %llu:0x%llx]",
+                  vbs->ref, vtype, (unsigned long long)vbs->offset,
+                  (unsigned long long)vva, (unsigned long long)vgpa,
+                  (unsigned long long)lagfx_le64(vdesc+0),  (unsigned long long)(lagfx_le64(vdesc+8)  & 0xffffffffull),
+                  (unsigned long long)lagfx_le64(vdesc+16), (unsigned long long)(lagfx_le64(vdesc+24) & 0xffffffffull),
+                  (unsigned long long)lagfx_le64(vdesc+32), (unsigned long long)(lagfx_le64(vdesc+40) & 0xffffffffull),
+                  (unsigned long long)lagfx_le64(vdesc+48), (unsigned long long)(lagfx_le64(vdesc+56) & 0xffffffffull));
+    }
     uint8_t vdata[LAGFX_DRAW_DS_BUF_SZ];
     /* B8: LOGICAL scatter-gather walk (same as the descriptor-binding path) — the
      * placement descriptor's {size,PFN} entries tile the buffer's LOGICAL address
