@@ -287,6 +287,17 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     uint8_t desc[64];
     if (!lagfx_task_read_virtual(p, task, tva, sizeof(desc), desc))
         return NULL;
+    /* Texture-object descriptor RE (TEXDESC): dump the raw 64 bytes as u32
+     * words so the width/height/rowBytes/format fields can be calibrated from
+     * the known-dim small textures (ref 0x16=32x32, 0x31=64x81) and applied to
+     * the wallpaper (ref 0x10). The dims are currently INFERRED from byte size,
+     * which loses the true rowBytes/stride — the banded-scramble root cause. */
+    LAGFX_LOG("TEXDESC ref=0x%x tva=0x%llx w[%u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u]",
+              tref, (unsigned long long)tva,
+              lagfx_le32(desc+0),  lagfx_le32(desc+4),  lagfx_le32(desc+8),  lagfx_le32(desc+12),
+              lagfx_le32(desc+16), lagfx_le32(desc+20), lagfx_le32(desc+24), lagfx_le32(desc+28),
+              lagfx_le32(desc+32), lagfx_le32(desc+36), lagfx_le32(desc+40), lagfx_le32(desc+44),
+              lagfx_le32(desc+48), lagfx_le32(desc+52), lagfx_le32(desc+56), lagfx_le32(desc+60));
     uint64_t total = 0;
     for (int e = 0; e < 4; e++) {
         uint64_t rsize = lagfx_le64(desc + (size_t)e * 16u);
