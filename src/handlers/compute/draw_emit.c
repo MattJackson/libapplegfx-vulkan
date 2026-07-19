@@ -378,8 +378,13 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, tref);
         lagfx_vk_iosurface_t *ios = te ? (lagfx_vk_iosurface_t *)te->host_handle : NULL;
         if (!ios) {
-            uint32_t W = task->render_pass_desc.render_area_w ? task->render_pass_desc.render_area_w : 1920u;
-            uint32_t H = task->render_pass_desc.render_area_h ? task->render_pass_desc.render_area_h : 1080u;
+            /* Size the per-pass surface from the guest's authoritative source:
+             * render_area (usually 0), else the scissor (0x75, real draw region
+             * e.g. 1280x1024 wallpaper), else the scanout default. */
+            uint32_t W = task->render_pass_desc.render_area_w ? task->render_pass_desc.render_area_w
+                       : (task->scissor_w ? task->scissor_w : 1920u);
+            uint32_t H = task->render_pass_desc.render_area_h ? task->render_pass_desc.render_area_h
+                       : (task->scissor_h ? task->scissor_h : 1080u);
             if (W < 16u) W = 1920u; if (H < 16u) H = 1080u;
             if (lagfx_vk_iosurface_create(dev_with_vk->vk, W, H, 80u, &ios) == LAGFX_OK && ios) {
                 lagfx_resource_register(&p->resources, tref, LAGFX_RESOURCE_TYPE_TEXTURE,

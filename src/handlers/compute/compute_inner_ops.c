@@ -1490,7 +1490,7 @@ static int op_set_scissor_rect(lagfx_protocol_t *p,
                                  uint32_t          task_id,
                                  const uint8_t    *body,
                                  size_t            body_len) {
-    (void)p; (void)encoder_type;
+    (void)encoder_type;
     /* RE: render-decoder-handlers.md line 119 — PGCmdSetScissorRect (32 B == MTLScissorRect), POD family */
     if (body_len < 32u) {
         LAGFX_WARN("compute_inner: 0x75 SetScissorRect payload too small (%zu < 32)", body_len);
@@ -1502,6 +1502,13 @@ static int op_set_scissor_rect(lagfx_protocol_t *p,
     uint64_t h = lagfx_le64(body + 24);
     LAGFX_LOG("compute_inner: 0x75 SetScissorRect t%u origin=(%llu,%llu) size=%llux%llu",
               task_id, x, y, w, h);
+    /* Capture the scissor size as the authoritative per-pass surface size
+     * (0x1a render_area is 0). Guard sane bounds. */
+    if (task_id < LAGFX_MAX_TASKS && p->tasks[task_id].live
+        && w >= 16u && w <= 16384u && h >= 16u && h <= 16384u) {
+        p->tasks[task_id].scissor_w = (uint32_t)w;
+        p->tasks[task_id].scissor_h = (uint32_t)h;
+    }
     /* TODO: Stage 70 — translate to vkCmdSetScissor. */
     return 0;
 }

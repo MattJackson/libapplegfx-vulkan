@@ -250,6 +250,13 @@ typedef struct {
      * Per-task state: each task has its own render pass descriptor. */
     lagfx_render_pass_desc_t render_pass_desc;
 
+    /* Scissor rect (0x75) — the authoritative draw-region size. 0x1a
+     * render_area is genuinely 0 for real passes (Metal leaves
+     * renderTargetWidth unset), so the scissor is the correct source for
+     * per-pass surface dimensions (e.g. 1280x1024 wallpaper pass). */
+    uint32_t scissor_w;
+    uint32_t scissor_h;
+
     /* Pending draw description — populated by Draw opcode handlers (0x01, 0x03, 0x06, 0x07).
      * Per-task state: each task has its own pending draw descriptor. */
     lagfx_pending_draw_t pending_draw;
