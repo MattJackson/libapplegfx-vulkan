@@ -370,20 +370,35 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
             }
         }
     }
-    /* dims: first preferred width dividing the pixel count with sane aspect */
+    /* Dims from the DESCRIBED contract, not size inference: the type-0x03
+     * descriptor carries rowBytes at word 13 and height at word 15 (RE'd from
+     * ref 0x10=1280x1024 stride 5120, 0x16=32x17 stride 128, 0x2e=240x234
+     * stride 960). width = rowBytes/4. Fall back to size inference only when
+     * the descriptor fields are implausible. */
     uint32_t npx = want / 4u, W = 0, H = 0;
-    static const uint32_t widths[] = {64u, 128u, 32u, 256u, 16u, 512u,
-                                      1280u, 1920u, 1024u, 2048u};
-    for (size_t wi = 0; wi < sizeof(widths)/sizeof(widths[0]); wi++) {
-        uint32_t w = widths[wi];
-        if (npx % w) continue;
-        uint32_t h = npx / w;
-        if (h == 0u) continue;
-        float aspect = (float)w / (float)h;
-        if (aspect < 0.4f || aspect > 2.5f) continue;
-        W = w; H = h; break;
+    uint32_t desc_stride = lagfx_le32(desc + 52);   /* word 13 */
+    uint32_t desc_h      = lagfx_le32(desc + 60);   /* word 15 */
+    if (desc_stride >= 4u && (desc_stride & 3u) == 0u && desc_h > 0u
+        && (uint64_t)desc_stride * desc_h <= (uint64_t)want) {
+        W = desc_stride / 4u;
+        H = desc_h;
+    }
+    if (!W) {
+        static const uint32_t widths[] = {64u, 128u, 32u, 256u, 16u, 512u,
+                                          1280u, 1920u, 1024u, 2048u};
+        for (size_t wi = 0; wi < sizeof(widths)/sizeof(widths[0]); wi++) {
+            uint32_t w = widths[wi];
+            if (npx % w) continue;
+            uint32_t h = npx / w;
+            if (h == 0u) continue;
+            float aspect = (float)w / (float)h;
+            if (aspect < 0.4f || aspect > 2.5f) continue;
+            W = w; H = h; break;
+        }
     }
     if (!W) { W = 64u; H = npx / 64u ? npx / 64u : 1u; }
+    LAGFX_LOG("TEXREAL: ref=0x%x dims %ux%u (descriptor stride=%u h=%u)",
+              tref, W, H, desc_stride, desc_h);
     lagfx_vk_iosurface_t *ios = NULL;
     if (lagfx_vk_iosurface_create(vk, W, H, 80u, &ios) != LAGFX_OK || !ios) {
         free(raw); free(via); return NULL;
