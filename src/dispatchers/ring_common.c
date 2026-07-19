@@ -132,3 +132,34 @@ void lagfx_ring_publish_read_ptr(lagfx_protocol_t *p,
                    (unsigned long long)(desc_gpa + 0x04u));
     }
 }
+
+bool lagfx_ring_read_bytes(lagfx_protocol_t *p,
+                            uint64_t page0_gpa,
+                            uint32_t ring_size,
+                            uint32_t offset,
+                            uint32_t len,
+                            uint8_t *out) {
+    if (!p || !out || len == 0u) return false;
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    if (!dev || !dev->desc.shell.read_memory) return false;
+
+    uint32_t done = 0;
+    while (done < len) {
+        uint64_t chunk_gpa = 0;
+        if (!lagfx_ring_resolve_data_gpa(p, page0_gpa, ring_size,
+                                          offset + done, &chunk_gpa)) {
+            return false;
+        }
+        uint32_t chunk_off_in_page = (uint32_t)(chunk_gpa & 0xfffu);
+        uint32_t chunk_len = 0x1000u - chunk_off_in_page;
+        if (chunk_len > len - done) chunk_len = len - done;
+        if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
+                                          chunk_gpa, chunk_len, out + done)) {
+            LAGFX_WARN("ring_read_bytes: chunk DMA failed at gpa=0x%llx",
+                       (unsigned long long)chunk_gpa);
+            return false;
+        }
+        done += chunk_len;
+    }
+    return true;
+}

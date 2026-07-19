@@ -386,19 +386,34 @@ size_t channel_0_dispatcher_drain(lagfx_protocol_t *p) {
         uint32_t rp = p->read_ptr % ring_size;
         uint64_t hdr_gpa = ring_base + (uint64_t)rp;
 
-        /* Step 1: read the 12-byte header. The header itself never
-         * wraps because rings are aligned and headers are 12 bytes;
-         * a wrap mid-header would mean the producer wrote a
-         * malformed entry. We still defensively wrap-read the body
-         * below. */
+        /* Step 1: read the 12-byte header, WRAP-AWARE. The old "headers
+         * never wrap" assumption was wrong on the compute rings (live
+         * 'bad length 0x0 at rp=0xffc' drain-stop, M2c 2026-07-18) — a
+         * header starting within 12 bytes of the ring end straddles the
+         * boundary; read the tail from ring start. */
         uint8_t hdr_buf[LAGFX_CMD_HEADER_BYTES];
-        if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
-                                          hdr_gpa,
-                                          LAGFX_CMD_HEADER_BYTES,
-                                          hdr_buf)) {
-            LAGFX_WARN("ch0 drain: header DMA failed at gpa=0x%llx",
-                       (unsigned long long)hdr_gpa);
-            break;
+        {
+            uint32_t hdr_head = ring_size - rp;
+            if (hdr_head >= LAGFX_CMD_HEADER_BYTES) {
+                if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
+                                                  hdr_gpa,
+                                                  LAGFX_CMD_HEADER_BYTES,
+                                                  hdr_buf)) {
+                    LAGFX_WARN("ch0 drain: header DMA failed at gpa=0x%llx",
+                               (unsigned long long)hdr_gpa);
+                    break;
+                }
+            } else {
+                if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
+                                                  hdr_gpa, hdr_head, hdr_buf)
+                    || !dev->desc.shell.read_memory(dev->desc.shell.opaque,
+                                                     ring_base,
+                                                     LAGFX_CMD_HEADER_BYTES - hdr_head,
+                                                     hdr_buf + hdr_head)) {
+                    LAGFX_WARN("ch0 drain: wrapped header DMA failed at rp=0x%x", rp);
+                    break;
+                }
+            }
         }
 
         uint16_t opcode       = lagfx_le16(hdr_buf + 0);

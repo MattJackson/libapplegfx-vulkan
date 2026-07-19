@@ -89,6 +89,22 @@ void lagfx_ring_publish_read_ptr(lagfx_protocol_t *p,
                                   uint64_t desc_gpa,
                                   uint32_t read_ptr);
 
+/* Read `len` ring bytes starting at absolute offset `offset`, resolving
+ * EACH 4 KiB chunk through the PFN-array — ring data pages are NOT
+ * physically contiguous, so any read that can straddle a page boundary
+ * (a 12-byte command header at rp=0xffc, a wrapped body) MUST go through
+ * this, not a single flat shell.read_memory. The flat header read was a
+ * live drain-stopper: at rp=0xffc the length dword landed in the next
+ * PHYSICAL page → length=0 → "bad length … stop" → every later command
+ * in the batch dropped (M2c 2026-07-18). Returns false on any chunk
+ * resolve/DMA failure. */
+bool lagfx_ring_read_bytes(lagfx_protocol_t *p,
+                            uint64_t page0_gpa,
+                            uint32_t ring_size,
+                            uint32_t offset,
+                            uint32_t len,
+                            uint8_t *out);
+
 /* FIFORingDescriptor wire size (in bytes). Exported for tests. */
 #define LAGFX_RING_FIFO_DESC_BYTES        20u
 #define LAGFX_RING_FIFO_DESC_BASE_OFFSET  0x400u

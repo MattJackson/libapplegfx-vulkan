@@ -406,19 +406,16 @@ size_t channel_compute_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
     for (unsigned i = 0; i < LAGFX_COMPUTE_DRAIN_MAX_CMDS; ++i) {
         if (rp == write_ptr) break;
 
-        /* Resolve command-bytes GPA via page0's PFN-array. */
-        uint64_t hdr_gpa = 0;
-        if (!lagfx_ring_resolve_data_gpa(p, page0_gpa, ring_size, rp, &hdr_gpa)) {
-            break;
-        }
-
+        /* Header read MUST be chunk-resolved: at rp=0xffc the 12-byte header
+         * straddles the ring-page boundary and the ring's data pages are NOT
+         * physically contiguous — the old flat read pulled the length dword
+         * from the wrong physical page → length=0 → "bad length … stop" →
+         * every later command in the batch silently dropped. */
         uint8_t hdr_buf[LAGFX_CMD_HEADER_BYTES];
-        if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
-                                          hdr_gpa,
-                                          LAGFX_CMD_HEADER_BYTES,
-                                          hdr_buf)) {
-            LAGFX_WARN("compute drain: ch=%u header DMA failed at gpa=0x%llx",
-                       chan_id, (unsigned long long)hdr_gpa);
+        if (!lagfx_ring_read_bytes(p, page0_gpa, ring_size, rp,
+                                    LAGFX_CMD_HEADER_BYTES, hdr_buf)) {
+            LAGFX_WARN("compute drain: ch=%u header read failed at rp=0x%x",
+                       chan_id, rp);
             break;
         }
 

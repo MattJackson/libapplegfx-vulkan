@@ -218,21 +218,15 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
     for (unsigned i = 0; i < LAGFX_DISP_DRAIN_MAX_CMDS; ++i) {
         if (rp == write_ptr) break;
 
-        /* Resolve the command-bytes GPA via page0's PFN-array (see
-         * per-channel-ring-pfn-array.md). page0_gpa<<12 is NOT data —
-         * it's a u32 PFN array of page pointers. */
-        uint64_t hdr_gpa = 0;
-        if (!lagfx_ring_resolve_data_gpa(p, page0_gpa, ring_size, rp, &hdr_gpa)) {
-            break;
-        }
-
+        /* Chunk-resolved header read (see ring_common.h lagfx_ring_read_bytes)
+         * — a header near the ring-page boundary straddles NON-contiguous
+         * physical pages; a flat read pulls the length from the wrong page
+         * → bogus "bad length … stop" → dropped command tail. */
         uint8_t hdr_buf[LAGFX_CMD_HEADER_BYTES];
-        if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
-                                          hdr_gpa,
-                                          LAGFX_CMD_HEADER_BYTES,
-                                          hdr_buf)) {
-            LAGFX_WARN("display drain: ch=%u header DMA failed at gpa=0x%llx",
-                       chan_id, (unsigned long long)hdr_gpa);
+        if (!lagfx_ring_read_bytes(p, page0_gpa, ring_size, rp,
+                                    LAGFX_CMD_HEADER_BYTES, hdr_buf)) {
+            LAGFX_WARN("display drain: ch=%u header read failed at rp=0x%x",
+                       chan_id, rp);
             break;
         }
 
@@ -256,11 +250,12 @@ size_t channel_display_dispatcher_drain(lagfx_protocol_t *p, uint32_t chan_id) {
          * "Per-dispatcher scratch buffers"). BQL-serialised — must
          * not be used from anywhere outside this drain loop. */
         uint8_t *cmd_buf = p->scratch_display;
-        /* Display rings don't wrap (ring_size=0x1000 small enough),
-         * but read the body in one DMA. */
-        if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
-                                          hdr_gpa, length, cmd_buf)) {
-            LAGFX_WARN("display drain: ch=%u body DMA failed", chan_id);
+        /* Chunk-resolved like the header — a body spanning the ring-page
+         * boundary lands on non-contiguous physical pages. */
+        if (!lagfx_ring_read_bytes(p, page0_gpa, ring_size, rp,
+                                    length, cmd_buf)) {
+            LAGFX_WARN("display drain: ch=%u body read failed at rp=0x%x",
+                       chan_id, rp);
             break;
         }
 
