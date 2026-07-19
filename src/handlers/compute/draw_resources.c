@@ -276,15 +276,21 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     const char *how0 = "none", *how1 = "none";
     uint32_t got0 = lagfx_read_vtx_source(p, task, tref, 0u, want, raw, &how0, 0);
     uint32_t got1 = lagfx_read_vtx_source(p, task, tref, 0u, want, via, &how1, 1);
-    uint32_t nb0 = 0, nb1 = 0;
+    /* Score by WRITTEN pixels: nonzero alpha counts (opaque black IS real
+     * content — the login background buffer is 00 00 00 ff); a fully-zero
+     * buffer is unwritten and rejected. */
+    uint32_t nb0 = 0, nb1 = 0, na0 = 0, na1 = 0;
     for (uint32_t o = 0; o + 4u <= want; o += 4u) {
         if (raw[o] | raw[o+1] | raw[o+2]) nb0++;
         if (via[o] | via[o+1] | via[o+2]) nb1++;
+        if (raw[o+3]) na0++;
+        if (via[o+3]) na1++;
     }
+    uint32_t sc0 = na0 > nb0 ? na0 : nb0, sc1 = na1 > nb1 ? na1 : nb1;
     uint8_t *pick = NULL; const char *how = "none"; uint32_t nb = 0;
-    if (got1 && nb1 >= nb0) { pick = via; how = "va"; nb = nb1; }
+    if (got1 && sc1 >= sc0) { pick = via; how = "va"; nb = nb1; }
     else if (got0)          { pick = raw; how = "raw"; nb = nb0; }
-    if (!pick || nb == 0u) { free(raw); free(via); return NULL; }
+    if (!pick || (pick == via ? sc1 : sc0) == 0u) { free(raw); free(via); return NULL; }
     /* dims: first preferred width dividing the pixel count with sane aspect */
     uint32_t npx = want / 4u, W = 0, H = 0;
     static const uint32_t widths[] = {64u, 128u, 32u, 256u, 16u, 512u,
