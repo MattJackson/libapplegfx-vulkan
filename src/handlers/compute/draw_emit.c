@@ -587,7 +587,9 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
             lagfx_vk_iosurface_t *qios =
                 (lagfx_vk_iosurface_t *)p->frame_blit_queue[qi];
             if (!qios || qios->image == VK_NULL_HANDLE) continue;
-            if (composite && qi != 0u && qios->view != VK_NULL_HANDLE) {
+            if (composite && qi != 0u && getenv("LAGFX_BG_ONLY")) {
+                continue;  /* isolation: composite the background wallpaper only */
+            } else if (composite && qi != 0u && qios->view != VK_NULL_HANDLE) {
                 lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, qios->view);
             } else {
                 lagfx_vk_display_present_surface(
