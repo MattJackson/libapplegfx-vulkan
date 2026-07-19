@@ -489,7 +489,7 @@ lagfx_handler_status_t lagfx_display_vchan_present_gamma(
     }
 
     uint32_t display_index = lagfx_le32(hdr->payload + 0);
-    uint32_t plane_id      = lagfx_le32(hdr->payload + 4);
+    uint32_t plane_id      = lagfx_le32(hdr->payload + 4); (void)plane_id;
     uint32_t surface_id    = lagfx_le32(hdr->payload + 8);
 
     LAGFX_LOG("vchan_present_gamma: display[%u] surface=0x%x gamma_len=%u stamp=0x%08x",
