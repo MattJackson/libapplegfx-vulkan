@@ -1147,6 +1147,69 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
  * (heap) to this ceiling so the whole tile stream can rasterize. */
 #define LAGFX_BIGVERTS_BUF_SZ (16u * 1024u * 1024u)
 
+/* M2c VTXSRC: score a byte buffer's plausibility as float32 vertex data —
+ * fraction of nonzero dwords that read as sane finite floats (|x| in
+ * [1e-6, 1e6]). Text/poison slabs (UTF-16 boot log, 0xFFFFFFFF fill) score ~0;
+ * real position/texcoord streams score high. */
+static uint32_t lagfx_vtx_float_plausibility(const uint8_t *b, uint32_t len) {
+    uint32_t sampled = 0, sane = 0;
+    for (uint32_t o = 0; o + 4u <= len && sampled < 64u; o += 4u) {
+        uint32_t d = lagfx_le32(b + o);
+        if (d == 0u) continue;
+        sampled++;
+        float f; memcpy(&f, &d, 4);
+        float m = f < 0 ? -f : f;
+        if (f == f && m >= 1e-6f && m <= 1e6f) sane++;
+    }
+    return sampled ? (sane * 100u) / sampled : 0u;
+}
+
+/* M2c VTXSRC: read `want` bytes of a bound buffer (ref,offset) — prefer the
+ * 0x3b BackingUpdate address (task VA, page-aware) when one exists for the
+ * ref, else the placement-table walk (entry-size-capped multi-entry gather).
+ * Returns bytes filled (0 = fail). */
+static uint32_t lagfx_read_vtx_source(lagfx_protocol_t *p, lagfx_task_entry_t *task,
+                                      uint32_t ref, uint64_t offset,
+                                      uint32_t want, uint8_t *out, const char **how) {
+    *how = "none";
+    for (uint32_t bi = 0; bi < p->backing_update_n && bi < 64u; bi++) {
+        if (!p->backing_update[bi].valid || p->backing_update[bi].ref != ref) continue;
+        if (lagfx_task_read_virtual(p, task, p->backing_update[bi].addr + offset,
+                                    want, out)) {
+            *how = "backupd-va";
+            return want;
+        }
+        break;
+    }
+    uint8_t vtype = 0; uint64_t vva = 0, vgpa = 0;
+    if (!lagfx_resolve_object_data(p, task, ref, &vtype, &vva, &vgpa) || vva == 0u)
+        return 0u;
+    uint8_t vdesc[64];
+    if (!lagfx_task_read_virtual(p, task, vva, sizeof(vdesc), vdesc))
+        return 0u;
+    uint64_t vacc = 0, logical = offset;
+    uint32_t filled = 0;
+    for (int e = 0; e < 4 && filled < want; e++) {
+        uint64_t rsize = lagfx_le64(vdesc + (size_t)e * 16u);
+        uint64_t pfn = lagfx_le64(vdesc + (size_t)e * 16u + 8u) & 0xffffffffull;
+        if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
+        if (logical < vacc + rsize) {
+            uint64_t within = logical - vacc;
+            uint64_t avail = rsize - within;
+            uint32_t chunk = (avail < (uint64_t)(want - filled))
+                                 ? (uint32_t)avail : (want - filled);
+            if (!lagfx_read_resource_backing(p, task, (pfn << 12) + within,
+                                             chunk, out + filled))
+                break;
+            filled += chunk;
+            logical += chunk;
+        }
+        vacc += rsize;
+    }
+    if (filled) *how = "placement";
+    return filled;
+}
+
 static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                                                  lagfx_task_entry_t *task,
                                                  struct lagfx_vk_state *vk,
@@ -1158,6 +1221,47 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
         || task->bindings.vertex_buffers[0].ref == 0u)
         return VK_NULL_HANDLE;
     lagfx_binding_slot_t *vbs = &task->bindings.vertex_buffers[0];
+    /* M2c VTXSRC (LAGFX_M2_VTXSRC): multi-slot vertex-SOURCE search. The slot-0
+     * refs for the composite draws (0x15/0x16/0x18) resolve to unwritten
+     * text/poison slabs, while slot-1's ref 0x13 receives live 0x3b backing
+     * updates — the real position stream may be in a different slot than 0.
+     * Sample each bound slot (BACKUPD-VA preferred, else placement walk), score
+     * plausibility-as-float32, upload the first slot scoring ≥50. Falls through
+     * to the legacy slot-0 path when off or when nothing scores. */
+    if (getenv("LAGFX_M2_VTXSRC")) {
+        uint32_t want = getenv("LAGFX_M2_BIGVERTS")
+                            ? LAGFX_BIGVERTS_BUF_SZ : LAGFX_DRAW_DS_BUF_SZ;
+        for (uint32_t s = 0; s < 3u; s++) {
+            lagfx_binding_slot_t *cs = &task->bindings.vertex_buffers[s];
+            if (!cs->valid || cs->ref == 0u) continue;
+            uint8_t sample[256];
+            const char *how = "none";
+            uint32_t got = lagfx_read_vtx_source(p, task, cs->ref, cs->offset,
+                                                 sizeof(sample), sample, &how);
+            uint32_t score = got ? lagfx_vtx_float_plausibility(sample, got) : 0u;
+            if (getenv("LAGFX_DUMP_SPV"))
+                LAGFX_LOG("VTXSRC slot=%u ref=0x%x off=%llu how=%s score=%u",
+                          s, cs->ref, (unsigned long long)cs->offset, how, score);
+            if (score < 50u) continue;
+            uint8_t *full = calloc(1u, want);
+            if (!full) break;
+            uint32_t ffill = lagfx_read_vtx_source(p, task, cs->ref, cs->offset,
+                                                   want, full, &how);
+            if (ffill) {
+                VkBuffer svb = VK_NULL_HANDLE;
+                if (lagfx_vk_make_host_storage_buffer(vk, full, want,
+                                                      &svb, out_mem) == LAGFX_OK) {
+                    *out_size = want;
+                    LAGFX_LOG("VTXSRC: uploading slot=%u ref=0x%x how=%s score=%u filled=%u",
+                              s, cs->ref, how, score, ffill);
+                    free(full);
+                    return svb;
+                }
+            }
+            free(full);
+        }
+        /* nothing plausible → fall through to legacy slot-0 behavior */
+    }
     /* M2c BACKUPD (LAGFX_M2_BACKUPD): if a 0x3b backing update recorded a data
      * address for this ref, read the vertex bytes from THAT (task VA, page-aware)
      * instead of the placement-table PFN walk — the placement is stale for some
