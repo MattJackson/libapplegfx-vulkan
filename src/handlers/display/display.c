@@ -14,11 +14,57 @@
 #include "../../device.h"             /* dev->vk for the C1 frame-blit drain */
 #include "../../vulkan/display_blit.h"
 #include "../../vulkan/iosurface.h"
+#include "../../protocol/resource_registry.h"
+#include "../compute/compute_draw_internal.h"  /* lagfx_texture_realize */
 #endif
 
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+
+/* Present-by-id: the vchan present opcodes (0x06/0x07) carry the surface the
+ * guest wants scanned out. Resolve it (registry first, then realize from its
+ * guest backing using any live task's page table) and enqueue it on the
+ * frame-blit queue so the next display submit composites it. Crash-proof:
+ * unresolved ids just log. */
+static void lagfx_display_present_surface_by_id(lagfx_protocol_t *p,
+                                                uint32_t display_index,
+                                                uint32_t surface_id,
+                                                const char *who) {
+#ifdef LAGFX_HAVE_VULKAN
+    (void)display_index;
+    if (!p || surface_id == 0u) return;
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    if (!dev || !dev->vk) return;
+    lagfx_vk_iosurface_t *ios = NULL;
+    lagfx_resource_entry_t *re = lagfx_resource_lookup(&p->resources, surface_id,
+                                                       p->current_chan_id);
+    if (!re) re = lagfx_resource_lookup(&p->resources, surface_id, 0u);
+    if (re && re->host_handle)
+        ios = (lagfx_vk_iosurface_t *)re->host_handle;
+    if (!ios) {
+        for (uint32_t t = 0; t < LAGFX_MAX_TASKS; t++) {
+            if (!p->tasks[t].live) continue;
+            ios = lagfx_texture_realize(p, &p->tasks[t], dev->vk, surface_id);
+            break;
+        }
+    }
+    if (ios && ios->image != VK_NULL_HANDLE) {
+        bool queued = false;
+        for (uint32_t qi = 0; qi < p->frame_blit_n; qi++)
+            if (p->frame_blit_queue[qi] == (uintptr_t)ios) { queued = true; break; }
+        if (!queued && p->frame_blit_n < 16u)
+            p->frame_blit_queue[p->frame_blit_n++] = (uintptr_t)ios;
+        LAGFX_LOG("%s: PRESENTQ surface=0x%x %ux%u queued=%u qn=%u",
+                  who, surface_id, ios->width, ios->height,
+                  queued ? 0u : 1u, p->frame_blit_n);
+    } else {
+        LAGFX_LOG("%s: PRESENTQ surface=0x%x UNRESOLVED", who, surface_id);
+    }
+#else
+    (void)p; (void)display_index; (void)surface_id; (void)who;
+#endif
+}
 
 lagfx_handler_status_t lagfx_display_ack(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) {
@@ -513,8 +559,7 @@ lagfx_handler_status_t lagfx_display_vchan_present(
     LAGFX_LOG("vchan_present: display[%u] surface=0x%x plane=%u stamp=0x%08x",
               display_index, surface_id, plane_id, hdr->stamp);
 
-    /* TODO: Call lagfx_vk_display_present_surface() for Vulkan scanout */
-    LAGFX_WARN("vchan_present: Vulkan scanout not wired (Stage 80 blocker)");
+    lagfx_display_present_surface_by_id(p, display_index, surface_id, "vchan_present");
 
     return LAGFX_HANDLER_OK;
 }
@@ -537,8 +582,7 @@ lagfx_handler_status_t lagfx_display_vchan_present_gamma(
     LAGFX_LOG("vchan_present_gamma: display[%u] surface=0x%x gamma_len=%u stamp=0x%08x",
               display_index, surface_id, lagfx_le32(hdr->payload + 20), hdr->stamp);
 
-    /* TODO: Upload gamma table and call lagfx_vk_display_present_surface() */
-    LAGFX_WARN("vchan_present: Vulkan scanout not wired (Stage 80 blocker)");
+    lagfx_display_present_surface_by_id(p, display_index, surface_id, "vchan_present_gamma");
 
     return LAGFX_HANDLER_OK;
 }

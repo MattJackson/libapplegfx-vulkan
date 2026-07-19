@@ -101,25 +101,43 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
             lagfx_display_cursor_glyph(p, hdr);
             break;
         case LAGFX_OP_DISPLAY_TRANSACTION2_DEP: /* 0x15 */
-            /* RE: pre-refactor lagfx_op_display_transaction2_dep (deprecated
-             * variant of 0x16; same dispatch). Log + ack. */
-            LAGFX_LOG("display: 0x15 CmdDisplayTransaction2 (dep) ch=%u stamp=0x%08x payload=%u",
-                      (unsigned)p->current_chan_id, hdr->stamp,
+        case LAGFX_OP_DISPLAY_TRANSACTION3: {  /* 0x16 — surface attach for present */
+            /* Wire RE: pre-refactor shapes were 12+32*N (legacy) or 16+44*N
+             * (layered). Dump the raw payload + trial-parse both shapes so the
+             * live attachment list (surface ids/GPAs) is visible. */
+            LAGFX_LOG("display: 0x%02x Transaction ch=%u stamp=0x%08x payload=%u",
+                      hdr->opcode, (unsigned)p->current_chan_id, hdr->stamp,
                       (unsigned)hdr->payload_size);
+            if (hdr->payload && hdr->payload_size) {
+                uint32_t psz = hdr->payload_size;
+                char hx[300]; size_t hn = 0;
+                for (uint32_t k = 0; k < psz && k < 96u && hn + 3 < sizeof(hx); k++)
+                    hn += (size_t)snprintf(hx + hn, sizeof(hx) - hn, "%02x ",
+                                           hdr->payload[k]);
+                LAGFX_LOG("display: TXNRAW len=%u: %s", psz, hx);
+                if (psz >= 12u && (psz - 12u) % 32u == 0u) {
+                    uint32_t n = (psz - 12u) / 32u;
+                    for (uint32_t e = 0; e < n && e < 6u; e++) {
+                        const uint8_t *ent = hdr->payload + 12u + (size_t)e * 32u;
+                        LAGFX_LOG("display: TXN legacy[%u/%u] w0=0x%x w1=0x%x w2=0x%x w3=0x%x q2=0x%llx",
+                                  e, n, lagfx_le32(ent), lagfx_le32(ent+4),
+                                  lagfx_le32(ent+8), lagfx_le32(ent+12),
+                                  (unsigned long long)lagfx_le64(ent+16));
+                    }
+                }
+                if (psz >= 16u && (psz - 16u) % 44u == 0u) {
+                    uint32_t n = (psz - 16u) / 44u;
+                    for (uint32_t e = 0; e < n && e < 6u; e++) {
+                        const uint8_t *ent = hdr->payload + 16u + (size_t)e * 44u;
+                        LAGFX_LOG("display: TXN layered[%u/%u] w0=0x%x w1=0x%x w2=0x%x w3=0x%x q2=0x%llx",
+                                  e, n, lagfx_le32(ent), lagfx_le32(ent+4),
+                                  lagfx_le32(ent+8), lagfx_le32(ent+12),
+                                  (unsigned long long)lagfx_le64(ent+16));
+                    }
+                }
+            }
             break;
-        case LAGFX_OP_DISPLAY_TRANSACTION3:  /* 0x16 */
-            /* RE: command-buffer-format.md §3.10 — surface attach for
-             * present. Pre-refactor lagfx_op_display_transaction3 had
-             * a 12 + 32*N (legacy) or 16 + 44*N (layered) shape parser
-             * that fed compositor state; the post-refactor present
-             * path lives in src/handlers/display/display.c (vchan
-             * opcode 0x06). When SkyLight starts driving the §3
-             * compositor path this needs reinstatement. */
-            LAGFX_LOG("display: 0x16 CmdDisplayTransaction3 ch=%u stamp=0x%08x payload=%u "
-                      "(log-ack; TODO: Stage 30 compositor reinstatement)",
-                      (unsigned)p->current_chan_id, hdr->stamp,
-                      (unsigned)hdr->payload_size);
-            break;
+        }
         case LAGFX_OP_DISPLAY_SET_SHARED_PAGE: /* 0x17 */
             /* RE: command-buffer-format.md §3.6 — install the vblank
              * mailbox page. Pre-refactor parsed `u64 page_va` at +0
