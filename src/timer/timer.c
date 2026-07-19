@@ -9,6 +9,12 @@
 #include "timer.h"
 #include "libapplegfx-vulkan.h"
 #include "../common/log.h"
+#ifdef LAGFX_HAVE_VULKAN
+#include "../device.h"
+#include "../protocol/state.h"
+#include "../vulkan/iosurface.h"
+#include <stdlib.h>
+#endif
 
 #define LAGFX_MAX_DISPLAYS 8u
 
@@ -33,11 +39,23 @@ bool lagfx_timer_tick_vblank(
      * the composite draw burst has created + filled the per-pass views. */
     if (getenv("LAGFX_DUMP_PASSES")) {
         extern void lagfx_dump_all_passes(lagfx_protocol_t *, lagfx_display_t *);
-        static uint32_t tk = 0; static int done = 0;
-        if (!done && ++tk == 720u) {
-            done = 1;
-            lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
-            if (p) lagfx_dump_all_passes(p, dev->displays[0]);
+        static int done = 0; static uint32_t settle = 0;
+        lagfx_protocol_t *p = (lagfx_protocol_t *)dev->protocol_state;
+        if (!done && p) {
+            /* Content-driven: the composite burst creates a 1280x1024 per-pass
+             * view. Wait until one exists, then let it settle a few frames so
+             * the whole burst finishes, then dump every surface once. */
+            int have_view = 0;
+            for (uint32_t r = 0; r < p->resources.count; r++) {
+                lagfx_vk_iosurface_t *io =
+                    (lagfx_vk_iosurface_t *)p->resources.entries[r].host_handle;
+                if (io && io->image != VK_NULL_HANDLE
+                    && io->width == 1280u && io->height == 1024u) { have_view = 1; break; }
+            }
+            if (have_view && ++settle >= 120u) {
+                done = 1;
+                lagfx_dump_all_passes(p, dev->displays[0]);
+            }
         }
     }
 #endif
