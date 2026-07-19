@@ -1221,6 +1221,41 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
         vacc += rsize;
     }
     if (filled == 0u) { free(vdata); return VK_NULL_HANDLE; }
+    /* M2c FIXEDVTX (LAGFX_M2_FIXEDVTX): some composite pipelines' vertex streams
+     * are 16.16 FIXED-POINT pixel coords, not float32 — live VBDBG/VTX24 decode
+     * (2026-07-18): ref=0x16's "denormal garbage" dwords are 0x00650000=101.0,
+     * 0x006D0000=109.0; ref=0x18's "-nan" is 0xFFC00000=-64.0 — all clean 16.16
+     * integers, while ref=0x14 is genuine float32 (0.0/6.0 tiles). Fetched as
+     * float they're denormals/NaN → degenerate geometry → ZERO coverage (the M2b
+     * 100%-teal result). Detect per upload: sample nonzero dwords; if most are
+     * ABSURD as f32 (denormal/NaN/huge) but PLAUSIBLE as 16.16 (|v| ≤ 32768),
+     * convert every dword (int32_t)d/65536.0f. The MTXSCAN viewport matrix maps
+     * the resulting pixel coords to NDC. Gated; float32 streams (0x14) are left
+     * untouched by the signature test. */
+    if (getenv("LAGFX_M2_FIXEDVTX")) {
+        uint32_t sampled = 0, absurd = 0;
+        for (uint32_t o = 0; o + 4u <= filled && sampled < 64u; o += 4u) {
+            uint32_t d = lagfx_le32(vdata + o);
+            if (d == 0u) continue;
+            sampled++;
+            float f; memcpy(&f, &d, 4);
+            float mag = f < 0 ? -f : f;
+            int f32_absurd = (f != f) || mag < 1e-30f || mag > 1.0e6f;
+            float fx = (float)(int32_t)d / 65536.0f;
+            float fxmag = fx < 0 ? -fx : fx;
+            if (f32_absurd && fxmag <= 32768.0f) absurd++;
+        }
+        if (sampled >= 4u && absurd * 10u >= sampled * 6u) {  /* ≥60% absurd-as-f32 */
+            for (uint32_t o = 0; o + 4u <= filled; o += 4u) {
+                uint32_t d = lagfx_le32(vdata + o);
+                float fx = (float)(int32_t)d / 65536.0f;
+                uint32_t bits; memcpy(&bits, &fx, 4);
+                lagfx_put_le32(vdata + o, bits);
+            }
+            LAGFX_LOG("FIXEDVTX ref=0x%x: converted 16.16 fixed -> float (%u/%u sampled absurd)",
+                      vbs->ref, absurd, sampled);
+        }
+    }
     VkBuffer vb = VK_NULL_HANDLE;
     if (lagfx_vk_make_host_storage_buffer(vk, vdata, want, &vb, out_mem) != LAGFX_OK) {
         free(vdata);
