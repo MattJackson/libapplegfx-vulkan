@@ -513,6 +513,25 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                   task->scissor_w, task->scissor_h);
     }
 
+    /* PASSGRAPH: the dependency DAG. Each draw WRITES target_ref and READS the
+     * bound fragment_textures — dump both edges so the forest-source chain and
+     * the terminal (target=scanout) pass are visible in one boot. Gated. */
+    if (getenv("LAGFX_PASSGRAPH")) {
+        char rd[128]; size_t rn = 0; uint32_t nread = 0;
+        for (uint32_t s = 0; s < LAGFX_MAX_BINDING_SLOTS && rn + 8 < sizeof(rd); s++) {
+            if (!task->bindings.fragment_textures[s].valid) continue;
+            rn += (size_t)snprintf(rd + rn, sizeof(rd) - rn, "0x%x,",
+                                   task->bindings.fragment_textures[s].ref);
+            nread++;
+        }
+        if (rn == 0) { rd[0] = '-'; rd[1] = 0; }
+        LAGFX_LOG("PASSGRAPH t%u WRITES tgt=0x%x pipe=0x%x xlated=%d READS[%u]=%s scissor=%ux%u",
+                  task->id, task->render_pass_desc.target_ref,
+                  task->pending_pipeline.reference,
+                  task->pending_pipeline.translated ? 1 : 0,
+                  nread, rd, task->scissor_w, task->scissor_h);
+    }
+
     if (resource_using) {
         /* Bind the guest's storage buffers into a descriptor set matching the
          * reflected layout, then draw the guest geometry. Failure → skip (no crash). */
