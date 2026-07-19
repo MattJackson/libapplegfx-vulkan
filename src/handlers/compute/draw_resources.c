@@ -275,6 +275,35 @@ static uint32_t photo_correlation_score(const uint8_t *buf, uint32_t bytes) {
     return 1000u - (mean * 1000u) / 128u;
 }
 
+/* DIRECT raw read of a type-0x03 texture's placement backing (each entry's
+ * pfn<<12 read straight via the shell — identical to a QMP pmemsave), bypassing
+ * the READARB float-plausibility arbitration which is meaningless for photo
+ * textures and can pick a black VA read over the content-rich raw one. Returns
+ * bytes filled. */
+static uint32_t lagfx_direct_read_backing(lagfx_protocol_t *p, lagfx_task_entry_t *task,
+                                          uint32_t tref, uint32_t want, uint8_t *out) {
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    if (!dev || !dev->desc.shell.read_memory) return 0u;
+    uint8_t ttype = 0; uint64_t tva = 0, tgpa = 0;
+    if (!lagfx_resolve_object_data(p, task, tref, &ttype, &tva, &tgpa) || tva == 0u)
+        return 0u;
+    uint8_t desc[64];
+    if (!lagfx_task_read_virtual(p, task, tva, sizeof(desc), desc)) return 0u;
+    uint32_t filled = 0;
+    for (int e = 0; e < 4 && filled < want; e++) {
+        uint64_t rsize = lagfx_le64(desc + (size_t)e * 16u);
+        uint64_t pfn = lagfx_le64(desc + (size_t)e * 16u + 8u) & 0xffffffffull;
+        if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
+        uint32_t chunk = (rsize < (uint64_t)(want - filled))
+                             ? (uint32_t)rsize : (want - filled);
+        if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
+                                         (pfn << 12), chunk, out + filled))
+            break;
+        filled += chunk;
+    }
+    return filled;
+}
+
 /* Distinct-colour richness of a BGRA buffer (5-bit-per-channel buckets, capped
  * at 256). A photo scores ~256; a solid/black fill scores 1-2. Used to pick the
  * populated buffer of a multi-buffered (triple-buffered) IOSurface. */
@@ -344,6 +373,24 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     if (got1 && sc1 >= sc0) { pick = via; how = "va"; nb = nb1; }
     else if (got0)          { pick = raw; how = "raw"; nb = nb0; }
     if (!pick || (pick == via ? sc1 : sc0) == 0u) { free(raw); free(via); return NULL; }
+    /* Direct raw read (pmemsave-equivalent) — for a photo texture this holds real
+     * content where the arbitrated raw/VA reads came back black. Score by colour
+     * richness (float-plausibility is meaningless here) and prefer it when richer. */
+    uint8_t *dir = calloc(1u, want);
+    if (dir) {
+        uint32_t dgot = lagfx_direct_read_backing(p, task, tref, want, dir);
+        uint32_t drich = dgot ? chunk_color_richness(dir, want) : 0u;
+        uint32_t prich = chunk_color_richness(pick, want);
+        if (dgot && drich > prich) {
+            free(raw); free(via); raw = dir; via = NULL; dir = NULL;
+            pick = raw; how = "direct";
+            nb = 0; for (uint32_t o = 0; o + 4u <= want; o += 4u)
+                if (raw[o]|raw[o+1]|raw[o+2]) nb++;
+            LAGFX_LOG("TEXREAL: ref=0x%x DIRECT read wins (rich %u > %u nonblack=%u)",
+                      tref, drich, prich, nb);
+        }
+        free(dir);
+    }
 
     /* MULTI-BUFFER (triple-buffered IOSurface): the placement descriptor holds N
      * same-size buffers (e.g. 0x10 = 3x5 MiB). The scatter-gather read concatenates
@@ -543,6 +590,22 @@ void lagfx_texture_refresh(lagfx_protocol_t *p, lagfx_task_entry_t *task,
     for (uint32_t o = 0; o + 4u <= want; o += 4u) {
         if (raw[o] | raw[o+1] | raw[o+2]) nb0++;
         if (via[o] | via[o+1] | via[o+2]) nb1++;
+    }
+    /* Direct raw read (pmemsave-equivalent) — the wallpaper content lives at the
+     * declared backing but the arbitrated reads return black; prefer direct when
+     * richer (colour buckets). */
+    {
+        uint8_t *dir = calloc(1u, want);
+        if (dir) {
+            uint32_t dgot = lagfx_direct_read_backing(p, task, tref, want, dir);
+            uint32_t dnb = 0;
+            if (dgot) for (uint32_t o = 0; o + 4u <= want; o += 4u)
+                if (dir[o]|dir[o+1]|dir[o+2]) dnb++;
+            if (dgot && dnb > nb0 && dnb > nb1) {
+                free(raw); raw = dir; dir = NULL; got0 = dgot; nb0 = dnb; how0 = "direct";
+            }
+            free(dir);
+        }
     }
     uint8_t *pick = NULL; const char *how = "none";
     if (got1 && nb1 >= nb0)      { pick = via; how = "va"; }
