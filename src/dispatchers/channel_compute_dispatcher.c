@@ -185,6 +185,16 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                           hdr->stamp, flag, (unsigned long long)gpa,
                           (unsigned long long)sz,
                           sz >= 4u*1024u*1024u ? " <== BIG" : "");
+                if (sz >= 4u*1024u*1024u && gpa != 0u) {
+                    bool known = false;
+                    for (uint32_t bm = 0; bm < p->big_maps_n && bm < 16u; bm++)
+                        if (p->big_maps[bm].gpa == gpa) { known = true; break; }
+                    if (!known && p->big_maps_n < 16u) {
+                        p->big_maps[p->big_maps_n].gpa = gpa;
+                        p->big_maps[p->big_maps_n].size = sz;
+                        p->big_maps_n++;
+                    }
+                }
             } else {
                 LAGFX_LOG("compute: 0x39 CmdMapMemoryImmediate ch=%u stamp=0x%08x payload_size=%u",
                           (unsigned)p->current_chan_id, hdr->stamp,

@@ -291,6 +291,40 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     if (got1 && sc1 >= sc0) { pick = via; how = "va"; nb = nb1; }
     else if (got0)          { pick = raw; how = "raw"; nb = nb0; }
     if (!pick || (pick == via ? sc1 : sc0) == 0u) { free(raw); free(via); return NULL; }
+    /* Wallpaper recovery: a large surface (wallpaper-sized) whose placement
+     * read is fully black lives elsewhere — the guest CPU-decodes it into one
+     * of the 0x39-mapped guest-physical regions. Scan those for the richest
+     * (photo-content) region and bind THAT instead. */
+    if (nb == 0u && want >= 2u * 1024u * 1024u && p->big_maps_n > 0u) {
+        lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+        if (dev && dev->desc.shell.read_memory) {
+            uint8_t *best = NULL; uint32_t best_nb = 0;
+            uint8_t *scan = calloc(1u, want);
+            for (uint32_t bm = 0; scan && bm < p->big_maps_n && bm < 16u; bm++) {
+                if (p->big_maps[bm].size < want) continue;
+                if (!dev->desc.shell.read_memory(dev->desc.shell.opaque,
+                                                 p->big_maps[bm].gpa, want, scan))
+                    continue;
+                uint32_t cnt = 0;
+                for (uint32_t o = 0; o + 4u <= want; o += 256u)
+                    if (scan[o] | scan[o+1] | scan[o+2]) cnt++;
+                if (cnt > best_nb) {
+                    best_nb = cnt;
+                    if (!best) best = calloc(1u, want);
+                    if (best) memcpy(best, scan, want);
+                }
+            }
+            free(scan);
+            if (best && best_nb > 0u) {
+                free(raw); free(via);
+                raw = best; via = NULL; pick = best; how = "mapmem"; nb = best_nb;
+                LAGFX_LOG("TEXREAL: ref=0x%x wallpaper recovered from 0x39 map (nonblack~%u)",
+                          tref, best_nb);
+            } else {
+                free(best);
+            }
+        }
+    }
     /* dims: first preferred width dividing the pixel count with sane aspect */
     uint32_t npx = want / 4u, W = 0, H = 0;
     static const uint32_t widths[] = {64u, 128u, 32u, 256u, 16u, 512u,

@@ -403,6 +403,13 @@ typedef struct lagfx_protocol {
     uintptr_t frame_blit_queue[16];
     uint32_t  frame_blit_n;
 
+    /* 0x39 MapMemoryImmediate big regions (>=4 MiB). The wallpaper IOSurface's
+     * pixels are written by the guest into one of these guest-physical regions,
+     * NOT the placement descriptor its ref resolves to (which reads black). The
+     * texture-realize path scans these for the photo-rich one. */
+    struct { uint64_t gpa; uint64_t size; } big_maps[16];
+    uint32_t big_maps_n;
+
     /* One-shot / capped diagnostic flags and counters (protocol-owned so
      * handlers stay free of file-static state). */
     struct {
