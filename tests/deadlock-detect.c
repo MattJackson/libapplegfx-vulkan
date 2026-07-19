@@ -3,7 +3,7 @@
  * tests/m5-deadlock-detect.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Regression suite for ABBA deadlock between WindowServer and DisplayPipe.
  * Tests timing behavior that causes MTL device creation to hang forever.

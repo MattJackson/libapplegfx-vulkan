@@ -3,7 +3,7 @@
  * src/common/perf.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Monotonic nanosecond clock for the env-gated (LAGFX_PERF) frame-time
  * instrumentation that feeds the lavapipe-vs-GPU-backend decision. Header-only.

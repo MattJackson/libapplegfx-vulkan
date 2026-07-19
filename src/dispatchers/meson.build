@@ -1,7 +1,7 @@
 # src/dispatchers/meson.build — Dispatcher routing sources
 #
 # Copyright © 2026 Matthew Jackson
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 
 lagfx_sources += files(
   'primary_ring_door_dispatcher.h',

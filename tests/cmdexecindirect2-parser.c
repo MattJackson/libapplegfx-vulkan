@@ -3,7 +3,7 @@
  * tests/handler-cmdexecindirect2-parse.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Small testable unit: validates outer-payload parsing for opcode 0x37
  */

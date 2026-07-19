@@ -3,7 +3,7 @@
  * src/protocol/render_pass.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Wire-format struct and parsed representation for the
  * PGCmdDescribeRenderPass inner opcode (0x1a), the 584-byte POD

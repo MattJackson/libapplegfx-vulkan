@@ -3,7 +3,7 @@
  * tests/air2spv-vertex-attribute-input-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Regression guard for the vertex-input ABI fix. The translator used to
  * HARDCODE vertex arg 0 = vertex_id and bind it to

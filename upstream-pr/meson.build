@@ -1,6 +1,6 @@
 project('libapplegfx-vulkan', 'c',
   version : '0.0.1',
-  license : 'AGPL-3.0-or-later',
+  license : 'MIT',
   default_options : [
     'c_std=c11',
     'warning_level=2',

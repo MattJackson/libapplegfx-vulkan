@@ -3,7 +3,7 @@
  * tests/air2spv-vector-shuffle-emit-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  */
 
 #include "air2spv/emit_vector_shuffle.h"

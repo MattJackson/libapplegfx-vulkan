@@ -3,7 +3,7 @@
  * examples/air-bcdump.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Standalone dump tool: loads any .air.bc file via lagfx_air_module_open
  * and prints a bcanalyzer-like structural summary, plus the decoded

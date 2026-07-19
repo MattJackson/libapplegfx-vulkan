@@ -3,7 +3,7 @@
 # src/shaders/generate_stub_spirv.py
 #
 # Copyright © 2026 Matthew Jackson
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # Emits minimal-but-valid SPIR-V "passthrough" modules for each
 # (shader, stage) pair in the Phase 3.C catalog. The generated

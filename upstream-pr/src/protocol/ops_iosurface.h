@@ -3,7 +3,7 @@
  * src/protocol/ops_iosurface.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Log+ack handlers for the IOSurface cross-process back-buffer opcodes
  * that WindowServer emits during M6 startup. See re-followup-spec-

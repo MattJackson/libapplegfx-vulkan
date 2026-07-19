@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* SPDX-License-Identifier: MIT */
 /*
  * libapplegfx-vulkan — descriptor-set + pipeline layout from SPIR-V reflection
  * src/vulkan/descriptor_layout.c

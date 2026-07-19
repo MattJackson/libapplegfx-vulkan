@@ -3,7 +3,7 @@
  * tests/memory-coherence.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Proves that lagfx_task_map_host_memory aliases the host pointer's
  * pages into the task VA range, rather than copying. Under the

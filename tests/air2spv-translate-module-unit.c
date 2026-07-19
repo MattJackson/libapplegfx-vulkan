@@ -3,7 +3,7 @@
  * tests/air2spv-translate-module-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Walks triangle.air.bc through the translator skeleton:
  *   1. lagfx_air_module_open (Phase 1-3)

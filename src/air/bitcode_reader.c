@@ -3,7 +3,7 @@
  * src/air/bitcode_reader.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Phase 1 implementation. Parses the LLVM bitcode wrapper + the
  * module-level blocks. Stops at FUNCTION_BLOCK bodies (Phase 2 work).

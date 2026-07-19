@@ -4,7 +4,7 @@
  * src/air2spv/emit_constant_float.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Sixth reference emitter. Demonstrates building a vec4 const from
  * four DISTINCT scalar float constants (vs. emit_render_target which

@@ -3,7 +3,7 @@
  * src/air2spv/emit_position.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef LIBAPPLEGFX_AIR2SPV_EMIT_POSITION_H

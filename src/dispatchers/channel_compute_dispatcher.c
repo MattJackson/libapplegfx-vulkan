@@ -3,7 +3,7 @@
  * src/dispatchers/channel_compute_dispatcher.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Per-channel ring drain for compute vchans. Each child channel
  * (chan_id 1..4) has its own command ring registered via

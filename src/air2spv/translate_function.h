@@ -3,7 +3,7 @@
  * src/air2spv/translate_function.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Translates one AIR function body (a decoded FUNCTION_BLOCK) into a
  * complete Vulkan-compliant SPIR-V module. Composes the per-pattern

@@ -3,7 +3,7 @@
  * tests/air-bitcode-reader-metadata-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Phase 3 — module-level METADATA_BLOCK walker tests. Validates that
  * lagfx_air_module_open() decodes triangle's METADATA_STRINGS BLOB +

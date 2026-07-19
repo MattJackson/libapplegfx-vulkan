@@ -3,7 +3,7 @@
  * src/protocol/ops_display.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Real handlers for the display-pipe opcodes needed by M6 (login
  * screen render). Originally landed as Phase 2.A scaffolds; this

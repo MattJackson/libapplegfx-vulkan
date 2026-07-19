@@ -3,7 +3,7 @@
  * tests/air2spv-buffer-arg-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Guards Metal constant/device BUFFER argument support (coverage audit
  * 2026-05-30, real SkyLight corpus). A `[[buffer(n)]]` arg is a struct

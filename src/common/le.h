@@ -3,7 +3,7 @@
  * src/common/le.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Per-byte LE readers for guest-protocol payloads. The macOS guest
  * is x86-64 (little-endian), but the readers are arch-neutral

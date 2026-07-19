@@ -3,7 +3,7 @@
  * src/protocol/fifo.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * The command header is 12 bytes (see opcodes.h and
  * re-followup-spec-gaps.md §5.1). The doorbell is a write-pointer

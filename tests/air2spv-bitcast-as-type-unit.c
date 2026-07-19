@@ -3,7 +3,7 @@
  * tests/air2spv-bitcast-as-type-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Guards numeric bitcasts (coverage audit 2026-05-30, corpus shader
  * 04_int_bitwise::bitcast_fragment, `as_type<uint>(float)` /

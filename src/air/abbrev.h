@@ -3,7 +3,7 @@
  * src/air/abbrev.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Abbreviations let the bitstream emitter compress common record
  * shapes. A DEFINE_ABBREV pattern specifies a sequence of operand

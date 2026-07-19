@@ -102,4 +102,5 @@ The `upstream-pr/` subdirectory holds code intended for future submission to ext
 
 ## License
 
-AGPL-3.0. Network use counts as distribution. See `LICENSE`.
+MIT. See `LICENSE`. By contributing you agree your contribution is
+licensed under the same terms.

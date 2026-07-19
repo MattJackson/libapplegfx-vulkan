@@ -3,7 +3,7 @@
  * src/common/crash_handler.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Installs a SIGSEGV/SIGBUS/SIGABRT handler that logs the faulting
  * instruction pointer + nearest symbol (via dladdr) to the lagfx log,

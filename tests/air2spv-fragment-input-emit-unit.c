@@ -3,7 +3,7 @@
  * tests/air2spv-fragment-input-emit-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Validates that lagfx_air2spv_emit_fragment_input_stub() produces a
  * Vulkan-compliant SPIR-V module with fragment-stage input + output.

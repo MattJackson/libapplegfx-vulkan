@@ -3,7 +3,7 @@
  * src/vulkan/pipeline.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Creates a built-in "passthrough" graphics pipeline from the clear
  * shader pair's SPIR-V (fullscreen triangle vertex + solid-color

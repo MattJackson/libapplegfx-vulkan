@@ -3,7 +3,7 @@
  * tests/lifecycle-smoke.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Exercises Phase 1.A.1 device/display/mmio no-op objects. No
  * Vulkan, no protocol — just: can we new/free/reset a device, attach

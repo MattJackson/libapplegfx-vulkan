@@ -3,7 +3,7 @@
  * tests/air2spv-type-section-ordering-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * SPIR-V §2.4 requires every OpType and OpConstant declaration to appear
  * BEFORE the first OpFunction (in the "types, variables and constants"

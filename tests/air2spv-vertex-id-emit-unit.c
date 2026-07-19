@@ -3,7 +3,7 @@
  * tests/air2spv-vertex-id-emit-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Same shape as air2spv-position-emit-unit but for the vertex_id +
  * Position-output emitter. Confirms the spv_builder scaffolds for

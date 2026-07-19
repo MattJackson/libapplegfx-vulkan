@@ -3,7 +3,7 @@
  * src/protocol/object_resolver.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Implementation of lagfx_lookup_function_bytes() and
  * lagfx_lookup_pipeline_function_refs(). Cites

@@ -3,7 +3,7 @@
  * tests/air2spirv.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Exercises src/air2spirv/ with BOTH synthesised fixtures and a
  * real-bytes copy of Apple's `default.metallib` (shipped at

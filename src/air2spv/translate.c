@@ -3,7 +3,7 @@
  * src/air2spv/translate.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * MVP: uses Phase 3 named-metadata helpers to identify the entry-point
  * stage, then dispatches to a reference emitter that produces a

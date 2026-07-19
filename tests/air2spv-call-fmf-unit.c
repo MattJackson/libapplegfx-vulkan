@@ -3,7 +3,7 @@
  * tests/air2spv-call-fmf-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Regression guard for the CALL_FMF decode bug. An AIR CALL record's
  * cc field (llvm::CallMarkersFlags): bit 15 = CALL_EXPLICIT_TYPE,

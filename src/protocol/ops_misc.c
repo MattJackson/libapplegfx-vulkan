@@ -3,7 +3,7 @@
  * src/protocol/ops_misc.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Handlers:
  *

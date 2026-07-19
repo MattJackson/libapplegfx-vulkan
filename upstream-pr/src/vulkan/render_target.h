@@ -3,7 +3,7 @@
  * src/vulkan/render_target.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Internal header. Not installed.
  *

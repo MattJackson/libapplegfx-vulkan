@@ -3,7 +3,7 @@
  * src/air/bitstream.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * The LLVM Bitstream format is a self-describing bit-packed container.
  * https://llvm.org/docs/BitCodeFormat.html#bitstream-format

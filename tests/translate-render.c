@@ -3,7 +3,7 @@
  * tests/translate-render.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Exercises src/translate/render_encoder.c. Two cases, gated
  * differently:

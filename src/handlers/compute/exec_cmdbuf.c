@@ -3,7 +3,7 @@
  * src/handlers/compute/exec_cmdbuf.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * CmdExecIndirect2 outer-payload handler + Stage-20% inner-PGCmdHeader
  * observation walker. The outer payload layout is RE-confirmed

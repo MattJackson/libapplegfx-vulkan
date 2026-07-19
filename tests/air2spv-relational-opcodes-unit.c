@@ -3,7 +3,7 @@
  * tests/air2spv-relational-opcodes-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Compile-time guard: pins every comparison (§3.32.15), shift and
  * bitwise (§3.32.14/§3.32.2) opcode constant in spv_builder.h to its

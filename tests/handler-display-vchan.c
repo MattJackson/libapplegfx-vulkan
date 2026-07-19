@@ -3,7 +3,7 @@
  * tests/handler-display-vchan.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Tests for display virtual channel handlers (channels 5+)
  */

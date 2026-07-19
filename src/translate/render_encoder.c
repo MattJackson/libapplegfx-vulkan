@@ -3,7 +3,7 @@
  * src/translate/render_encoder.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Implements the Phase 3.A skeleton. See render_encoder.h for the
  * overall design; this file is the straight-line impl.

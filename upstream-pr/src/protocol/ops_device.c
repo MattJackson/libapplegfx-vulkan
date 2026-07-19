@@ -3,7 +3,7 @@
  * src/protocol/ops_device.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Phase 1.A.2 real handlers for the device-lifecycle opcodes:
  *

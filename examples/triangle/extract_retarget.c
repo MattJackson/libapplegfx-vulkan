@@ -3,7 +3,7 @@
  * examples/triangle/extract_retarget.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Drives src/air2spirv/ end-to-end against a REAL metallib. Reads the
  * metallib file named on argv[1], extracts every function's LLVM

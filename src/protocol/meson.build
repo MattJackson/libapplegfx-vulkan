@@ -1,7 +1,7 @@
 # src/protocol/meson.build — Protocol state machine sources
 #
 # Copyright © 2026 Matthew Jackson
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 
 lagfx_sources += files(
   'state.h',

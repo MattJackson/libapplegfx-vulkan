@@ -3,7 +3,7 @@
  * tests/air2spv-guarded-loop-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * REGRESSION GUARD for the 4-block "guarded rotated loop" — the shape
  * `xcrun metal` emits for a `while (cond) {...}` (or a for-loop with a

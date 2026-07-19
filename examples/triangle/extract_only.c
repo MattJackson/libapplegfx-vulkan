@@ -3,7 +3,7 @@
  * examples/triangle/extract_only.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Drives src/air2spirv/metallib_extract to extract AIR bitcode from a
  * metallib file, writing one .air.bc file per function to the output

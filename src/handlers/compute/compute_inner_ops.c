@@ -3,7 +3,7 @@
  * src/handlers/compute/compute_inner_ops.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Architecture: encType=0 / encType=1 segments arrive via
  * exec_cmdbuf.c::inner_walk_segment. This file is the dispatch

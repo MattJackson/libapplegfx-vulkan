@@ -3,7 +3,7 @@
  * ParavirtualizedGraphics framework, Vulkan backend.
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * === Status: Phase 1.A.1 — no-op scaffolding ===================
  *

@@ -3,7 +3,7 @@
 # src/shaders/embed_spirv.py
 #
 # Copyright © 2026 Matthew Jackson
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # Converts a set of .spv files into a single generated C source
 # file that declares each blob as a static const uint8_t[] plus a

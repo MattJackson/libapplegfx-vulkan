@@ -4,7 +4,7 @@
  * src/air2spv/emit_texture_sample.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Seventh reference emitter. Lands Pattern F: a fragment shader that
  * declares a separate 2D `texture2D` + `sampler` (not a combined

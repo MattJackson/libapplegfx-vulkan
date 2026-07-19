@@ -4,7 +4,7 @@
  * src/air2spv/emit_unop.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Eleventh reference emitter. Demonstrates two unary float patterns
  * in a single fragment shader:

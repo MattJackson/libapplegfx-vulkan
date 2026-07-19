@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* SPDX-License-Identifier: MIT */
 #include "air2spirv/shader_cache.h"
 #include "common/log.h"
 

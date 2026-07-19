@@ -3,7 +3,7 @@
  * tests/exec-cmdbuf-translation.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Regression test for commit 3d9cf76 (exec_cmdbuf: page-walked translation).
  * Validates that multi-page cmdbufs with non-contiguous physical pages are

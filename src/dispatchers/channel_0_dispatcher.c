@@ -3,7 +3,7 @@
  * src/dispatchers/channel_0_dispatcher.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Drains the root command ring on a BAR0+0x1008 doorbell. read_ptr /
  * write_ptr are BYTE OFFSETS within the ring (not command counts);

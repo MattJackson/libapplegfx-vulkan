@@ -3,7 +3,7 @@
  * src/handlers/iosurface/iosurface.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Outer-FIFO opcodes 0x26..0x2a (CmdDeleteIOSurfaceBacking2 /
  * CmdCreateIOSurfaceBacking2 / CmdLookupIOSurface /

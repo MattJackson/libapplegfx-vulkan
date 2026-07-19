@@ -3,7 +3,7 @@
  * tests/blit-inner-ops-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Unit tests for blit inner opcodes in blit_inner_ops.c.
  * PURE UNIT TESTS — no Vulkan, no device_new(), no MMIO path. Standalone

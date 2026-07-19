@@ -3,7 +3,7 @@
  * src/vulkan/draw_record.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Implementation of lagfx_vk_draw_record_and_submit. Encapsulates the
  * one-shot draw path: allocate CB, begin, transition image layout,

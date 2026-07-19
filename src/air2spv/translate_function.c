@@ -3,7 +3,7 @@
  * src/air2spv/translate_function.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Architecture: see header. Composes the patterns from emit_position
  * (vertex Position output), emit_vertex_id (BuiltIn VertexIndex input),

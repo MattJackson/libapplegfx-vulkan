@@ -3,7 +3,7 @@
  * src/air2spv/emit_vertex_id.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Second reference emitter after air.position. Same minimal shape but
  * for an INPUT variable with BuiltIn VertexIndex decoration — the

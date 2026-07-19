@@ -3,7 +3,7 @@
  * src/air2spirv/shader_translate.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Implementation of shader_translate.h — glues the offline MSL→SPIR-V
  * pipeline (metallib_extract + bitcode_retarget + spv_signature_transform)

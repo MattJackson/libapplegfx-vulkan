@@ -3,7 +3,7 @@
  * src/version.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Values come from -D preprocessor flags set by meson.build
  * (LAGFX_VERSION_MAJOR/MINOR/PATCH and LAGFX_BUILD_INFO). Defaults

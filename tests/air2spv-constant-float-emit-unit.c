@@ -3,7 +3,7 @@
  * tests/air2spv-constant-float-emit-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Validates the multi-distinct-float OpConstantComposite emitter at
  * src/air2spv/emit_constant_float.c. Magic-header check + spirv-val

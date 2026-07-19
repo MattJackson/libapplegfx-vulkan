@@ -3,7 +3,7 @@
  * src/handlers/compute/task_translate.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Exports lagfx_task_translate() for VA→GPA translation via the
  * per-task radix tree (rooted at task->root_page_pfn). Used by Phase B

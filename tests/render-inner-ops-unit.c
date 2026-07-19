@@ -3,7 +3,7 @@
  * tests/render-inner-ops-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Unit tests for render inner opcodes in render_inner_ops.c.
  * PURE UNIT TESTS — no Vulkan, no device_new(), no MMIO path. Standalone

@@ -3,7 +3,7 @@
  * src/air2spirv/metallib_extract.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Implementation of the MTLB tagged-field container walker. See
  * metallib_extract.h for the API and paravirt-re/metallib-analysis.md

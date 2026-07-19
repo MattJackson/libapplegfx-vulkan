@@ -3,7 +3,7 @@
  * src/air2spv/emit_fragment_input.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Fourth reference emitter — fragment-stage INPUT shape. Emits a minimal
  * fragment shader that reads a vec2 from Location 0 (UV coordinates),

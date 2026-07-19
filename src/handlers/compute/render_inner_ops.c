@@ -3,7 +3,7 @@
  * src/handlers/compute/render_inner_ops.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * RE: paravirt-re/library/state-machines/render-decoder-handlers.tsv +
  *     pre-refactor src/protocol/render_opcodes.c at b652199~1 (stranded

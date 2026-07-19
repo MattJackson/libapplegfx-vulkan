@@ -3,7 +3,7 @@
  * tests/air2spv-spv-reflect-bindings-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Guards lagfx_spv_reflect_bindings() — the host uses it to build a
  * VkDescriptorSetLayout matching the bindings a translated SkyLight shader

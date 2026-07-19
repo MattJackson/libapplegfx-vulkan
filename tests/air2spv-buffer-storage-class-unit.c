@@ -3,7 +3,7 @@
  * tests/air2spv-buffer-storage-class-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Guards two REAL macOS-guest SkyLight shaders (captured live from a running
  * macOS 15.7.5 guest) whose `[[buffer(n)]]` args have an UNWRAPPED, non-struct

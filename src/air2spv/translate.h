@@ -3,7 +3,7 @@
  * src/air2spv/translate.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Phase 5 entry point. Walks a parsed AIR module (`lagfx_air_module_t *`)
  * and produces a Vulkan-compliant SPIR-V module.

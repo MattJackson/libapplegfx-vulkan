@@ -3,7 +3,7 @@
  * src/handlers/compute/compute_inner_ops.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * encType=0 (regular compute) and encType=1 (alt compute) inner
  * streams arrive via exec_cmdbuf.c::inner_walk_segment. This module

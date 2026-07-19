@@ -3,7 +3,7 @@
  * tests/air2spv-alu-binops-emit-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Validates the binary ALU ops reference emitter at src/air2spv/emit_alu_binops.c.
  * Exercises OpFAdd, OpFSub, OpFDiv, and OpDot (scalar result).

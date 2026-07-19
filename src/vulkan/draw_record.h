@@ -3,7 +3,7 @@
  * src/vulkan/draw_record.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Encapsulates the begin/bind/draw/end/submit bundle for one-shot
  * draw execution. Called by compute_inner_ops.c when a draw fires.

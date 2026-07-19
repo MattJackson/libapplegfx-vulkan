@@ -3,7 +3,7 @@
  * src/handlers/iosurface/iosurface.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * RE: paravirt-re/library/state-machines/PGFIFO-sub-channel-opcode-table.md
  *     re-followup-spec-gaps.md §14.5 (conjectured wire layouts),

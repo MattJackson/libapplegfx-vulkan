@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* SPDX-License-Identifier: MIT */
 #include "libapplegfx-vulkan.h"
 #include "air2spirv/shader_translate.h"
 #include <stdint.h>

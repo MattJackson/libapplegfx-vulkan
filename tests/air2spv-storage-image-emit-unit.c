@@ -3,7 +3,7 @@
  * tests/air2spv-storage-image-emit-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Validates the Pattern K (storage-image OpImageRead / OpImageWrite)
  * reference emitter at src/air2spv/emit_storage_image.c.

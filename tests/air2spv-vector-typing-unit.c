@@ -3,7 +3,7 @@
  * tests/air2spv-vector-typing-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Guards three coupled translator fixes (coverage audit 2026-05-30) that
  * together let general math vertex shaders translate cleanly:

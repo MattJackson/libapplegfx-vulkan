@@ -3,7 +3,7 @@
  * tests/air2spv-half-type-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Guards `half`/`half2`/`half4` support (coverage audit 2026-05-30, corpus
  * shader 05_math_intrinsics::half_fragment). Before the fix `emit_air_type`

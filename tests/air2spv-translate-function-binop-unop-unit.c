@@ -3,7 +3,7 @@
  * tests/air2spv-translate-function-binop-unop-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Exercises the new BINOP and UNOP handlers in translate_function.c by
  * running an existing AIR module (triangle.air.bc or Vfx fixture) through

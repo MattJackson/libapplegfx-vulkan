@@ -3,7 +3,7 @@
  * tests/stock-shaders.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Complement to tests/shader-catalog.c. That test proves the five
  * stock-shader SPIR-V blobs embedded at build time begin with the

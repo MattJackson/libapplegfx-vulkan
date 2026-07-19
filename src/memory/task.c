@@ -3,7 +3,7 @@
  * src/memory/task.c — memfd-based task memory management
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * The production target is Linux; on Darwin (used for ad-hoc dev
  * builds) memfd_create is absent and we fall back to mkstemp + unlink

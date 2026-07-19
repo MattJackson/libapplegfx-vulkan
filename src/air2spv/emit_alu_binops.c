@@ -4,7 +4,7 @@
  * src/air2spv/emit_alu_binops.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Produces a fragment shader that exercises four binary ALU opcodes:
  *

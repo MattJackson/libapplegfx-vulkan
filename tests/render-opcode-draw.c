@@ -3,7 +3,7 @@
  * tests/m4-render-opcode-draw.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Covers CmdDrawIndexedPrimitive (0x08), CmdDrawPrimitives (0x18),
  * CmdDrawPrimitivesInstanced (0x28). These are the most frequently used

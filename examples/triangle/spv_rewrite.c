@@ -3,7 +3,7 @@
  * examples/triangle/spv_rewrite.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Post-processor for the SPV blobs LLVM's SPIR-V backend produces
  * from Apple's retargeted bitcode. The `llc -mtriple=spirv-...`

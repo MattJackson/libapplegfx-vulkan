@@ -3,7 +3,7 @@
  * tests/triangle-lavapipe-e2e.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * End-to-end smoke for the MSL -> metallib -> AIR -> SPIR-V pipeline
  * staged in src/air2spirv + the companion examples/triangle/build_spirv.sh

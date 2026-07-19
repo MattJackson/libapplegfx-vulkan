@@ -3,7 +3,7 @@
  * src/protocol/resource_registry.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Maps (PGCmdReference, task_id) → host-side resource metadata.
  * Inner render opcodes use u32 refs to refer to pipelines, buffers,

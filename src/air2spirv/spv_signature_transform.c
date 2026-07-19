@@ -3,7 +3,7 @@
  * src/air2spirv/spv_signature_transform.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Implementation of spv_signature_transform.h. See that header's
  * extended doc-comment for the algorithm and scope.

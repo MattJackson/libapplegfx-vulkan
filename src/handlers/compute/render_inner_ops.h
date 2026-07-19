@@ -3,7 +3,7 @@
  * src/handlers/compute/render_inner_ops.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * The Render decoder (PGDeserializerRenderDecoder, encType=2 in the
  * inner-opcode wire format — see paravirt-re/library/state-machines/

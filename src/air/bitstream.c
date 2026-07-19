@@ -3,7 +3,7 @@
  * src/air/bitstream.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Implementation of the bit-level cursor primitives in bitstream.h.
  *

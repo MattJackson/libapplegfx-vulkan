@@ -3,7 +3,7 @@
  * src/handlers/compute/blit_inner_ops.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * RE: paravirt-re/library/state-machines/blit-decoder-handlers.tsv +
  *     pre-refactor src/protocol/blit_opcodes.c at b652199~1 (stranded

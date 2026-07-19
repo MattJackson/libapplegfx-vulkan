@@ -3,7 +3,7 @@
  * src/dispatchers/channel_display_dispatcher.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Display vchan drain. Each display channel (chan_id 5+) has its own
  * command ring registered via FIFORingDescriptor at:

@@ -3,7 +3,7 @@
  * src/protocol/object_resolver.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Helper API to walk the per-task heap slot table and resolve object IDs
  * to their backing bytes. Cites paravirt-re/library/phase_b_step5_v2_4_MTLB_CONFIRMED.md

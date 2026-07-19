@@ -3,7 +3,7 @@
  * src/protocol/fifo.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Skeleton only. The ring-buffer GPA is assembled at runtime from
  * three MMIO setter writes (setFifoBasePage:, setFifoLength:,

@@ -3,7 +3,7 @@
  * tests/gpu-cores.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Verifies the descriptor field `thread_count` is translated into the
  * process env var `LP_NUM_THREADS` by lagfx_device_new, per the spec

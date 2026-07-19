@@ -3,7 +3,7 @@
  * tests/shader-catalog.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Exercises src/shaders/catalog.c:
  *   1. Each of the 5 shader kinds in lagfx_shader_kind_t looks

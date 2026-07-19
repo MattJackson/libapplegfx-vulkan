@@ -3,7 +3,7 @@
  * src/air2spv/emit_vector_shuffle.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Ninth reference emitter. Lands Pattern H — OpVectorShuffle for
  * Metal/HLSL-style vector swizzles (.xyz, .rrr, .bgra, etc.).

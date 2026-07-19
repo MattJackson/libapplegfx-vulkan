@@ -3,7 +3,7 @@
  * src/handlers/compute/blit_inner_ops.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * The Blit decoder (PGDeserializerBlitDecoder, encType=4 in the
  * inner-opcode wire format) recognises 24 opcodes in the contiguous

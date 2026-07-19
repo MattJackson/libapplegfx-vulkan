@@ -3,7 +3,7 @@
  * src/display.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Phase 2.B display path: on create, allocate a VkImage-backed render
  * target sized to the display's first advertised mode; on Phase 2.B

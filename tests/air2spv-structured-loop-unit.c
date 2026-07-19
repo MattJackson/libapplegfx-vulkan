@@ -3,7 +3,7 @@
  * tests/air2spv-structured-loop-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * REGRESSION GUARD for multi-basic-block (structured) control flow.
  *

@@ -4,7 +4,7 @@
  * src/air2spv/emit_constant_float.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Produces a fragment shader writing vec4(0.2, 0.5, 0.8, 1.0) to
  * Location 0 via OpConstantComposite of four distinct float

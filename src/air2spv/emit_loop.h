@@ -3,7 +3,7 @@
  * src/air2spv/emit_loop.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Eleventh reference emitter. Lands Pattern J — structured `for` /
  * `while` loops via OpLoopMerge + Function-storage OpVariable.

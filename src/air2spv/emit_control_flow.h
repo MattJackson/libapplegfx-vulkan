@@ -4,7 +4,7 @@
  * src/air2spv/emit_control_flow.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Tenth reference emitter. Lands Pattern I — structured control
  * flow. Required for any AIR shader with a non-trivial body

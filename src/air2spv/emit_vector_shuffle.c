@@ -3,7 +3,7 @@
  * src/air2spv/emit_vector_shuffle.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Produces a fragment shader that reverses vec4(0.2, 0.5, 0.8, 1.0)
  * via OpVectorShuffle .wzyx, writing the result vec4(1.0, 0.8, 0.5, 0.2)

@@ -3,7 +3,7 @@
  * tests/skylight-lavapipe-render.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * "Beyond Stage 80" gate: proves a REAL Apple SkyLight compositor fragment
  * shader — translated by OUR clean-room AIR->SPIR-V pipeline (air2spv) —

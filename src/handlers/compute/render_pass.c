@@ -3,7 +3,7 @@
  * src/handlers/compute/render_pass.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * RE: paravirt-re/disasm-cache/arm64e-pvg/full-text.asm —
  *     -[PGDeserializerRenderDecoder

@@ -3,7 +3,7 @@
  * tests/vulkan-init.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Exercises src/vulkan/instance.c: creates a device via
  * lagfx_device_new, reaches into the internal state to confirm

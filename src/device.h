@@ -3,7 +3,7 @@
  * src/device.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Not installed. Only other translation units inside the library
  * should include this (display.c reaches into struct lagfx_device

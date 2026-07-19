@@ -3,7 +3,7 @@
  * src/handlers/compute/info_replies.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Restoration of the InfoDecoder reply path that was lost in the
  * 2026-05-12 dispatcher refactor (commit b652199 deleted

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* SPDX-License-Identifier: MIT */
 #ifndef LIBAPPLEGFX_AIR2SPIRV_SHADER_CACHE_H
 #define LIBAPPLEGFX_AIR2SPIRV_SHADER_CACHE_H
 

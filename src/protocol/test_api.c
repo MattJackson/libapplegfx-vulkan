@@ -3,7 +3,7 @@
  * src/protocol/test_api.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Minimal test API exports for lagfx_protocol_dispatch_one and mmio helpers.
  * These functions are called by tests (resource-registry.c, m4-doorbell-drain.c, etc.)

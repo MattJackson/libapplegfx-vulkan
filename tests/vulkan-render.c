@@ -3,7 +3,7 @@
  * tests/vulkan-render.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Exercises src/vulkan/render_target.c end-to-end:
  *   1. Allocate a 64x64 BGRA8 render target.

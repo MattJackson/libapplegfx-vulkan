@@ -4,7 +4,7 @@
  * src/air2spv/emit_control_flow.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Fragment shader: if (uv.x > 0.5) color = red; else color = blue;
  *

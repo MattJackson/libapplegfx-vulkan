@@ -3,7 +3,7 @@
  * src/doorbell.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Single entry point for ALL inbound MMIO above the MSI-X range. See
  * the long comment in doorbell.h for the architectural rationale.

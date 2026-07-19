@@ -3,7 +3,7 @@
  * tests/air2spv-buffer-load-emit-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Validates the Pattern E (Uniform-storage-class buffer load) reference
  * emitter at src/air2spv/emit_buffer_load.c.

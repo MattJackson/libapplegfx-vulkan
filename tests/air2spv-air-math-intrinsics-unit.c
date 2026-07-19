@@ -3,7 +3,7 @@
  * tests/air2spv-air-math-intrinsics-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Regression guard for the intrinsic-naming fix (coverage audit 2026-05-30).
  *

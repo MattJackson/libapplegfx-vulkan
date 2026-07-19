@@ -3,7 +3,7 @@
  * read/write (Pattern K). src/air2spv/emit_storage_image.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Produces a GLCompute shader that declares two storage images (Rgba8 format)
  * at DescriptorSet 0 Bindings 0 and 1, runs with LocalSize = (1, 1, 1), and

@@ -3,7 +3,7 @@
  * tests/air2spv-nonvoid-call-valuenumber-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * REGRESSION GUARD for "blocker A" (the Stage-80 translator bug).
  *

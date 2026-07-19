@@ -3,7 +3,7 @@
  * src/protocol/opcodes.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Enumerates all 37 FIFO opcodes documented in
  * mos/the internal spec Each entry in the

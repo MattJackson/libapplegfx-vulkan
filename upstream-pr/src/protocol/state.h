@@ -3,7 +3,7 @@
  * src/protocol/state.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Layout of the opaque lagfx_protocol_t struct. Used by protocol.c,
  * fifo.c, ops_*.c. Tests poke via the public accessors in

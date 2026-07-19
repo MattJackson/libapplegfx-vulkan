@@ -3,7 +3,7 @@
  * tests/info-replies-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Unit tests for the InfoDecoder reply handlers in info_replies.c.
  * PURE UNIT TESTS — no Vulkan, no device_new(), no MMIO path. Standalone

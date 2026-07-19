@@ -3,7 +3,7 @@
  * src/protocol/ops_iosurface.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Implements log+ack handlers for the three conjectured IOSurface
  * opcodes WindowServer is expected to emit at M6 startup:

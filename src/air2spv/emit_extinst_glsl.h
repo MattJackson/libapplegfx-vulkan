@@ -4,7 +4,7 @@
  * src/air2spv/emit_extinst_glsl.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Eighth reference emitter. Lands Pattern G — OpExtInstImport +
  * OpExtInst against the GLSL.std.450 extended instruction set.

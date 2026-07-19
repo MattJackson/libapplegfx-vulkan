@@ -3,7 +3,7 @@
  * src/translate/blit_encoder.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Implements real Vulkan translation for critical blit opcodes that are
  * blocking M5 stage 20%. This is the minimum viable set to produce visible

@@ -3,7 +3,7 @@
  * tests/memory-task.c — Unity-style tests for task.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Compile: gcc -o memory-task memory-task.c ../src/memory/task.c -std=c11
  * Run: ./memory-task

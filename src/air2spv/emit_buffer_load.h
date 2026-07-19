@@ -4,7 +4,7 @@
  * src/air2spv/emit_buffer_load.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Fifth reference emitter. Lands the Pattern E "read from a Vulkan
  * uniform buffer + use the value in the body" shape that subsequent

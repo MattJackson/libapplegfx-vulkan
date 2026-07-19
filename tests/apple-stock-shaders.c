@@ -3,7 +3,7 @@
  * tests/apple-stock-shaders.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Companion to tests/stock-shaders.c. Where that test exercises the
  * GLSL-sourced catalog blobs shipped at src/shaders/spv/, this one

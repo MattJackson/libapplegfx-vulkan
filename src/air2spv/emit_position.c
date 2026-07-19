@@ -3,7 +3,7 @@
  * src/air2spv/emit_position.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Pattern reference for subsequent per-intrinsic emitters (air.read,
  * air.sample, etc.). Produces:

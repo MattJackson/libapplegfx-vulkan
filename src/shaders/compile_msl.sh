@@ -3,7 +3,7 @@
 # src/shaders/compile_msl.sh
 #
 # Copyright © 2026 Matthew Jackson
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # Takes every src/shaders/msl/*.metal source file and runs it through
 # the full Phase 3.C.2 Apple-AIR pipeline:

@@ -3,7 +3,7 @@
  * tests/air-bitcode-reader-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Phase 1 scope: validate that lagfx_air_module_open() accepts a real
  * .air.bc blob (wrapper magic check, bitstream magic check, allocation

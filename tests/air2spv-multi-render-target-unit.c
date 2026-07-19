@@ -3,7 +3,7 @@
  * tests/air2spv-multi-render-target-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Guards struct-returning fragments that write multiple render targets
  * (real SkyLight corpus, 2026-05-30). A `fragment struct { float, float2 } f()`

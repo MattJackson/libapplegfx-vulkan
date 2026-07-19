@@ -3,7 +3,7 @@
  * tests/m1-shader-catalog.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Covers src/shaders/catalog.c: SPIR-V blob validation and basic lookup.
  */

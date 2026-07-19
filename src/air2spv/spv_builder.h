@@ -3,7 +3,7 @@
  * src/air2spv/spv_builder.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Minimal SPIR-V word-by-word emitter sized for Phase 4 reference
  * emitters. Just enough to assemble a valid Vulkan-acceptable vertex

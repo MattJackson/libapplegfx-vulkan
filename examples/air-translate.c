@@ -3,7 +3,7 @@
  * examples/air-translate.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Runs the real translator (lagfx_air2spv_translate_module, which calls
  * the per-instruction body walker with a reference-emitter fallback) on

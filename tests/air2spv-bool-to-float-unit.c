@@ -3,7 +3,7 @@
  * tests/air2spv-bool-to-float-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Guards the bool→float lowering of `air.convert.f.*.u.i1` (coverage audit
  * 2026-05-30, corpus shader 05_math_intrinsics::math_fragment, where

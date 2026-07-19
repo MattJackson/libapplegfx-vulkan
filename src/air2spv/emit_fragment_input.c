@@ -3,7 +3,7 @@
  * src/air2spv/emit_fragment_input.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  */
 
 #include "emit_fragment_input.h"

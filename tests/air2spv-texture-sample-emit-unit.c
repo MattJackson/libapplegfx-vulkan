@@ -3,7 +3,7 @@
  * tests/air2spv-texture-sample-emit-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Validates the Pattern F (separate image + sampler texture-sample)
  * reference emitter at src/air2spv/emit_texture_sample.c.

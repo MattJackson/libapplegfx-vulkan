@@ -3,7 +3,7 @@
  * src/protocol/opcodes.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * All 36 named opcodes from command-buffer-format.md §3 are recognized
  * by name. Handlers are wired to the real implementations in

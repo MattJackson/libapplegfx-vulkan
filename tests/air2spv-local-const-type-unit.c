@@ -3,7 +3,7 @@
  * tests/air2spv-local-const-type-unit.c
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Regression guard for the AIR-type-index-0-vs-unknown sentinel bug
  * (the vertex-shader cluster root cause). The translator used

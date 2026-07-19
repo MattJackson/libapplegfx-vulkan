@@ -3,7 +3,7 @@
  * src/dispatchers/ring_common.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * The compute (ch 1..4) and display (ch 5+) dispatchers each have
  * their own command ring, but the ring-descriptor lookup, the PFN-

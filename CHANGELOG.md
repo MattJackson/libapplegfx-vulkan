@@ -80,7 +80,7 @@ landed on `main` so far. Rough grouping by phase (per the
 implementation plan in `docs/`).
 
 ### Phase 1.A — host-library scaffold
-- **1.A.1:** repo skeleton, AGPL-3.0, meson build, public C API
+- **1.A.1:** repo skeleton, AGPL-3.0 (relicensed MIT 2026-07-19), meson build, public C API
   header, device/display/MMIO no-op objects, `lagfx_task_*` memory
   API stubs.
 - **1.A.2:** PVG protocol decoder + dispatcher. P0 opcode handlers

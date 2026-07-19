@@ -3,7 +3,7 @@
  * tests/air2spv-texture-sample-translate-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Guards the texture-sampling lowering (coverage audit 2026-05-30). Apple
  * lowers `tex.sample(s, uv)` to a CALL of

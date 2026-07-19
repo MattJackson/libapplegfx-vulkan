@@ -270,11 +270,10 @@ In-tree internal docs:
 
 ## License
 
-**[AGPL-3.0-or-later](LICENSE).** Network use counts as
-distribution. The AIR → SPIR-V shader translator (`src/air2spirv/`)
-may carve out to a permissively-licensed standalone repo later if
-there is community interest; until then, AGPL-3.0 covers the whole
-tree.
+**[MIT](LICENSE).** The whole tree — including the clean-room
+AIR → SPIR-V shader translator — is MIT-licensed. Use it, embed it,
+fork it. (Relicensed from AGPL-3.0 to MIT on 2026-07-19 by the sole
+copyright holder.)
 
 ## Reporting issues
 

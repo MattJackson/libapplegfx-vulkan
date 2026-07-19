@@ -3,7 +3,7 @@
  * src/translate/blit_encoder.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Public API for blit opcode Vulkan translation. Minimal implementation
  * targeting first visible pixels (FillTextureWithColor + CopyFromTextureToTexture).

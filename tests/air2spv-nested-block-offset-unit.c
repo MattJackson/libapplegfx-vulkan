@@ -3,7 +3,7 @@
  * tests/air2spv-nested-block-offset-unit.c
  *
  * Copyright (c) 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Guards std430 layout of NESTED aggregates inside a [[buffer(n)]] Block
  * (real SkyLight corpus, coverage audit 2026-05-30 v2). A buffer struct

@@ -3,7 +3,7 @@
  * src/doorbell.h
  *
  * Copyright © 2026 Matthew Jackson
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: MIT
  *
  * Listens to BAR offset writes and routes them to appropriate door
  * dispatchers. This module owns the SINGLE entry point for all MMIO
