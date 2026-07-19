@@ -358,6 +358,19 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
         default:
             LAGFX_WARN("compute dispatch: ch=%u unknown opcode 0x%04x stamp=0x%08x",
                        (unsigned)p->current_chan_id, hdr->opcode, hdr->stamp);
+            /* M2c wire RE (LAGFX_DUMP_SPV): raw payload hex for unknown opcodes.
+             * 0x3b flows now that the ring-wrap drop is fixed and is a suspect
+             * for the slab-content upload that would fill the composite vertex
+             * buffers we read as text/poison. */
+            if (getenv("LAGFX_DUMP_SPV") && hdr->payload && hdr->payload_size) {
+                char uh[200]; size_t un = 0;
+                uint32_t cap = hdr->payload_size < 64u ? hdr->payload_size : 64u;
+                for (uint32_t k = 0; k < cap && un + 3 < sizeof(uh); k++)
+                    un += (size_t)snprintf(uh + un, sizeof(uh) - un, "%02x ",
+                                           hdr->payload[k]);
+                LAGFX_LOG("UNKOP 0x%04x len=%u: %s", hdr->opcode,
+                          (unsigned)hdr->payload_size, uh);
+            }
             p->unknown_opcode_count++;
             break;
     }
