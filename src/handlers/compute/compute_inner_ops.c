@@ -1175,6 +1175,13 @@ static VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                   (unsigned long long)lagfx_le64(vdesc+16), (unsigned long long)(lagfx_le64(vdesc+24) & 0xffffffffull),
                   (unsigned long long)lagfx_le64(vdesc+32), (unsigned long long)(lagfx_le64(vdesc+40) & 0xffffffffull),
                   (unsigned long long)lagfx_le64(vdesc+48), (unsigned long long)(lagfx_le64(vdesc+56) & 0xffffffffull));
+        /* M2c: RAW descriptor bytes — the working refs' (0x14) and broken refs'
+         * (0x16/0x18) vva rows are only 12-72 B apart, so our 64 B read overlaps
+         * multiple table rows; dump raw hex to decode the TRUE row framing. */
+        char rh[200]; size_t rn = 0;
+        for (size_t k = 0; k < 64u && rn + 3 < sizeof(rh); k++)
+            rn += (size_t)snprintf(rh + rn, sizeof(rh) - rn, "%02x ", vdesc[k]);
+        LAGFX_LOG("VBRAW ref=0x%x vva=0x%llx: %s", vbs->ref, (unsigned long long)vva, rh);
     }
     /* B8: LOGICAL scatter-gather walk (same as the descriptor-binding path) — the
      * placement descriptor's {size,PFN} entries tile the buffer's LOGICAL address
