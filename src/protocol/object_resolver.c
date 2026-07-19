@@ -276,7 +276,20 @@ lagfx_lookup_pipeline_function_refs(lagfx_protocol_t *p,
     /* Step 2: compute slot VA for pipeline and translate. */
     uint64_t slot_va = slot_va_for(task->heap_pfn, pipeline_object_id);
     uint64_t slot_gpa = 0;
-    if (!lagfx_task_translate(p, task, slot_va, &slot_gpa)) {
+    bool xok = lagfx_task_translate(p, task, slot_va, &slot_gpa);
+    /* Heap-slot diagnostic: compare a HIT ref (0x19) vs a MISS ref (0x2c) to
+     * see whether the pipeline slot is populated (type 0x07) or empty/zero. */
+    if (getenv("LAGFX_HEAPDUMP")) {
+        uint8_t sl[12] = {0}; bool rd = false;
+        if (xok) rd = ((lagfx_device_t *)p->dev)->desc.shell.read_memory(
+                          ((lagfx_device_t *)p->dev)->desc.shell.opaque, slot_gpa, 12, sl);
+        LAGFX_LOG("HEAPDUMP pso=0x%x heap_pfn=0x%llx slot_va=0x%llx xlate=%d rd=%d "
+                  "type=0x%02x bytes_va=0x%llx",
+                  (unsigned)pipeline_object_id, (unsigned long long)task->heap_pfn,
+                  (unsigned long long)slot_va, xok ? 1 : 0, rd ? 1 : 0,
+                  sl[0], (unsigned long long)lagfx_le64(sl + 4));
+    }
+    if (!xok) {
         LAGFX_TRACE("lookup_pipeline_refs: radix walk failed for pipeline slot[0x%x] va=0x%llx",
                     (unsigned)pipeline_object_id, (unsigned long long)slot_va);
         return false;
