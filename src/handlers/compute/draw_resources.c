@@ -275,6 +275,23 @@ static uint32_t photo_correlation_score(const uint8_t *buf, uint32_t bytes) {
     return 1000u - (mean * 1000u) / 128u;
 }
 
+/* Distinct-colour richness of a BGRA buffer (5-bit-per-channel buckets, capped
+ * at 256). A photo scores ~256; a solid/black fill scores 1-2. Used to pick the
+ * populated buffer of a multi-buffered (triple-buffered) IOSurface. */
+static uint32_t chunk_color_richness(const uint8_t *buf, uint32_t bytes) {
+    if (!buf || bytes < 4096u) return 0u;
+    uint32_t px = bytes / 4u;
+    uint32_t step = (px / 4096u) + 1u;
+    uint32_t seen[256]; uint32_t nseen = 0;
+    for (uint32_t i = 0; i < px && nseen < 256u; i += step) {
+        uint32_t c = lagfx_le32(buf + (size_t)i * 4u) & 0xf8f8f8u;
+        bool dup = false;
+        for (uint32_t s = 0; s < nseen; s++) if (seen[s] == c) { dup = true; break; }
+        if (!dup) seen[nseen++] = c;
+    }
+    return nseen;
+}
+
 lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
                                             lagfx_task_entry_t *task,
                                             struct lagfx_vk_state *vk,
@@ -327,6 +344,41 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     if (got1 && sc1 >= sc0) { pick = via; how = "va"; nb = nb1; }
     else if (got0)          { pick = raw; how = "raw"; nb = nb0; }
     if (!pick || (pick == via ? sc1 : sc0) == 0u) { free(raw); free(via); return NULL; }
+
+    /* MULTI-BUFFER (triple-buffered IOSurface): the placement descriptor holds N
+     * same-size buffers (e.g. 0x10 = 3x5 MiB). The scatter-gather read concatenates
+     * them; we upload only the first buffer's worth — but the guest presents the
+     * FRONT buffer, which may be a later one while buffer[0] is the black back
+     * buffer. Split into per-buffer chunks, score each by colour richness (both
+     * read modes), and point `pick` at the richest buffer. `single` = one buffer's
+     * byte size from the descriptor's rowBytes*height. */
+    uint32_t mb_single = 0;
+    {
+        uint32_t ds = lagfx_le32(desc + 52), dh = lagfx_le32(desc + 60);
+        if (ds >= 4u && (ds & 3u) == 0u && dh > 0u
+            && (uint64_t)ds * dh >= 4096u && (uint64_t)ds * dh <= want)
+            mb_single = ds * dh;
+    }
+    if (mb_single && want >= 2u * mb_single) {
+        uint32_t nbuf = want / mb_single;
+        uint32_t best_rich = 0, best_off = 0; uint8_t *best_src = pick;
+        for (uint32_t b = 0; b < nbuf && b < 8u; b++) {
+            uint32_t off = b * mb_single;
+            uint32_t r0 = got0 ? chunk_color_richness(raw + off, mb_single) : 0u;
+            uint32_t r1 = got1 ? chunk_color_richness(via + off, mb_single) : 0u;
+            LAGFX_LOG("TEXREAL: ref=0x%x buffer[%u] richness raw=%u va=%u",
+                      tref, b, r0, r1);
+            if (r0 > best_rich) { best_rich = r0; best_off = off; best_src = raw; }
+            if (r1 > best_rich) { best_rich = r1; best_off = off; best_src = via; }
+        }
+        if (best_rich >= 16u) {           /* a real image, not a flat/near-flat buffer */
+            pick = best_src + best_off;
+            how = (best_src == via) ? "mbuf-va" : "mbuf-raw";
+            want = mb_single;             /* upload exactly one buffer */
+            LAGFX_LOG("TEXREAL: ref=0x%x picked buffer @off=%u richness=%u (%s)",
+                      tref, best_off, best_rich, how);
+        }
+    }
     /* Wallpaper recovery: a large surface (wallpaper-sized) whose placement
      * read is fully black lives elsewhere — the guest CPU-decodes it into one
      * of the 0x39-mapped guest-physical regions. Scan those for the richest
