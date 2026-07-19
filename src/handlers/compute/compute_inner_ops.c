@@ -162,9 +162,38 @@ static bool lagfx_read_virtual_besteffort(lagfx_protocol_t *p,
  * best-effort read so any genuinely VA-backed resource still resolves. Returns
  * true if either path produced data. Proven 2026-06-11: raw GPA 0x741000 =
  * 73.5% nonblack wallpaper; virtual read of the same pfn<<12 = 0% (mistranslated). */
+static uint32_t lagfx_vtx_float_plausibility(const uint8_t *b, uint32_t len);
+
 static bool lagfx_read_resource_backing(lagfx_protocol_t *p,
                                        const lagfx_task_entry_t *task,
                                        uint64_t gpa, uint32_t len, uint8_t *buf) {
+    /* M2c READARB (LAGFX_M2_READARB): the placement "PFN" is a VIRTUAL page
+     * number for some allocations and physical for others (identity-mapped).
+     * Live proof: refs 0x15/0x16/0x18 read boot-log text via raw GPA but real
+     * float geometry via the VA-translated radix (VTXSRC mode-1 scores 59-100
+     * vs 0), while 0xe/0x14/0x781 read fine raw. The old "raw unless all-zero"
+     * arbitration keeps nonzero garbage. Read BOTH and keep the buffer with the
+     * higher plausibility-as-float score (ties → raw, preserving behavior). */
+    if (getenv("LAGFX_M2_READARB") && getenv("LAGFX_M2_RAWGPA") && task) {
+        lagfx_device_t *adev = p ? (lagfx_device_t *)p->dev : NULL;
+        bool raw_ok = adev && adev->desc.shell.read_memory
+                      && adev->desc.shell.read_memory(adev->desc.shell.opaque,
+                                                      gpa, len, buf);
+        uint32_t raw_score = raw_ok ? lagfx_vtx_float_plausibility(buf, len) : 0u;
+        if (raw_score < 90u) {
+            uint32_t probe_len = len < 4096u ? len : 4096u;
+            uint8_t vprobe[4096];
+            if (lagfx_task_read_virtual(p, (lagfx_task_entry_t *)task, gpa,
+                                        probe_len, vprobe)) {
+                uint32_t va_score = lagfx_vtx_float_plausibility(vprobe, probe_len);
+                if (va_score > raw_score) {
+                    return lagfx_read_virtual_besteffort(p, task, gpa, len, buf);
+                }
+            }
+        }
+        if (raw_ok) return true;
+        return lagfx_read_virtual_besteffort(p, task, gpa, len, buf);
+    }
     /* GATED (LAGFX_M2_RAWGPA): the raw-GPA read is strictly more correct (the
      * descriptor PFN is a guest-physical frame), but it surfaces REAL texture
      * data that the downstream M2 render path can't yet sample correctly — the
