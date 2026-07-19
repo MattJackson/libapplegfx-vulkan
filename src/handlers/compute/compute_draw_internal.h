@@ -24,6 +24,7 @@ struct lagfx_vk_state;
 #ifdef LAGFX_HAVE_VULKAN
 #include <vulkan/vulkan.h>
 #include "vulkan/pipeline_build.h"
+#include "vulkan/iosurface.h"
 
 /* 64 KiB: bounds a shader's dynamic storage-buffer indexing so an over-read
  * returns zero-padded data instead of faulting lavapipe; descriptor / MVP
@@ -53,6 +54,10 @@ uint32_t lagfx_read_vtx_source(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                                uint32_t ref, uint64_t offset,
                                uint32_t want, uint8_t *out, const char **how,
                                int mode);
+lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
+                                            lagfx_task_entry_t *task,
+                                            struct lagfx_vk_state *vk,
+                                            uint32_t tref);
 
 /* draw_descriptors.c — descriptor-set construction for translated draws */
 VkDescriptorSet lagfx_build_draw_descriptor_set(

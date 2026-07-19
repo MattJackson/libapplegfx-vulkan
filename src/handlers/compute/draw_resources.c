@@ -240,4 +240,87 @@ uint32_t lagfx_read_vtx_source(lagfx_protocol_t *p, lagfx_task_entry_t *task,
 }
 
 
+/* Realize a bound texture ref as a sampleable IOSurface filled with the
+ * guest's REAL pixel bytes. The type-0x03 texture object's placement
+ * descriptor is walked like the vertex path ({size,pfn} entries); the bytes
+ * are read BOTH raw-GPA and VA-translated and the read with the higher
+ * NONBLACK pixel fraction wins (pixel data scores meaninglessly as floats,
+ * so the float arbitration cannot decide here). Dims are inferred from the
+ * byte size at BGRA8: first 16-aligned width from a preference list whose
+ * aspect lands in [0.4, 2.5] — the 20 KiB login-UI textures resolve to
+ * 64x80, the 4 KiB cursor to 32x32. The surface is registered under the
+ * ref so later draws bind it directly. Returns NULL on any miss. */
+lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
+                                            lagfx_task_entry_t *task,
+                                            struct lagfx_vk_state *vk,
+                                            uint32_t tref) {
+    if (!p || !task || !vk || tref == 0u) return NULL;
+    uint8_t ttype = 0; uint64_t tva = 0, tgpa = 0;
+    if (!lagfx_resolve_object_data(p, task, tref, &ttype, &tva, &tgpa)
+        || tva == 0u || ttype != 0x03u)
+        return NULL;
+    uint8_t desc[64];
+    if (!lagfx_task_read_virtual(p, task, tva, sizeof(desc), desc))
+        return NULL;
+    uint64_t total = 0;
+    for (int e = 0; e < 4; e++) {
+        uint64_t rsize = lagfx_le64(desc + (size_t)e * 16u);
+        uint64_t pfn = lagfx_le64(desc + (size_t)e * 16u + 8u) & 0xffffffffull;
+        if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
+        total += rsize;
+    }
+    if (total < 4096u || total > 1024u * 1024u) return NULL;  /* UI-texture band */
+    uint32_t want = (uint32_t)total;
+    uint8_t *raw = calloc(1u, want), *via = calloc(1u, want);
+    if (!raw || !via) { free(raw); free(via); return NULL; }
+    const char *how0 = "none", *how1 = "none";
+    uint32_t got0 = lagfx_read_vtx_source(p, task, tref, 0u, want, raw, &how0, 0);
+    uint32_t got1 = lagfx_read_vtx_source(p, task, tref, 0u, want, via, &how1, 1);
+    uint32_t nb0 = 0, nb1 = 0;
+    for (uint32_t o = 0; o + 4u <= want; o += 4u) {
+        if (raw[o] | raw[o+1] | raw[o+2]) nb0++;
+        if (via[o] | via[o+1] | via[o+2]) nb1++;
+    }
+    uint8_t *pick = NULL; const char *how = "none"; uint32_t nb = 0;
+    if (got1 && nb1 >= nb0) { pick = via; how = "va"; nb = nb1; }
+    else if (got0)          { pick = raw; how = "raw"; nb = nb0; }
+    if (!pick || nb == 0u) { free(raw); free(via); return NULL; }
+    /* dims: first preferred width dividing the pixel count with sane aspect */
+    uint32_t npx = want / 4u, W = 0, H = 0;
+    static const uint32_t widths[] = {64u, 128u, 32u, 256u, 16u, 512u};
+    for (size_t wi = 0; wi < sizeof(widths)/sizeof(widths[0]); wi++) {
+        uint32_t w = widths[wi];
+        if (npx % w) continue;
+        uint32_t h = npx / w;
+        if (h == 0u) continue;
+        float aspect = (float)w / (float)h;
+        if (aspect < 0.4f || aspect > 2.5f) continue;
+        W = w; H = h; break;
+    }
+    if (!W) { W = 64u; H = npx / 64u ? npx / 64u : 1u; }
+    lagfx_vk_iosurface_t *ios = NULL;
+    if (lagfx_vk_iosurface_create(vk, W, H, 80u, &ios) != LAGFX_OK || !ios) {
+        free(raw); free(via); return NULL;
+    }
+    if (lagfx_vk_iosurface_upload_pixels(vk, ios, pick, want) != LAGFX_OK) {
+        lagfx_vk_iosurface_destroy(vk, ios);
+        free(raw); free(via); return NULL;
+    }
+    free(raw); free(via);
+    lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, tref);
+    if (!te) {
+        lagfx_resource_register(&p->resources, tref, LAGFX_RESOURCE_TYPE_TEXTURE,
+                                task->id, tgpa, total);
+        te = lagfx_resource_lookup_texture(&p->resources, tref);
+    }
+    if (te) { te->host_handle = ios; te->image = ios->image; te->view = ios->view; }
+    else {
+        lagfx_vk_iosurface_destroy(vk, ios);
+        return NULL;
+    }
+    LAGFX_LOG("TEXREAL: ref=0x%x %ux%u from %uB backing (read=%s nonblack=%u/%u)",
+              tref, W, H, want, how, nb, npx);
+    return ios;
+}
+
 #endif /* LAGFX_HAVE_VULKAN */

@@ -174,6 +174,18 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                     }
                 }
             }
+            if (view == VK_NULL_HANDLE && tref != 0u) {
+                /* Realize the bound ref's REAL guest texture content before any
+                 * fallback: create + upload a surface from its type-0x03
+                 * backing so composites sample actual login pixels. */
+                lagfx_vk_iosurface_t *rt_ios =
+                    (lagfx_vk_iosurface_t *)lagfx_texture_realize(p, task, vk, tref);
+                if (rt_ios && rt_ios->view != VK_NULL_HANDLE
+                    && (rt_ios->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                        || rt_ios->layout == VK_IMAGE_LAYOUT_GENERAL)) {
+                    view = rt_ios->view; lay = rt_ios->layout;
+                }
+            }
             if (view == VK_NULL_HANDLE) {
                 /* M2 UIRENDER: rather than SKIP a loginwindow UI draw whose sampled
                  * texture is unresolved (→ black screen, the whole UI vanishes),
