@@ -8,18 +8,20 @@ protocol, walks the per-task radix page table, translates Metal
 command streams to Vulkan, and renders through Mesa's `lavapipe`
 (or any other Vulkan ICD).
 
-This is the most technical of the [mos](https://github.com/MattJackson/mos-docs)
-project's implementation repos — opcode handlers, stamp slots,
-radix page tables, virtual channels all live here. The narrative
-context — how this fits the stack, why Vulkan, what each
-mechanism does — is in
-[mos-docs](https://github.com/MattJackson/mos-docs); this README is
-about *what's in the tree* and *how to consume it*.
+This is the most technical of the mos project's implementation
+repos — opcode handlers, stamp slots, radix page tables, virtual
+channels all live here. The narrative context — how this fits the
+stack, why Vulkan, what each mechanism does — is in **mos-docs**
+(the documentation library; publication to a public repo is in
+progress). This README is about *what's in the tree* and *how to
+consume it*.
 
 ## Status
 
-**M5 stage 20% in progress** — pixels not yet on screen. M1–M4
-green ([project status](https://github.com/MattJackson/mos-docs/blob/main/overview/project-status.md)).
+**Full render chain proven live** — real guest geometry with
+translated vertex + fragment shaders reaching ~99.7% frame
+coverage on lavapipe. M1–M5 green; consolidation of the winning
+render path to default-on is in progress.
 
 | Milestone | What it gates | Status |
 |---|---|---|
@@ -27,16 +29,14 @@ green ([project status](https://github.com/MattJackson/mos-docs/blob/main/overvi
 | M2 | IOAccelerator class tree visible | done 2026-04-21 |
 | M3 | `MTLCreateSystemDefaultDevice()` non-nil | done 2026-05-03 |
 | M4 | `CmdExecIndirect2` inner parsing + 3-level radix VA→GPA | done 2026-04-26 |
-| **M5** | **First visible pixel via Vulkan/lavapipe** | stage 20% (in progress) |
+| **M5** | **First visible pixel via Vulkan/lavapipe** | done 2026-05-18 |
 
-Stage 20% wires the **~10 most-frequent inner Render opcodes**
-(`setVertexBuffer/Bytes`, `setFragmentBuffer/Bytes`,
-`setRenderPipelineState`, `drawPrimitives` + indexed/instanced
-variants, `endEncoding`, `CmdExecIndirect2` recursive) plus the
-matching Blit ops to lavapipe. The gate: open noVNC and see the
-macOS login screen rendered by the guest's WindowServer.
-Background:
-[whitepaper 04 — first pixel](https://github.com/MattJackson/mos-docs/blob/main/whitepapers/04-m5-first-pixel.md).
+Beyond M5: the clean-room AIR → SPIR-V translator now translates
+the guest's real compiled shaders live on the production path
+(vertex + fragment), a long-standing ring-wrap protocol bug is
+fixed, and the current work is consolidating the winning render
+path to default-on. Background: whitepaper 04 ("M5, first pixel")
+in mos-docs.
 
 ## Where this fits
 
@@ -61,9 +61,7 @@ links against it via `dependency('libapplegfx-vulkan')`. The
 production runtime in
 [mos-docker](https://github.com/MattJackson/mos-docker) bundles
 `libapplegfx-vulkan.so` into its image alongside the patched QEMU.
-See
-[component map](https://github.com/MattJackson/mos-docs/blob/main/architecture/01-component-map.md)
-for the full repo graph.
+The full repo graph is in the mos-docs component map.
 
 ## Build
 
@@ -203,7 +201,7 @@ running mos-docker VM.
 
 - **Stamps are monotonic.** Never write 0 to a stamp cell. Never
   set `stampBases[slot] = 0` to "reset" state. Background:
-  [whitepaper 05](https://github.com/MattJackson/mos-docs/blob/main/whitepapers/05-stamp-slot-mechanism.md).
+  whitepaper 05 (stamp slot mechanism) in mos-docs.
 - **MSI vector 0 only.** All stamp / pending-bitmask interrupts
   fire on vector 0; the kext doesn't bind any other.
 - **Bit number = display\_index, not chan\_id.** When setting
@@ -223,8 +221,8 @@ running mos-docker VM.
   time from `libapplegfx-vulkan.pc`.
 - **mos-docker** — production runtime image installs
   `libapplegfx-vulkan.so` into `/usr/lib/` and the patched QEMU
-  links against it. See
-  [component map § "where each artifact comes from"](https://github.com/MattJackson/mos-docs/blob/main/architecture/01-component-map.md).
+  links against it. See the mos-docs component map,
+  § "where each artifact comes from".
 
 ## Background reading
 

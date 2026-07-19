@@ -559,28 +559,34 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         }
     }
 
-    /* Scanout assembly: a per-pass draw ENQUEUES its
-     * surface for the frame-blit queue; the guest's display present
-     * (vchan_display_submit) blits the queue IN DRAW ORDER into display->rt and
-     * clears it, so a later near-empty surface can never wipe an earlier
-     * content-bearing one. Dedup: a surface already queued keeps its
-     * FIRST-draw position (guest pass order). Crash-proof: queue-full drops the
-     * oldest-duplicate-free entry silently (16 passes/frame is far above the
-     * live ~4). */
+    /* Scanout assembly: a per-pass draw records its surface in draw order
+     * (dedup, first-draw position) and re-blits the WHOLE ordered set into
+     * display->rt — earlier passes first, this pass last. Re-blitting all of
+     * them each draw keeps a later near-empty surface from wiping an earlier
+     * content-bearing one, and does not depend on a trailing display present
+     * (the guest may issue none after the compositing burst). The queue is
+     * reset at the next present (soft frame boundary). */
     if (LAGFX_POLICY("M2_ASMBLIT") && active_rt == &perpass_rt
         && perpass_ios && perpass_ios->image != VK_NULL_HANDLE
         && perpass_real_draw && st == LAGFX_OK) {
         bool queued = false;
         for (uint32_t qi = 0; qi < p->frame_blit_n; qi++)
             if (p->frame_blit_queue[qi] == (uintptr_t)perpass_ios) { queued = true; break; }
-        if (!queued && p->frame_blit_n < 16u) {
+        if (!queued && p->frame_blit_n < 16u)
             p->frame_blit_queue[p->frame_blit_n++] = (uintptr_t)perpass_ios;
-            LAGFX_LOG("%s ASMBLIT: queued per-pass surface 0x%x (%ux%u) pos=%u",
-                      op, perpass_tref, perpass_ios->width, perpass_ios->height,
-                      p->frame_blit_n - 1u);
+
+        for (uint32_t qi = 0; qi < p->frame_blit_n && qi < 16u; qi++) {
+            lagfx_vk_iosurface_t *qios =
+                (lagfx_vk_iosurface_t *)p->frame_blit_queue[qi];
+            if (!qios || qios->image == VK_NULL_HANDLE) continue;
+            lagfx_vk_display_present_surface(
+                dev_with_vk->vk, &display->rt, qios->image, &qios->layout,
+                qios->width, qios->height, display->rt.width, display->rt.height,
+                display->scanout_gpa, display->scanout_length,
+                dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory);
         }
-        /* Keep the frame-ready signal so the shell repaints even before the
-         * next guest present drains the queue. */
+        LAGFX_LOG("%s ASMBLIT: composited %u per-pass surfaces in draw order -> display->rt",
+                  op, p->frame_blit_n);
         lagfx_display_signal_frame_ready(display);
     }
 
