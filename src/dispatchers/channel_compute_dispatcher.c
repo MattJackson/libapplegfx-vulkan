@@ -173,9 +173,23 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                       hdr->stamp, (unsigned)hdr->payload_size);
             break;
         case LAGFX_OP_MAP_MEMORY_IMMEDIATE:   /* 0x39 — CmdMapMemoryImmediate */
-            LAGFX_LOG("compute: 0x39 CmdMapMemoryImmediate ch=%u stamp=0x%08x payload_size=%u",
-                      (unsigned)p->current_chan_id, hdr->stamp,
-                      (unsigned)hdr->payload_size);
+            /* 20 B: {flag u32, gpa=PFN<<12 u64, size u64}. These establish the
+             * real object->GPA mappings; decode them to correlate a ~5 MB region
+             * to the wallpaper surface 0x10 (its placement descriptor reads black,
+             * so the true backing is mapped here). */
+            if (hdr->payload && hdr->payload_size >= 20u) {
+                uint32_t flag = lagfx_le32(hdr->payload + 0);
+                uint64_t gpa  = lagfx_le64(hdr->payload + 4);
+                uint64_t sz   = lagfx_le64(hdr->payload + 12);
+                LAGFX_LOG("MAPMEM 0x39 stamp=0x%08x flag=0x%x gpa=0x%llx size=%llu%s",
+                          hdr->stamp, flag, (unsigned long long)gpa,
+                          (unsigned long long)sz,
+                          sz >= 4u*1024u*1024u ? " <== BIG" : "");
+            } else {
+                LAGFX_LOG("compute: 0x39 CmdMapMemoryImmediate ch=%u stamp=0x%08x payload_size=%u",
+                          (unsigned)p->current_chan_id, hdr->stamp,
+                          (unsigned)hdr->payload_size);
+            }
             break;
 
         case LAGFX_OP_VCHAN_REPLACE_PHYSICAL: { /* 0x3c — per-resource replacePhysical on Immediate vchan */
