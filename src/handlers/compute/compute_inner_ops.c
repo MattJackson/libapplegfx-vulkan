@@ -687,6 +687,37 @@ static VkDescriptorSet lagfx_build_draw_descriptor_set(
                  * is many small textured quads; skipping any one drops the whole
                  * draw. A fallback lets the UI shapes appear (toward a recognizable
                  * loginwindow) instead of nothing. Gated. */
+                /* M2c WHITEFB (LAGFX_M2_WHITEFB): bind a lazily-created opaque
+                 * WHITE texture for unresolved samples. SOLIDFRAG proved the
+                 * whole geometry chain; the translated composite fragments then
+                 * emitted NOTHING (blend disabled ⇒ they DISCARD, SkyLight's
+                 * alpha-threshold discard, on alpha-0 fallback textures).
+                 * Opaque white guarantees alpha=1 → no discard → the real
+                 * fragment's computed output becomes visible. */
+                if (view == VK_NULL_HANDLE && getenv("LAGFX_M2_WHITEFB")) {
+                    lagfx_vk_iosurface_t *wfb =
+                        (lagfx_vk_iosurface_t *)p->white_fb_ios;
+                    if (!wfb) {
+                        if (lagfx_vk_iosurface_create(vk, 4u, 4u, 80u, &wfb) == LAGFX_OK
+                            && wfb) {
+                            uint8_t wpx[4u * 4u * 4u];
+                            memset(wpx, 0xFF, sizeof(wpx));
+                            if (lagfx_vk_iosurface_upload_pixels(vk, wfb, wpx,
+                                                                sizeof(wpx)) == LAGFX_OK) {
+                                p->white_fb_ios = (uintptr_t)wfb;
+                                LAGFX_LOG("P6b WHITEFB: created 4x4 opaque-white fallback");
+                            } else {
+                                lagfx_vk_iosurface_destroy(vk, wfb);
+                                wfb = NULL;
+                            }
+                        } else {
+                            wfb = NULL;
+                        }
+                    }
+                    if (wfb && wfb->view != VK_NULL_HANDLE) {
+                        view = wfb->view; lay = wfb->layout;
+                    }
+                }
                 if (view == VK_NULL_HANDLE && getenv("LAGFX_M2_UIRENDER")) {
                     /* M2c: PREFER textures with a REAL guest backing (gpu_addr
                      * != 0) — the registry also holds PERPASS-created empty

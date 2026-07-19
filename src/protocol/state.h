@@ -404,6 +404,12 @@ typedef struct lagfx_protocol {
     } backing_update[64];
     uint32_t backing_update_n;
 
+    /* M2c WHITEFB: lazily-created opaque-white fallback texture
+     * (lagfx_vk_iosurface_t*, stored as uintptr_t — vulkan.h-free header).
+     * Bound for unresolved SAMPLED_IMAGEs under LAGFX_M2_WHITEFB so the
+     * translated composite fragments' alpha-discard never fires. */
+    uintptr_t white_fb_ios;
+
     /* Command counters (for diagnostics) */
     uint64_t total_cmds_seen;
     uint64_t total_cmds_completed;
