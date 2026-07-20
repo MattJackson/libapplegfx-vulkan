@@ -108,7 +108,7 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
     uint32_t prim         = lagfx_le16(body + 0);
     uint32_t vertex_start = lagfx_le16(body + 4);
     uint32_t vertex_count = lagfx_le16(body + 6);
-    if (LAGFX_POLICY("DISABLE_M2_DRAWCOUNT16")) {  /* escape hatch to the legacy read */
+    if (getenv("LAGFX_LEGACY_DRAW01")) {  /* escape hatch to the pre-fix le32 read */
         vertex_start = lagfx_le32(body + 0);
         vertex_count = lagfx_le32(body + 4);
     }
