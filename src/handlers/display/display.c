@@ -528,8 +528,13 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
 
 #ifdef LAGFX_HAVE_VULKAN
             if (getenv("LAGFX_DUMP_PASSES")) {
+                /* Dump the LAST N presents (overwrite each time) so the capture
+                 * reflects the post-compositing-burst state, not just early
+                 * boot. The first-3 cap only ever saw empty pre-burst surfaces. */
+                const char *dn = getenv("LAGFX_DUMP_PASSES_N");
+                int cap = dn ? atoi(dn) : 40;
                 static int dumped = 0;
-                if (dumped < 3) { dumped++; lagfx_dump_all_passes(p, disp); }
+                if (cap <= 0 || dumped < cap) { dumped++; lagfx_dump_all_passes(p, disp); }
             }
 #endif
             /* The draw path composites the per-pass surfaces into display->rt

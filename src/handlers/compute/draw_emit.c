@@ -375,6 +375,47 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         uint32_t tref = task->render_pass_desc.target_ref;
         lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, tref);
         lagfx_vk_iosurface_t *ios = te ? (lagfx_vk_iosurface_t *)te->host_handle : NULL;
+        /* M2q GROUND-TRUTH PROBE (LAGFX_M2_PPPROBE, log-only): does the pass
+         * target ref's guest BACKING hold real content (the forest), or is it
+         * a pure GPU render target we must draw into? Resolve the ref, read its
+         * type-0x03-style placement backing BOTH ways (raw GPA + VA-translated),
+         * report type/size/nonblack/photo for each — the single discriminator
+         * between "sample its backing" and "our draws must produce it". */
+        if (getenv("LAGFX_M2_PPPROBE")) {
+            uint8_t pt = 0; uint64_t pva = 0, pgpa = 0;
+            if (lagfx_resolve_object_data(p, task, tref, &pt, &pva, &pgpa) && pva) {
+                uint8_t pd[64] = {0};
+                if (lagfx_task_read_virtual(p, task, pva, sizeof(pd), pd)) {
+                    uint64_t tot = 0;
+                    for (int e = 0; e < 4; e++) {
+                        uint64_t rs = lagfx_le64(pd + (size_t)e*16u);
+                        uint64_t pf = lagfx_le64(pd + (size_t)e*16u+8u) & 0xffffffffull;
+                        if (pf >= 0x10u && pf <= 0xfffffu && rs) tot += rs;
+                    }
+                    uint32_t cap = tot > 5u*1024u*1024u ? 5u*1024u*1024u : (uint32_t)tot;
+                    if (cap >= 4096u) {
+                        uint8_t *rb = calloc(1u, cap), *vb = calloc(1u, cap);
+                        const char *h0="none", *h1="none";
+                        uint32_t g0 = rb ? lagfx_read_vtx_source(p, task, tref, 0u, cap, rb, &h0, 0) : 0;
+                        uint32_t g1 = vb ? lagfx_read_vtx_source(p, task, tref, 0u, cap, vb, &h1, 1) : 0;
+                        uint32_t nb0=0, nb1=0;
+                        for (uint32_t o=0;o+4u<=cap;o+=4u){ if(rb&&(rb[o]|rb[o+1]|rb[o+2]))nb0++; if(vb&&(vb[o]|vb[o+1]|vb[o+2]))nb1++; }
+                        LAGFX_LOG("PPPROBE tref=0x%x type=0x%02x tot=%llu cap=%u raw(%s g=%u nb=%u) va(%s g=%u nb=%u)",
+                                  tref, pt, (unsigned long long)tot, cap,
+                                  h0, g0, nb0, h1, g1, nb1);
+                        free(rb); free(vb);
+                    } else {
+                        LAGFX_LOG("PPPROBE tref=0x%x type=0x%02x tot=%llu (too small)",
+                                  tref, pt, (unsigned long long)tot);
+                    }
+                } else {
+                    LAGFX_LOG("PPPROBE tref=0x%x type=0x%02x va=0x%llx desc-read-fail",
+                              tref, pt, (unsigned long long)pva);
+                }
+            } else {
+                LAGFX_LOG("PPPROBE tref=0x%x unresolved", tref);
+            }
+        }
         if (!ios) {
             /* DUMB-FAITHFUL (M2q): the pass target IS the guest texture — its
              * memory may already hold real content (ref 0x17's backing holds
