@@ -50,6 +50,7 @@ bool lagfx_read_binding_slot(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                              uint8_t *out, size_t len);
 bool lagfx_looks_like_mvp_matrix(const uint8_t *data);
 uint32_t lagfx_vtx_float_plausibility(const uint8_t *b, uint32_t len);
+uint32_t lagfx_vtx_looks_like_positions(const uint8_t *b, uint32_t len, uint32_t stride);
 uint32_t lagfx_read_vtx_source(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                                uint32_t ref, uint64_t offset,
                                uint32_t want, uint8_t *out, const char **how,

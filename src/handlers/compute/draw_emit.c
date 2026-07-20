@@ -114,6 +114,16 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
             int16_t mi = task->pending_pipeline.spv_binding_metal[bi];
             if (mi >= 0 && mi < 32) claimed |= (1u << mi);
         }
+        /* Pipeline vertex stride (for the position-signature test). */
+        uint32_t pstride = 0;
+        for (uint32_t a = 0; a < task->pending_pipeline.n_vtx_inputs && a < 8u; a++)
+            pstride += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
+        pstride = (pstride + 7u) & ~7u;
+        if (task->pending_pipeline.vtx_stride >= pstride
+            && task->pending_pipeline.vtx_stride <= 256u)
+            pstride = task->pending_pipeline.vtx_stride;
+        if (pstride == 0u) pstride = 48u;
+
         uint32_t best_s = 0u; int best_mode = 0; uint32_t best_score = 0u;
         bool have_best = false;
         for (uint32_t sm = 0; sm < 6u; sm++) {
@@ -124,14 +134,22 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
             if (claimed & (1u << s)) continue;   /* shader buffer arg, not stage-in */
             lagfx_binding_slot_t *cs = &task->bindings.vertex_buffers[s];
             if (!cs->valid || cs->ref == 0u) continue;
-            uint8_t sample[256];
+            uint8_t sample[512];
             const char *how = "none";
             uint32_t got = lagfx_read_vtx_source(p, task, cs->ref, cs->offset,
                                                  sizeof(sample), sample, &how, mode);
-            uint32_t score = got ? lagfx_vtx_float_plausibility(sample, got) : 0u;
+            uint32_t plaus = got ? lagfx_vtx_float_plausibility(sample, got) : 0u;
+            /* PRIMARY selector: does this slot hold a per-vertex POSITION stream
+             * at the pipeline stride (screen-space, varying) vs a matrix/uniform
+             * block (repeated ±1/tiny)? The plausibility score can't tell them
+             * apart — a matrix scores 100 too — so an unrestricted highest-score
+             * pick uploaded the MVP as the vertex stream → band smear. Weight the
+             * position signature far above bare plausibility. */
+            uint32_t posity = got ? lagfx_vtx_looks_like_positions(sample, got, pstride) : 0u;
+            uint32_t score = posity ? (1000u + posity) : plaus;
             if (getenv("LAGFX_DUMP_SPV"))
-                LAGFX_LOG("VTXSRC slot=%u mode=%d ref=0x%x off=%llu how=%s score=%u",
-                          s, mode, cs->ref, (unsigned long long)cs->offset, how, score);
+                LAGFX_LOG("VTXSRC slot=%u mode=%d ref=0x%x off=%llu how=%s plaus=%u pos=%u score=%u",
+                          s, mode, cs->ref, (unsigned long long)cs->offset, how, plaus, posity, score);
             if (score >= 50u && score > best_score) {
                 best_score = score; best_s = s; best_mode = mode; have_best = true;
             }

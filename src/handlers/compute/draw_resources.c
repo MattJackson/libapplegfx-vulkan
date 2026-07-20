@@ -153,6 +153,44 @@ uint32_t lagfx_vtx_float_plausibility(const uint8_t *b, uint32_t len) {
     return sampled ? (sane * 100u) / sampled : 0u;
 }
 
+/* Distinguish a per-vertex POSITION stream from a matrix/uniform block. The
+ * float-plausibility scorer can't: a pixel→NDC matrix (values ~0.0015, ±1) and
+ * a screen-space vertex (values ~572, 87) are both "plausible floats". But a
+ * real vertex stream has, at the per-vertex STRIDE, position.x values that (a)
+ * span screen-pixel range [~0.5, 8192], (b) VARY between consecutive vertices,
+ * and (c) are not the tell-tale ±1/tiny-scale of a projection matrix. Returns a
+ * 0..100 confidence that `b` is a position stream at `stride`. Grounded in the
+ * DTrace ground truth (CA::OGL verts are float4 pixel positions at offset 0). */
+uint32_t lagfx_vtx_looks_like_positions(const uint8_t *b, uint32_t len, uint32_t stride) {
+    if (stride < 8u || stride > 256u) stride = 48u;
+    float xs[16]; uint32_t nv = 0;
+    for (uint32_t v = 0; (size_t)(v + 1u) * stride <= len && nv < 16u; v++) {
+        uint32_t dx = lagfx_le32(b + (size_t)v * stride);
+        uint32_t dy = lagfx_le32(b + (size_t)v * stride + 4u);
+        float fx, fy; memcpy(&fx, &dx, 4); memcpy(&fy, &dy, 4);
+        if (fx != fx || fy != fy) continue;           /* NaN */
+        xs[nv++] = fx;
+        (void)fy;
+    }
+    if (nv < 3u) return 0u;
+    uint32_t in_screen = 0, distinct = 0;
+    for (uint32_t i = 0; i < nv; i++) {
+        float m = xs[i] < 0 ? -xs[i] : xs[i];
+        if (m >= 0.5f && m <= 8192.0f) in_screen++;
+        bool seen = false;
+        for (uint32_t j = 0; j < i; j++) {
+            float d = xs[i] - xs[j]; if (d < 0) d = -d;
+            if (d < 0.01f) { seen = true; break; }
+        }
+        if (!seen) distinct++;
+    }
+    /* Need most positions in screen range AND genuine variation (a matrix
+     * column repeats 0/±1 → few distinct, out of screen range). */
+    uint32_t screen_frac = (in_screen * 100u) / nv;
+    if (distinct < 2u) return 0u;
+    return screen_frac;
+}
+
 /* M2c VTXSRC: read `want` bytes of a bound buffer (ref,offset) — prefer the
  * 0x3b BackingUpdate address (task VA, page-aware) when one exists for the
  * ref, else the placement-table walk (entry-size-capped multi-entry gather).
