@@ -65,6 +65,13 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
         vin.pVertexBindingDescriptions      = &vbind;
         vin.vertexAttributeDescriptionCount = nvi;
         vin.pVertexAttributeDescriptions    = vattr;
+        if (getenv("LAGFX_DUMP_SPV")) {
+            char ab[128]; size_t an = 0;
+            for (uint32_t a = 0; a < nvi && an + 24 < sizeof(ab); a++)
+                an += (size_t)snprintf(ab+an, sizeof(ab)-an, "loc%u:c%u@%u ",
+                                       vattr[a].location, desc->vtx_in_comp[a], vattr[a].offset);
+            LAGFX_LOG("VTXINPUT n=%u stride=%u attrs: %s", nvi, stride, ab);
+        }
     }
 
     /* Input assembly */

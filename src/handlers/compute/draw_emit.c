@@ -184,10 +184,27 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                         }
                         if (emitted == icount) {
                             memcpy(full, exp, want);
-                            if (getenv("LAGFX_DUMP_SPV"))
+                            if (getenv("LAGFX_DUMP_SPV")) {
                                 LAGFX_LOG("IDXEXP: expanded %u u16 indices (ref=0x%x off=%u stride=%u how=%s)",
                                           icount, task->pending_draw.index_buffer_ref,
                                           task->pending_draw.index_buffer_offset, vs, ihow);
+                                /* Dump the first 3 expanded verts as float4@0 +
+                                 * float2@16 so we can see if positions are real
+                                 * screen-space (e.g. (572,87)) or garbage. */
+                                for (uint32_t vt = 0; vt < 3 && (size_t)(vt+1)*vs <= want; vt++) {
+                                    const uint8_t *vp = full + (size_t)vt * vs;
+                                    float px,py,pz,pw,tu,tv; uint32_t u;
+                                    u=lagfx_le32(vp+0);  memcpy(&px,&u,4);
+                                    u=lagfx_le32(vp+4);  memcpy(&py,&u,4);
+                                    u=lagfx_le32(vp+8);  memcpy(&pz,&u,4);
+                                    u=lagfx_le32(vp+12); memcpy(&pw,&u,4);
+                                    u=lagfx_le32(vp+16); memcpy(&tu,&u,4);
+                                    u=lagfx_le32(vp+20); memcpy(&tv,&u,4);
+                                    LAGFX_LOG("IDXEXP48 v%u idx=%u pos[%.4g %.4g %.4g %.4g] tex[%.4g %.4g]",
+                                              vt, (uint32_t)ib[vt*2] | ((uint32_t)ib[vt*2+1]<<8),
+                                              px,py,pz,pw,tu,tv);
+                                }
+                            }
                         }
                         free(exp);
                     }
