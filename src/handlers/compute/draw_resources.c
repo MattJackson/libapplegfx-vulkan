@@ -373,10 +373,13 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     if (got1 && sc1 >= sc0) { pick = via; how = "va"; nb = nb1; }
     else if (got0)          { pick = raw; how = "raw"; nb = nb0; }
     if (!pick || (pick == via ? sc1 : sc0) == 0u) { free(raw); free(via); return NULL; }
-    /* Direct raw read (pmemsave-equivalent) — for a photo texture this holds real
-     * content where the arbitrated raw/VA reads came back black. Score by colour
-     * richness (float-plausibility is meaningless here) and prefer it when richer. */
-    uint8_t *dir = calloc(1u, want);
+    /* Direct raw read (pmemsave-equivalent) scored by colour richness.
+     * REFUTED as a wallpaper source: a dim forest photo and gray heap noise are
+     * indistinguishable by colour-richness, so this bound noise bands for ref
+     * 0x10 (the "forest at 0x741000" false positive). Gated diagnostic only —
+     * the production path binds the honest placement read (black wallpaper when
+     * the declared backing is black), never a heuristically-scored region. */
+    uint8_t *dir = getenv("LAGFX_M2_COLORPICK") ? calloc(1u, want) : NULL;
     if (dir) {
         uint32_t dgot = lagfx_direct_read_backing(p, task, tref, want, dir);
         uint32_t drich = dgot ? chunk_color_richness(dir, want) : 0u;
@@ -400,7 +403,7 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
      * read modes), and point `pick` at the richest buffer. `single` = one buffer's
      * byte size from the descriptor's rowBytes*height. */
     uint32_t mb_single = 0;
-    {
+    if (getenv("LAGFX_M2_COLORPICK")) {   /* colour-richness pick is refuted (noise trap) */
         uint32_t ds = lagfx_le32(desc + 52), dh = lagfx_le32(desc + 60);
         if (ds >= 4u && (ds & 3u) == 0u && dh > 0u
             && (uint64_t)ds * dh >= 4096u && (uint64_t)ds * dh <= want)
@@ -591,10 +594,8 @@ void lagfx_texture_refresh(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         if (raw[o] | raw[o+1] | raw[o+2]) nb0++;
         if (via[o] | via[o+1] | via[o+2]) nb1++;
     }
-    /* Direct raw read (pmemsave-equivalent) — the wallpaper content lives at the
-     * declared backing but the arbitrated reads return black; prefer direct when
-     * richer (colour buckets). */
-    {
+    /* Direct raw read (refuted noise trap — see texture_realize); diagnostic-gated. */
+    if (getenv("LAGFX_M2_COLORPICK")) {
         uint8_t *dir = calloc(1u, want);
         if (dir) {
             uint32_t dgot = lagfx_direct_read_backing(p, task, tref, want, dir);
