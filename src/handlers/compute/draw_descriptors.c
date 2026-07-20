@@ -463,7 +463,7 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                         if (getenv("LAGFX_M2_DUMP")) {
                             for (int e = 0; e < 4; e++) {
                                 uint64_t es = lagfx_le64(desc + (size_t)e * 16u);
-                                uint64_t ep = lagfx_le64(desc + (size_t)e * 16u + 8u);
+                                uint64_t ep = lagfx_le64(desc + (size_t)e * 16u + 8u) & 0xffffffffull;
                                 LAGFX_LOG("P6b DUMP ref=0x%x bind%u desc[%d]={size=%llu PFN=0x%llx}",
                                           bs->ref, binding_no[i], e,
                                           (unsigned long long)es, (unsigned long long)ep);
@@ -500,7 +500,17 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                         uint64_t acc = 0;
                         for (int e = 0; e < 4; e++) {
                             uint64_t rsize = lagfx_le64(desc + (size_t)e * 16u);
-                            uint64_t pfn = lagfx_le64(desc + (size_t)e * 16u + 8u);
+                            /* Entry layout is {u64 size, u32 pfn, u32 flags} —
+                             * reading the pfn as u64 folds flags into the high
+                             * half (flags=1 → pfn 0x1_0000_xxxx), fails the
+                             * range check, and the walk never hits → the raw
+                             * row-VA bytes (adjacent heap objects / PSO text)
+                             * get bound as the shader's matrix. The CA pool
+                             * buffers (ref 0x24/0x2d) all carry flags=1; the
+                             * boot-era refs (0xe/0x15) carried 0, which hid
+                             * this. Mask to the low u32 like every other
+                             * placement walk (draw_emit/draw_resources). */
+                            uint64_t pfn = lagfx_le64(desc + (size_t)e * 16u + 8u) & 0xffffffffull;
                             if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
                             if (bs->offset < acc + rsize) {
                                 uint64_t local = bs->offset - acc;
