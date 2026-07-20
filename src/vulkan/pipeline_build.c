@@ -80,9 +80,17 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
     };
 
-    /* Viewport + scissor — hardcoded to match triangle test */
+    /* Viewport with the Metal→Vulkan Y-FLIP (negative height, origin at
+     * y=height). Metal clip space is Y-UP; Vulkan is Y-DOWN — without the flip
+     * the guest's composite geometry renders vertically MIRRORED (proven live:
+     * the cursor drew huge + UPSIDE-DOWN and UI rows collapsed into horizontal
+     * bands, while our upright display test-boxes confirmed the display path
+     * itself is correct). A negative-height viewport (Vulkan 1.1 / KHR_
+     * maintenance1) is the canonical fix. Kill-switch: LAGFX_DISABLE_YFLIP. */
+    bool yflip = (getenv("LAGFX_DISABLE_YFLIP") == NULL);
     VkViewport vp = {
-        .x = 0.0f, .y = 0.0f, .width = 1920.0f, .height = 1080.0f,
+        .x = 0.0f, .y = yflip ? 1080.0f : 0.0f,
+        .width = 1920.0f, .height = yflip ? -1080.0f : 1080.0f,
         .minDepth = 0.0f, .maxDepth = 1.0f,
     };
     VkRect2D sc = { .offset = {0, 0}, .extent = { .width = 1920, .height = 1080 } };
