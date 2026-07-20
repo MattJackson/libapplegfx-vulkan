@@ -437,6 +437,37 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
         return st;
     }
 
+    /* DISPLAY-PATH VALIDATOR (LAGFX_TEST_BOXES): paint three known solid boxes
+     * directly into the readback buffer — RED top-left, GREEN centre, BLUE
+     * bottom-right — AFTER the RT readback. If the screendump shows all three at
+     * the right positions and colours, the readback→QEMU-display→screendump chain
+     * is PROVEN good and the persistent bands are guest/RT content, not a display
+     * bug. Colour-swap (red↔blue) also reveals the pixel byte order (BGRA vs
+     * RGBA). Purely diagnostic, overwrites nothing durable. */
+    if (getenv("LAGFX_TEST_BOXES") && stride >= 4u) {
+        uint32_t W = display->rt.width, H = display->rt.height;
+        uint8_t *fb = (uint8_t *)dst;
+        struct { uint32_t x0,y0,x1,y1; uint8_t r,g,b; } boxes[3] = {
+            {   50u,   50u,  450u,  250u, 255u,   0u,   0u },  /* RED   top-left     */
+            {  760u,  440u, 1160u,  640u,   0u, 255u,   0u },  /* GREEN centre       */
+            { 1450u,  830u, 1850u, 1030u,   0u,   0u, 255u },  /* BLUE  bottom-right */
+        };
+        for (int bi = 0; bi < 3; bi++) {
+            for (uint32_t y = boxes[bi].y0; y < boxes[bi].y1 && y < H; y++) {
+                uint8_t *row = fb + (size_t)y * stride;
+                for (uint32_t x = boxes[bi].x0; x < boxes[bi].x1 && x < W; x++) {
+                    uint8_t *px = row + (size_t)x * 4u;
+                    px[0] = boxes[bi].b;   /* assume BGRA; swap tells us if RGBA */
+                    px[1] = boxes[bi].g;
+                    px[2] = boxes[bi].r;
+                    px[3] = 255u;
+                }
+            }
+        }
+        LAGFX_LOG("TEST_BOXES painted RED(tl)/GREEN(c)/BLUE(br) into readback "
+                  "(W=%u H=%u stride=%zu)", W, H, stride);
+    }
+
     if (stride_out) {
         *stride_out = stride;
     }
