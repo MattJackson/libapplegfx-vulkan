@@ -166,6 +166,26 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
             if (!full) return VK_NULL_HANDLE;
             uint32_t ffill = lagfx_read_vtx_source(p, task, cs->ref, cs->offset,
                                                    want, full, &how, mode);
+            /* GROUND-TRUTH LOCATOR (LAGFX_DUMP_SPV): the guest DTrace proved the
+             * real CA vertex is float4 (572,87,0,1) w=1.0 at 48B stride. Scan the
+             * resolved backing for a vertex-like 16B: pos.x,pos.y in screen range
+             * AND pos.w == 1.0 at +12. Log the FIRST such offset — if != 0 the
+             * real vertices sit at a different offset than our slot read starts,
+             * pinpointing the pool-buffer offset/resolve delta. */
+            if (ffill && getenv("LAGFX_DUMP_SPV")) {
+                int found = -1;
+                for (uint32_t o = 0; o + 16u <= ffill && found < 0; o += 4u) {
+                    float px, py, pw; uint32_t u;
+                    u = lagfx_le32(full+o);    memcpy(&px,&u,4);
+                    u = lagfx_le32(full+o+4);  memcpy(&py,&u,4);
+                    u = lagfx_le32(full+o+12); memcpy(&pw,&u,4);
+                    float ax = px<0?-px:px, ay = py<0?-py:py;
+                    if (pw == 1.0f && ax >= 1.0f && ax <= 4096.0f
+                        && ay >= 1.0f && ay <= 4096.0f) found = (int)o;
+                }
+                LAGFX_LOG("VTXLOCATE ref=0x%x slotoff=%llu: real-vertex(w=1) signature at backing offset %d (slot read starts at 0)",
+                          cs->ref, (unsigned long long)cs->offset, found);
+            }
             /* INDEXED draws (0x07): expand the index list CPU-side into an
              * unindexed vertex stream so the existing vkCmdDraw path renders
              * the REAL topology. Wire fields sourced from Apple's decoder
