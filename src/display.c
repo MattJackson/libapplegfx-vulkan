@@ -376,10 +376,15 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
     }
 
 #ifdef LAGFX_HAVE_VULKAN
-    /* Fallback path: use pre-stored pixels from CmdDisplaySwapMapping
-     * miss (no scanout buffer registered). This enables display output
-     * even when macOS hasn't called IOFBSetDisplayModeAndDepth. */
-    if (display->fallback_pixels && dst) {
+    /* Fallback path: pre-stored pixels from a CmdDisplaySwapMapping miss (no
+     * scanout buffer registered) — for early boot before macOS sets a display
+     * mode. ONLY serve it when the live RT is NOT ready: once we have real
+     * composited content, serving stale fallback pixels every-other-frame makes
+     * the display FLICKER between the real frame and the stale one (this was the
+     * "persistent bands" — the fallback's old pixels alternating with the
+     * increasingly-correct RT readback, proven by the LAGFX_TEST_BOXES boxes
+     * FLASHING). Prefer the RT whenever it's ready. */
+    if (display->fallback_pixels && dst && !display->rt_ready) {
         size_t copy_len = display->fallback_bytes;
         if (dst_size_bytes < copy_len) {
             copy_len = dst_size_bytes;
