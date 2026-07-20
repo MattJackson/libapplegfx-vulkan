@@ -554,6 +554,27 @@ lagfx_status_t lagfx_vk_render_target_readback(struct lagfx_vk_state *vk,
     memcpy(dst, mapped, need);
     vkUnmapMemory(vk->device, staging_mem);
 
+    /* DISPLAY-PATH VALIDATOR (LAGFX_TEST_BOXES): paint RED(tl)/GREEN(c)/BLUE(br)
+     * boxes into EVERY readback's output — the true convergence point for all
+     * displayed pixels (read_frame + ASMBLIT present both land here). If the
+     * screendump shows them, the readback→display chain is proven and the bands
+     * are RT content; if not, the display bypasses this readback entirely. */
+    if (getenv("LAGFX_TEST_BOXES") && stride >= 4u) {
+        uint8_t *fb = (uint8_t *)dst; uint32_t W = rt->width, H = rt->height;
+        struct { uint32_t x0,y0,x1,y1; uint8_t r,g,b; } bx[3] = {
+            {  50u,  50u, 450u, 250u, 255u,   0u,   0u },
+            { 760u, 440u,1160u, 640u,   0u, 255u,   0u },
+            {1450u, 830u,1850u,1030u,   0u,   0u, 255u } };
+        for (int i = 0; i < 3; i++)
+            for (uint32_t y = bx[i].y0; y < bx[i].y1 && y < H; y++) {
+                uint8_t *row = fb + (size_t)y * stride;
+                for (uint32_t x = bx[i].x0; x < bx[i].x1 && x < W; x++) {
+                    uint8_t *px = row + (size_t)x * 4u;
+                    px[0]=bx[i].b; px[1]=bx[i].g; px[2]=bx[i].r; px[3]=255u;
+                }
+            }
+    }
+
     rt->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
     LAGFX_LOG("render_target_readback: %ux%u stride=%zu bytes=%zu OK",
