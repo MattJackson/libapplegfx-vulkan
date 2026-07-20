@@ -869,7 +869,15 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                 px = qios->dst_x; py = qios->dst_y;
                 pw = qios->dst_w; ph = qios->dst_h;
             }
-            if (overlay && qi != 0u && qios->view != VK_NULL_HANDLE) {
+            /* Layer 0 ALSO composites src-over (was: replace-blit). DRAWMAP proved
+             * content draws split between per-pass targets (0x17) AND direct-to-
+             * scanout (display->rt: pipes 0x23/0x4e/0x5b). The old layer-0 replace-
+             * blit of the per-pass 0x17 surface WIPED the direct-scanout content →
+             * black frame. composite_over uses LOAD_OP_LOAD + src-over, so it
+             * preserves whatever is already in display->rt (the direct draws) and
+             * layers the per-pass content on top. Kill-switch DISABLE_M2_OVERLAY
+             * still reverts to the old full replace-blit. */
+            if (overlay && qios->view != VK_NULL_HANDLE) {
                 lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, qios->view,
                                         px, py, pw, ph);
             } else {
