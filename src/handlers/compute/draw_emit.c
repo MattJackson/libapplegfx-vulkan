@@ -226,6 +226,24 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                         }
                         if (emitted == icount) {
                             memcpy(full, exp, want);
+                            /* FORCE w=1 on the float4 position (offset +12). The
+                             * texture-composite draws (0x23/0x28/0x2c) carry real
+                             * X,Y screen coords but garbage Z,W (w=920/938) — the
+                             * perspective divide by that w shrinks the quad to
+                             * nothing. Every valid CA composite vertex has w=1, so
+                             * clamping w=1 recovers the geometry when only Z/W are
+                             * misaligned. Gated LAGFX_DISABLE_FORCE_W1. */
+                            if (getenv("LAGFX_DISABLE_FORCE_W1") == NULL) {
+                                float one = 1.0f;
+                                for (uint32_t k = 0; (size_t)(k + 1u) * vs <= want; k++) {
+                                    uint8_t *pw = full + (size_t)k * vs + 12u;
+                                    uint32_t wu; memcpy(&wu, pw, 4);
+                                    float wf; memcpy(&wf, &wu, 4);
+                                    /* only override implausible w (keep genuine 1.0) */
+                                    if (!(wf >= 0.99f && wf <= 1.01f))
+                                        memcpy(pw, &one, 4);
+                                }
+                            }
                             if (getenv("LAGFX_DUMP_SPV")) {
                                 /* Whether THIS pipeline samples a texture (has a
                                  * SAMPLED_IMAGE binding) — so we can tell a flat
