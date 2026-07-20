@@ -120,6 +120,7 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
             pstride += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
         pstride = (pstride + 7u) & ~7u;
         if (task->pending_pipeline.vtx_stride >= pstride
+            && task->pending_pipeline.vtx_stride <= pstride + 8u
             && task->pending_pipeline.vtx_stride <= 256u)
             pstride = task->pending_pipeline.vtx_stride;
         if (pstride == 0u) pstride = 48u;
@@ -211,6 +212,7 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                         vs += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
                     vs = (vs + 7u) & ~7u;
                     if (task->pending_pipeline.vtx_stride >= vs
+                        && task->pending_pipeline.vtx_stride <= vs + 8u
                         && task->pending_pipeline.vtx_stride <= 256u)
                         vs = task->pending_pipeline.vtx_stride;
                     if (vs == 0u) vs = 48u;
@@ -714,6 +716,7 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
          * pipeline_build reads the buffer. The tight-packed sum under-counts the
          * stride (48→24) → an over-large vc that reads past valid vertices. */
         if (task->pending_pipeline.vtx_stride >= vstride
+            && task->pending_pipeline.vtx_stride <= vstride + 8u
             && task->pending_pipeline.vtx_stride <= 256u)
             vstride = task->pending_pipeline.vtx_stride;
         if (vstride == 0u) vstride = 16u;
