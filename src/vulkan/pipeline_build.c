@@ -44,14 +44,18 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
             };
             off += c * 4u;
         }
-        /* The guest's MTLVertexDescriptor stride may exceed the tight-packed sum
-         * (per-attribute padding / 8-byte alignment); a wrong stride misreads
-         * vertices 1.. (vertex 0 still anchors). Live data for the SkyLight
-         * composites (vec2 pos + vec2 tex + float, tight=20) shows the real
-         * stride is 24 (the trailing float padded to an 8-byte boundary). Allow
-         * an env override to probe the real stride until the descriptor is
-         * decoded; default rounds the tight sum UP to a multiple of 8. */
+        /* Vertex stride, in priority order:
+         *  1. desc->vtx_stride — the REAL stride decoded from the PSO's serialized
+         *     MTLVertexDescriptor (lagfx_parse_pso_vertex_stride). Authoritative
+         *     and per-pipeline (CoreAnimation composites = 48, fullscreen quad = 24).
+         *  2. LAGFX_VTX_STRIDE env override (diagnostic / global probe).
+         *  3. round8(sum of attr sizes) — the legacy heuristic; correct only when
+         *     there is no trailing padding, and WRONG for the CA composites (tight
+         *     sum rounds to 24 while the real stride is 48 → every other vertex
+         *     misread → horizontal-band smear). Fallback of last resort. */
         uint32_t stride = (off + 7u) & ~7u;
+        if (desc->vtx_stride >= off && desc->vtx_stride <= 256u)
+            stride = desc->vtx_stride;
         const char *vs = getenv("LAGFX_VTX_STRIDE");
         if (vs) { unsigned long s = strtoul(vs, NULL, 0); if (s >= off && s <= 256u) stride = (uint32_t)s; }
         vbind = (VkVertexInputBindingDescription){

@@ -41,6 +41,11 @@ typedef struct {
     uint8_t          vtx_in_loc[8];
     uint8_t          vtx_in_comp[8];            /* 1..4 components per attribute */
     uint8_t          n_vtx_inputs;
+    /* Real per-vertex stride decoded from the PSO's MTLVertexDescriptor
+     * (lagfx_parse_pso_vertex_stride). 0 = unknown → fall back to round8(sum).
+     * The round8 heuristic is wrong for the CoreAnimation composites (real 48,
+     * heuristic 24) and smears the geometry into horizontal bands. */
+    uint32_t         vtx_stride;
     /* Future fields (Stage 70b+):
      *   cull_mode, front_face, blend factor, depth-stencil state... */
 } lagfx_pipeline_desc_t;

@@ -222,6 +222,13 @@ typedef struct {
     uint8_t    vtx_in_loc[8];
     uint8_t    vtx_in_comp[8];
     uint8_t    n_vtx_inputs;
+    /* Per-pipeline vertex-buffer-layout stride, decoded from the serialized
+     * MTLVertexDescriptor in the PSO blob (the `04 <stride:u32> 02` layout token).
+     * 0 = unknown → callers fall back to the round8(sum-of-attr-sizes) heuristic.
+     * The round8 heuristic is WRONG for the CoreAnimation composites (real stride
+     * 48, tight sum rounds to 24 → every other vertex misread → horizontal smear).
+     * Ground truth: pso 0x2c/0x23 = 48, pso 0x14 = 24. */
+    uint32_t   vtx_stride;
     /* B1 (M0): cached VkPipeline built from this pending_pipeline + the RT
      * formats it was built for. Reused across draws (was rebuilt + LEAKED every
      * draw → OOM on long runs). Destroyed when the shaders change (op_0x74

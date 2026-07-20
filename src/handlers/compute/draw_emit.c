@@ -93,6 +93,13 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
     if (LAGFX_POLICY("M2_VTXSRC")) {
         uint32_t want = getenv("LAGFX_M2_BIGVERTS")
                             ? LAGFX_BIGVERTS_BUF_SZ : LAGFX_DRAW_DS_BUF_SZ;
+        /* Score EVERY bound slot/mode and pick the HIGHEST — not the first ≥50.
+         * The per-vertex geometry is at buffer index 1 (ground truth: ref 0x15
+         * scores 100), while slot-0 uniform buffers score 45–80 (floats look
+         * "plausible"). Taking the first ≥50 let slot-0 uniforms win and fed the
+         * shader uniforms-as-positions → smear/zero-coverage. Highest-score wins. */
+        uint32_t best_s = 0u; int best_mode = 0; uint32_t best_score = 0u;
+        bool have_best = false;
         for (uint32_t sm = 0; sm < 6u; sm++) {
             /* slot-major, then mode: s0/m0, s0/m1, s1/m0, s1/m1, s2/m0, s2/m1 —
              * mode 1 = VA-translated placement read (lead 3). */
@@ -108,9 +115,16 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
             if (getenv("LAGFX_DUMP_SPV"))
                 LAGFX_LOG("VTXSRC slot=%u mode=%d ref=0x%x off=%llu how=%s score=%u",
                           s, mode, cs->ref, (unsigned long long)cs->offset, how, score);
-            if (score < 50u) continue;
+            if (score >= 50u && score > best_score) {
+                best_score = score; best_s = s; best_mode = mode; have_best = true;
+            }
+        }
+        if (have_best) {
+            uint32_t s = best_s; int mode = best_mode; uint32_t score = best_score;
+            lagfx_binding_slot_t *cs = &task->bindings.vertex_buffers[s];
+            const char *how = "none";
             uint8_t *full = calloc(1u, want);
-            if (!full) break;
+            if (!full) return VK_NULL_HANDLE;
             uint32_t ffill = lagfx_read_vtx_source(p, task, cs->ref, cs->offset,
                                                    want, full, &how, mode);
             if (ffill) {
@@ -337,6 +351,7 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                         && LAGFX_POLICY("VTX_INPUT");
     if (vtx_input_on) {
         pdesc.n_vtx_inputs = task->pending_pipeline.n_vtx_inputs;
+        pdesc.vtx_stride   = task->pending_pipeline.vtx_stride;
         for (uint32_t a = 0; a < pdesc.n_vtx_inputs && a < 8u; a++) {
             pdesc.vtx_in_loc[a]  = task->pending_pipeline.vtx_in_loc[a];
             pdesc.vtx_in_comp[a] = task->pending_pipeline.vtx_in_comp[a];
@@ -541,6 +556,13 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         vstride = 0u;
         for (uint32_t a = 0; a < task->pending_pipeline.n_vtx_inputs && a < 8u; a++)
             vstride += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
+        /* Use the REAL per-pipeline stride (decoded from the PSO descriptor) when
+         * known, so the vertex-count cap below (vc = BUF_SZ/stride) matches how
+         * pipeline_build reads the buffer. The tight-packed sum under-counts the
+         * stride (48→24) → an over-large vc that reads past valid vertices. */
+        if (task->pending_pipeline.vtx_stride >= vstride
+            && task->pending_pipeline.vtx_stride <= 256u)
+            vstride = task->pending_pipeline.vtx_stride;
         if (vstride == 0u) vstride = 16u;
         vbuf = lagfx_upload_guest_vertex_buffer(p, task, dev_with_vk->vk, &vbmem,
                                                 &vbuf_size);

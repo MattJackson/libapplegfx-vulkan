@@ -395,3 +395,68 @@ lagfx_lookup_pipeline_function_refs(lagfx_protocol_t *p,
     *out_fragment_ref = fragment_ref;
     return true;
 }
+
+uint32_t
+lagfx_parse_pso_vertex_stride(lagfx_protocol_t *p,
+                              const lagfx_task_entry_t *task,
+                              uint32_t pipeline_object_id) {
+    if (!p || !task || task->heap_pfn == 0u) return 0u;
+
+    /* Resolve the pipeline slot → its serialized descriptor bytes (same path as
+     * lookup_pipeline_function_refs, but read the FULL blob: the vertex-layout
+     * stride run lives past the 128 B that lookup reads — pso 0x2c's strides sit
+     * at offset ~256). */
+    uint64_t slot_va = slot_va_for(task->heap_pfn, pipeline_object_id);
+    uint64_t slot_gpa = 0;
+    if (!lagfx_task_translate(p, task, slot_va, &slot_gpa)) return 0u;
+
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    uint8_t slot_type = 0;
+    uint64_t bytes_va = 0;
+    if (!read_slot_fields((const lagfx_device_descriptor_t *)&dev->desc,
+                          slot_gpa, &slot_type, &bytes_va))
+        return 0u;
+    if (slot_type != LAGFX_APV_TYPE_PIPELINE) return 0u;
+
+    uint64_t bytes_gpa = 0;
+    if (!lagfx_task_translate(p, task, bytes_va, &bytes_gpa)) return 0u;
+
+    /* The observed descriptors are 0x3c..0x154 bytes; 512 covers the tail where
+     * the MTLVertexBufferLayout stride tokens live. */
+    uint8_t blob[512] = {0};
+    if (!dev->desc.shell.read_memory(dev->desc.shell.opaque, bytes_gpa,
+                                     sizeof(blob), blob))
+        return 0u;
+
+    /* The blob's declared total size is at +4 (little-endian). Bound the token
+     * scan to it so we don't read trailing heap garbage. */
+    uint32_t total = lagfx_le32(blob + 4);
+    uint32_t limit = (total >= 16u && total <= sizeof(blob)) ? total : (uint32_t)sizeof(blob);
+
+    /* Token stream: `04 <u32 value> <tag:u8>`. A MTLVertexBufferLayout stride is
+     * `04 <stride> 02`. Since 0x04 also occurs as data, only count tokens whose
+     * tag is a layout field (0x01 = last-layout terminator / 0x02 = stride) and
+     * whose value is a plausible stride (multiple of 4, 8..256). Take the MODE of
+     * those values — a pipeline's real per-vertex stride repeats once per bound
+     * buffer layout, while spurious matches don't cluster. Ground-truth verified:
+     * pso 0x2c/0x23 → 48 (four 0x30 tokens), pso 0x14 → 24 (three 0x18 tokens). */
+    uint32_t cand[64]; uint32_t hits[64]; uint32_t nc = 0;
+    for (uint32_t i = 16u; i + 6u <= limit; ) {
+        if (blob[i] != 0x04u) { i++; continue; }
+        uint32_t val = lagfx_le32(blob + i + 1u);
+        uint8_t  tag = blob[i + 5u];
+        if ((tag == 0x02u || tag == 0x01u) &&
+            val >= 8u && val <= 256u && (val & 3u) == 0u) {
+            uint32_t k = 0;
+            for (; k < nc; k++) if (cand[k] == val) { hits[k]++; break; }
+            if (k == nc && nc < 64u) { cand[nc] = val; hits[nc] = 1u; nc++; }
+        }
+        i += 6u;
+    }
+    uint32_t best = 0u, bestn = 0u;
+    for (uint32_t k = 0; k < nc; k++)
+        if (hits[k] > bestn || (hits[k] == bestn && cand[k] > best)) {
+            best = cand[k]; bestn = hits[k];
+        }
+    return best;
+}

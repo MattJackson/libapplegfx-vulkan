@@ -1422,6 +1422,17 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                             LAGFX_LOG("op_0x74 P6a: ref=0x%x vertex shader has %zu stage-in attribute(s)",
                                       reference, nvi);
                     }
+                    /* Decode the real per-vertex stride from the PSO's serialized
+                     * MTLVertexDescriptor (the round8(sum) heuristic is wrong for
+                     * the CoreAnimation composites: real 48, heuristic 24 → smear).
+                     * 0 = not found → pipeline_build falls back to the heuristic. */
+                    task->pending_pipeline.vtx_stride =
+                        (task->pending_pipeline.n_vtx_inputs > 0u)
+                            ? lagfx_parse_pso_vertex_stride(p, task, reference)
+                            : 0u;
+                    if (task->pending_pipeline.vtx_stride)
+                        LAGFX_LOG("op_0x74 P6a: ref=0x%x PSO vertex stride = %u (decoded from descriptor)",
+                                  reference, task->pending_pipeline.vtx_stride);
                     if (drawable) {
                         task->pending_pipeline.descriptor_set_layout = (uintptr_t)dsl;
                         task->pending_pipeline.pipeline_layout       = (uintptr_t)pl;

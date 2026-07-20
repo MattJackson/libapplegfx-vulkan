@@ -89,4 +89,17 @@ bool lagfx_lookup_pipeline_function_refs(lagfx_protocol_t *p,
                                           uint8_t *out_vertex_ref,
                                           uint8_t *out_fragment_ref);
 
+/*
+ * Decode the vertex-buffer-layout stride from a render pipeline's serialized
+ * MTLVertexDescriptor (the PSO blob). The blob is a `04 <u32 value> <tag:u8>`
+ * token stream; a MTLVertexBufferLayout stride is `04 <stride> 02`. Returns the
+ * decoded stride (bytes) or 0 if the pipeline has no vertex descriptor / can't
+ * be read. Ground truth: pso 0x2c/0x23 (CoreAnimation composites) = 48, pso 0x14
+ * (fullscreen-quad) = 24 — the round8(sum-of-attr-sizes) heuristic gets these
+ * wrong and smears the geometry.
+ */
+uint32_t lagfx_parse_pso_vertex_stride(lagfx_protocol_t *p,
+                                        const lagfx_task_entry_t *task,
+                                        uint32_t pipeline_object_id);
+
 #endif /* LIBAPPLEGFX_PROTOCOL_OBJECT_RESOLVER_H */
