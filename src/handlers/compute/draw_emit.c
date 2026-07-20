@@ -403,6 +403,18 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                         LAGFX_LOG("PPPROBE tref=0x%x type=0x%02x tot=%llu cap=%u raw(%s g=%u nb=%u) va(%s g=%u nb=%u)",
                                   tref, pt, (unsigned long long)tot, cap,
                                   h0, g0, nb0, h1, g1, nb1);
+                        /* LAGFX_M2_PPDUMP: persist both reads so the bytes can be
+                         * rendered host-side — counts can't distinguish forest
+                         * from boot-log garbage; only an image can. */
+                        if (getenv("LAGFX_M2_PPDUMP")) {
+                            char fn[64];
+                            snprintf(fn, sizeof(fn), "/tmp/pp-%x-raw.bin", tref);
+                            FILE *f = rb ? fopen(fn, "wb") : NULL;
+                            if (f) { fwrite(rb, 1, cap, f); fclose(f); }
+                            snprintf(fn, sizeof(fn), "/tmp/pp-%x-va.bin", tref);
+                            f = vb ? fopen(fn, "wb") : NULL;
+                            if (f) { fwrite(vb, 1, cap, f); fclose(f); }
+                        }
                         free(rb); free(vb);
                     } else {
                         LAGFX_LOG("PPPROBE tref=0x%x type=0x%02x tot=%llu (too small)",
