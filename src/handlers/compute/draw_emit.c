@@ -227,7 +227,16 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                         if (emitted == icount) {
                             memcpy(full, exp, want);
                             if (getenv("LAGFX_DUMP_SPV")) {
-                                LAGFX_LOG("IDXEXP: expanded %u u16 indices (ref=0x%x off=%u stride=%u how=%s)",
+                                /* Whether THIS pipeline samples a texture (has a
+                                 * SAMPLED_IMAGE binding) — so we can tell a flat
+                                 * ColorFill panel (texcoords irrelevant) from a
+                                 * texture draw whose texcoords must span 0..1. */
+                                bool samples_tex = false;
+                                for (uint32_t bb = 0; bb < task->pending_pipeline.n_spv_bindings && bb < 16u; bb++)
+                                    if (task->pending_pipeline.spv_binding_kind[bb]
+                                        == (uint8_t)LAGFX_SPV_BINDING_SAMPLED_IMAGE) { samples_tex = true; break; }
+                                LAGFX_LOG("IDXEXP: pipe=0x%x samples_tex=%d expanded %u u16 indices (ref=0x%x off=%u stride=%u how=%s)",
+                                          task->pending_pipeline.reference, samples_tex ? 1 : 0,
                                           icount, task->pending_draw.index_buffer_ref,
                                           task->pending_draw.index_buffer_offset, vs, ihow);
                                 /* Dump the first 3 expanded verts as float4@0 +
