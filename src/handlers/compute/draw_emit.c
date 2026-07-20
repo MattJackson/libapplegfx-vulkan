@@ -232,10 +232,8 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
             uint64_t avail = rsize - within;
             uint32_t chunk = (avail < (uint64_t)(want - filled))
                                  ? (uint32_t)avail : (want - filled);
-            /* SAME root cause as the texture backing: the placement descriptor's
-             * PFN is a guest-PHYSICAL frame, so dva=(pfn<<12)+off is a GPA — read
-             * it raw (gated LAGFX_M2_RAWGPA), NOT VA-translated, else the vertex
-             * positions come back garbage/zero → degenerate geometry. */
+            /* M2q: contract read — VA-translated when the address maps in the
+             * per-task radix, raw GPA otherwise (see read_resource_backing). */
             uint64_t dva = (pfn << 12) + within;
             if (!lagfx_read_resource_backing(p, task, dva, chunk, vdata + filled)) {
                 if (filled == 0u) { free(vdata); return VK_NULL_HANDLE; }

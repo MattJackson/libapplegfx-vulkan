@@ -483,11 +483,9 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                             if (bs->offset < acc + rsize) {
                                 uint64_t local = bs->offset - acc;
                                 uint64_t dva = (pfn << 12) + local;
-                                /* SAME root cause: pfn is guest-PHYSICAL, dva is a
-                                 * GPA — read raw (gated LAGFX_M2_RAWGPA), not
-                                 * VA-translated, so the composite's storage buffers
-                                 * (UVs, MVP transforms, uniforms) are correct, not
-                                 * garbage. Falls back to VA read when gate off (M1). */
+                                /* M2q: contract read — VA-translated when the
+                                 * address maps in the per-task radix, raw GPA
+                                 * otherwise (see read_resource_backing). */
                                 lagfx_read_resource_backing(p, task, dva,
                                                             LAGFX_DRAW_DS_BUF_SZ, data);
                                 /* DRAW-TIME storage-buffer dump (gated DUMP_SPV):
