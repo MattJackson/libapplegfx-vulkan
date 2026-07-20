@@ -126,8 +126,12 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
 
         uint32_t best_s = 0u; int best_mode = 0; uint32_t best_score = 0u;
         bool have_best = false;
-        for (uint32_t sm = 0; sm < 6u; sm++) {
-            /* slot-major, then mode: s0/m0, s0/m1, s1/m0, s1/m1, s2/m0, s2/m1 —
+        /* Scan slots 0..7 (was 0..2): the per-vertex stream is bound at a slot
+         * that varies per draw — live SetVertexBuffers binds ref 0x24 at slots
+         * 1/2/3, and the ~20% of composites that fell back to the matrix had
+         * their positions in a slot > 2. */
+        for (uint32_t sm = 0; sm < 16u; sm++) {
+            /* slot-major, then mode: s/m0, s/m1 for slots 0..7 —
              * mode 1 = VA-translated placement read (lead 3). */
             uint32_t s = sm / 2u;
             int mode = (int)(sm % 2u);
