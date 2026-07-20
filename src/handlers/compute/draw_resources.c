@@ -9,6 +9,7 @@
 #include "compute_draw_internal.h"
 #include "display.h"
 #include "protocol/object_resolver.h"
+#include "task_translate.h"
 
 #include "common/le.h"
 #include "common/log.h"
@@ -344,6 +345,25 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
               lagfx_le32(desc+16), lagfx_le32(desc+20), lagfx_le32(desc+24), lagfx_le32(desc+28),
               lagfx_le32(desc+32), lagfx_le32(desc+36), lagfx_le32(desc+40), lagfx_le32(desc+44),
               lagfx_le32(desc+48), lagfx_le32(desc+52), lagfx_le32(desc+56), lagfx_le32(desc+60));
+    /* CONTRACTDIAG (M2n, gated): the decoded Apple host contract resolves an
+     * IOSurface backing via -[PGLocalTask newBufferForVirtualPage:length:] —
+     * i.e. treat the descriptor's page_index (placement pfn, blob+0x08) as a
+     * per-task VIRTUAL page and walk the per-task page table (the op-0x39
+     * commits). This logs, for the requested ref, whether that VA→GPA
+     * translation SUCCEEDS and to which GPA — the single discriminator between
+     * (a) a missing 0x39 mapping [translate fails => real host bug to chase]
+     * and (b) the guest never DMAing the pixels [translate ok but reads
+     * black => guest-side gap, needs guest ground-truth]. Diagnostic only;
+     * production resolution is unchanged. See iosurface-backing-contract-RE.md. */
+    if (getenv("LAGFX_M2_CONTRACTDIAG")) {
+        uint64_t page_index = lagfx_le64(desc + 8u) & 0xffffffffull; /* blob+0x08 */
+        uint64_t va = page_index << 12, gpa = 0;
+        bool xok = lagfx_task_translate(p, task, va, &gpa);
+        LAGFX_LOG("CONTRACTDIAG ref=0x%x page_index=0x%llx newBufferForVirtualPage-VA=0x%llx "
+                  "translate=%d gpa=0x%llx",
+                  tref, (unsigned long long)page_index, (unsigned long long)va,
+                  xok ? 1 : 0, (unsigned long long)gpa);
+    }
     uint64_t total = 0;
     for (int e = 0; e < 4; e++) {
         uint64_t rsize = lagfx_le64(desc + (size_t)e * 16u);
