@@ -35,6 +35,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* === Per-task radix-tree translator ============================== */
 
@@ -335,11 +336,30 @@ static void exec_walk_resource(lagfx_protocol_t *p,
         return;
     }
 
-    /* Read up to scratch_exec bytes, chunked per page so the radix
-     * tree can map each task-VA page to whichever GPA the kext put
-     * it at. */
+    /* Pick a buffer that holds the WHOLE cmdbuf. A cmdbuf carries a
+     * sequence of encoder segments; the 4 KiB scratch is only enough
+     * for small single-segment buffers. Anything larger goes through
+     * the growable heap buffer so tail segments (blit encoders
+     * serialize after compute/render) aren't truncated away. */
     uint8_t *buf = p->scratch_exec;
     uint32_t buf_size = LAGFX_MAX_RING_READ;
+    if (length > LAGFX_MAX_RING_READ) {
+        if (p->scratch_exec_heap_size < length) {
+            uint32_t new_size = (length + 0xffffu) & ~0xffffu;  /* 64 KiB round-up */
+            uint8_t *nb = realloc(p->scratch_exec_heap, new_size);
+            if (nb) {
+                p->scratch_exec_heap = nb;
+                p->scratch_exec_heap_size = new_size;
+            } else {
+                LAGFX_WARN("exec_walk_resource: heap buffer alloc %u failed — "
+                           "walking first %u bytes only", new_size, buf_size);
+            }
+        }
+        if (p->scratch_exec_heap_size >= length) {
+            buf = p->scratch_exec_heap;
+            buf_size = p->scratch_exec_heap_size;
+        }
+    }
     uint32_t to_read = length < buf_size ? length : buf_size;
 
     uint32_t bytes_read = 0;
@@ -407,24 +427,54 @@ static void exec_walk_resource(lagfx_protocol_t *p,
         return;
     }
 
-    uint32_t segment_size = lagfx_le32(buf + seg_off + 0);
-    uint8_t  encoder_type = buf[seg_off + 4];
-    LAGFX_LOG("exec_walk: segment seg_off=%zu seg_size=%u encType=%u",
-              seg_off, segment_size, (unsigned)encoder_type);
+    /* Walk the SEQUENCE of segments. Apple's deserializer loops
+     * -decodeSegmentWithHeader: over the cursor until the cmdbuf is
+     * consumed (that's what reuseFlag/keepFlag exist for); a single
+     * cmdbuf routinely carries compute + render + blit segments
+     * back-to-back. segmentSize includes the 8-byte header. An
+     * encType=5 header is a protection-options preamble: consume its
+     * 8-byte header + a u64, then the real header follows. */
+    size_t off = seg_off;
+    unsigned seg_idx = 0;
+    while (off + 8u <= to_read) {
+        uint32_t segment_size = lagfx_le32(buf + off + 0);
+        uint8_t  encoder_type = buf[off + 4];
 
-    /* Walk the inner stream after the 8-byte segment header. */
-    size_t inner_off = seg_off + 8u;
-    if (inner_off >= to_read) return;
-    size_t inner_len = segment_size > 8u ? segment_size - 8u : 0u;
-    if (inner_len > to_read - inner_off) inner_len = to_read - inner_off;
+        if (encoder_type == 5u) {
+            if (off + 24u > to_read) break;
+            off += 16u;  /* preamble header + u64 protectionOptions */
+            continue;
+        }
+        if ((encoder_type != 0u && encoder_type != 1u && encoder_type != 2u
+             && encoder_type != 4u)
+            || segment_size < 8u || segment_size > to_read - off) {
+            if (seg_idx > 0u && segment_size != 0u) {
+                LAGFX_TRACE("exec_walk: stop at off=%zu size=%u encType=%u "
+                            "after %u segment(s)", off, segment_size,
+                            (unsigned)encoder_type, seg_idx);
+            }
+            break;
+        }
 
-    size_t inner_count = inner_walk_segment(p, encoder_type,
-                                              buf + inner_off,
-                                              inner_len, stamp,
-                                              outer_resources,
-                                              resource_count, task);
-    LAGFX_LOG("exec_walk: encType=%u inner_cmds_observed=%zu",
-              (unsigned)encoder_type, inner_count);
+        LAGFX_LOG("exec_walk: segment[%u] seg_off=%zu seg_size=%u encType=%u",
+                  seg_idx, off, segment_size, (unsigned)encoder_type);
+
+        size_t inner_len = segment_size - 8u;
+        size_t inner_count = inner_walk_segment(p, encoder_type,
+                                                  buf + off + 8u,
+                                                  inner_len, stamp,
+                                                  outer_resources,
+                                                  resource_count, task);
+        LAGFX_LOG("exec_walk: encType=%u inner_cmds_observed=%zu",
+                  (unsigned)encoder_type, inner_count);
+
+        off += segment_size;
+        seg_idx++;
+    }
+    if (to_read < length) {
+        LAGFX_WARN("exec_walk: cmdbuf truncated (%u of %u bytes) — "
+                   "segments past the buffer were not walked", to_read, length);
+    }
 }
 
 lagfx_handler_status_t lagfx_compute_exec_cmdbuf(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {

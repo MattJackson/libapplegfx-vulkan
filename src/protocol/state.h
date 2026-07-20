@@ -465,6 +465,15 @@ typedef struct lagfx_protocol {
     uint8_t scratch_display[LAGFX_MAX_RING_READ];
     uint8_t scratch_exec[LAGFX_MAX_RING_READ];
 
+    /* Growable heap buffer for CmdExecIndirect2 cmdbuf reads that exceed
+     * the 4 KiB scratch_exec (outer length field allows up to 4 MiB). A
+     * cmdbuf carries a SEQUENCE of encoder segments; truncating at 4 KiB
+     * dropped every segment past the first page (blit segments serialize
+     * after the compute/render segments). Owned by exec_cmdbuf.c; freed
+     * in lagfx_protocol_free. */
+    uint8_t  *scratch_exec_heap;
+    uint32_t  scratch_exec_heap_size;
+
 } lagfx_protocol_t;
 
 /* Validation macro */

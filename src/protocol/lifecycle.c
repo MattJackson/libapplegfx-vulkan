@@ -36,6 +36,7 @@ void lagfx_protocol_free(lagfx_protocol_t *p) {
               (unsigned long long)p->total_cmds_seen,
               (unsigned long long)p->total_cmds_completed);
 
+    free(p->scratch_exec_heap);
     memset(p, 0, sizeof(*p));
     free(p);
 }

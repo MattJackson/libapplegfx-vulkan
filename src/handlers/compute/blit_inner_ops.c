@@ -293,29 +293,36 @@ int lagfx_blit_inner_dispatch(lagfx_protocol_t *p,
                                uint32_t          opcode,
                                const uint8_t    *payload,
                                size_t            len) {
-    p->diag.unknown_blit_ops++;
-    
     const lagfx_blit_inner_op_desc_t *d = table_lookup(opcode);
     if (!d) {
+        p->diag.unknown_blit_ops++;
         if (p->diag.unknown_blit_ops <= 10) {
-            LAGFX_WARN("blit inner: unknown opcode 0x%03x len=%zu — absorbed (count=%lu)",
+            LAGFX_WARN("blit inner: unknown opcode 0x%03x len=%zu — absorbed (count=%u)",
                        (unsigned)(opcode & 0xfffu), len, p->diag.unknown_blit_ops);
         } else if (p->diag.unknown_blit_ops == 11) {
             LAGFX_WARN("blit inner: suppressing further unknown opcode logs");
         }
         return 0;
     }
-    LAGFX_TRACE("blit inner: op=0x%03x (%s) len=%zu",
-                (unsigned)(d->opcode & 0xfffu), d->name, len);
-    /* Diagnostic: dump every blit op + leading refs to map which op uploads
-     * texture content (dst ref 0x10 = wallpaper). Gated. */
-    if (getenv("LAGFX_BLIT_DUMP")) {
-        uint32_t w0 = len >= 4 ? lagfx_le32(payload + 0) : 0;
-        uint32_t w1 = len >= 8 ? lagfx_le32(payload + 4) : 0;
-        uint32_t w2 = len >= 12 ? lagfx_le32(payload + 8) : 0;
-        uint32_t w3 = len >= 16 ? lagfx_le32(payload + 12) : 0;
-        LAGFX_LOG("BLITDUMP op=0x%03x (%s) len=%zu w[%u,%u,%u,%u]",
-                  (unsigned)(d->opcode & 0xfffu), d->name, len, w0, w1, w2, w3);
+    /* M2s: every blit op is logged at INFO with its full payload words and
+     * whether our handler EXECUTES a Vulkan op or only ACKs. Blit segments
+     * are rare (not vblank-spam), and this is the census that decides
+     * whether the wallpaper arrives via a copy we ACK but never execute. */
+    {
+        char words[24 * 11 + 1];
+        size_t n = len / 4u;
+        if (n > 24u) n = 24u;
+        size_t pos = 0;
+        for (size_t i = 0; i < n; ++i) {
+            int wrote = snprintf(words + pos, sizeof(words) - pos, "%s%x",
+                                 i ? "," : "", lagfx_le32(payload + i * 4u));
+            if (wrote < 0 || (size_t)wrote >= sizeof(words) - pos) break;
+            pos += (size_t)wrote;
+        }
+        words[pos] = '\0';
+        LAGFX_LOG("BLITOP op=0x%03x (%s) len=%zu %s w[%s]",
+                  (unsigned)(d->opcode & 0xfffu), d->name, len,
+                  d->handler == op_ack_stub ? "ACK-ONLY" : "EXEC", words);
     }
     if (!d->handler) {
         return 0;
