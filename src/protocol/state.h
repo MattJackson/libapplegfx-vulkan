@@ -146,6 +146,11 @@ typedef struct {
     int32_t    base_vertex;     /* Vertex offset (signed, default 0) */
     uint32_t   first_instance;  /* First instance index (default 0) */
     uint32_t   index_buffer_ref;/* Index buffer reference (0 if unindexed draw) */
+    /* Byte offset of the index data inside the index buffer. Decoded from the
+     * 0x07 wire per Apple's decodeDrawIndexedPrimitives16WithIterator:
+     * {prim:u16, indexType:u16, bufRef:u32, indexCount:u16, offset:u16}. */
+    uint32_t   index_buffer_offset;
+    uint32_t   index_type;      /* MTLIndexType: 0 = UInt16, 1 = UInt32 */
     bool       indexed;         /* 1 = use index_buffer_ref, 0 = vertex-only draw */
 } lagfx_pending_draw_t;
 

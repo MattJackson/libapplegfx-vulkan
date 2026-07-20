@@ -305,9 +305,18 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
                    body_len);
         return 1;
     }
-    uint32_t index_count = lagfx_le32(body + 0);
-    uint32_t index_buffer_ref = lagfx_le32(body + 4);
-    uint32_t index_buffer_offset = lagfx_le32(body + 8);
+    /* Wire layout SOURCED from Apple's own x86_64 host decoder
+     * (-[PGDeserializerRenderDecoder decodeDrawIndexedPrimitives16WithIterator:]):
+     * 12 B = {prim:u16 @0, indexType:u16 @2, bufRef:u32 @4, indexCount:u16 @8,
+     * indexBufferOffset:u16 @10}. The old {count:u32@0, ref:u32@4, offset:u32@8}
+     * parse read the PRIMITIVE TYPE as the count (every draw logged "count=3" =
+     * Triangle) and packed junk as the offset — indices then picked unrelated
+     * pool vertices → the full-width sliver bands. */
+    uint32_t prim              = lagfx_le16(body + 0);
+    uint32_t index_type        = lagfx_le16(body + 2);
+    uint32_t index_buffer_ref  = lagfx_le32(body + 4);
+    uint32_t index_count       = lagfx_le16(body + 8);
+    uint32_t index_buffer_offset = lagfx_le16(body + 10);
 
     if (task_id >= LAGFX_MAX_TASKS) {
         LAGFX_WARN("compute_inner: 0x07 DrawIndexedPrimitives16 task_id=%u out of range", task_id);
@@ -322,14 +331,17 @@ static int op_draw_indexed_primitives_16(lagfx_protocol_t *p,
     /* Populate per-task pending draw state. */
     task->pending_draw.valid = true;
     task->pending_draw.indexed = true;              /* Indexed draw */
+    task->pending_draw.primitive_type = prim;
+    task->pending_draw.index_type = index_type;
     task->pending_draw.index_count = index_count;
     task->pending_draw.index_buffer_ref = index_buffer_ref;
+    task->pending_draw.index_buffer_offset = index_buffer_offset;
     task->pending_draw.base_vertex = 0;             /* Not specified in 0x07 variant */
     task->pending_draw.instance_count = 1u;         /* Default for non-instanced variant */
     task->pending_draw.first_instance = 0u;
 
-    LAGFX_LOG("compute_inner: 0x07 DrawIndexedPrimitives16 count=%u bufRef=0x%x offset=0x%x -> pending_draw.valid=true indexed=true",
-              index_count, index_buffer_ref, index_buffer_offset);
+    LAGFX_LOG("compute_inner: 0x07 DrawIndexedPrimitives16 prim=%u idxType=%u count=%u bufRef=0x%x offset=%u",
+              prim, index_type, index_count, index_buffer_ref, index_buffer_offset);
 
     /* M1 (a): resource-aware draw via the shared helper. 0x07 is the DOMINANT
      * draw (~22439) and was substitute-only (with mislabeled op_0x82 logs) —

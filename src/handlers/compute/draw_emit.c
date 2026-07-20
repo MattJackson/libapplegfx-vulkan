@@ -144,6 +144,56 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
             if (!full) return VK_NULL_HANDLE;
             uint32_t ffill = lagfx_read_vtx_source(p, task, cs->ref, cs->offset,
                                                    want, full, &how, mode);
+            /* INDEXED draws (0x07): expand the index list CPU-side into an
+             * unindexed vertex stream so the existing vkCmdDraw path renders
+             * the REAL topology. Wire fields sourced from Apple's decoder
+             * (prim/indexType/count/ref/offset — see op_draw_indexed_
+             * primitives_16). Without this, indexed geometry was drawn
+             * unindexed: vertices consumed 0..N-1 → wrong triangles. */
+            if (ffill && task->pending_draw.indexed
+                && task->pending_draw.index_type == 0u        /* UInt16 */
+                && task->pending_draw.index_count > 0u
+                && task->pending_draw.index_count <= 4096u
+                && task->pending_draw.index_buffer_ref != 0u) {
+                uint32_t icount = task->pending_draw.index_count;
+                uint8_t *ib = malloc((size_t)icount * 2u);
+                const char *ihow = "none";
+                if (ib && lagfx_read_vtx_source(p, task,
+                        task->pending_draw.index_buffer_ref,
+                        task->pending_draw.index_buffer_offset,
+                        icount * 2u, ib, &ihow, 0) == icount * 2u) {
+                    /* Vertex stride: same rule as pipeline_build (real PSO
+                     * stride when decoded, else round8 of the attr sum). */
+                    uint32_t vs = 0;
+                    for (uint32_t a = 0; a < task->pending_pipeline.n_vtx_inputs && a < 8u; a++)
+                        vs += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
+                    vs = (vs + 7u) & ~7u;
+                    if (task->pending_pipeline.vtx_stride >= vs
+                        && task->pending_pipeline.vtx_stride <= 256u)
+                        vs = task->pending_pipeline.vtx_stride;
+                    if (vs == 0u) vs = 48u;
+                    uint8_t *exp = calloc(1u, want);
+                    if (exp) {
+                        uint32_t maxv = want / vs;
+                        uint32_t emitted = 0;
+                        for (uint32_t k = 0; k < icount && (size_t)(k + 1u) * vs <= want; k++) {
+                            uint32_t idx = (uint32_t)ib[k*2] | ((uint32_t)ib[k*2+1] << 8);
+                            if (idx >= maxv) continue;
+                            memcpy(exp + (size_t)k * vs, full + (size_t)idx * vs, vs);
+                            emitted++;
+                        }
+                        if (emitted == icount) {
+                            memcpy(full, exp, want);
+                            if (getenv("LAGFX_DUMP_SPV"))
+                                LAGFX_LOG("IDXEXP: expanded %u u16 indices (ref=0x%x off=%u stride=%u how=%s)",
+                                          icount, task->pending_draw.index_buffer_ref,
+                                          task->pending_draw.index_buffer_offset, vs, ihow);
+                        }
+                        free(exp);
+                    }
+                }
+                free(ib);
+            }
             if (ffill) {
                 VkBuffer svb = VK_NULL_HANDLE;
                 if (lagfx_vk_make_host_storage_buffer(vk, full, want,
