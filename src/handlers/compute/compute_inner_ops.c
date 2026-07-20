@@ -97,16 +97,21 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
                    body_len);
         return 1;
     }
-    uint32_t vertex_start = lagfx_le32(body + 0);
-    uint32_t vertex_count = lagfx_le32(body + 4);
-    /* WIRE FIX (LAGFX_M2_DRAWCOUNT16): PGCmdDrawPrimitives16's vertexCount is a
-     * 16-bit field at byte offset 6, NOT a u32 at offset 4. Proven by raw dump:
-     * `03 00 00 00 | 00 00 | 06 00` = vertexStart=3, vertexCount=le16@6=6 (one
-     * quad); `…18 00` = 24 (4 quads). The old le32@4 read 0x00060000=393216 →
-     * 1024 clamped garbage verts → the on-screen band. Gated so M1 is preserved
-     * until verified; enable for M2 so draws rasterize only the real geometry. */
-    if (LAGFX_POLICY("M2_DRAWCOUNT16"))
-        vertex_count = lagfx_le16(body + 6);
+    /* Wire layout SOURCED from Apple's own x86_64 host decoder
+     * (-[PGDeserializerRenderDecoder decodeDrawPrimitives16WithIterator:]): the
+     * 8-byte payload is u16 fields {prim@0, <pad>@2, vertexStart@4, vertexCount@6}.
+     * The old `le32@0 / le32@4` parse read the raw dump `03 00 00 00 00 00 06 00`
+     * as vertexStart=3 / vertexCount=0x60000=393216 → 1024 clamped GARBAGE verts →
+     * the persistent full-width horizontal BAND smear. Correct decode: prim=3
+     * (Triangle), vertexStart=0, vertexCount=6 (one quad). This is now the DEFAULT
+     * (was gated behind LAGFX_M2_DRAWCOUNT16, which prod never set → the bands). */
+    uint32_t prim         = lagfx_le16(body + 0);
+    uint32_t vertex_start = lagfx_le16(body + 4);
+    uint32_t vertex_count = lagfx_le16(body + 6);
+    if (LAGFX_POLICY("DISABLE_M2_DRAWCOUNT16")) {  /* escape hatch to the legacy read */
+        vertex_start = lagfx_le32(body + 0);
+        vertex_count = lagfx_le32(body + 4);
+    }
 
     /* DUMP_SPV: hex-dump the raw payload to decode the real field layout — the
      * "vertexCount=0x60000" reading is a misparse (the band = garbage triangles).
@@ -135,13 +140,14 @@ static int op_draw_primitives_16(lagfx_protocol_t *p,
     /* Populate per-task pending draw state. */
     task->pending_draw.valid = true;
     task->pending_draw.indexed = false;           /* Unindexed draw */
+    task->pending_draw.primitive_type = prim;
     task->pending_draw.index_count = vertex_count;  /* index_count field used for both indexed/unindexed */
     task->pending_draw.base_vertex = (int32_t)vertex_start;
     task->pending_draw.instance_count = 1u;       /* Default for non-instanced variant */
     task->pending_draw.first_instance = 0u;
 
-    LAGFX_LOG("compute_inner: 0x01 DrawPrimitives16 vertexStart=%u vertexCount=%u -> pending_draw.valid=true indexed=false",
-              vertex_start, vertex_count);
+    LAGFX_LOG("compute_inner: 0x01 DrawPrimitives16 prim=%u vertexStart=%u vertexCount=%u -> pending_draw.valid=true indexed=false",
+              prim, vertex_start, vertex_count);
 
     /* M1 (a): resource-aware draw via the shared helper (was op_0x01-only). */
 #ifdef LAGFX_HAVE_VULKAN
