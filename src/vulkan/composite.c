@@ -27,7 +27,7 @@ static VkShaderModule make_module(VkDevice dev, lagfx_shader_kind_t kind,
     return m;
 }
 
-/* Lazily build the MAX-blend passthrough pipeline (blit.vert + blit.frag),
+/* Lazily build the src-over passthrough pipeline (blit.vert + blit.frag),
  * a repeat sampler, and a single reusable set-0/binding-0 combined-image
  * sampler descriptor. */
 static bool composite_ensure(struct lagfx_vk_state *vk) {
@@ -111,16 +111,17 @@ static bool composite_ensure(struct lagfx_vk_state *vk) {
     VkPipelineMultisampleStateCreateInfo ms = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
-    /* MAX blend: out = max(src, dst) — bright layer texels win, dark ones keep
-     * the background. Alpha-independent (per-pass surfaces lack reliable alpha). */
+    /* Src-over alpha blend (M2q dumb-faithful): the guest's per-pixel alpha
+     * decides — transparent layer texels leave the background, opaque texels
+     * win. (The old MAX blend was a brightest-texel-wins content heuristic.) */
     VkPipelineColorBlendAttachmentState cba = {
         .blendEnable = VK_TRUE,
-        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE,
-        .colorBlendOp = VK_BLEND_OP_MAX,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp = VK_BLEND_OP_ADD,
         .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-        .alphaBlendOp = VK_BLEND_OP_MAX,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .alphaBlendOp = VK_BLEND_OP_ADD,
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
                         | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
@@ -150,7 +151,7 @@ static bool composite_ensure(struct lagfx_vk_state *vk) {
     if (pr != VK_SUCCESS) goto fail;
 
     vk->composite_ready = true;
-    LAGFX_LOG("composite: MAX-blend layer pipeline built");
+    LAGFX_LOG("composite: src-over layer pipeline built");
     return true;
 fail:
     lagfx_vk_composite_shutdown(vk);
@@ -159,7 +160,9 @@ fail:
 
 lagfx_status_t lagfx_vk_composite_over(struct lagfx_vk_state *vk,
                                         lagfx_vk_render_target_t *display_rt,
-                                        VkImageView src_view) {
+                                        VkImageView src_view,
+                                        uint32_t dst_x, uint32_t dst_y,
+                                        uint32_t dst_w, uint32_t dst_h) {
     if (!vk || !display_rt || src_view == VK_NULL_HANDLE) return LAGFX_ERR_INVALID_ARG;
     if (!composite_ensure(vk)) return LAGFX_ERR_BACKEND;
     VkDevice dev = vk->device;
@@ -208,10 +211,17 @@ lagfx_status_t lagfx_vk_composite_over(struct lagfx_vk_state *vk,
         .renderArea = { { 0, 0 }, { display_rt->width, display_rt->height } },
         .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att };
     vkCmdBeginRendering(cb, &ri);
-    VkViewport vpp = { 0.0f, 0.0f, (float)display_rt->width, (float)display_rt->height,
-                       0.0f, 1.0f };
+    /* Destination rect (guest-declared placement); w/h == 0 → full-screen.
+     * Clamp to the rt so the dynamic viewport/scissor stay valid. */
+    uint32_t vx = dst_x, vy = dst_y, vw = dst_w, vh = dst_h;
+    if (vw == 0u || vh == 0u || vx >= display_rt->width || vy >= display_rt->height) {
+        vx = 0u; vy = 0u; vw = display_rt->width; vh = display_rt->height;
+    }
+    if (vx + vw > display_rt->width)  vw = display_rt->width - vx;
+    if (vy + vh > display_rt->height) vh = display_rt->height - vy;
+    VkViewport vpp = { (float)vx, (float)vy, (float)vw, (float)vh, 0.0f, 1.0f };
     vkCmdSetViewport(cb, 0, 1, &vpp);
-    VkRect2D sc = { { 0, 0 }, { display_rt->width, display_rt->height } };
+    VkRect2D sc = { { (int32_t)vx, (int32_t)vy }, { vw, vh } };
     vkCmdSetScissor(cb, 0, 1, &sc);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->composite_pipeline);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,

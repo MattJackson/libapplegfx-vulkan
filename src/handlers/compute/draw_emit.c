@@ -378,9 +378,28 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         lagfx_resource_entry_t *te = lagfx_resource_lookup_texture(&p->resources, tref);
         lagfx_vk_iosurface_t *ios = te ? (lagfx_vk_iosurface_t *)te->host_handle : NULL;
         if (!ios) {
-            /* Size the per-pass surface from the guest's authoritative source:
-             * render_area (usually 0), else the scissor (0x75, real draw region
-             * e.g. 1280x1024 wallpaper), else the scanout default. */
+            /* DUMB-FAITHFUL (M2q): the pass target IS the guest texture — its
+             * memory may already hold real content (ref 0x17's backing holds
+             * the decoded wallpaper). SEED the render target from the declared
+             * backing via texture_realize, so a later pass that SAMPLES the
+             * same ref reads the guest's real bytes plus whatever we rendered
+             * (loadOp=LOAD preserves the seed). The old empty invented RT
+             * registered under the ref SHADOWED the real backing → black. */
+            ios = lagfx_texture_realize(p, task, dev_with_vk->vk, tref);
+            if (ios) {
+                if (task->vp_valid && !ios->dst_valid) {
+                    ios->dst_x = task->vp_x; ios->dst_y = task->vp_y;
+                    ios->dst_w = task->vp_w; ios->dst_h = task->vp_h;
+                    ios->dst_valid = 1u;
+                }
+                LAGFX_LOG("%s PERPASS: seeded RT from backing ref=0x%x %ux%u",
+                          op, tref, ios->width, ios->height);
+            }
+        }
+        if (!ios) {
+            /* No realizable backing — size the per-pass surface from the guest's
+             * authoritative source: render_area (usually 0), else the scissor
+             * (0x75, real draw region), else the scanout default. */
             uint32_t W = task->render_pass_desc.render_area_w ? task->render_pass_desc.render_area_w
                        : (task->scissor_w ? task->scissor_w : 1920u);
             uint32_t H = task->render_pass_desc.render_area_h ? task->render_pass_desc.render_area_h
@@ -404,22 +423,6 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                     LAGFX_LOG("%s PERPASS: created RT IOSurface for target ref=0x%x %ux%u vp=%ux%u@(%u,%u) valid=%u",
                               op, tref, W, H, task->vp_w, task->vp_h,
                               task->vp_x, task->vp_y, task->vp_valid);
-                    /* VIEWALIAS probe: the wallpaper render pass targets a VIEW
-                     * (0x17/0x32) that ALIASES the sampled wallpaper backing
-                     * texture 0x10 — the guest renders the forest into the view,
-                     * a later composite samples 0x10. Point 0x10's registry entry
-                     * at this per-pass image (dim match 1280x1024) so the sample
-                     * reads the drawn forest. Validates the view->backing theory
-                     * before the full view-descriptor decode. Gated. */
-                    if (getenv("LAGFX_M2_VIEWALIAS") && W == 1280u && H == 1024u) {
-                        lagfx_resource_entry_t *wp =
-                            lagfx_resource_lookup_texture(&p->resources, 0x10u);
-                        if (wp) {
-                            wp->host_handle = ios; wp->image = ios->image; wp->view = ios->view;
-                            LAGFX_LOG("%s VIEWALIAS: aliased sampled tex 0x10 -> per-pass view 0x%x (%ux%u)",
-                                      op, tref, W, H);
-                        }
-                    }
                 } else {
                     /* Registry register failed — without an owning entry the
                      * image would leak and be recreated per draw. Destroy and
@@ -570,7 +573,10 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                 LAGFX_LOG("%s P6b: drew TRANSLATED resource pipeline ref=0x%x verts=%u bindings=%u",
                           op, task->pending_pipeline.reference, vc,
                           task->pending_pipeline.n_spv_bindings);
-                if (active_rt == &perpass_rt) perpass_real_draw = true;
+                if (active_rt == &perpass_rt) {
+                    perpass_real_draw = true;
+                    if (perpass_ios) perpass_ios->gpu_drawn = 1u;
+                }
                 lagfx_display_signal_frame_ready(display);
             } else {
                 LAGFX_WARN("%s P6b: bound draw failed (%d)", op, (int)st);
@@ -594,7 +600,10 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         if (st == LAGFX_OK) {
             LAGFX_LOG("%s VTX: drew TRANSLATED vertex-input pipeline ref=0x%x verts=%u stride=%u",
                       op, task->pending_pipeline.reference, vc, vstride);
-            if (active_rt == &perpass_rt) perpass_real_draw = true;
+            if (active_rt == &perpass_rt) {
+                perpass_real_draw = true;
+                if (perpass_ios) perpass_ios->gpu_drawn = 1u;
+            }
             lagfx_display_signal_frame_ready(display);
         } else {
             LAGFX_WARN("%s VTX: vertex-input draw failed (%d)", op, (int)st);
@@ -643,30 +652,28 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         if (!queued && p->frame_blit_n < 16u)
             p->frame_blit_queue[p->frame_blit_n++] = (uintptr_t)perpass_ios;
 
-        /* Layer compositor (LAGFX_M2_COMPOSITE, opt-in): background replace-blit
-         * + MAX-blend upper layers. The infrastructure is correct, but the
-         * current per-pass/wallpaper source surfaces still hold un-decoded
-         * (GPU-tiled/scrambled) content — compositing them yields noise, so this
-         * is gated off until the surface-content decode lands, keeping the
-         * default frame at the faithful M2d dark composite (replace-blit). */
-        bool composite = getenv("LAGFX_M2_COMPOSITE") != NULL;
+        /* DUMB-FAITHFUL (M2q): re-composite the queue in the guest's SUBMIT
+         * ORDER. Layer 0 (the earliest pass, the background) replace-blits;
+         * every later layer composites src-over ON TOP at its declared dst
+         * rect — a later opaque-black or empty layer must never WIPE an
+         * earlier content-bearing one (the old default replace-blitted every
+         * layer full-screen, so the last pass always won the whole frame).
+         * Kill-switch: LAGFX_DISABLE_M2_OVERLAY reverts upper layers to
+         * replace-blit. */
+        bool overlay = LAGFX_POLICY("M2_OVERLAY");
         for (uint32_t qi = 0; qi < p->frame_blit_n && qi < 16u; qi++) {
             lagfx_vk_iosurface_t *qios =
                 (lagfx_vk_iosurface_t *)p->frame_blit_queue[qi];
             if (!qios || qios->image == VK_NULL_HANDLE) continue;
-            if (composite && qi != 0u && getenv("LAGFX_BG_ONLY")) {
-                continue;  /* isolation: composite the background wallpaper only */
-            } else if (composite && qi != 0u && qios->view != VK_NULL_HANDLE) {
-                lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, qios->view);
+            uint32_t px = 0, py = 0, pw = 0, ph = 0;
+            if (qios->dst_valid) {
+                px = qios->dst_x; py = qios->dst_y;
+                pw = qios->dst_w; ph = qios->dst_h;
+            }
+            if (overlay && qi != 0u && qios->view != VK_NULL_HANDLE) {
+                lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, qios->view,
+                                        px, py, pw, ph);
             } else {
-                /* Placement (LAGFX_M2_PLACE): blit the layer into its declared
-                 * viewport dst rect so clock/UI land at the guest offset instead
-                 * of a full-screen stretch. Gated; default = full-screen. */
-                uint32_t px = 0, py = 0, pw = 0, ph = 0;
-                if (getenv("LAGFX_M2_PLACE") && qios->dst_valid) {
-                    px = qios->dst_x; py = qios->dst_y;
-                    pw = qios->dst_w; ph = qios->dst_h;
-                }
                 lagfx_vk_display_present_surface(
                     dev_with_vk->vk, &display->rt, qios->image, &qios->layout,
                     qios->width, qios->height, display->rt.width, display->rt.height,
@@ -675,11 +682,10 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                     px, py, pw, ph);
             }
         }
-        if (composite)
-            lagfx_display_submit_rendered_frame(display, display->scanout_gpa,
-                                                display->scanout_length);
-        LAGFX_LOG("%s ASMBLIT: %u layers -> display->rt (composite=%d)",
-                  op, p->frame_blit_n, composite ? 1 : 0);
+        lagfx_display_submit_rendered_frame(display, display->scanout_gpa,
+                                            display->scanout_length);
+        LAGFX_LOG("%s ASMBLIT: %u layers -> display->rt (overlay=%d)",
+                  op, p->frame_blit_n, overlay ? 1 : 0);
         /* Cursor on top of the composited set — read_frame serves display->rt
          * directly on the sparse-present guest, so overlay here too. */
         (void)lagfx_display_overlay_cursor(display);

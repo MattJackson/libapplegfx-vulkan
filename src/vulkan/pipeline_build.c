@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "pipeline_build.h"
 #include "common/log.h"
+#include "common/policy.h"
 
 #ifdef LAGFX_HAVE_VULKAN
 
@@ -95,8 +96,21 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
 
-    /* Color blend attachment — full write mask, no blending */
+    /* Color blend attachment — src-over alpha (M2q dumb-faithful): SkyLight
+     * composites layers src-over; with loadOp=LOAD this makes a draw's
+     * transparent/alpha-0 pixels PRESERVE what is already in the target
+     * instead of replacing it with black (the "opaque clear wipes the
+     * wallpaper" bug). Opaque (alpha=1) pixels — incl. the substitute
+     * triangle — replace, exactly as before.
+     * Kill-switch: LAGFX_DISABLE_M2_SRCOVER → no blending. */
     VkPipelineColorBlendAttachmentState blend_att = {
+        .blendEnable         = LAGFX_POLICY("M2_SRCOVER") ? VK_TRUE : VK_FALSE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp        = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .alphaBlendOp        = VK_BLEND_OP_ADD,
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT
                         | VK_COLOR_COMPONENT_G_BIT
                         | VK_COLOR_COMPONENT_B_BIT

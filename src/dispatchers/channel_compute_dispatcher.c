@@ -277,6 +277,14 @@ static void dispatch_command(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr)
                     p->backing_update[sl].addr = baddr;
                     p->backing_update[sl].valid = 1u;
                 }
+                /* M2q: the guest announced a CPU write of this ref's backing —
+                 * mark the realized texture dirty so the sample-bind refresh
+                 * re-reads it even over GPU-rendered content. */
+                {
+                    lagfx_resource_entry_t *bte =
+                        lagfx_resource_lookup_texture(&p->resources, bref);
+                    if (bte) bte->backing_dirty = 1u;
+                }
                 LAGFX_LOG("compute: 0x3b BackingUpdate ch=%u seq=%u ref=0x%x addr=0x%llx",
                           (unsigned)p->current_chan_id, bseq, bref,
                           (unsigned long long)baddr);

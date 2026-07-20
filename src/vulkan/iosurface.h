@@ -41,6 +41,11 @@ typedef struct {
      * places each layer at its guest-declared offset instead of stretching. */
     uint32_t dst_x, dst_y, dst_w, dst_h;
     uint8_t  dst_valid;
+    /* M2q: a TRANSLATED draw landed in this surface — its GPU content is
+     * authoritative over the (older) guest backing until the guest announces
+     * a new backing write (0x3b). Keeps the sample-bind refresh from wiping
+     * rendered content with a stale/zero backing read. */
+    uint8_t  gpu_drawn;
 } lagfx_vk_iosurface_t;
 
 lagfx_status_t lagfx_vk_iosurface_create(struct lagfx_vk_state *vk,

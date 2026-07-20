@@ -125,15 +125,10 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                     valid_tex_slots[n_valid_tex++] = (uint8_t)s;
         }
     }
-    /* M2 SKIPBLACKFILL: a no-texture composite whose fragment colour is BLACK is
-     * a fullscreen black FILL (ColorFill ref=0xd). In the shared-RT compositing
-     * it OVERWRITES the texture-composite UI layer drawn before it → the login UI
-     * vanishes. The real dark login background (0,0,2) comes from the texture
-     * composites anyway, so a (0,0,0) fill is purely destructive. Track whether
-     * the pipeline binds a texture and whether any fragment colour is non-black;
-     * skip the draw if it's an all-black no-texture fill. Gated. */
-    bool sbf_had_tex = false, sbf_nonblack = false;
-    const bool m2_skipblackfill = LAGFX_POLICY("M2_SKIPBLACKFILL");
+    /* M2q DUMB-FAITHFUL: SKIPBLACKFILL removed. A black fill the guest submits
+     * is drawn; with src-over blending and preserved submit order, an early
+     * opaque background does not destroy later layers and a transparent black
+     * layer does not wipe what is under it. Black is never special-cased. */
     for (uint32_t i = 0; i < n && i < 16u; i++) {
         uint32_t slot = binding_no[i];
         /* M1 (c): texture (SAMPLED_IMAGE) binding — resolve the guest's bound
@@ -142,7 +137,6 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
          * the whole set (skip this draw) rather than form a partial descriptor
          * set — no crash, no garbage sample. */
         if (binding_kind[i] == (uint8_t)LAGFX_SPV_BINDING_SAMPLED_IMAGE) {
-            sbf_had_tex = true;
             VkImageView view = VK_NULL_HANDLE;
             VkImageLayout lay = VK_IMAGE_LAYOUT_GENERAL;
             const char *tex_src = "none";
@@ -172,10 +166,10 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                                 || ios->layout == VK_IMAGE_LAYOUT_GENERAL)) {
                         /* Cached content may predate the guest's write of the
                          * backing (wallpaper decodes seconds into boot) —
-                         * re-read while below photo grade so this and later
-                         * draws sample the real pixels. */
-                        if (te->realize_rich < 64u)
-                            lagfx_texture_refresh(p, task, vk, tref);
+                         * re-read (rate-limited; refresh itself skips
+                         * GPU-drawn surfaces) so later draws sample the
+                         * guest's current bytes. */
+                        lagfx_texture_refresh(p, task, vk, tref);
                         view = te->view;
                         lay  = ios->layout;
                         tex_src = "direct";
@@ -210,7 +204,10 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                  * alpha-threshold discard, on alpha-0 fallback textures).
                  * Opaque white guarantees alpha=1 → no discard → the real
                  * fragment's computed output becomes visible. */
-                if (view == VK_NULL_HANDLE && LAGFX_POLICY("M2_WHITEFB")) {
+                /* M2q: WHITEFB / UIRENDER are OPT-IN diagnostics now — binding
+                 * a texture the guest did not name is fabrication. The dumb-
+                 * faithful default binds exactly the named texture or skips. */
+                if (view == VK_NULL_HANDLE && getenv("LAGFX_M2_WHITEFB")) {
                     lagfx_vk_iosurface_t *wfb =
                         (lagfx_vk_iosurface_t *)p->white_fb_ios;
                     if (!wfb) {
@@ -235,7 +232,7 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                         tex_src = "whitefb";
                     }
                 }
-                if (view == VK_NULL_HANDLE && LAGFX_POLICY("M2_UIRENDER")) {
+                if (view == VK_NULL_HANDLE && getenv("LAGFX_M2_UIRENDER")) {
                     /* M2c: PREFER textures with a REAL guest backing (gpu_addr
                      * != 0) — the registry also holds PERPASS-created empty
                      * surfaces (alpha 0); sampling one makes the composite's
@@ -534,16 +531,6 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
             }
         }
         if (have) {
-            /* SKIPBLACKFILL: track whether THIS fragment buffer carries a non-black
-             * colour. ColorFill's fragment colour is a vec4 at the buffer start
-             * (RGB at bytes 0..11; e.g. blue = non-zero, black = all-zero). A
-             * fragment storage buffer (binding >= FRAG_BASE under texcomp) with any
-             * non-zero RGB means this is a COLOURED fill (keep it, e.g. the blue
-             * strip); all-zero across all fragment buffers = a black fill (skip). */
-            if (binding_no[i] >= LAGFX_FRAG_BINDING_BASE
-                && (data[0] | data[1] | data[2] | data[4] | data[5] | data[6]
-                    | data[8] | data[9] | data[10]))
-                sbf_nonblack = true;
             LAGFX_LOG("P6b bind#%u slot=%u DATA first32: %02x %02x %02x %02x %02x %02x %02x %02x "
                       "%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x "
                       "%02x %02x %02x %02x %02x %02x %02x %02x", binding_no[i], slot,
@@ -667,19 +654,6 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
         nw++;
     }
     if (nw == 0u) {
-        vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
-        *out_n = 0;
-        return VK_NULL_HANDLE;
-    }
-    /* SKIPBLACKFILL: a no-texture composite with no non-black fragment colour is
-     * a fullscreen BLACK fill (ColorFill) → skip so it doesn't clobber the
-     * texture-composite UI layer in the shared RT. The dark login bg comes from
-     * the texture composites; coloured fills (blue strip) keep sbf_nonblack=true. */
-    if (m2_skipblackfill && !sbf_had_tex && !sbf_nonblack) {
-        for (uint32_t k = 0; k < *out_n; k++) {
-            vkDestroyBuffer(vk->device, out_bufs[k], NULL);
-            vkFreeMemory(vk->device, out_mems[k], NULL);
-        }
         vkFreeDescriptorSets(vk->device, vk->draw_desc_pool, 1, &set);
         *out_n = 0;
         return VK_NULL_HANDLE;

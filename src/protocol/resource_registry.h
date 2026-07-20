@@ -59,6 +59,10 @@ typedef struct {
      * seconds into boot) caches stale content; refresh re-reads until rich. */
     uint16_t realize_rich;
     uint16_t realize_seen;
+    /* M2q: set by 0x3b BackingUpdate — the guest announced a CPU write of this
+     * ref's backing; the sample-bind refresh re-reads it even if the surface
+     * holds GPU-rendered content (gpu_drawn). Cleared on re-upload. */
+    uint8_t backing_dirty;
 } lagfx_resource_entry_t;
 
 typedef struct {
