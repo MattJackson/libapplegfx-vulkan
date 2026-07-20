@@ -217,25 +217,65 @@ lagfx_handler_status_t lagfx_iosurface_lookup(
     }
     uint32_t surface_id = lagfx_le32(hdr->payload + 0);
     uint32_t flags      = (hdr->payload_size >= 8)  ? lagfx_le32(hdr->payload + 4) : 0u;
-    uint64_t size       = (hdr->payload_size >= 16) ? lagfx_le64(hdr->payload + 8) : 0u;
+    /* Wire RE: the "size" slot at +8 is NOT a u64 byte-size. Live evidence
+     * (global surface_id=0x1): reading u64@+8 yields 0x10000000C, which is two
+     * u32 fields — lo=+8 (0xC), hi=+12 (0x1) — conflated. The old u64 read
+     * therefore produced a ~4 GB pseudo-size that tripped the 64 MB gate and
+     * SKIPPED the per-frame global-surface lookup entirely. Read the fields
+     * separately; treat +8 as the count/size field. */
+    uint32_t size_lo = (hdr->payload_size >= 12) ? lagfx_le32(hdr->payload + 8)  : 0u;
+    uint32_t field_hi = (hdr->payload_size >= 16) ? lagfx_le32(hdr->payload + 12) : 0u;
 
-    LAGFX_LOG("CmdLookupIOSurface: surface_id=0x%x flags=0x%x size=%llu stamp=0x%08x",
-              surface_id, flags, (unsigned long long)size, hdr->stamp);
+    LAGFX_LOG("CmdLookupIOSurface: surface_id=0x%x flags=0x%x sz_lo=%u f_hi=%u stamp=0x%08x",
+              surface_id, flags, size_lo, field_hi, hdr->stamp);
+
+    /* Raw dump so the global surface's true field layout can be decoded
+     * offline — the create/deliver mechanism for id=0x1 is still being RE'd. */
+    if (getenv("LAGFX_DUMP_SPV")) {
+        char hx[200]; size_t hn = 0;
+        uint32_t cap = hdr->payload_size < 64u ? hdr->payload_size : 64u;
+        for (uint32_t k = 0; k < cap && hn + 3 < sizeof(hx); k++)
+            hn += (size_t)snprintf(hx + hn, sizeof(hx) - hn, "%02x ", hdr->payload[k]);
+        LAGFX_LOG("IOSLOOKUP_RAW id=0x%x len=%u: %s",
+                  surface_id, (unsigned)hdr->payload_size, hx);
+    }
 
     uint32_t task_id = 0u;
     lagfx_resource_entry_t *e = lagfx_resource_lookup(&p->resources, surface_id, task_id);
-    if (!e && size > 0u && size <= ((uint64_t)4096u * 4096u * 4u)) {
-        LAGFX_LOG("CmdLookupIOSurface: auto-registering surface 0x%x size=%llu "
-                  "(guest didn't send 0x27 Create first)",
-                  surface_id, (unsigned long long)size);
+    if (!e) {
+        /* The guest looks up a surface we never registered via 0x27 Create —
+         * historically skipped, so the global/scanout surface never resolves.
+         * Register a tracker + (M2 GLOBALSURF) a real backing so the compositor
+         * can resolve it. Dims: the create path is not delivered for id=0x1;
+         * default to the scanout size when unknown. Gated so production's
+         * honest-dark frame cannot regress until live-verified. */
+        LAGFX_LOG("CmdLookupIOSurface: surface 0x%x not registered (guest expects it) — %s",
+                  surface_id,
+                  getenv("LAGFX_M2_GLOBALSURF") ? "auto-backing (GLOBALSURF)" : "tracker only");
         lagfx_resource_register(&p->resources, surface_id,
                                 LAGFX_RESOURCE_TYPE_TEXTURE,
-                                task_id, 0u, size);
-        /* TODO: Stage 30 — allocate a backing VkImage and bind to
-         * host_handle so subsequent render-target uses can resolve. */
-    } else if (!e) {
-        LAGFX_TRACE("CmdLookupIOSurface: surface 0x%x not found, size=%llu — skip auto-create",
-                    surface_id, (unsigned long long)size);
+                                task_id, 0u, 0u);
+#ifdef LAGFX_HAVE_VULKAN
+        if (getenv("LAGFX_M2_GLOBALSURF") && p->dev) {
+            lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+            if (dev->vk) {
+                uint32_t gw = 1920u, gh = 1080u, gfmt = 80u; /* scanout BGRA8 default */
+                lagfx_vk_iosurface_t *ios = NULL;
+                if (lagfx_vk_iosurface_create(dev->vk, gw, gh, gfmt, &ios) == LAGFX_OK
+                    && ios) {
+                    lagfx_resource_entry_t *ne =
+                        lagfx_resource_lookup(&p->resources, surface_id, task_id);
+                    if (ne) {
+                        ne->host_handle = ios; ne->image = ios->image; ne->view = ios->view;
+                        LAGFX_LOG("CmdLookupIOSurface: GLOBALSURF backing %ux%u for 0x%x",
+                                  gw, gh, surface_id);
+                    } else {
+                        lagfx_vk_iosurface_destroy(dev->vk, ios);
+                    }
+                }
+            }
+        }
+#endif
     }
     return LAGFX_HANDLER_OK;
 }
