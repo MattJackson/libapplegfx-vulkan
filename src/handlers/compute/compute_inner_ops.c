@@ -213,10 +213,18 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
                    body_len);
         return 1;
     }
-    /* Wire format: field0 = vertex_start + instance_count (packed), field1 = vertex_count.
+    /* Wire layout SOURCED from Apple's own x86_64 host decoder
+     * (-[PGDeserializerRenderDecoder decodeDrawInstancedPrimitives16WithIterator:]):
+     * the 8-byte payload is FOUR u16 fields {vertexStart@0, vertexCount@2,
+     * instanceCount@4, prim@6}. The old le32 parse folded vertexStart+vertexCount
+     * into one dword (logged the tell-tale "vertexStart=393216" = 6<<16) → the draw
+     * consumed a bogus vertex range → smeared geometry on the direct-scanout draws.
      * Metal selector: drawPrimitives:vertexStart:vertexCount:instanceCount: */
-    uint32_t vertex_start = lagfx_le32(body + 0);
-    uint32_t vertex_count = lagfx_le32(body + 4);
+    uint32_t vertex_start   = lagfx_le16(body + 0);
+    uint32_t vertex_count   = lagfx_le16(body + 2);
+    uint32_t instance_count = lagfx_le16(body + 4);
+    uint32_t prim           = lagfx_le16(body + 6);
+    if (instance_count == 0u) instance_count = 1u;
 
     if (task_id >= LAGFX_MAX_TASKS) {
         LAGFX_WARN("compute_inner: 0x03 DrawInstancedPrimitives16 task_id=%u out of range", task_id);
@@ -231,13 +239,14 @@ static int op_draw_instanced_primitives_16(lagfx_protocol_t *p,
     /* Populate per-task pending draw state. */
     task->pending_draw.valid = true;
     task->pending_draw.indexed = false;           /* Unindexed draw */
+    task->pending_draw.primitive_type = prim;
     task->pending_draw.index_count = vertex_count;  /* index_count field used for both indexed/unindexed */
     task->pending_draw.base_vertex = (int32_t)vertex_start;
-    task->pending_draw.instance_count = 1u;       /* Instance count from wire layout */
+    task->pending_draw.instance_count = instance_count;
     task->pending_draw.first_instance = 0u;
 
-    LAGFX_LOG("compute_inner: 0x03 DrawInstancedPrimitives16 vertexStart=%u vertexCount=%u instanceCount=1 -> pending_draw.valid=true indexed=false",
-              vertex_start, vertex_count);
+    LAGFX_LOG("compute_inner: 0x03 DrawInstancedPrimitives16 vertexStart=%u vertexCount=%u instanceCount=%u prim=%u -> pending_draw.valid=true indexed=false",
+              vertex_start, vertex_count, instance_count, prim);
 
     /* M1 (a): resource-aware draw via the shared helper (was substitute-only). */
 #ifdef LAGFX_HAVE_VULKAN
