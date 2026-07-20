@@ -177,6 +177,20 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
     };
 
+    /* DYNAMIC viewport + scissor: the same pipeline draws into targets of
+     * DIFFERENT sizes (the 1920×1080 scanout AND 1280×1024 per-pass surfaces).
+     * A pipeline-baked 1920×1080 viewport mis-scaled the 1280×1024 per-pass
+     * draws (the "zoom"). The draw site sets the viewport per-draw to the ACTUAL
+     * render-target dims (with the Y-flip). Static vp/sc above become ignored
+     * placeholders. */
+    VkDynamicState dyn_states[2] = {
+        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+    };
+    VkPipelineDynamicStateCreateInfo dyn = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2, .pDynamicStates = dyn_states,
+    };
+
     /* Graphics pipeline create info */
     VkGraphicsPipelineCreateInfo gpci = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -190,6 +204,7 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
         .pMultisampleState = &ms,
         .pDepthStencilState = &ds,
         .pColorBlendState = &cb,
+        .pDynamicState = &dyn,
         .layout = desc->layout,
         .renderPass = VK_NULL_HANDLE,
         .subpass = 0,

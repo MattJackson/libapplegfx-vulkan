@@ -153,6 +153,23 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
     /* Bind the pipeline (pattern from triangle-lavapipe-e2e.c:500) */
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
+    /* Dynamic viewport/scissor sized to THIS render target (the pipeline no
+     * longer bakes 1920×1080 — that mis-scaled the 1280×1024 per-pass draws).
+     * Y-FLIP via negative height (Metal Y-up → Vulkan Y-down); kill-switch
+     * LAGFX_DISABLE_YFLIP. */
+    {
+        bool yflip = (getenv("LAGFX_DISABLE_YFLIP") == NULL);
+        VkViewport dvp = {
+            .x = 0.0f, .y = yflip ? (float)rt->height : 0.0f,
+            .width = (float)rt->width,
+            .height = yflip ? -(float)rt->height : (float)rt->height,
+            .minDepth = 0.0f, .maxDepth = 1.0f,
+        };
+        VkRect2D dsc = { .offset = {0, 0}, .extent = { rt->width, rt->height } };
+        vkCmdSetViewport(cb, 0, 1, &dvp);
+        vkCmdSetScissor(cb, 0, 1, &dsc);
+    }
+
     /* Stage 85b: bind the descriptor set for translated resource-using
      * pipelines (set 0 with the guest's buffers). NULL for the substitute path. */
     if (desc_set != VK_NULL_HANDLE && pipe_layout != VK_NULL_HANDLE) {
