@@ -1525,22 +1525,36 @@ static int op_set_viewport(lagfx_protocol_t *p,
                              uint32_t          task_id,
                              const uint8_t    *body,
                              size_t            body_len) {
-    (void)p; (void)encoder_type; (void)task_id;
+    (void)encoder_type;
     /* RE: render-decoder-handlers.md line 142 — PGCmdSetViewport (48 B == MTLViewport), POD family */
     if (body_len < 48u) {
         LAGFX_WARN("compute_inner: 0x82 SetViewport payload too small (%zu < 48)", body_len);
         return 1;
     }
-    /* Wire format: 6× f64 (originX, originY, width, height, znear, zfar) */
-    double origin_x = (double)lagfx_le64(body + 0);
-    double origin_y = (double)lagfx_le64(body + 8);
-    double width = (double)lagfx_le64(body + 16);
-    double height = (double)lagfx_le64(body + 24);
-    double znear = (double)lagfx_le64(body + 32);
-    double zfar = (double)lagfx_le64(body + 40);
-    LAGFX_LOG("compute_inner: 0x82 SetViewport origin=(%g,%g) size=%gx%g z=[%g..%g]",
-              origin_x, origin_y, width, height, znear, zfar);
-    /* TODO: Stage 70 — translate to vkCmdSetViewport. */
+    /* MTLViewport = 6× IEEE-754 f64 (originX, originY, width, height, znear,
+     * zfar). Reinterpret the 8 raw bytes as a double — a (double)u64 cast
+     * would turn the bit pattern into an integer value, giving garbage. */
+    double origin_x, origin_y, width, height, znear, zfar;
+    uint64_t u;
+    u = lagfx_le64(body + 0);  memcpy(&origin_x, &u, 8);
+    u = lagfx_le64(body + 8);  memcpy(&origin_y, &u, 8);
+    u = lagfx_le64(body + 16); memcpy(&width, &u, 8);
+    u = lagfx_le64(body + 24); memcpy(&height, &u, 8);
+    u = lagfx_le64(body + 32); memcpy(&znear, &u, 8);
+    u = lagfx_le64(body + 40); memcpy(&zfar, &u, 8);
+    LAGFX_LOG("compute_inner: 0x82 SetViewport t%u origin=(%g,%g) size=%gx%g z=[%g..%g]",
+              task_id, origin_x, origin_y, width, height, znear, zfar);
+    /* Store as the layer's destination rect for composite placement. Guard
+     * sane bounds (positive, within a 16K display). */
+    if (task_id < LAGFX_MAX_TASKS && p->tasks[task_id].live
+        && width >= 1.0 && width <= 16384.0 && height >= 1.0 && height <= 16384.0
+        && origin_x >= 0.0 && origin_x <= 16384.0 && origin_y >= 0.0 && origin_y <= 16384.0) {
+        p->tasks[task_id].vp_x = (uint32_t)(origin_x + 0.5);
+        p->tasks[task_id].vp_y = (uint32_t)(origin_y + 0.5);
+        p->tasks[task_id].vp_w = (uint32_t)(width + 0.5);
+        p->tasks[task_id].vp_h = (uint32_t)(height + 0.5);
+        p->tasks[task_id].vp_valid = 1u;
+    }
     return 0;
 }
 

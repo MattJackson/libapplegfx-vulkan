@@ -68,7 +68,8 @@ lagfx_status_t lagfx_vk_display_present_surface(
     uint32_t display_width, uint32_t display_height,
     uint64_t scanout_gpa, uint64_t scanout_length,
     void *shell_opaque,
-    bool (*write_memory)(void *, uint64_t, uint64_t, const void *)) {
+    bool (*write_memory)(void *, uint64_t, uint64_t, const void *),
+    uint32_t dst_x, uint32_t dst_y, uint32_t dst_w, uint32_t dst_h) {
     if (!vk || !display_rt || surface_image == VK_NULL_HANDLE) {
         return LAGFX_ERR_INVALID_ARG;
     }
@@ -205,9 +206,15 @@ lagfx_status_t lagfx_vk_display_present_surface(
                 .baseArrayLayer = 0,
                 .layerCount     = 1,
             },
-            .dstOffsets[0] = { 0, 0, 0 },
-            .dstOffsets[1] = { (int32_t)display_width,
-                               (int32_t)display_height, 1 },
+            /* Placement: blit into the layer's declared dst rect (offset+
+             * extent) when given; else full-screen (legacy). Clamped to the
+             * display bounds. display_rt persists across layers, so sub-rect
+             * blits compose into the final scanout. */
+            .dstOffsets[0] = { (int32_t)dst_x, (int32_t)dst_y, 0 },
+            .dstOffsets[1] = {
+                (int32_t)((dst_w && dst_x + dst_w <= display_width) ? dst_x + dst_w : display_width),
+                (int32_t)((dst_h && dst_y + dst_h <= display_height) ? dst_y + dst_h : display_height),
+                1 },
         };
         vkCmdBlitImage(cb,
                        surface_image,

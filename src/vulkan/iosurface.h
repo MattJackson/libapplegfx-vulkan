@@ -35,6 +35,12 @@ typedef struct {
      * other entry is still using. BQL-serialised in steady-state so
      * non-atomic. */
     uint32_t refcount;
+    /* Composite placement (0x82 viewport): the layer's destination rect in
+     * the scanout. dst_valid=0 → blit full-screen (legacy). Set at per-pass
+     * creation from the owning task's viewport so the ASMBLIT/composite path
+     * places each layer at its guest-declared offset instead of stretching. */
+    uint32_t dst_x, dst_y, dst_w, dst_h;
+    uint8_t  dst_valid;
 } lagfx_vk_iosurface_t;
 
 lagfx_status_t lagfx_vk_iosurface_create(struct lagfx_vk_state *vk,

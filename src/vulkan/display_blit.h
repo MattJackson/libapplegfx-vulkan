@@ -30,7 +30,8 @@ lagfx_status_t lagfx_vk_display_present_surface(
     uint32_t display_width, uint32_t display_height,
     uint64_t scanout_gpa, uint64_t scanout_length,
     void *shell_opaque,
-    bool (*write_memory)(void *, uint64_t, uint64_t, const void *));
+    bool (*write_memory)(void *, uint64_t, uint64_t, const void *),
+    uint32_t dst_x, uint32_t dst_y, uint32_t dst_w, uint32_t dst_h);
 
 #endif
 

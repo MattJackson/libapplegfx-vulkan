@@ -392,7 +392,18 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                 lagfx_resource_entry_t *ne = lagfx_resource_lookup_texture(&p->resources, tref);
                 if (ne) {
                     ne->host_handle = ios; ne->image = ios->image; ne->view = ios->view;
-                    LAGFX_LOG("%s PERPASS: created RT IOSurface for target ref=0x%x %ux%u", op, tref, W, H);
+                    /* Stamp the layer's declared destination rect (0x82
+                     * viewport) so the composite blit places it at the guest's
+                     * real offset (clock/UI land correctly) instead of a
+                     * full-screen stretch. */
+                    if (task->vp_valid) {
+                        ios->dst_x = task->vp_x; ios->dst_y = task->vp_y;
+                        ios->dst_w = task->vp_w; ios->dst_h = task->vp_h;
+                        ios->dst_valid = 1u;
+                    }
+                    LAGFX_LOG("%s PERPASS: created RT IOSurface for target ref=0x%x %ux%u vp=%ux%u@(%u,%u) valid=%u",
+                              op, tref, W, H, task->vp_w, task->vp_h,
+                              task->vp_x, task->vp_y, task->vp_valid);
                     /* VIEWALIAS probe: the wallpaper render pass targets a VIEW
                      * (0x17/0x32) that ALIASES the sampled wallpaper backing
                      * texture 0x10 — the guest renders the forest into the view,
@@ -648,11 +659,20 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
             } else if (composite && qi != 0u && qios->view != VK_NULL_HANDLE) {
                 lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, qios->view);
             } else {
+                /* Placement (LAGFX_M2_PLACE): blit the layer into its declared
+                 * viewport dst rect so clock/UI land at the guest offset instead
+                 * of a full-screen stretch. Gated; default = full-screen. */
+                uint32_t px = 0, py = 0, pw = 0, ph = 0;
+                if (getenv("LAGFX_M2_PLACE") && qios->dst_valid) {
+                    px = qios->dst_x; py = qios->dst_y;
+                    pw = qios->dst_w; ph = qios->dst_h;
+                }
                 lagfx_vk_display_present_surface(
                     dev_with_vk->vk, &display->rt, qios->image, &qios->layout,
                     qios->width, qios->height, display->rt.width, display->rt.height,
                     display->scanout_gpa, display->scanout_length,
-                    dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory);
+                    dev_with_vk->desc.shell.opaque, dev_with_vk->desc.shell.write_memory,
+                    px, py, pw, ph);
             }
         }
         if (composite)

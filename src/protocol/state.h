@@ -257,6 +257,14 @@ typedef struct {
     uint32_t scissor_w;
     uint32_t scissor_h;
 
+    /* Viewport rect (0x82 SetViewport, MTLViewport = 6× f64). originX/Y +
+     * width/height are the layer's DESTINATION rect in the render target /
+     * scanout — the guest-declared placement for compositing each per-pass
+     * layer (clock/UI land at their real offset, not a centered stretch).
+     * valid=0 until the guest sets one. */
+    uint32_t vp_x, vp_y, vp_w, vp_h;
+    uint8_t  vp_valid;
+
     /* Pending draw description — populated by Draw opcode handlers (0x01, 0x03, 0x06, 0x07).
      * Per-task state: each task has its own pending draw descriptor. */
     lagfx_pending_draw_t pending_draw;
