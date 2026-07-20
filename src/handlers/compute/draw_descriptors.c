@@ -324,7 +324,29 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
         uint64_t bind_alloc_sz = LAGFX_DRAW_DS_BUF_SZ;
         if (slot < LAGFX_MAX_BINDING_SLOTS) {
             lagfx_binding_slot_t *bs = NULL;
-            if (m1_texcomp) {
+            /* AUTHORITATIVE binding→slot map (AIR arg metadata): the shader's
+             * [[buffer(n)]] Metal index, captured at translate time
+             * (spv_binding_metal). The Metal index VARIES per shader
+             * (UberCompositeVertex mvp=[[buffer(1)]], VfxVertex=[[buffer(2)]],
+             * ViewportToNDC=0/1/2), so this replaces both the +1 stage-in-skip
+             * guess and the MTXSCAN content-signature scan whenever present.
+             * -1 (unknown) → legacy heuristics below. */
+            int16_t midx = task->pending_pipeline.spv_binding_metal[i];
+            bool bind_is_frag = m1_texcomp && slot >= LAGFX_FRAG_BINDING_BASE;
+            if (midx >= 0 && midx < (int16_t)LAGFX_MAX_BINDING_SLOTS) {
+                lagfx_binding_slot_t *auth = bind_is_frag
+                        ? &task->bindings.fragment_buffers[midx]
+                        : &task->bindings.vertex_buffers[midx];
+                if (auth->valid && auth->ref != 0u) {
+                    bs = auth;
+                    LAGFX_LOG("AUTHBIND: binding %u -> %s_buffers[%d] ref=0x%x off=%llu",
+                              binding_no[i], bind_is_frag ? "fragment" : "vertex",
+                              (int)midx, auth->ref, (unsigned long long)auth->offset);
+                }
+            }
+            if (bs) {
+                /* authoritative hit — skip all heuristics below */
+            } else if (m1_texcomp) {
                 /* TEXCOMP demux: fragment buffers are at binding >= FRAG_BASE
                  * (resolve by ordinal among fragment STORAGE bindings →
                  * fragment_buffers[ordinal]); lower bindings are vertex buffers

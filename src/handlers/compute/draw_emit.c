@@ -9,6 +9,7 @@
 #include "compute_draw_internal.h"
 #include "display.h"
 #include "protocol/object_resolver.h"
+#include "air2spv/spv_reflect.h"
 
 #include "common/le.h"
 #include "common/log.h"
@@ -98,6 +99,21 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
          * scores 100), while slot-0 uniform buffers score 45–80 (floats look
          * "plausible"). Taking the first ≥50 let slot-0 uniforms win and fed the
          * shader uniforms-as-positions → smear/zero-coverage. Highest-score wins. */
+        /* Slots CLAIMED by the vertex shader's [[buffer(n)]] args (from the
+         * AIR arg-metadata map) are NOT the stage-in stream — e.g. the 64 B
+         * mvp_matrix at index 2: its matrix floats score 100 on plausibility,
+         * so an unrestricted scan uploads the MATRIX (+ trailing pool garbage)
+         * as vertex data → horizontal-band smear. Exclude claimed slots. */
+        uint32_t claimed = 0u;
+        for (uint32_t bi = 0; bi < task->pending_pipeline.n_spv_bindings && bi < 16u; bi++) {
+            if (task->pending_pipeline.spv_binding_kind[bi]
+                    != (uint8_t)LAGFX_SPV_BINDING_STORAGE_BUFFER)
+                continue;
+            if (task->pending_pipeline.spv_binding_no[bi] >= LAGFX_FRAG_BINDING_BASE)
+                continue;   /* fragment-stage binding */
+            int16_t mi = task->pending_pipeline.spv_binding_metal[bi];
+            if (mi >= 0 && mi < 32) claimed |= (1u << mi);
+        }
         uint32_t best_s = 0u; int best_mode = 0; uint32_t best_score = 0u;
         bool have_best = false;
         for (uint32_t sm = 0; sm < 6u; sm++) {
@@ -105,6 +121,7 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
              * mode 1 = VA-translated placement read (lead 3). */
             uint32_t s = sm / 2u;
             int mode = (int)(sm % 2u);
+            if (claimed & (1u << s)) continue;   /* shader buffer arg, not stage-in */
             lagfx_binding_slot_t *cs = &task->bindings.vertex_buffers[s];
             if (!cs->valid || cs->ref == 0u) continue;
             uint8_t sample[256];

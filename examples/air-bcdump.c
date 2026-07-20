@@ -19,6 +19,7 @@
  */
 
 #include "air/bitcode_reader.h"
+#include "air2spv/translate.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -125,10 +126,18 @@ static void dump_module(const lagfx_air_module_t *m) {
     }
 
     uint32_t nc = 0;
-    (void)lagfx_air_module_constants(m, &nc);
+    const lagfx_air_constant_t *consts = lagfx_air_module_constants(m, &nc);
     uint32_t npag = 0;
     (void)lagfx_air_module_param_attr_groups(m, &npag);
     printf("\nConstants:           %u\n", nc);
+    for (uint32_t i = 0; i < nc; i++) {
+        printf("  [c%2u] kind=%d type=%u", i, (int)consts[i].kind, consts[i].type_index);
+        if (consts[i].kind == LAGFX_AIR_CONST_INTEGER)
+            printf(" int=%lld", (long long)consts[i].payload.i64);
+        else if (consts[i].kind == LAGFX_AIR_CONST_FLOAT)
+            printf(" flt=%g", consts[i].payload.f64);
+        printf("\n");
+    }
     printf("Param attr groups:   %u\n", npag);
 
     uint32_t nf = 0;
@@ -163,6 +172,14 @@ static void dump_module(const lagfx_air_module_t *m) {
     }
     printf("  records (%u): %u VALUE, %u NODE, %u NAMED_NODE, %u UNKNOWN\n",
            nmd, n_value, n_node, n_named, n_unknown);
+    {
+        lagfx_air_arg_binding_t ab[16];
+        size_t nab = lagfx_air_arg_bindings(m, ab, 16);
+        printf("  Resource args (%zu):", nab);
+        for (size_t k = 0; k < nab; k++)
+            printf(" [b%zu kind=%u metal_idx=%d]", k, ab[k].kind, (int)ab[k].metal_index);
+        printf("\n");
+    }
     for (uint32_t i = 0; i < nmd; i++) {
         const lagfx_air_metadata_t *md = &mds[i];
         const char *kind = (md->kind == LAGFX_AIR_MD_VALUE) ? "VALUE"
@@ -175,10 +192,10 @@ static void dump_module(const lagfx_air_module_t *m) {
             printf(" name='%s'", lagfx_air_module_string(m, md->name_offset));
         }
         printf(" ops=");
-        for (uint32_t j = 0; j < md->num_operands && j < 8u; j++) {
+        for (uint32_t j = 0; j < md->num_operands && j < 32u; j++) {
             printf("%s%u", j == 0u ? "[" : ",", md->operands[j]);
         }
-        printf("%s\n", md->num_operands > 8u ? ",...]" : (md->num_operands ? "]" : "[]"));
+        printf("%s\n", md->num_operands > 32u ? ",...]" : (md->num_operands ? "]" : "[]"));
     }
 }
 

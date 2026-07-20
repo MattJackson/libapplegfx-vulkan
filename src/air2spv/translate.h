@@ -58,6 +58,34 @@ lagfx_air2spv_translate_module(const lagfx_air_module_t *m,
                                 uint8_t                 **out_blob,
                                 size_t                   *out_size_bytes);
 
+/* One resource argument of the module's entry point, in FUNCTION-ARG ORDER
+ * (the same order the translator assigns sequential SPIR-V bindings), with
+ * its Metal resource index from Apple's own arg metadata.
+ *
+ * kind: 1 = buffer ([[buffer(n)]]), 2 = texture, 3 = sampler.
+ * metal_index: the `air.location_index` of the arg — i.e. the Metal binding
+ * slot the guest's SetVertexBuffers/SetFragmentBuffers/... index refers to.
+ * -1 if the index could not be resolved.
+ *
+ * This is THE authoritative binding map: the Metal buffer index VARIES per
+ * shader (UberCompositeVertex: mvp_matrix=[[buffer(1)]]; ViewportToNDC:
+ * buffers 0/1/2; CA lock-screen composites: matrix at 2) — no fixed
+ * convention exists, so slot-guessing heuristics (skip-one, MTXSCAN content
+ * signatures) cannot be correct in general. */
+typedef struct {
+    uint8_t kind;
+    int16_t metal_index;
+} lagfx_air_arg_binding_t;
+
+/* Walk the entry point's air.vertex / air.fragment per-arg metadata and
+ * return the resource args (buffers/textures/samplers) in arg order.
+ * Returns the number of entries written (0 on any parse failure — callers
+ * MUST treat 0 as "no mapping available" and fall back). */
+size_t
+lagfx_air_arg_bindings(const lagfx_air_module_t *m,
+                        lagfx_air_arg_binding_t  *out,
+                        size_t                    max);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

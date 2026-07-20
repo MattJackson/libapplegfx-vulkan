@@ -1259,3 +1259,19 @@ if fs.is_file(meson.current_source_dir() / 'vtx-plausibility-unit.c') and vulkan
   )
   test('vtx float plausibility (unit)', vtx_plaus_test)
 endif
+
+# AIR arg-metadata Metal-index map: the authoritative binding→slot map
+# (air.location_index per resource arg). Guards the M2v fix — the Metal
+# buffer index varies per shader (UberComposite mvp=1, Vfx=2, ViewportToNDC
+# 0/1/2), so heuristics can't substitute for this decode.
+if fs.is_file(meson.current_source_dir() / 'air2spv-arg-bindings-unit.c')
+  air2spv_argbind_test = executable('air2spv-arg-bindings-unit',
+    'air2spv-arg-bindings-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : [libapplegfx_vulkan_dep],
+    c_args : ['-DSRCDIR="' + meson.current_source_dir() + '"'],
+    build_by_default : true,
+  )
+  test('air2spv arg-metadata metal-index map (unit)', air2spv_argbind_test,
+    workdir : meson.current_source_dir() / '..')
+endif

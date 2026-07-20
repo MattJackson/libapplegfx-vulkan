@@ -45,6 +45,111 @@ static lagfx_translate_stage_t discover_stage(const lagfx_air_module_t *m) {
     return LAGFX_TRANS_STAGE_UNKNOWN;
 }
 
+/* === Entry-point arg-metadata walk (Metal resource indexes) ========
+ *
+ * LLVM/AIR metadata ID rules (validated against llvm.module.flags on the
+ * login corpus: {Max, 'air.max_device_buffers', 31} resolves exactly):
+ *   - NAMED_NODE operands are RAW global metadata IDs.
+ *   - NODE operands are global-ID + 1 (0 = null).
+ *   - global ID < num_strings  -> strings[id]; else metadata[id-num_strings].
+ *   - VALUE records are [type_index, value_id]; value_id enumerates
+ *     globalvars, then functions, then module constants — so constant
+ *     index = value_id - (num_globalvars + num_functions).
+ *   - CST_NULL means integer 0 (LLVM emits i32 0 as CST_CODE_NULL).
+ *
+ * The entry-point node (air.vertex/air.fragment op) is
+ *   [fn VALUE, outputs NODE, args NODE]
+ * and each per-arg NODE is a key/value list over the strings pool:
+ *   [argidx VALUE, 'air.buffer'|'air.vertex_input'|..., 'air.location_index',
+ *    <loc VALUE>, ...] */
+
+static const lagfx_air_metadata_t *
+md_record(const lagfx_air_module_t *m, uint32_t global_id) {
+    uint32_t nms = 0, nmd = 0;
+    (void)lagfx_air_module_metadata_strings(m, &nms);
+    const lagfx_air_metadata_t *mds = lagfx_air_module_metadata(m, &nmd);
+    if (!mds || global_id < nms || global_id - nms >= nmd) return NULL;
+    return &mds[global_id - nms];
+}
+
+static const char *
+md_string(const lagfx_air_module_t *m, uint32_t global_id) {
+    uint32_t nms = 0;
+    const char *const *strs = lagfx_air_module_metadata_strings(m, &nms);
+    if (!strs || global_id >= nms) return NULL;
+    return strs[global_id];
+}
+
+/* Resolve a VALUE metadata record to its integer constant, or -1. */
+static int64_t
+md_value_int(const lagfx_air_module_t *m, const lagfx_air_metadata_t *v) {
+    if (!v || v->kind != LAGFX_AIR_MD_VALUE || v->num_operands < 2u) return -1;
+    uint32_t value_id = v->operands[1];
+    uint32_t ng = lagfx_air_module_num_globalvars(m);
+    uint32_t nf = 0;
+    (void)lagfx_air_module_functions(m, &nf);
+    uint32_t base = ng + nf;
+    if (value_id < base) return -1;
+    uint32_t nc = 0;
+    const lagfx_air_constant_t *cs = lagfx_air_module_constants(m, &nc);
+    if (!cs || value_id - base >= nc) return -1;
+    const lagfx_air_constant_t *c = &cs[value_id - base];
+    if (c->kind == LAGFX_AIR_CONST_INTEGER) return c->payload.i64;
+    if (c->kind == LAGFX_AIR_CONST_NULL)    return 0;
+    return -1;
+}
+
+size_t
+lagfx_air_arg_bindings(const lagfx_air_module_t *m,
+                        lagfx_air_arg_binding_t  *out,
+                        size_t                    max) {
+    if (!m || !out || max == 0u) return 0u;
+    const lagfx_air_metadata_t *named = lagfx_air_module_named_metadata(m, "air.vertex");
+    if (!named) named = lagfx_air_module_named_metadata(m, "air.fragment");
+    if (!named || named->num_operands < 1u) return 0u;
+    /* Entry-point node: NAMED_NODE ops are raw IDs. */
+    const lagfx_air_metadata_t *ep = md_record(m, named->operands[0]);
+    if (!ep || ep->kind != LAGFX_AIR_MD_NODE || ep->num_operands < 3u) return 0u;
+    /* [fn, outputs, args] — args node ops are ID+1. */
+    uint32_t args_id = ep->operands[2];
+    if (args_id == 0u) return 0u;
+    const lagfx_air_metadata_t *args = md_record(m, args_id - 1u);
+    if (!args || args->kind != LAGFX_AIR_MD_NODE) return 0u;
+
+    size_t n_out = 0u;
+    for (uint32_t a = 0; a < args->num_operands && n_out < max; a++) {
+        if (args->operands[a] == 0u) continue;
+        const lagfx_air_metadata_t *arg = md_record(m, args->operands[a] - 1u);
+        if (!arg || arg->kind != LAGFX_AIR_MD_NODE) continue;
+        uint8_t kind = 0;      /* 1=buffer 2=texture 3=sampler */
+        int64_t loc = -1;
+        bool is_stagein = false;
+        for (uint32_t j = 0; j < arg->num_operands; j++) {
+            if (arg->operands[j] == 0u) continue;
+            const char *s = md_string(m, arg->operands[j] - 1u);
+            if (!s) continue;
+            if (strcmp(s, "air.buffer") == 0)            kind = kind ? kind : 1u;
+            else if (strcmp(s, "air.texture") == 0)      kind = kind ? kind : 2u;
+            else if (strcmp(s, "air.sampler") == 0)      kind = kind ? kind : 3u;
+            else if (strcmp(s, "air.vertex_input") == 0
+                     || strcmp(s, "air.position") == 0
+                     || strcmp(s, "air.vertex_id") == 0
+                     || strcmp(s, "air.fragment_input") == 0)
+                is_stagein = true;
+            else if (strcmp(s, "air.location_index") == 0
+                     && j + 1u < arg->num_operands
+                     && arg->operands[j + 1u] != 0u) {
+                loc = md_value_int(m, md_record(m, arg->operands[j + 1u] - 1u));
+            }
+        }
+        if (is_stagein || kind == 0u) continue;   /* stage-in attr / vid — not a resource */
+        out[n_out].kind        = kind;
+        out[n_out].metal_index = (loc >= 0 && loc < 0x7fff) ? (int16_t)loc : -1;
+        n_out++;
+    }
+    return n_out;
+}
+
 lagfx_status_t
 lagfx_air2spv_translate_module(const lagfx_air_module_t *m,
                                 uint8_t                 **out_blob,

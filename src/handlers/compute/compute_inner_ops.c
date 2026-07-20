@@ -1160,6 +1160,10 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
              * layout once both stages are translated. Freed after the loop. */
             uint8_t *spv_keep[2] = { NULL, NULL };
             size_t   spv_keep_sz[2] = { 0, 0 };
+            /* Per-stage Metal resource indexes (air.location_index), in the
+             * same arg order the translator assigns sequential bindings. */
+            lagfx_air_arg_binding_t stage_ab[2][16];
+            size_t stage_nab[2] = { 0, 0 };
 
             /* Inline helper: read metallib at vert/frag ref → extract
              * AIR for that stage → translate → vkCreateShaderModule.
@@ -1235,6 +1239,9 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                 uint8_t *spv = NULL;
                 size_t   spv_sz = 0;
                 lagfx_status_t xl_st = lagfx_air2spv_translate_module(m, &spv, &spv_sz);
+                /* Capture the stage's Metal resource indexes (air.location_index
+                 * per resource arg, in binding order) before the module goes. */
+                stage_nab[stage] = lagfx_air_arg_bindings(m, stage_ab[stage], 16);
                 lagfx_air_module_free(m);
                 if (xl_st != LAGFX_OK || !spv || spv_sz == 0u) {
                     LAGFX_WARN("op_0x74 P6a: translate_module failed (st=%d)", (int)xl_st);
@@ -1440,6 +1447,27 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                         for (size_t u = 0; u < nrb; u++) {
                             task->pending_pipeline.spv_binding_no[u]   = (uint8_t)rb[u].binding;
                             task->pending_pipeline.spv_binding_kind[u] = (uint8_t)rb[u].kind;
+                            /* Attach the Metal resource index: the translator
+                             * numbers each stage's resources sequentially from
+                             * 0 (fragment offset by FRAG_BINDING_BASE under
+                             * TEXCOMP), so binding ordinal-within-stage indexes
+                             * that stage's arg-metadata list. */
+                            int16_t midx = -1;
+                            uint32_t b = rb[u].binding;
+                            int st = 0; uint32_t ord = b;
+                            if (LAGFX_POLICY("M1_TEXCOMP")
+                                && b >= LAGFX_FRAG_BINDING_BASE) {
+                                st = 1; ord = b - LAGFX_FRAG_BINDING_BASE;
+                            }
+                            if (ord < stage_nab[st])
+                                midx = stage_ab[st][ord].metal_index;
+                            task->pending_pipeline.spv_binding_metal[u] = midx;
+                            if (midx >= 0)
+                                LAGFX_LOG("op_0x74 P6a: ref=0x%x binding %u -> metal %s index %d",
+                                          reference, b,
+                                          stage_ab[st][ord].kind == 1u ? "buffer" :
+                                          stage_ab[st][ord].kind == 2u ? "texture" : "sampler",
+                                          (int)midx);
                         }
                         phase6_translated = true;
                         LAGFX_LOG("op_0x74 P6a: ref=0x%x using TRANSLATED shaders "
