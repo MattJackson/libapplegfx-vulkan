@@ -148,6 +148,17 @@ static const shader_t g_corpus[] = {
     { "TextureCopy",             "login_texturecopy_frag.air.bc",     ROLE_FRAG_TEX },
     { "UberCompositeFragment_a", "login_ubercomposite_frag_a.air.bc", ROLE_FRAG_TEX },
     { "UberCompositeFragment_b", "login_ubercomposite_frag_b.air.bc", ROLE_FRAG_TEX },
+    /* GOAL-M2z additions — the two shader classes behind the 22k
+     * vkCreateGraphicsPipelines(-13) failures at the login screen:
+     *   VfxU11:      GEP through a `device float4*` runtime-array buffer;
+     *                the pointee walk descended into the vector (result
+     *                pointer float vs loaded v4float — spirv-val reject).
+     *   TvcmXc_Isrc: single-colour-output fragment returning a STRUCT
+     *                wrapper (stored the struct into the v4float Output);
+     *                also carried a `[0 x struct]` dead artifact array
+     *                (OpTypeArray length 0). */
+    { "VfxU11",                  "login_vfxu11_vert.air.bc",          ROLE_VERT },
+    { "TvcmXc_Isrc",             "login_tvcmxc_isrc_frag.air.bc",     ROLE_FRAG_TEX },
 };
 
 static uint8_t *find_fixture(const char *basename, size_t *len) {
