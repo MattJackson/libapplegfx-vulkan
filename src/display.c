@@ -473,6 +473,121 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
                   "(W=%u H=%u stride=%zu)", W, H, stride);
     }
 
+    /* HOLD-FRAME (GOAL-M2z): score the readback by sampled nonblack pixels.
+     * Near-black frame + a better held frame -> serve the held copy instead
+     * (the flashing was content frames alternating with mid-composite black).
+     * A content-rich frame replaces the held copy. Slow decay lets genuinely
+     * new content win eventually. Kill-switch LAGFX_DISABLE_HOLDFRAME. */
+    if (getenv("LAGFX_DISABLE_HOLDFRAME") == NULL && stride > 0u) {
+        uint8_t *fb = (uint8_t *)dst;
+        size_t total = (size_t)display->rt.height * stride;
+        if (total > dst_size_bytes) total = dst_size_bytes;
+        uint32_t score = 0;
+        for (size_t o = 0; o + 3u < total; o += 4u * 997u)
+            if (fb[o] | fb[o+1u] | fb[o+2u]) score++;
+        if (display->held_pixels && display->held_age < 3000u)
+            display->held_age++;
+        else if (display->held_pixels && display->held_score > 0u) {
+            display->held_score -= display->held_score / 10u + 1u;
+            display->held_age = 0;
+        }
+        if (score * 4u < display->held_score && display->held_pixels
+            && display->held_bytes <= dst_size_bytes) {
+            memcpy(dst, display->held_pixels, display->held_bytes);
+            stride = display->held_stride;
+        } else if (score > 0u && score >= display->held_score) {
+            if (!display->held_pixels || display->held_bytes < total) {
+                free(display->held_pixels);
+                display->held_pixels = malloc(total);
+                display->held_bytes = display->held_pixels ? total : 0u;
+            }
+            if (display->held_pixels) {
+                memcpy(display->held_pixels, dst, total);
+                display->held_bytes  = total;
+                display->held_stride = stride;
+                display->held_score  = score;
+                display->held_age    = 0;
+            }
+        }
+    }
+
+
+    /* HOLD-FRAME (GOAL-M2z): score the readback by sampled nonblack pixels.
+     * Near-black frame + a better held frame -> serve the held copy instead
+     * (the flashing was content frames alternating with mid-composite black).
+     * A content-rich frame replaces the held copy. Slow decay lets genuinely
+     * new content win eventually. Kill-switch LAGFX_DISABLE_HOLDFRAME. */
+    if (getenv("LAGFX_DISABLE_HOLDFRAME") == NULL && stride > 0u) {
+        uint8_t *fb = (uint8_t *)dst;
+        size_t total = (size_t)display->rt.height * stride;
+        if (total > dst_size_bytes) total = dst_size_bytes;
+        uint32_t score = 0;
+        for (size_t o = 0; o + 3u < total; o += 4u * 997u)
+            if (fb[o] | fb[o+1u] | fb[o+2u]) score++;
+        if (display->held_pixels && display->held_age < 3000u)
+            display->held_age++;
+        else if (display->held_pixels && display->held_score > 0u) {
+            display->held_score -= display->held_score / 10u + 1u;
+            display->held_age = 0;
+        }
+        if (score * 4u < display->held_score && display->held_pixels
+            && display->held_bytes <= dst_size_bytes) {
+            memcpy(dst, display->held_pixels, display->held_bytes);
+            stride = display->held_stride;
+        } else if (score > 0u && score >= display->held_score) {
+            if (!display->held_pixels || display->held_bytes < total) {
+                free(display->held_pixels);
+                display->held_pixels = malloc(total);
+                display->held_bytes = display->held_pixels ? total : 0u;
+            }
+            if (display->held_pixels) {
+                memcpy(display->held_pixels, dst, total);
+                display->held_bytes  = total;
+                display->held_stride = stride;
+                display->held_score  = score;
+                display->held_age    = 0;
+            }
+        }
+    }
+
+    /* HOLD-FRAME (GOAL-M2z): score the readback by sampled nonblack pixels.
+     * Near-black frame + a better held frame -> serve the held copy instead
+     * (the flashing was content frames alternating with mid-composite black).
+     * A content-rich frame replaces the held copy. Slow decay lets genuinely
+     * new content win eventually. Kill-switch LAGFX_DISABLE_HOLDFRAME. */
+    if (getenv("LAGFX_DISABLE_HOLDFRAME") == NULL && stride > 0u) {
+        uint8_t *fb = (uint8_t *)dst;
+        size_t total = (size_t)display->rt.height * stride;
+        if (total > dst_size_bytes) total = dst_size_bytes;
+        uint32_t score = 0;
+        for (size_t o = 0; o + 3u < total; o += 4u * 997u)
+            if (fb[o] | fb[o+1u] | fb[o+2u]) score++;
+        if (display->held_pixels && display->held_age < 3000u)
+            display->held_age++;
+        else if (display->held_pixels && display->held_score > 0u) {
+            display->held_score -= display->held_score / 10u + 1u;
+            display->held_age = 0;
+        }
+        if (score * 4u < display->held_score && display->held_pixels
+            && display->held_bytes <= dst_size_bytes) {
+            memcpy(dst, display->held_pixels, display->held_bytes);
+            stride = display->held_stride;
+        } else if (score > 0u && score >= display->held_score) {
+            if (!display->held_pixels || display->held_bytes < total) {
+                free(display->held_pixels);
+                display->held_pixels = malloc(total);
+                display->held_bytes = display->held_pixels ? total : 0u;
+            }
+            if (display->held_pixels) {
+                memcpy(display->held_pixels, dst, total);
+                display->held_bytes  = total;
+                display->held_stride = stride;
+                display->held_score  = score;
+                display->held_age    = 0;
+            }
+        }
+    }
+
     if (stride_out) {
         *stride_out = stride;
     }

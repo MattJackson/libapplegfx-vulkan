@@ -121,6 +121,17 @@ struct lagfx_display {
     uint64_t scanout_length;
     uint32_t scanout_width;
     uint32_t scanout_height;
+
+    /* GOAL-M2z HOLD-FRAME (anti-flicker): the compositor legitimately paints
+     * black mid-recomposite, so the presented stream alternates content/black
+     * (user-visible flashing). Keep the most content-rich recent readback and
+     * serve it whenever the live readback is near-black. Kill-switch:
+     * LAGFX_DISABLE_HOLDFRAME. */
+    uint8_t *held_pixels;
+    size_t   held_bytes;
+    size_t   held_stride;
+    uint32_t held_score;
+    uint32_t held_age;
     bool     scanout_valid;
 
 #ifdef LAGFX_HAVE_VULKAN
