@@ -233,12 +233,20 @@ jobs:
         # install <pkg>` then silently no-ops (already installed) and
         # the binary isn't on PATH. `brew link --overwrite` after the
         # install forces the symlinks even on cache-hit.
+        # The runner image ships a LINKED pkgconf that can be older than the
+        # cached Cellar's (image 3.0.2 linked vs cache 3.0.3): `brew link
+        # --overwrite` refuses a version switch ("Cannot link pkgconf"), so
+        # unlink whatever is linked first. pkg-config is an alias of pkgconf
+        # in current brew; fall back for older images.
         run: |
           brew update
           brew install meson ninja pkg-config || true
-          brew link --overwrite meson ninja pkg-config
+          brew unlink pkgconf 2>/dev/null || true
+          brew link --overwrite meson ninja
+          brew link --overwrite pkgconf || brew link --overwrite pkg-config
           meson --version
           ninja --version
+          pkg-config --version
 
       - name: Configure
         run: meson setup build
