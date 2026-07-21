@@ -89,6 +89,11 @@ lagfx_handler_status_t lagfx_display_swap_mapping(lagfx_protocol_t *p, const lag
             LAGFX_LOG("CmdDisplaySwapMapping: stored for display[%u] gpa=0x%llx len=%u %ux%u",
                       display_id, (unsigned long long)scanout_gpa, scanout_len,
                       fb_width, fb_height);
+            /* FRAME-ON-SWAP (GOAL-M2z, gated): the guest's swap IS the frame
+             * boundary. Per-cmdbuf signaling presented partial recomposites
+             * (content frames alternating with black -> visible flashing). */
+            if (getenv("LAGFX_FRAME_ON_SWAP"))
+                lagfx_display_signal_frame_ready(disp);
         } else {
             LAGFX_WARN("CmdDisplaySwapMapping: display[%u] not found — info stored but no handler",
                       display_id);

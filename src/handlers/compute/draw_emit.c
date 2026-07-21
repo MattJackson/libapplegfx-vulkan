@@ -1103,7 +1103,7 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                     perpass_real_draw = true;
                     if (perpass_ios) perpass_ios->gpu_drawn = 1u;
                 }
-                lagfx_display_signal_frame_ready(display);
+                if (getenv("LAGFX_FRAME_ON_SWAP") == NULL) lagfx_display_signal_frame_ready(display);
             } else {
                 LAGFX_WARN("%s P6b: bound draw failed (%d)", op, (int)st);
             }
@@ -1130,7 +1130,7 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                 perpass_real_draw = true;
                 if (perpass_ios) perpass_ios->gpu_drawn = 1u;
             }
-            lagfx_display_signal_frame_ready(display);
+            if (getenv("LAGFX_FRAME_ON_SWAP") == NULL) lagfx_display_signal_frame_ready(display);
         } else {
             LAGFX_WARN("%s VTX: vertex-input draw failed (%d)", op, (int)st);
         }
@@ -1156,7 +1156,7 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
             dev_with_vk->vk, pipeline, active_rt, false, 3, 1, 0, 0, 0);
         if (st == LAGFX_OK) {
             LAGFX_LOG("%s: drew substitute triangle (guest req count=%u)", op, count);
-            lagfx_display_signal_frame_ready(display);
+            if (getenv("LAGFX_FRAME_ON_SWAP") == NULL) lagfx_display_signal_frame_ready(display);
         } else {
             LAGFX_WARN("%s: substitute draw failed (%d)", op, (int)st);
         }
@@ -1258,7 +1258,7 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         /* Cursor on top of the composited set — read_frame serves display->rt
          * directly on the sparse-present guest, so overlay here too. */
         (void)lagfx_display_overlay_cursor(display);
-        lagfx_display_signal_frame_ready(display);
+        if (getenv("LAGFX_FRAME_ON_SWAP") == NULL) lagfx_display_signal_frame_ready(display);
     }
 
     if (vbuf != VK_NULL_HANDLE) {
