@@ -114,13 +114,14 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
             int16_t mi = task->pending_pipeline.spv_binding_metal[bi];
             if (mi >= 0 && mi < 32) claimed |= (1u << mi);
         }
-        /* Pipeline vertex stride (for the position-signature test). */
+        /* Pipeline vertex stride (for the position-signature test). PSO stride
+         * is authoritative when sane (lldb ground truth GOAL-M2x: buffer stride
+         * 48 vs reflected extent 32 — see pipeline_build.c). */
         uint32_t pstride = 0;
         for (uint32_t a = 0; a < task->pending_pipeline.n_vtx_inputs && a < 8u; a++)
             pstride += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
         pstride = (pstride + 7u) & ~7u;
         if (task->pending_pipeline.vtx_stride >= pstride
-            && task->pending_pipeline.vtx_stride <= pstride + 8u
             && task->pending_pipeline.vtx_stride <= 256u)
             pstride = task->pending_pipeline.vtx_stride;
         if (pstride == 0u) pstride = 48u;
@@ -205,14 +206,14 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                         task->pending_draw.index_buffer_ref,
                         task->pending_draw.index_buffer_offset,
                         icount * 2u, ib, &ihow, 0) == icount * 2u) {
-                    /* Vertex stride: same rule as pipeline_build (real PSO
-                     * stride when decoded, else round8 of the attr sum). */
+                    /* Vertex stride: same rule as pipeline_build (decoded PSO
+                     * stride authoritative when sane — lldb ground truth
+                     * GOAL-M2x — else round8 of the attr sum). */
                     uint32_t vs = 0;
                     for (uint32_t a = 0; a < task->pending_pipeline.n_vtx_inputs && a < 8u; a++)
                         vs += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
                     vs = (vs + 7u) & ~7u;
                     if (task->pending_pipeline.vtx_stride >= vs
-                        && task->pending_pipeline.vtx_stride <= vs + 8u
                         && task->pending_pipeline.vtx_stride <= 256u)
                         vs = task->pending_pipeline.vtx_stride;
                     if (vs == 0u) vs = 48u;

@@ -54,16 +54,18 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
          *     sum rounds to 24 while the real stride is 48 → every other vertex
          *     misread → horizontal-band smear). Fallback of last resort. */
         uint32_t stride = (off + 7u) & ~7u;
-        /* Trust the PSO stride ONLY when it's within a reasonable padding of the
-         * reflected attribute extent. The reflection now tight-packs the correct
-         * offsets for BOTH real formats (CA n=4 → 48; UberComposite n=3
-         * pos/tex/scale → 24), so round8(off) is authoritative. The PSO decode
-         * (mode of the blob's stride tokens) returned 48 for the UberComposite
-         * pipelines too — reading their 24-byte vertices at 48-byte intervals
-         * misaligned EVERY vertex (the 0x23/0x28/0x2c garbage: pos w=920). Reject
-         * a PSO stride that's >8 B larger than the attribute extent. */
-        if (desc->vtx_stride >= off && desc->vtx_stride <= 256u
-            && desc->vtx_stride <= stride + 8u)
+        /* The decoded PSO stride is AUTHORITATIVE whenever present and sane.
+         * lldb ground truth (GOAL-M2x, 2026-07-21, WindowServer
+         * PGSerializerRenderCommandEncoder): the indexed-quad composite draws
+         * (0x23/0x28/0x2c) bind a 48-byte-stride pool buffer — float4
+         * SCREEN-SPACE pos@0 (w=1), float2 normalized texcoord@16, rgba8
+         * color@32 — while the shader reflects only 2 attrs (extent 32). The
+         * former "+8 B of the reflected extent" clamp rejected the real 48 →
+         * stride 32 → v0 correct, v1/v2 read from attr padding → the
+         * degenerate (v1==v2) triangles. The reflected extent is the shader's
+         * VIEW of the vertex, not the buffer stride; only the PSO's serialized
+         * MTLVertexDescriptor knows the buffer layout. */
+        if (desc->vtx_stride >= off && desc->vtx_stride <= 256u)
             stride = desc->vtx_stride;
         const char *vs = getenv("LAGFX_VTX_STRIDE");
         if (vs) { unsigned long s = strtoul(vs, NULL, 0); if (s >= off && s <= 256u) stride = (uint32_t)s; }
