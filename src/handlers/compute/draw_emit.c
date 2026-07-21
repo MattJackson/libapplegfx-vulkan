@@ -660,15 +660,27 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
     }
     /* DRAW BISECTOR (diagnostic): LAGFX_SKIP_PIPES="0x74,0x76" skips drawing
      * the listed pipeline refs — attribute visible artifacts to their draw
-     * family over the proven display. */
-    const char *skip = getenv("LAGFX_SKIP_PIPES");
-    if (skip) {
-        char pref[16];
-        snprintf(pref, sizeof(pref), "0x%x", task->pending_pipeline.reference);
-        const char *hit = strstr(skip, pref);
-        size_t pl = strlen(pref);
-        if (hit && (hit[pl] == '\0' || hit[pl] == ','))
-            return;
+     * family over the proven display. Pipeline refs are PER-BOOT dynamic, so
+     * an env list goes stale on reboot; /tmp/lagfx_skip.txt (same format,
+     * re-read every draw) allows live in-boot bisection via docker exec. */
+    {
+        char skipbuf[256];
+        const char *skip = getenv("LAGFX_SKIP_PIPES");
+        FILE *sf = fopen("/tmp/lagfx_skip.txt", "r");
+        if (sf) {
+            size_t sgot = fread(skipbuf, 1, sizeof(skipbuf) - 1, sf);
+            fclose(sf);
+            skipbuf[sgot] = '\0';
+            if (sgot) skip = skipbuf;
+        }
+        if (skip) {
+            char pref[16];
+            snprintf(pref, sizeof(pref), "0x%x", task->pending_pipeline.reference);
+            const char *hit = strstr(skip, pref);
+            size_t pl = strlen(pref);
+            if (hit && (hit[pl] == '\0' || hit[pl] == ',' || hit[pl] == '\n'))
+                return;
+        }
     }
     lagfx_device_t *dev_with_vk = (lagfx_device_t *)p->dev;
     if (!(dev_with_vk && dev_with_vk->vk && dev_with_vk->vk->initialized)) {
