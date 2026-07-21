@@ -98,6 +98,19 @@ bool lagfx_lookup_pipeline_function_refs(lagfx_protocol_t *p,
  * (fullscreen-quad) = 24 — the round8(sum-of-attr-sizes) heuristic gets these
  * wrong and smears the geometry.
  */
+/* GOAL-M2z: per-attribute {MTLVertexFormat, offset, bufferIndex} decoded from
+ * the PSO's serialized MTLVertexDescriptor. Entry pattern in the blob:
+ * `01 04 <fmt u32> 02 04 <off u32> 03 04 <bufidx u32>` (keys: 01=format,
+ * 02=offset, 03=bufferIndex; 0x04 = u32 type tag). Ground truth: caret/9patch
+ * pipes carry fmt 31 (Float4) @0, 29 (Float2) @16, 9 (UChar4Normalized) @32 —
+ * the rgba8 color our SFLOAT binding read as NaN (invisible fills).
+ * Returns the number of attributes found (<= cap), sorted by offset. */
+typedef struct { uint32_t fmt, off, bufidx; } lagfx_pso_vtx_attr_t;
+uint32_t lagfx_parse_pso_vertex_attrs(lagfx_protocol_t *p,
+                                      const lagfx_task_entry_t *task,
+                                      uint32_t pipeline_object_id,
+                                      lagfx_pso_vtx_attr_t *out, uint32_t cap);
+
 uint32_t lagfx_parse_pso_vertex_stride(lagfx_protocol_t *p,
                                         const lagfx_task_entry_t *task,
                                         uint32_t pipeline_object_id);

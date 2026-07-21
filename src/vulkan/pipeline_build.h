@@ -46,6 +46,12 @@ typedef struct {
      * The round8 heuristic is wrong for the CoreAnimation composites (real 48,
      * heuristic 24) and smears the geometry into horizontal bands. */
     uint32_t         vtx_stride;
+    /* GOAL-M2z: real per-attribute {MTLVertexFormat, offset} from the PSO
+     * descriptor (sorted by offset; n_pso_attrs 0 = not decoded -> tight-pack
+     * SFLOAT fallback). Fixes the rgba8 color attr read as SFLOAT NaN. */
+    uint32_t         pso_attr_fmt[8];
+    uint32_t         pso_attr_off[8];
+    uint8_t          n_pso_attrs;
     /* Future fields (Stage 70b+):
      *   cull_mode, front_face, blend factor, depth-stencil state... */
 } lagfx_pipeline_desc_t;

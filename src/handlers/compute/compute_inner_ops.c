@@ -1467,6 +1467,25 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                     if (task->pending_pipeline.vtx_stride)
                         LAGFX_LOG("op_0x74 P6a: ref=0x%x PSO vertex stride = %u (decoded from descriptor)",
                                   reference, task->pending_pipeline.vtx_stride);
+                    /* GOAL-M2z: real attribute formats/offsets (rgba8 color at
+                     * offset 32 was bound as SFLOAT -> NaN fills). */
+                    task->pending_pipeline.n_vtx_attrs = 0u;
+                    if (task->pending_pipeline.n_vtx_inputs > 0u) {
+                        lagfx_pso_vtx_attr_t pat[8];
+                        uint32_t na = lagfx_parse_pso_vertex_attrs(p, task, reference, pat, 8u);
+                        for (uint32_t ai = 0; ai < na; ai++) {
+                            task->pending_pipeline.vtx_attr_fmt[ai] = pat[ai].fmt;
+                            task->pending_pipeline.vtx_attr_off[ai] = pat[ai].off;
+                        }
+                        task->pending_pipeline.n_vtx_attrs = (uint8_t)na;
+                        if (na && getenv("LAGFX_DUMP_SPV")) {
+                            char fb[128]; size_t fn = 0;
+                            for (uint32_t ai = 0; ai < na && fn + 16 < sizeof(fb); ai++)
+                                fn += (size_t)snprintf(fb+fn, sizeof(fb)-fn, "f%u@%u ",
+                                                       pat[ai].fmt, pat[ai].off);
+                            LAGFX_LOG("PSOATTR ref=0x%x n=%u: %s", reference, na, fb);
+                        }
+                    }
                     if (drawable) {
                         task->pending_pipeline.descriptor_set_layout = (uintptr_t)dsl;
                         task->pending_pipeline.pipeline_layout       = (uintptr_t)pl;

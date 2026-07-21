@@ -245,6 +245,11 @@ typedef struct {
      * 48, tight sum rounds to 24 → every other vertex misread → horizontal smear).
      * Ground truth: pso 0x2c/0x23 = 48, pso 0x14 = 24. */
     uint32_t   vtx_stride;
+    /* GOAL-M2z: real per-attribute {MTLVertexFormat, offset} decoded from the
+     * PSO's MTLVertexDescriptor (sorted by offset). 0 attrs = not decoded. */
+    uint32_t   vtx_attr_fmt[8];
+    uint32_t   vtx_attr_off[8];
+    uint8_t    n_vtx_attrs;
     /* B1 (M0): cached VkPipeline built from this pending_pipeline + the RT
      * formats it was built for. Reused across draws (was rebuilt + LEAKED every
      * draw → OOM on long runs). Destroyed when the shaders change (op_0x74

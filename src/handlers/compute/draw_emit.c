@@ -781,6 +781,11 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
             pdesc.vtx_in_loc[a]  = task->pending_pipeline.vtx_in_loc[a];
             pdesc.vtx_in_comp[a] = task->pending_pipeline.vtx_in_comp[a];
         }
+        pdesc.n_pso_attrs = task->pending_pipeline.n_vtx_attrs;
+        for (uint32_t a = 0; a < pdesc.n_pso_attrs && a < 8u; a++) {
+            pdesc.pso_attr_fmt[a] = task->pending_pipeline.vtx_attr_fmt[a];
+            pdesc.pso_attr_off[a] = task->pending_pipeline.vtx_attr_off[a];
+        }
     }
     VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
     if (pipeline == VK_NULL_HANDLE) {

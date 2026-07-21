@@ -396,6 +396,59 @@ lagfx_lookup_pipeline_function_refs(lagfx_protocol_t *p,
     return true;
 }
 
+
+uint32_t
+lagfx_parse_pso_vertex_attrs(lagfx_protocol_t *p,
+                             const lagfx_task_entry_t *task,
+                             uint32_t pipeline_object_id,
+                             lagfx_pso_vtx_attr_t *out, uint32_t cap) {
+    if (!p || !task || !out || cap == 0u || task->heap_pfn == 0u) return 0u;
+    uint64_t slot_va = slot_va_for(task->heap_pfn, pipeline_object_id);
+    uint64_t slot_gpa = 0;
+    if (!lagfx_task_translate(p, task, slot_va, &slot_gpa)) return 0u;
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    uint8_t slot_type = 0;
+    uint64_t bytes_va = 0;
+    if (!read_slot_fields((const lagfx_device_descriptor_t *)&dev->desc,
+                          slot_gpa, &slot_type, &bytes_va))
+        return 0u;
+    if (slot_type != LAGFX_APV_TYPE_PIPELINE) return 0u;
+    uint64_t bytes_gpa = 0;
+    if (!lagfx_task_translate(p, task, bytes_va, &bytes_gpa)) return 0u;
+    uint8_t blob[512] = {0};
+    if (!dev->desc.shell.read_memory(dev->desc.shell.opaque, bytes_gpa,
+                                     sizeof(blob), blob))
+        return 0u;
+    uint32_t total = lagfx_le32(blob + 4);
+    uint32_t limit = (total >= 16u && total <= sizeof(blob)) ? total : (uint32_t)sizeof(blob);
+
+    /* Scan for `01 04 <fmt> 02 04 <off> 03 04 <bufidx>` (18 bytes). Accept
+     * plausible fields only (fmt 1..64, off <= 240, bufidx <= 30); dedupe by
+     * offset (a blob can serialize the descriptor twice). */
+    uint32_t n = 0;
+    for (uint32_t i = 16u; i + 18u <= limit; i++) {
+        if (blob[i] != 0x01u || blob[i+1u] != 0x04u) continue;
+        if (blob[i+6u] != 0x02u || blob[i+7u] != 0x04u) continue;
+        if (blob[i+12u] != 0x03u || blob[i+13u] != 0x04u) continue;
+        uint32_t fmt = lagfx_le32(blob + i + 2u);
+        uint32_t off = lagfx_le32(blob + i + 8u);
+        uint32_t bid = lagfx_le32(blob + i + 14u);
+        if (fmt == 0u || fmt > 64u || off > 240u || bid > 30u) continue;
+        uint32_t k = 0;
+        for (; k < n; k++) if (out[k].off == off) break;
+        if (k < n) continue;
+        if (n < cap) { out[n].fmt = fmt; out[n].off = off; out[n].bufidx = bid; n++; }
+        i += 17u;
+    }
+    /* sort by offset (insertion, n <= 8) */
+    for (uint32_t a = 1; a < n; a++) {
+        lagfx_pso_vtx_attr_t t = out[a]; uint32_t j = a;
+        while (j > 0u && out[j-1u].off > t.off) { out[j] = out[j-1u]; j--; }
+        out[j] = t;
+    }
+    return n;
+}
+
 uint32_t
 lagfx_parse_pso_vertex_stride(lagfx_protocol_t *p,
                               const lagfx_task_entry_t *task,

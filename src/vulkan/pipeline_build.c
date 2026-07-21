@@ -33,14 +33,43 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
     if (desc->n_vtx_inputs > 0u) {
         uint32_t nvi = desc->n_vtx_inputs > 8u ? 8u : desc->n_vtx_inputs;
         uint32_t off = 0u;
+        /* GOAL-M2z: PSO-decoded attribute formats+offsets are authoritative
+         * when present for every reflected attr (matched by order — both are
+         * offset/location ordered). MTLVertexFormat -> VkFormat for the
+         * observed set; unknown formats fall back to the reflected SFLOAT
+         * tight-pack (and log, gated). The killer this fixes: fmt 9
+         * (UChar4Normalized rgba8 color @32) was bound R32G32B32A32_SFLOAT ->
+         * NaN color/alpha -> invisible panel fills. */
+        bool use_pso_attrs = desc->n_pso_attrs >= nvi;
+        for (uint32_t a = 0; use_pso_attrs && a < nvi; a++) {
+            switch (desc->pso_attr_fmt[a]) {
+            case 3: case 9: case 28: case 29: case 30: case 31:
+            case 37: case 52: break;
+            default: use_pso_attrs = false; break;
+            }
+        }
         for (uint32_t a = 0; a < nvi; a++) {
             uint32_t c = desc->vtx_in_comp[a]; if (c < 1u) c = 1u; if (c > 4u) c = 4u;
             VkFormat fmt = (c == 1u) ? VK_FORMAT_R32_SFLOAT :
                            (c == 2u) ? VK_FORMAT_R32G32_SFLOAT :
                            (c == 3u) ? VK_FORMAT_R32G32B32_SFLOAT :
                                        VK_FORMAT_R32G32B32A32_SFLOAT;
+            uint32_t aoff = off;
+            if (use_pso_attrs) {
+                aoff = desc->pso_attr_off[a];
+                switch (desc->pso_attr_fmt[a]) {
+                case 3:  fmt = VK_FORMAT_R8G8B8A8_UINT;          break; /* UChar4 */
+                case 9:  fmt = VK_FORMAT_R8G8B8A8_UNORM;         break; /* UChar4Normalized */
+                case 28: fmt = VK_FORMAT_R32_SFLOAT;             break; /* Float */
+                case 29: fmt = VK_FORMAT_R32G32_SFLOAT;          break; /* Float2 */
+                case 30: fmt = VK_FORMAT_R32G32B32_SFLOAT;       break; /* Float3 */
+                case 31: fmt = VK_FORMAT_R32G32B32A32_SFLOAT;    break; /* Float4 */
+                case 37: fmt = VK_FORMAT_R32_UINT;               break; /* UInt */
+                case 52: fmt = VK_FORMAT_B8G8R8A8_UNORM;         break; /* UChar4Normalized_BGRA */
+                }
+            }
             vattr[a] = (VkVertexInputAttributeDescription){
-                .location = desc->vtx_in_loc[a], .binding = 0u, .format = fmt, .offset = off,
+                .location = desc->vtx_in_loc[a], .binding = 0u, .format = fmt, .offset = aoff,
             };
             off += c * 4u;
         }
