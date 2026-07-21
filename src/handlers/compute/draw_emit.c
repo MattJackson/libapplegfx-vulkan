@@ -332,6 +332,22 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
 
         uint32_t best_s = 0u; int best_mode = 0; uint32_t best_score = 0u;
         bool have_best = false;
+        /* SLOT-1 AUTHORITATIVE (GOAL-M2y, lldb ground truth): every captured
+         * CA composite draw (caret, textured, 9-patch frame) binds its vertex
+         * stream at METAL INDEX 1 — uniforms at 2+. The score-scan is fooled
+         * twice over: legit 9-patch verts have NEGATIVE coords (x=-271, z=-10)
+         * that FAIL the positive-screen-range position signature, while the
+         * "uniform" slab's read window covers ADJACENT pool content that
+         * contains other draws' embedded verts (573,87..) and wins — feeding
+         * stretched caret-junk to the frame draws (the band artifact). For the
+         * c4-led interleaved family, use slot 1 verbatim. */
+        if (task->pending_pipeline.n_vtx_inputs >= 2u
+            && task->pending_pipeline.vtx_in_comp[0] == 4u
+            && task->bindings.vertex_buffers[1].valid
+            && task->bindings.vertex_buffers[1].ref != 0u
+            && getenv("LAGFX_DISABLE_SLOT1AUTH") == NULL) {
+            best_s = 1u; best_mode = 0; best_score = 2000u; have_best = true;
+        } else {
         /* Scan slots 0..7 (was 0..2): the per-vertex stream is bound at a slot
          * that varies per draw — live SetVertexBuffers binds ref 0x24 at slots
          * 1/2/3, and the ~20% of composites that fell back to the matrix had
@@ -378,6 +394,7 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                           best_score);
             return VK_NULL_HANDLE;
         }
+        }   /* end score-scan (non-slot1-authoritative pipes) */
         if (have_best) {
             uint32_t s = best_s; int mode = best_mode; uint32_t score = best_score;
             lagfx_binding_slot_t *cs = &task->bindings.vertex_buffers[s];
