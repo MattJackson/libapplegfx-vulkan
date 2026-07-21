@@ -199,6 +199,23 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                     const char *how = "none";
                     uint32_t got = sbuf ? lagfx_read_vtx_source(p, task, cs->ref,
                                               cs->offset, sneed, sbuf, &how, 0) : 0;
+                    /* SANITY (GOAL-M2y): the c2c2 attr shape ALSO matches
+                     * interleaved 3-attr pipes whose real stream is at another
+     * slot — their slot-0/1 leftovers read ALL-ZERO and the draw
+                     * uploads dead geometry. A position stream with no nonzero
+                     * byte in its first 96 B is never valid → treat the whole
+                     * multi-stream match as wrong and fall back to VTXSRC. */
+                    if (a == 0u && got) {
+                        bool any = false;
+                        for (uint32_t z = 0; z < got && z < 96u; z++)
+                            if (sbuf[z]) { any = true; break; }
+                        if (!any) {
+                            free(sbuf);
+                            free(full);
+                            full = NULL;
+                            break;
+                        }
+                    }
                     if (got) filled_streams++;
                     for (uint32_t i = 0; i < maxv && sbuf; i++)
                         memcpy(full + (size_t)i * stride + offs[a],
