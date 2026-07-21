@@ -158,6 +158,47 @@ fail:
     return false;
 }
 
+lagfx_status_t lagfx_vk_clear_image(struct lagfx_vk_state *vk,
+                                    VkImage image, VkImageLayout *layout) {
+    if (!vk || image == VK_NULL_HANDLE || !layout) return LAGFX_ERR_INVALID_ARG;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    if (lagfx_vk_cmdbuf_alloc(vk, &cb) != LAGFX_OK) return LAGFX_ERR_BACKEND;
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS) return LAGFX_ERR_BACKEND;
+    VkImageMemoryBarrier bar = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = *layout,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &bar);
+    VkClearColorValue black = { .float32 = { 0, 0, 0, 0 } };
+    VkImageSubresourceRange srr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    vkCmdClearColorImage(cb, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &srr);
+    if (vkEndCommandBuffer(cb) != VK_SUCCESS) return LAGFX_ERR_BACKEND;
+    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                        .commandBufferCount = 1, .pCommandBuffers = &cb };
+    VkFence fence = VK_NULL_HANDLE;
+    VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    if (vkCreateFence(vk->device, &fci, NULL, &fence) != VK_SUCCESS) return LAGFX_ERR_BACKEND;
+    lagfx_status_t st = LAGFX_OK;
+    if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) != VK_SUCCESS
+        || vkWaitForFences(vk->device, 1, &fence, VK_TRUE, 1000000000ull) != VK_SUCCESS)
+        st = LAGFX_ERR_BACKEND;
+    vkDestroyFence(vk->device, fence, NULL);
+    if (st == LAGFX_OK) *layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    return st;
+}
+
 lagfx_status_t lagfx_vk_composite_over(struct lagfx_vk_state *vk,
                                         lagfx_vk_render_target_t *display_rt,
                                         VkImageView src_view,

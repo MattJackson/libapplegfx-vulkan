@@ -31,6 +31,11 @@ struct lagfx_vk_state;
  * first use. Synchronous (own submit + fence wait), so a single descriptor
  * set is safely reused across calls. src must be in SHADER_READ_ONLY_OPTIMAL.
  * No-op-safe on any failure (rt left as-is). */
+/* GOAL-M2z diagnostic: clear an arbitrary image (per-pass surface) to black.
+ * layout is read+updated (same convention as the present path). */
+lagfx_status_t lagfx_vk_clear_image(struct lagfx_vk_state *vk,
+                                    VkImage image, VkImageLayout *layout);
+
 lagfx_status_t lagfx_vk_composite_over(struct lagfx_vk_state *vk,
                                         lagfx_vk_render_target_t *display_rt,
                                         VkImageView src_view,

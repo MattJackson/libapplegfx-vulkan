@@ -1187,6 +1187,24 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
          * Kill-switch: LAGFX_DISABLE_M2_OVERLAY reverts upper layers to
          * replace-blit. */
         bool overlay = LAGFX_POLICY("M2_OVERLAY");
+        /* LIVE CLEAR-ALL (GOAL-M2z): /tmp/lagfx_clearall.txt wipes the
+         * queued PER-PASS surfaces (stale burst content the overlay re-stamps
+         * forever — RT clears can't reach it). Consumed once. */
+        {
+            FILE *caf = fopen("/tmp/lagfx_clearall.txt", "r");
+            if (caf) {
+                fclose(caf);
+                remove("/tmp/lagfx_clearall.txt");
+                for (uint32_t qi = 0; qi < p->frame_blit_n && qi < 16u; qi++) {
+                    lagfx_vk_iosurface_t *cios =
+                        (lagfx_vk_iosurface_t *)p->frame_blit_queue[qi];
+                    if (!cios || cios->image == VK_NULL_HANDLE) continue;
+                    lagfx_vk_clear_image(dev_with_vk->vk, cios->image, &cios->layout);
+                }
+                LAGFX_LOG("ASMBLIT: CLEARALL consumed — %u per-pass surfaces wiped",
+                          p->frame_blit_n);
+            }
+        }
         for (uint32_t qi = 0; qi < p->frame_blit_n && qi < 16u; qi++) {
             lagfx_vk_iosurface_t *qios =
                 (lagfx_vk_iosurface_t *)p->frame_blit_queue[qi];
