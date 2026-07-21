@@ -107,26 +107,22 @@ static uint32_t lagfx_vtx_candidate_slots(lagfx_task_entry_t *task,
 }
 
 bool lagfx_vtx_multi_stream(lagfx_task_entry_t *task) {
-    uint32_t slots[8];
-    uint32_t n = lagfx_vtx_candidate_slots(task, slots);
-    /* Require BOTH the multi-stream shader shape — attr0/attr1 are float2
-     * (the 8-byte pos/tex streams; the interleaved CA family leads with a
-     * float4 screen pos, so it can never match) — AND >=2 candidate slots at
-     * CONSECUTIVE indices. Absolute index 0 is NOT required: lldb sees Metal
-     * indices 0/1/2 but the serializer wire binds at varying slot numbers
-     * (live 0x7d shows [1]/[2]/[3]). */
+    /* Multi-stream shader shape: attr0/attr1 are float2 (the 8-byte pos/tex
+     * streams — SkyLight UberComposite pos2/tex2/scale1). The interleaved CA
+     * family leads with a float4 screen pos, so it can never match. */
     if (task->pending_pipeline.n_vtx_inputs < 2u
         || task->pending_pipeline.vtx_in_comp[0] != 2u
         || task->pending_pipeline.vtx_in_comp[1] != 2u)
         return false;
-    for (uint32_t i = 0; i + 1u < n; i++)
-        if (slots[i + 1u] == slots[i] + 1u) return true;
-    if (getenv("LAGFX_DUMP_SPV"))
-        LAGFX_LOG("MSTREAMMISS pipe=0x%x n_cand=%u slots=[%u %u %u %u]",
-                  task->pending_pipeline.reference, n,
-                  n > 0 ? slots[0] : 99u, n > 1 ? slots[1] : 99u,
-                  n > 2 ? slots[2] : 99u, n > 3 ? slots[3] : 99u);
-    return false;
+    /* lldb ground truth: this family ALWAYS binds pos stream at slot 0 and
+     * tex stream at slot 1 (MVP at 2). Do NOT consult the AIR-claimed mask
+     * here — the map's mvp index (fixture: [[buffer(1)]]) differs from the
+     * live binding (MVP at 2), and masking slot 1 pushed the scan onto the
+     * matrix slot (rendered 2/w-scale junk). Slots 0/1 verbatim. */
+    return task->bindings.vertex_buffers[0].valid
+           && task->bindings.vertex_buffers[0].ref != 0u
+           && task->bindings.vertex_buffers[1].valid
+           && task->bindings.vertex_buffers[1].ref != 0u;
 }
 
 /* Upload the guest's vertex buffer (vertex_buffers[0], real data via the
@@ -153,14 +149,11 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
      * Kill-switch: LAGFX_DISABLE_MULTISTREAM. */
     if (LAGFX_POLICY("M2_VTXSRC") && getenv("LAGFX_DISABLE_MULTISTREAM") == NULL
         && lagfx_vtx_multi_stream(task)) {
-        uint32_t slots[8];
-        uint32_t nstreams = lagfx_vtx_candidate_slots(task, slots);
-        /* Streams start at the first consecutive-slot run (see
-         * lagfx_vtx_multi_stream — wire slot numbering need not start at 0). */
+        /* Fixed stream slots per lldb ground truth: pos@0, tex@1 (MVP@2 is a
+         * shader buffer arg, not a stream). */
+        uint32_t slots[8] = {0u, 1u};
         uint32_t sstart = 0;
-        for (uint32_t i = 0; i + 1u < nstreams; i++)
-            if (slots[i + 1u] == slots[i] + 1u) { sstart = i; break; }
-        nstreams -= sstart;
+        uint32_t nstreams = 2u;
         uint32_t want = getenv("LAGFX_M2_BIGVERTS")
                             ? LAGFX_BIGVERTS_BUF_SZ : LAGFX_DRAW_DS_BUF_SZ;
         uint32_t nvi = task->pending_pipeline.n_vtx_inputs > 8u
