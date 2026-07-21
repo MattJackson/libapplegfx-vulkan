@@ -781,10 +781,33 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
             pdesc.vtx_in_loc[a]  = task->pending_pipeline.vtx_in_loc[a];
             pdesc.vtx_in_comp[a] = task->pending_pipeline.vtx_in_comp[a];
         }
-        pdesc.n_pso_attrs = task->pending_pipeline.n_vtx_attrs;
-        for (uint32_t a = 0; a < pdesc.n_pso_attrs && a < 8u; a++) {
-            pdesc.pso_attr_fmt[a] = task->pending_pipeline.vtx_attr_fmt[a];
-            pdesc.pso_attr_off[a] = task->pending_pipeline.vtx_attr_off[a];
+        /* The PSO blob omits the attribute-0 entry (offset 0 is serialized
+         * implicitly): when the parsed list starts past 0 and we're exactly
+         * one attr short, prepend the ground-truth position attr (Float4 @0 —
+         * every lldb capture). Without this the 4-attr pipes fell back to
+         * SFLOAT (NaN colors again) and 3-attr pipes bound shifted offsets. */
+        {
+            uint8_t na = task->pending_pipeline.n_vtx_attrs;
+            const uint32_t *pf = task->pending_pipeline.vtx_attr_fmt;
+            const uint32_t *po = task->pending_pipeline.vtx_attr_off;
+            if (na > 0u && na < 8u && po[0] != 0u
+                && na + 1u == pdesc.n_vtx_inputs) {
+                pdesc.pso_attr_fmt[0] = 31u;  /* MTLVertexFormatFloat4 */
+                pdesc.pso_attr_off[0] = 0u;
+                for (uint32_t a = 0; a < na; a++) {
+                    pdesc.pso_attr_fmt[a + 1u] = pf[a];
+                    pdesc.pso_attr_off[a + 1u] = po[a];
+                }
+                pdesc.n_pso_attrs = (uint8_t)(na + 1u);
+            } else if (na > 0u && po[0] == 0u) {
+                pdesc.n_pso_attrs = na;
+                for (uint32_t a = 0; a < na && a < 8u; a++) {
+                    pdesc.pso_attr_fmt[a] = pf[a];
+                    pdesc.pso_attr_off[a] = po[a];
+                }
+            } else {
+                pdesc.n_pso_attrs = 0u;  /* misaligned decode — fall back */
+            }
         }
     }
     VkPipeline pipeline = lagfx_get_cached_pipeline(task, device, &pdesc);
