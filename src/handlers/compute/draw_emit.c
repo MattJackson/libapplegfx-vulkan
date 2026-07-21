@@ -125,6 +125,26 @@ bool lagfx_vtx_multi_stream(lagfx_task_entry_t *task) {
            && task->bindings.vertex_buffers[1].ref != 0u;
 }
 
+/* GOAL-M2x: flag PIXEL-space texcoords (attr1 max |uv| > 2) so the
+ * descriptor bind selects the unnormalized sampler (Metal coord::pixel —
+ * CA glyph-atlas composites; normalized sampling clamp-smears the atlas
+ * edge into full-width white bands). */
+static void lagfx_flag_pixel_texcoords(lagfx_task_entry_t *task, const uint8_t *buf,
+                                       uint32_t buf_sz, uint32_t stride, uint32_t tex_off) {
+    task->pending_draw.pixel_texcoords = false;
+    if (task->pending_pipeline.n_vtx_inputs < 2u || stride == 0u
+        || tex_off + 8u > stride) return;
+    float mx = 0.0f;
+    for (uint32_t v = 0; v < 8u && (size_t)(v + 1u) * stride <= buf_sz; v++) {
+        float tu, tv; uint32_t u;
+        u = lagfx_le32(buf + (size_t)v * stride + tex_off);      memcpy(&tu, &u, 4);
+        u = lagfx_le32(buf + (size_t)v * stride + tex_off + 4u); memcpy(&tv, &u, 4);
+        if (tu == tu && tu > mx) mx = tu;
+        if (tv == tv && tv > mx) mx = tv;
+    }
+    task->pending_draw.pixel_texcoords = (mx > 2.0f);
+}
+
 /* Upload the guest's vertex buffer (vertex_buffers[0], real data via the
  * placement descriptor PFN<<12 + page-table translate — the M2 path) into a
  * host VkBuffer for vertex-input binding. Returns VK_NULL_HANDLE if there is no
@@ -225,6 +245,7 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                     }
                     free(ib);
                 }
+                lagfx_flag_pixel_texcoords(task, full, want, stride, offs[0+1] - 0u);
                 VkBuffer svb = VK_NULL_HANDLE;
                 if (lagfx_vk_make_host_storage_buffer(vk, full, want,
                                                       &svb, out_mem) == LAGFX_OK) {
@@ -450,6 +471,8 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                 free(ib);
             }
             if (ffill) {
+                lagfx_flag_pixel_texcoords(task, full, want, pstride,
+                                           (uint32_t)task->pending_pipeline.vtx_in_comp[0] * 4u);
                 VkBuffer svb = VK_NULL_HANDLE;
                 if (lagfx_vk_make_host_storage_buffer(vk, full, want,
                                                       &svb, out_mem) == LAGFX_OK) {

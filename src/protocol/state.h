@@ -152,6 +152,10 @@ typedef struct {
     uint32_t   index_buffer_offset;
     uint32_t   index_type;      /* MTLIndexType: 0 = UInt16, 1 = UInt32 */
     bool       indexed;         /* 1 = use index_buffer_ref, 0 = vertex-only draw */
+    /* GOAL-M2x: set at vertex upload when attr1 texcoords are PIXEL-space
+     * (max |uv| > 2) — the CA glyph pipelines sample with Metal coord::pixel
+     * samplers; the descriptor bind then uses the unnormalized VkSampler. */
+    bool       pixel_texcoords;
 } lagfx_pending_draw_t;
 
 /* === Per-task binding slots (Stage 70d) ==========================

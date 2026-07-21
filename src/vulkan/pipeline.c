@@ -854,6 +854,28 @@ static lagfx_status_t create_fallback_ds(struct lagfx_vk_state *vk) {
             LAGFX_LOG("pipeline_init: default_sampler created (M1 c)");
         }
     }
+    /* GOAL-M2x: unnormalized-coordinate sampler (Metal coord::pixel). Spec
+     * requires equal min/mag filters, NEAREST mips, lod 0, clamp addressing. */
+    {
+        VkSamplerCreateInfo sci = {
+            .sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter    = VK_FILTER_LINEAR,
+            .minFilter    = VK_FILTER_LINEAR,
+            .mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .minLod       = 0.0f,
+            .maxLod       = 0.0f,
+            .unnormalizedCoordinates = VK_TRUE,
+        };
+        VkResult svr = vkCreateSampler(vk->device, &sci, NULL, &vk->unnorm_sampler);
+        if (svr != VK_SUCCESS) {
+            LAGFX_WARN("pipeline_init: unnorm_sampler create failed (%d) — "
+                       "pixel-texcoord draws fall back to the normalized sampler", (int)svr);
+            vk->unnorm_sampler = VK_NULL_HANDLE;
+        }
+    }
     return LAGFX_OK;
 }
 
@@ -873,6 +895,10 @@ static void destroy_fallback_ds(struct lagfx_vk_state *vk) {
     if (vk->default_sampler != VK_NULL_HANDLE) {
         vkDestroySampler(vk->device, vk->default_sampler, NULL);
         vk->default_sampler = VK_NULL_HANDLE;
+    }
+    if (vk->unnorm_sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(vk->device, vk->unnorm_sampler, NULL);
+        vk->unnorm_sampler = VK_NULL_HANDLE;
     }
     if (vk->fallback_ubo != VK_NULL_HANDLE) {
         vkDestroyBuffer(vk->device, vk->fallback_ubo, NULL);

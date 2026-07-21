@@ -303,7 +303,12 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                 *out_n = 0;
                 return VK_NULL_HANDLE;
             }
-            iinfos[nw] = (VkDescriptorImageInfo){ .sampler = vk->default_sampler };
+            /* GOAL-M2x: pixel-space texcoords (Metal coord::pixel) need the
+             * unnormalized sampler — the normalized one clamp-smears atlases. */
+            iinfos[nw] = (VkDescriptorImageInfo){
+                .sampler = (task->pending_draw.pixel_texcoords
+                            && vk->unnorm_sampler != VK_NULL_HANDLE)
+                               ? vk->unnorm_sampler : vk->default_sampler };
             writes[nw] = (VkWriteDescriptorSet){
                 .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet          = set,

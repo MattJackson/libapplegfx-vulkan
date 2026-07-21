@@ -105,6 +105,9 @@ struct lagfx_vk_state {
     /* M1 (c): shared default sampler (linear/clamp) for texture-sampling
      * translated compositor pipelines. */
     VkSampler             default_sampler;
+    /* GOAL-M2x: unnormalizedCoordinates sampler for Metal coord::pixel
+     * (CA glyph-atlas composites; pixel-space texcoords like (70,22)). */
+    VkSampler             unnorm_sampler;
 
     /* M3/perf (env LAGFX_PERF): frame-time instrumentation accumulators,
      * reset per frame at readback. Feeds the lavapipe-vs-GPU decision. */
