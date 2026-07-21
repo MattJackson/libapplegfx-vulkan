@@ -109,11 +109,15 @@ static uint32_t lagfx_vtx_candidate_slots(lagfx_task_entry_t *task,
 bool lagfx_vtx_multi_stream(lagfx_task_entry_t *task) {
     uint32_t slots[8];
     uint32_t n = lagfx_vtx_candidate_slots(task, slots);
-    /* Require the stream pattern lldb observed — consecutive slots FROM 0
-     * (pos@0, tex@1). The interleaved CA family binds its single vertex
-     * stream at slot 1+ (slot 0 unbound), so it can never match even when
-     * extra un-claimed uniforms are bound. */
+    /* Require BOTH the stream pattern lldb observed — consecutive slots FROM 0
+     * (pos@0, tex@1) — AND the multi-stream shader shape: attr0/attr1 are
+     * float2 (the 8-byte pos/tex streams). Binding-shape alone is NOT enough:
+     * slot bindings persist across draws in task->bindings, so a stale slot-0
+     * from an earlier draw made the interleaved CA family (attr0 = float4
+     * screen pos) match and interleave zeros. */
     return task->pending_pipeline.n_vtx_inputs >= 2u
+           && task->pending_pipeline.vtx_in_comp[0] == 2u
+           && task->pending_pipeline.vtx_in_comp[1] == 2u
            && n >= 2u && slots[0] == 0u && slots[1] == 1u;
 }
 
