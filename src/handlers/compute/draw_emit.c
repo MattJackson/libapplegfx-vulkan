@@ -1196,6 +1196,23 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                 px = qios->dst_x; py = qios->dst_y;
                 pw = qios->dst_w; ph = qios->dst_h;
             }
+            /* OFFSCREEN-PARKED WINDOWS (GOAL-M2z): the guest hides windows by
+             * placing them BEYOND its scanout (dst_x >= scanout_width, e.g.
+             * x=1280 on a 1280-wide mode). Our display->rt is larger (1920),
+             * so those layers rendered visibly in the right/bottom gutter —
+             * the persistent stripe block at x>=1280. Skip layers parked
+             * fully outside the guest scanout. */
+            if (qios->dst_valid && display->scanout_width
+                && (px >= display->scanout_width
+                    || py >= display->scanout_height)) {
+                if (getenv("LAGFX_DUMP_SPV"))
+                    LAGFX_LOG("ASMBLIT layer %u PARKED offscreen dst=(%u,%u %ux%u) — skipped",
+                              qi, px, py, pw, ph);
+                continue;
+            }
+            if (getenv("LAGFX_DUMP_SPV"))
+                LAGFX_LOG("ASMBLIT layer %u dst=(%u,%u %ux%u) valid=%d",
+                          qi, px, py, pw, ph, qios->dst_valid ? 1 : 0);
             /* Layer 0 ALSO composites src-over (was: replace-blit). DRAWMAP proved
              * content draws split between per-pass targets (0x17) AND direct-to-
              * scanout (display->rt: pipes 0x23/0x4e/0x5b). The old layer-0 replace-
