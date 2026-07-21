@@ -122,16 +122,20 @@ struct lagfx_display {
     uint32_t scanout_width;
     uint32_t scanout_height;
 
-    /* GOAL-M2z HOLD-FRAME (anti-flicker): the compositor legitimately paints
-     * black mid-recomposite, so the presented stream alternates content/black
-     * (user-visible flashing). Keep the most content-rich recent readback and
-     * serve it whenever the live readback is near-black. Kill-switch:
-     * LAGFX_DISABLE_HOLDFRAME. */
-    uint8_t *held_pixels;
-    size_t   held_bytes;
-    size_t   held_stride;
-    uint32_t held_score;
-    uint32_t held_age;
+    /* GOAL-M2z SETTLE-LATCH (composite stability): the guest recomposites in
+     * BURSTS of draws with no trailing present/swap, and each draw re-runs the
+     * ASMBLIT recomposite + frame signal — so mid-burst states (opaque
+     * background redrawn, UI layers not yet re-drawn) were presented as
+     * flashing partial frames. read_frame now returns NO_FRAME (flag left
+     * set) until the draw stream has been quiescent for LAGFX_SETTLE_MS
+     * (default 250), so only settled composites reach the shell.
+     * last_signal_ns is stamped by lagfx_display_signal_frame_ready from the
+     * ring-drain thread and read from the display-tick thread — aligned u64,
+     * torn reads only skew the gate by one tick. settle_hold_start_ns bounds
+     * the hold (8× settle) so a continuously-animating guest still presents.
+     * Kill-switch: LAGFX_DISABLE_SETTLE. */
+    uint64_t last_signal_ns;
+    uint64_t settle_hold_start_ns;
     bool     scanout_valid;
 
 #ifdef LAGFX_HAVE_VULKAN

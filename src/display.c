@@ -29,6 +29,7 @@
 #include "vulkan/render_target.h"
 #include "vulkan/cursor.h"
 #include "common/log.h"
+#include "common/perf.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -208,6 +209,9 @@ static void set_frame_ready(lagfx_display_t *display) {
 
 void lagfx_display_signal_frame_ready(lagfx_display_t *display) {
     if (display) {
+        /* SETTLE-LATCH (GOAL-M2z): stamp the draw stream so read_frame can
+         * hold presentation until the recomposite burst goes quiet. */
+        display->last_signal_ns = lagfx_now_ns();
         set_frame_ready(display);
     }
 }
@@ -375,6 +379,46 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
         return LAGFX_ERR_NO_FRAME;
     }
 
+    /* SETTLE-LATCH (GOAL-M2z): the guest recomposites in bursts of draws with
+     * no trailing present/swap (FRAME_ON_SWAP found ZERO swap ops post-boot),
+     * and every draw re-runs the ASMBLIT recomposite + frame signal. Serving
+     * mid-burst states presented partial frames (opaque background redrawn
+     * before the UI layers -> visible flashing). Hold presentation until the
+     * draw stream has been quiet for LAGFX_SETTLE_MS (default 250): return
+     * NO_FRAME WITHOUT clearing the flag, so the shell keeps showing the last
+     * settled frame and we re-check on the next display tick. Max hold is
+     * 8x settle so a continuously-animating guest still presents. Applies to
+     * the live-RT path only (rt_ready) — early-boot fallback is unaffected.
+     * Kill-switch: LAGFX_DISABLE_SETTLE. */
+    if (getenv("LAGFX_DISABLE_SETTLE") == NULL && display->rt_ready
+        && display->last_signal_ns != 0u) {
+        uint64_t settle_ms = 250u;
+        const char *sm = getenv("LAGFX_SETTLE_MS");
+        if (sm && sm[0]) settle_ms = (uint64_t)strtoul(sm, NULL, 10);
+        uint64_t now = lagfx_now_ns();
+        uint64_t since_sig = now - display->last_signal_ns;
+        if (since_sig < settle_ms * 1000000ull) {
+            if (display->settle_hold_start_ns == 0u)
+                display->settle_hold_start_ns = now;
+            if (now - display->settle_hold_start_ns
+                < settle_ms * 8u * 1000000ull) {
+                if (rf_log)
+                    LAGFX_TRACE("read_frame[#%u]: SETTLE hold (last draw "
+                                "%llums ago)", rf_calls,
+                                (unsigned long long)(since_sig / 1000000ull));
+                return LAGFX_ERR_NO_FRAME;
+            }
+            LAGFX_LOG("SETTLE: max hold exceeded (draws still arriving) — "
+                      "presenting mid-burst frame");
+        } else if (display->settle_hold_start_ns != 0u) {
+            LAGFX_LOG("SETTLE: presenting after %llums quiet (held %llums)",
+                      (unsigned long long)(since_sig / 1000000ull),
+                      (unsigned long long)
+                          ((now - display->settle_hold_start_ns) / 1000000ull));
+        }
+        display->settle_hold_start_ns = 0u;
+    }
+
 #ifdef LAGFX_HAVE_VULKAN
     /* Fallback path: pre-stored pixels from a CmdDisplaySwapMapping miss (no
      * scanout buffer registered) — for early boot before macOS sets a display
@@ -471,121 +515,6 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
         }
         LAGFX_LOG("TEST_BOXES painted RED(tl)/GREEN(c)/BLUE(br) into readback "
                   "(W=%u H=%u stride=%zu)", W, H, stride);
-    }
-
-    /* HOLD-FRAME (GOAL-M2z): score the readback by sampled nonblack pixels.
-     * Near-black frame + a better held frame -> serve the held copy instead
-     * (the flashing was content frames alternating with mid-composite black).
-     * A content-rich frame replaces the held copy. Slow decay lets genuinely
-     * new content win eventually. Kill-switch LAGFX_DISABLE_HOLDFRAME. */
-    if (getenv("LAGFX_DISABLE_HOLDFRAME") == NULL && stride > 0u) {
-        uint8_t *fb = (uint8_t *)dst;
-        size_t total = (size_t)display->rt.height * stride;
-        if (total > dst_size_bytes) total = dst_size_bytes;
-        uint32_t score = 0;
-        for (size_t o = 0; o + 3u < total; o += 4u * 997u)
-            if (fb[o] | fb[o+1u] | fb[o+2u]) score++;
-        if (display->held_pixels && display->held_age < 3000u)
-            display->held_age++;
-        else if (display->held_pixels && display->held_score > 0u) {
-            display->held_score -= display->held_score / 10u + 1u;
-            display->held_age = 0;
-        }
-        if (score * 4u < display->held_score && display->held_pixels
-            && display->held_bytes <= dst_size_bytes) {
-            memcpy(dst, display->held_pixels, display->held_bytes);
-            stride = display->held_stride;
-        } else if (score > 0u && score >= display->held_score) {
-            if (!display->held_pixels || display->held_bytes < total) {
-                free(display->held_pixels);
-                display->held_pixels = malloc(total);
-                display->held_bytes = display->held_pixels ? total : 0u;
-            }
-            if (display->held_pixels) {
-                memcpy(display->held_pixels, dst, total);
-                display->held_bytes  = total;
-                display->held_stride = stride;
-                display->held_score  = score;
-                display->held_age    = 0;
-            }
-        }
-    }
-
-
-    /* HOLD-FRAME (GOAL-M2z): score the readback by sampled nonblack pixels.
-     * Near-black frame + a better held frame -> serve the held copy instead
-     * (the flashing was content frames alternating with mid-composite black).
-     * A content-rich frame replaces the held copy. Slow decay lets genuinely
-     * new content win eventually. Kill-switch LAGFX_DISABLE_HOLDFRAME. */
-    if (getenv("LAGFX_DISABLE_HOLDFRAME") == NULL && stride > 0u) {
-        uint8_t *fb = (uint8_t *)dst;
-        size_t total = (size_t)display->rt.height * stride;
-        if (total > dst_size_bytes) total = dst_size_bytes;
-        uint32_t score = 0;
-        for (size_t o = 0; o + 3u < total; o += 4u * 997u)
-            if (fb[o] | fb[o+1u] | fb[o+2u]) score++;
-        if (display->held_pixels && display->held_age < 3000u)
-            display->held_age++;
-        else if (display->held_pixels && display->held_score > 0u) {
-            display->held_score -= display->held_score / 10u + 1u;
-            display->held_age = 0;
-        }
-        if (score * 4u < display->held_score && display->held_pixels
-            && display->held_bytes <= dst_size_bytes) {
-            memcpy(dst, display->held_pixels, display->held_bytes);
-            stride = display->held_stride;
-        } else if (score > 0u && score >= display->held_score) {
-            if (!display->held_pixels || display->held_bytes < total) {
-                free(display->held_pixels);
-                display->held_pixels = malloc(total);
-                display->held_bytes = display->held_pixels ? total : 0u;
-            }
-            if (display->held_pixels) {
-                memcpy(display->held_pixels, dst, total);
-                display->held_bytes  = total;
-                display->held_stride = stride;
-                display->held_score  = score;
-                display->held_age    = 0;
-            }
-        }
-    }
-
-    /* HOLD-FRAME (GOAL-M2z): score the readback by sampled nonblack pixels.
-     * Near-black frame + a better held frame -> serve the held copy instead
-     * (the flashing was content frames alternating with mid-composite black).
-     * A content-rich frame replaces the held copy. Slow decay lets genuinely
-     * new content win eventually. Kill-switch LAGFX_DISABLE_HOLDFRAME. */
-    if (getenv("LAGFX_DISABLE_HOLDFRAME") == NULL && stride > 0u) {
-        uint8_t *fb = (uint8_t *)dst;
-        size_t total = (size_t)display->rt.height * stride;
-        if (total > dst_size_bytes) total = dst_size_bytes;
-        uint32_t score = 0;
-        for (size_t o = 0; o + 3u < total; o += 4u * 997u)
-            if (fb[o] | fb[o+1u] | fb[o+2u]) score++;
-        if (display->held_pixels && display->held_age < 3000u)
-            display->held_age++;
-        else if (display->held_pixels && display->held_score > 0u) {
-            display->held_score -= display->held_score / 10u + 1u;
-            display->held_age = 0;
-        }
-        if (score * 4u < display->held_score && display->held_pixels
-            && display->held_bytes <= dst_size_bytes) {
-            memcpy(dst, display->held_pixels, display->held_bytes);
-            stride = display->held_stride;
-        } else if (score > 0u && score >= display->held_score) {
-            if (!display->held_pixels || display->held_bytes < total) {
-                free(display->held_pixels);
-                display->held_pixels = malloc(total);
-                display->held_bytes = display->held_pixels ? total : 0u;
-            }
-            if (display->held_pixels) {
-                memcpy(display->held_pixels, dst, total);
-                display->held_bytes  = total;
-                display->held_stride = stride;
-                display->held_score  = score;
-                display->held_age    = 0;
-            }
-        }
     }
 
     if (stride_out) {
