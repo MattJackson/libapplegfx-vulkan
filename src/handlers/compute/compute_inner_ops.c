@@ -1240,6 +1240,27 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                     if (!found || !found->bitcode || found->bitcode_len == 0u) {
                         free(buf); continue;
                     }
+                    /* GOAL-M2z offline-repro dump (LAGFX_DUMP_MLIB): the
+                     * extractelt/insertelt "couldn't resolve vector operand
+                     * type" translator drops fail vkCreateGraphicsPipelines
+                     * across ~15 pipeline refs (22k build failures / boot) —
+                     * fixing that needs the exact failing guest bitcode on the
+                     * bench. Write-once per pipeline+stage+ref. */
+                    if (getenv("LAGFX_DUMP_MLIB")) {
+                        char mp[96];
+                        snprintf(mp, sizeof(mp),
+                                 "/tmp/mlib-pipe0x%x-%s-ref0x%x.metallib",
+                                 reference,
+                                 want == LAGFX_METALLIB_STAGE_VERTEX ? "vtx" : "frag",
+                                 fn_ref);
+                        FILE *mf = fopen(mp, "rb");
+                        if (mf) fclose(mf);
+                        else if ((mf = fopen(mp, "wb")) != NULL) {
+                            fwrite(buf, 1, mlib_len, mf);
+                            fclose(mf);
+                            LAGFX_LOG("op_0x74 DUMP_MLIB wrote %s (%u B)", mp, mlib_len);
+                        }
+                    }
                     /* Keep this metallib + its function table alive for translate. */
                     memcpy(fns, tmpf, sizeof(fns));
                     mlib_buf = buf;

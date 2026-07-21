@@ -486,6 +486,31 @@ lagfx_status_t lagfx_display_read_frame(lagfx_display_t *display,
         return st;
     }
 
+    /* GUTTER CROP (GOAL-M2z): the guest hides windows by PARKING them beyond
+     * its scanout (dst x>=1280 on a 1280x1024 mode). The ASMBLIT layer skip
+     * only covers overlay layers — direct-to-scanout draws of parked windows
+     * still land in our wider RT and render junk in the right/bottom gutter
+     * (the persistent x>=1280 band block). Black out everything beyond the
+     * guest scanout at the presentation edge so no path can show parked
+     * content. Kill-switch LAGFX_DISABLE_GUTTERCROP. */
+    if (getenv("LAGFX_DISABLE_GUTTERCROP") == NULL && display->scanout_valid
+        && display->scanout_width > 0u && display->scanout_height > 0u
+        && stride >= 4u) {
+        uint32_t W = display->rt.width, H = display->rt.height;
+        uint32_t gw = display->scanout_width, gh = display->scanout_height;
+        uint8_t *fb = (uint8_t *)dst;
+        for (uint32_t y = 0; y < H; y++) {
+            size_t row_off = (size_t)y * stride;
+            if (row_off + (size_t)W * 4u > dst_size_bytes) break;
+            uint8_t *row = fb + row_off;
+            if (y >= gh) {
+                memset(row, 0, (size_t)W * 4u);
+            } else if (gw < W) {
+                memset(row + (size_t)gw * 4u, 0, (size_t)(W - gw) * 4u);
+            }
+        }
+    }
+
     /* DISPLAY-PATH VALIDATOR (LAGFX_TEST_BOXES): paint three known solid boxes
      * directly into the readback buffer — RED top-left, GREEN centre, BLUE
      * bottom-right — AFTER the RT readback. If the screendump shows all three at
