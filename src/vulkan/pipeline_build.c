@@ -59,7 +59,7 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
                 aoff = desc->pso_attr_off[a];
                 switch (desc->pso_attr_fmt[a]) {
                 case 3:  fmt = VK_FORMAT_R8G8B8A8_UINT;          break; /* UChar4 */
-                case 9:  fmt = VK_FORMAT_R8G8B8A8_UNORM;         break; /* UChar4Normalized */
+                case 9:  fmt = VK_FORMAT_B8G8R8A8_UNORM;         break; /* UChar4Normalized — CA pool colors are BGRA-ordered (the PBGRA pipes); R8G8B8A8 rendered blue UI as red */
                 case 28: fmt = VK_FORMAT_R32_SFLOAT;             break; /* Float */
                 case 29: fmt = VK_FORMAT_R32G32_SFLOAT;          break; /* Float2 */
                 case 30: fmt = VK_FORMAT_R32G32B32_SFLOAT;       break; /* Float3 */
