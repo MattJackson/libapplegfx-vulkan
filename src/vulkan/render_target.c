@@ -480,13 +480,53 @@ lagfx_status_t lagfx_vk_render_target_readback(struct lagfx_vk_state *vk,
         goto cleanup;
     }
 
-    pipeline_barrier(cb, rt->image,
-                     rt->layout,
-                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                     VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                     VK_ACCESS_TRANSFER_READ_BIT,
-                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                     VK_PIPELINE_STAGE_TRANSFER_BIT);
+    /* LIVE RT CLEAR (GOAL-M2y diagnostic): passes LOAD the RT, so pixels
+     * painted once during the boot burst fossilize — skip-based bisection
+     * probes can't remove them. Touch /tmp/lagfx_clear.txt (docker exec) to
+     * clear the RT to black ONCE in this readback's command buffer; the flag
+     * file is consumed. Combined with /tmp/lagfx_skip.txt + a guest
+     * recomposite this gives a clean-slate attribution probe. */
+    bool do_clear = false;
+    {
+        FILE *cf = fopen("/tmp/lagfx_clear.txt", "r");
+        if (cf) {
+            fclose(cf);
+            remove("/tmp/lagfx_clear.txt");
+            do_clear = true;
+            LAGFX_LOG("render_target_readback: LIVE CLEAR consumed — RT wiped to black");
+        }
+    }
+    if (do_clear) {
+        pipeline_barrier(cb, rt->image,
+                         rt->layout,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                         VK_ACCESS_TRANSFER_WRITE_BIT,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkClearColorValue black = { .float32 = { 0.0f, 0.0f, 0.0f, 1.0f } };
+        VkImageSubresourceRange srr = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .levelCount = 1, .layerCount = 1,
+        };
+        vkCmdClearColorImage(cb, rt->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             &black, 1, &srr);
+        pipeline_barrier(cb, rt->image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         VK_ACCESS_TRANSFER_WRITE_BIT,
+                         VK_ACCESS_TRANSFER_READ_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT);
+    } else {
+        pipeline_barrier(cb, rt->image,
+                         rt->layout,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                         VK_ACCESS_TRANSFER_READ_BIT,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT);
+    }
 
     VkBufferImageCopy region = {
         .bufferOffset      = 0,
