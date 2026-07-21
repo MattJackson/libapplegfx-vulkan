@@ -73,6 +73,11 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
 void lagfx_pending_pipeline_drop_cache(lagfx_task_entry_t *task, VkDevice device);
 VkPipeline lagfx_get_cached_pipeline(lagfx_task_entry_t *task, VkDevice device,
                                      const lagfx_pipeline_desc_t *pdesc);
+/* GOAL-M2x: true when the pipeline's stage-in comes from separate per-attr
+ * guest streams (>=2 non-AIR-claimed vertex slots) — the upload interleaves
+ * them and the pipeline must use the tight reflected layout (vtx_stride=0). */
+bool lagfx_vtx_multi_stream(lagfx_task_entry_t *task);
+
 VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                                           lagfx_task_entry_t *task,
                                           struct lagfx_vk_state *vk,

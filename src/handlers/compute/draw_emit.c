@@ -69,6 +69,54 @@ VkPipeline lagfx_get_cached_pipeline(lagfx_task_entry_t *task, VkDevice device,
 }
 
 
+/* Metal buffer indices CLAIMED by the vertex shader's [[buffer(n)]] args
+ * (AIR arg-metadata map) — those slots are uniforms (MVP etc.), never the
+ * stage-in stream(s). */
+static uint32_t lagfx_vtx_claimed_mask(const lagfx_task_entry_t *task) {
+    uint32_t claimed = 0u;
+    for (uint32_t bi = 0; bi < task->pending_pipeline.n_spv_bindings && bi < 16u; bi++) {
+        if (task->pending_pipeline.spv_binding_kind[bi]
+                != (uint8_t)LAGFX_SPV_BINDING_STORAGE_BUFFER)
+            continue;
+        if (task->pending_pipeline.spv_binding_no[bi] >= LAGFX_FRAG_BINDING_BASE)
+            continue;   /* fragment-stage binding */
+        int16_t mi = task->pending_pipeline.spv_binding_metal[bi];
+        if (mi >= 0 && mi < 32) claimed |= (1u << (uint32_t)mi);
+    }
+    return claimed;
+}
+
+/* MULTI-STREAM stage-in detection (GOAL-M2x lldb ground truth, 2026-07-21):
+ * SkyLight's own composite PSOs (unlabeled; host 0x01 DrawPrimitives16) bind
+ * SEPARATE per-attribute streams via setVertexBytes — pos float2 stride 8 at
+ * Metal index 0, texcoord float2 stride 8 at index 1, with the pixel->NDC MVP
+ * at index 2 (AIR-claimed) — NOT one interleaved buffer. Discriminator: >= 2
+ * valid non-claimed vertex slots. Returns the candidate slots in ascending
+ * order (attr a <- a-th stream, the binding order lldb observed). */
+static uint32_t lagfx_vtx_candidate_slots(lagfx_task_entry_t *task,
+                                          uint32_t slots_out[8]) {
+    uint32_t claimed = lagfx_vtx_claimed_mask(task);
+    uint32_t n = 0;
+    for (uint32_t s = 0; s < 8u && n < 8u; s++) {
+        if (claimed & (1u << s)) continue;
+        lagfx_binding_slot_t *cs = &task->bindings.vertex_buffers[s];
+        if (!cs->valid || cs->ref == 0u) continue;
+        slots_out[n++] = s;
+    }
+    return n;
+}
+
+bool lagfx_vtx_multi_stream(lagfx_task_entry_t *task) {
+    uint32_t slots[8];
+    uint32_t n = lagfx_vtx_candidate_slots(task, slots);
+    /* Require the stream pattern lldb observed — consecutive slots FROM 0
+     * (pos@0, tex@1). The interleaved CA family binds its single vertex
+     * stream at slot 1+ (slot 0 unbound), so it can never match even when
+     * extra un-claimed uniforms are bound. */
+    return task->pending_pipeline.n_vtx_inputs >= 2u
+           && n >= 2u && slots[0] == 0u && slots[1] == 1u;
+}
+
 /* Upload the guest's vertex buffer (vertex_buffers[0], real data via the
  * placement descriptor PFN<<12 + page-table translate — the M2 path) into a
  * host VkBuffer for vertex-input binding. Returns VK_NULL_HANDLE if there is no
@@ -84,6 +132,113 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
         || task->bindings.vertex_buffers[0].ref == 0u)
         return VK_NULL_HANDLE;
     lagfx_binding_slot_t *vbs = &task->bindings.vertex_buffers[0];
+    /* MULTI-STREAM interleave (GOAL-M2x): when the guest binds separate
+     * per-attribute streams (SkyLight composites: pos f2/8B + tex f2/8B +
+     * AIR-claimed MVP), interleave them CPU-side into ONE binding-0 buffer at
+     * the reflected tight layout (attr a at off_a = sum(comp[<a])*4, stride =
+     * round8(sum)) — the exact layout pipeline_build emits when vtx_stride==0.
+     * Streams beyond those bound are filled with 1.0f (neutral scale/opacity).
+     * Kill-switch: LAGFX_DISABLE_MULTISTREAM. */
+    if (LAGFX_POLICY("M2_VTXSRC") && getenv("LAGFX_DISABLE_MULTISTREAM") == NULL
+        && lagfx_vtx_multi_stream(task)) {
+        uint32_t slots[8];
+        uint32_t nstreams = lagfx_vtx_candidate_slots(task, slots);
+        uint32_t want = getenv("LAGFX_M2_BIGVERTS")
+                            ? LAGFX_BIGVERTS_BUF_SZ : LAGFX_DRAW_DS_BUF_SZ;
+        uint32_t nvi = task->pending_pipeline.n_vtx_inputs > 8u
+                           ? 8u : task->pending_pipeline.n_vtx_inputs;
+        uint32_t offs[8], tight = 0;
+        for (uint32_t a = 0; a < nvi; a++) {
+            offs[a] = tight;
+            tight += (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
+        }
+        uint32_t stride = (tight + 7u) & ~7u;
+        if (stride == 0u) stride = 8u;
+        uint32_t maxv = want / stride;
+        uint8_t *full = calloc(1u, want);
+        if (full) {
+            uint32_t filled_streams = 0;
+            for (uint32_t a = 0; a < nvi; a++) {
+                uint32_t sa = (uint32_t)task->pending_pipeline.vtx_in_comp[a] * 4u;
+                if (a < nstreams) {
+                    lagfx_binding_slot_t *cs = &task->bindings.vertex_buffers[slots[a]];
+                    uint32_t sneed = maxv * sa;
+                    if (sneed > want) sneed = want;
+                    uint8_t *sbuf = calloc(1u, sneed);
+                    const char *how = "none";
+                    uint32_t got = sbuf ? lagfx_read_vtx_source(p, task, cs->ref,
+                                              cs->offset, sneed, sbuf, &how, 0) : 0;
+                    if (got) filled_streams++;
+                    for (uint32_t i = 0; i < maxv && sbuf; i++)
+                        memcpy(full + (size_t)i * stride + offs[a],
+                               sbuf + (size_t)i * sa, sa);
+                    free(sbuf);
+                } else {
+                    /* No stream bound for this attr — neutral 1.0f per comp. */
+                    float one = 1.0f;
+                    for (uint32_t i = 0; i < maxv; i++)
+                        for (uint32_t cco = 0; cco < sa; cco += 4u)
+                            memcpy(full + (size_t)i * stride + offs[a] + cco, &one, 4u);
+                }
+            }
+            if (filled_streams) {
+                /* Indexed multi-stream draws: expand indices over the
+                 * interleaved buffer at the SAME tight stride. */
+                if (task->pending_draw.indexed
+                    && task->pending_draw.index_type == 0u
+                    && task->pending_draw.index_count > 0u
+                    && task->pending_draw.index_count <= 4096u
+                    && task->pending_draw.index_buffer_ref != 0u) {
+                    uint32_t icount = task->pending_draw.index_count;
+                    uint8_t *ib = malloc((size_t)icount * 2u);
+                    const char *ihow = "none";
+                    if (ib && lagfx_read_vtx_source(p, task,
+                            task->pending_draw.index_buffer_ref,
+                            task->pending_draw.index_buffer_offset,
+                            icount * 2u, ib, &ihow, 0) == icount * 2u) {
+                        uint8_t *exp = calloc(1u, want);
+                        if (exp) {
+                            uint32_t emitted = 0;
+                            for (uint32_t k = 0; k < icount
+                                 && (size_t)(k + 1u) * stride <= want; k++) {
+                                uint32_t idx = (uint32_t)ib[k*2]
+                                               | ((uint32_t)ib[k*2+1] << 8);
+                                if (idx >= maxv) continue;
+                                memcpy(exp + (size_t)k * stride,
+                                       full + (size_t)idx * stride, stride);
+                                emitted++;
+                            }
+                            if (emitted == icount) memcpy(full, exp, want);
+                            free(exp);
+                        }
+                    }
+                    free(ib);
+                }
+                VkBuffer svb = VK_NULL_HANDLE;
+                if (lagfx_vk_make_host_storage_buffer(vk, full, want,
+                                                      &svb, out_mem) == LAGFX_OK) {
+                    *out_size = want;
+                    if (getenv("LAGFX_DUMP_SPV")) {
+                        LAGFX_LOG("MSTREAM: pipe=0x%x interleaved %u streams -> %u attrs stride=%u (slots %u/%u/%u)",
+                                  task->pending_pipeline.reference, nstreams, nvi,
+                                  stride, slots[0],
+                                  nstreams > 1 ? slots[1] : 99u,
+                                  nstreams > 2 ? slots[2] : 99u);
+                        for (uint32_t vt = 0; vt < 4 && (size_t)(vt+1)*stride <= want; vt++) {
+                            float px, py; uint32_t u2;
+                            u2 = lagfx_le32(full + (size_t)vt*stride);      memcpy(&px,&u2,4);
+                            u2 = lagfx_le32(full + (size_t)vt*stride + 4u); memcpy(&py,&u2,4);
+                            LAGFX_LOG("MSTREAM v%u pos[%.4g %.4g]", vt, px, py);
+                        }
+                    }
+                    free(full);
+                    return svb;
+                }
+            }
+            free(full);
+        }
+        /* fall through to the single-stream scan on any failure */
+    }
     /* M2c VTXSRC (LAGFX_M2_VTXSRC): multi-slot vertex-SOURCE search. The slot-0
      * refs for the composite draws (0x15/0x16/0x18) resolve to unwritten
      * text/poison slabs, while slot-1's ref 0x13 receives live 0x3b backing
@@ -508,6 +663,14 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
     if (vtx_input_on) {
         pdesc.n_vtx_inputs = task->pending_pipeline.n_vtx_inputs;
         pdesc.vtx_stride   = task->pending_pipeline.vtx_stride;
+        /* MULTI-STREAM (GOAL-M2x): the upload interleaves the separate guest
+         * streams at the tight reflected layout — force the pipeline onto the
+         * same layout (vtx_stride=0 -> round8(attr sum)), NOT the PSO stride
+         * (which describes the guest's separate stream layouts, not our
+         * interleave). */
+        if (getenv("LAGFX_DISABLE_MULTISTREAM") == NULL
+            && lagfx_vtx_multi_stream(task))
+            pdesc.vtx_stride = 0u;
         for (uint32_t a = 0; a < pdesc.n_vtx_inputs && a < 8u; a++) {
             pdesc.vtx_in_loc[a]  = task->pending_pipeline.vtx_in_loc[a];
             pdesc.vtx_in_comp[a] = task->pending_pipeline.vtx_in_comp[a];
