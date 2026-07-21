@@ -717,7 +717,6 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
          * pipeline_build reads the buffer. The tight-packed sum under-counts the
          * stride (48→24) → an over-large vc that reads past valid vertices. */
         if (task->pending_pipeline.vtx_stride >= vstride
-            && task->pending_pipeline.vtx_stride <= vstride + 8u
             && task->pending_pipeline.vtx_stride <= 256u)
             vstride = task->pending_pipeline.vtx_stride;
         if (vstride == 0u) vstride = 16u;
