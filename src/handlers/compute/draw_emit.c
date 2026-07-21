@@ -364,6 +364,20 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                 best_score = score; best_s = s; best_mode = mode; have_best = true;
             }
         }
+        /* GOAL-M2y: bare float-plausibility is NOT a vertex stream (the M2v
+         * lesson, again): uploading a "plausible" uniform/junk slab draws
+         * garbage slivers into per-pass surfaces, which the overlay then
+         * re-stamps onto the scanout every frame — the persistent stripe/line
+         * artifacts. Without a POSITION-signature match (score >= 1000), skip
+         * the draw entirely: no stream identified -> nothing to render.
+         * Revert switch: LAGFX_VTX_ALLOW_JUNK=1. */
+        if (have_best && best_score < 1000u
+            && getenv("LAGFX_VTX_ALLOW_JUNK") == NULL) {
+            if (getenv("LAGFX_DUMP_SPV"))
+                LAGFX_LOG("VTXSRC: no position-signature stream (best=%u) — draw skipped",
+                          best_score);
+            return VK_NULL_HANDLE;
+        }
         if (have_best) {
             uint32_t s = best_s; int mode = best_mode; uint32_t score = best_score;
             lagfx_binding_slot_t *cs = &task->bindings.vertex_buffers[s];
