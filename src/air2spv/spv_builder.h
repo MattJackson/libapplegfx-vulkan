@@ -143,6 +143,7 @@ enum {
     LAGFX_SPV_OP_ALL                    = 155,   /* OpAll: all lanes of vNbool */
     LAGFX_SPV_OP_DPDX                   = 207,   /* OpDPdx (fragment derivative) */
     LAGFX_SPV_OP_DPDY                   = 208,   /* OpDPdy */
+    LAGFX_SPV_OP_FWIDTH                 = 209,   /* OpFwidth */
     LAGFX_SPV_OP_LOGICAL_EQUAL          = 164,   /* OpLogicalEqual (§3.32.15) */
     LAGFX_SPV_OP_LOGICAL_NOT_EQUAL      = 165,   /* OpLogicalNotEqual (bool xor) */
     LAGFX_SPV_OP_LOGICAL_OR             = 166,   /* OpLogicalOr */
@@ -322,6 +323,7 @@ enum {
     LAGFX_SPV_GLSL_ATAN2                = 25,   /* GLSLstd450Atan2 */
     LAGFX_SPV_GLSL_EXP2                 = 29,   /* GLSLstd450Exp2 */
     LAGFX_SPV_GLSL_LOG2                 = 30,   /* GLSLstd450Log2 */
+    LAGFX_SPV_GLSL_FMA                  = 50,   /* GLSLstd450Fma */
     LAGFX_SPV_GLSL_LDEXP                = 53,   /* GLSLstd450Ldexp */
     LAGFX_SPV_GLSL_REFRACT              = 72,   /* GLSLstd450Refract */
 };

@@ -2996,6 +2996,14 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         {"air.fast_normalize", LAGFX_SPV_GLSL_NORMALIZE,    1},
         {"air.fast_length",    LAGFX_SPV_GLSL_LENGTH,       1},
         {"air.fast_fabs",      LAGFX_SPV_GLSL_FABS,         1},
+        {"air.fast_log2",      LAGFX_SPV_GLSL_LOG2,         1},
+        {"air.fast_exp2",      LAGFX_SPV_GLSL_EXP2,         1},
+        {"air.fast_log",       LAGFX_SPV_GLSL_LOG,          1},
+        {"air.fast_exp",       LAGFX_SPV_GLSL_EXP,          1},
+        /* fma(a,b,c) — REAL Apple name air.fma.<ty> (observed live in the
+         * Xgc login fragment, f16 + f32 variants). */
+        {"air.fma.",           LAGFX_SPV_GLSL_FMA,          3},
+        {"air.fast_fma",       LAGFX_SPV_GLSL_FMA,          3},
     };
 
     uint32_t glsl_inst = 0u;
@@ -3213,18 +3221,41 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
      * 0/1 constants to the result width via OpCompositeConstruct (a body
      * instruction; the scalar constants are pre-warmed in the prologue). */
     if ((strncmp(fn_name, "air.fast_saturate", 17u) == 0 ||
-         strncmp(fn_name, "air.precise_saturate", 20u) == 0) &&
+         strncmp(fn_name, "air.precise_saturate", 20u) == 0 ||
+         strncmp(fn_name, "air.saturate", 12u) == 0) &&
         result_value_id != 0u && result_ty_air != LAGFX_AIR_TYPE_NONE) {
         uint32_t arg_slot = callee_slot_idx + 1u;
         if (inst->num_ops > arg_slot) {
             uint32_t rty = emit_air_type(c, result_ty_air);
             uint32_t x = resolve_or_undef(c,
                 resolve_relative((uint32_t)inst->ops[arg_slot], next_val_id), rty);
-            uint32_t c0 = emit_const_float32(c, 0.0f);
-            uint32_t c1 = emit_const_float32(c, 1.0f);
-            /* If the result is a float vector, splat 0/1 to its width. */
+            /* 0/1 bounds in the result's SCALAR type: air.saturate.f16
+             * (half) needs half constants — f32 bounds on a half x is an
+             * OpExtInst operand-type mismatch. */
             uint32_t n_types = 0;
             const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+            bool is_half = false;
+            {
+                uint32_t elem = result_ty_air;
+                if (elem < n_types && ts[elem].kind == LAGFX_AIR_TYPE_VECTOR &&
+                    ts[elem].num_op >= 2u)
+                    elem = ts[elem].op[1];
+                is_half = (elem < n_types && ts[elem].kind == LAGFX_AIR_TYPE_HALF);
+            }
+            uint32_t c0, c1;
+            if (is_half) {
+                uint32_t half_t = emit_type_half(c);
+                c0 = lagfx_spv_builder_alloc_id(c->b);
+                { uint32_t o[] = { half_t, c0, 0x0000u };
+                  lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CONSTANT, o, 3); }
+                c1 = lagfx_spv_builder_alloc_id(c->b);
+                { uint32_t o[] = { half_t, c1, 0x3C00u /* 1.0h */ };
+                  lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CONSTANT, o, 3); }
+            } else {
+                c0 = emit_const_float32(c, 0.0f);
+                c1 = emit_const_float32(c, 1.0f);
+            }
+            /* If the result is a float vector, splat 0/1 to its width. */
             uint32_t lo = c0, hi = c1;
             if (result_ty_air < n_types &&
                 ts[result_ty_air].kind == LAGFX_AIR_TYPE_VECTOR &&
@@ -3380,9 +3411,10 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         }
     }
 
-    /* === air.dfdx / air.dfdy → OpDPdx / OpDPdy (fragment derivatives) === */
+    /* === air.dfdx / air.dfdy / air.fwidth → OpDPdx/OpDPdy/OpFwidth === */
     if ((strncmp(fn_name, "air.dfdx.", 9u) == 0 ||
-         strncmp(fn_name, "air.dfdy.", 9u) == 0) && result_value_id != 0u &&
+         strncmp(fn_name, "air.dfdy.", 9u) == 0 ||
+         strncmp(fn_name, "air.fwidth.", 11u) == 0) && result_value_id != 0u &&
         c->stage == LAGFX_XLATE_STAGE_FRAGMENT) {
         uint32_t a_slot = callee_slot_idx + 1u;
         if (inst->num_ops > a_slot &&
@@ -3394,7 +3426,8 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
             uint32_t rid = lagfx_spv_builder_alloc_id(c->b);
             uint32_t o[] = { rt, rid, a_spv };
             lagfx_spv_builder_emit_op(c->b,
-                fn_name[7] == 'x' ? LAGFX_SPV_OP_DPDX : LAGFX_SPV_OP_DPDY,
+                fn_name[4] == 'f' ? LAGFX_SPV_OP_FWIDTH
+                : fn_name[7] == 'x' ? LAGFX_SPV_OP_DPDX : LAGFX_SPV_OP_DPDY,
                 o, 3);
             bind_value_spv(c, result_value_id, rid);
             set_result_air_type(c, result_value_id, result_ty_air);
