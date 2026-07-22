@@ -367,18 +367,20 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
      * 66,355,200 B = stride 30720 x 2160 rows). The old 4-Bpp-only
      * plausibility check rejected 8-Bpp descriptors and the size-inference
      * fallback fabricated 64x259200 — beyond lavapipe's max dimension,
-     * SIGSEGV on upload. Rows are modelled as BGRA8 texels (W = stride/4)
-     * so byte geometry is exact; 16F content reads with wrong colours
-     * until an RGBA16F surface path lands. Height = min(descriptor height,
-     * rows that fit the allocation) — small textures pad the allocation
-     * (0x16: 23 padded rows vs 17 real), the backdrop under-fills it. */
+     * SIGSEGV on upload. 8-Bpp surfaces get a true RGBA16F VkImage
+     * (W = stride/8) — modelling them as doubled-width BGRA8 fed the panel
+     * half-float bytes as colour/alpha, i.e. near-black with garbage alpha.
+     * 1/2-Bpp rows still ride the BGRA8 view (W = stride/4; byte-exact).
+     * Height = min(descriptor height, rows that fit the allocation) — small
+     * textures pad the allocation (0x16: 23 padded rows vs 17 real), the
+     * backdrop under-fills it. */
     uint32_t bpp = (lagfx_le32(desc + 32) >> 24) & 0xFFu;
     if (bpp != 4u && bpp != 8u && bpp != 2u && bpp != 1u) bpp = 4u;
     if (desc_stride >= 4u && (desc_stride & 3u) == 0u && desc_h > 0u) {
         uint32_t rows_fit = (uint32_t)(want / desc_stride);
         uint32_t Heff = desc_h < rows_fit ? desc_h : rows_fit;
         if (Heff > 0u) {
-            W = desc_stride / 4u;
+            W = desc_stride / (bpp == 8u ? 8u : 4u);
             H = Heff;
         }
     }
@@ -407,7 +409,8 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     LAGFX_LOG("TEXREAL: ref=0x%x dims %ux%u (descriptor stride=%u h=%u bpp=%u)",
               tref, W, H, desc_stride, desc_h, bpp);
     lagfx_vk_iosurface_t *ios = NULL;
-    if (lagfx_vk_iosurface_create(vk, W, H, 80u, &ios) != LAGFX_OK || !ios) {
+    uint32_t mtl_fmt = (bpp == 8u) ? 115u /* RGBA16Float */ : 80u /* BGRA8 */;
+    if (lagfx_vk_iosurface_create(vk, W, H, mtl_fmt, &ios) != LAGFX_OK || !ios) {
         free(pick); return NULL;
     }
     if (lagfx_vk_iosurface_upload_pixels(vk, ios, pick, want) != LAGFX_OK) {
