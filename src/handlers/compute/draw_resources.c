@@ -334,7 +334,12 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
         if (pfn < 0x10u || pfn > 0xfffffu || rsize == 0u) continue;
         total += rsize;
     }
-    if (total < 4096u || total > 8u * 1024u * 1024u) return NULL;
+    /* 128 MiB (was 8 MiB): the login panel samples a 7680x3840 Retina-scale
+     * backdrop (ref TEXDESC: 66,355,200 B, stride 30720, height 3840) that
+     * the old cap silently rejected — its pipeline's draws then skipped on
+     * descriptor build (879/boot). Realized surfaces are registered under
+     * their ref, so the big upload happens once, not per draw. */
+    if (total < 4096u || total > 128u * 1024u * 1024u) return NULL;
     uint32_t want = (uint32_t)total;
     /* DUMB-FAITHFUL (M2q): ONE read, the contract way — 0x3b BackingUpdate
      * address when the guest announced one, else the placement walk whose
