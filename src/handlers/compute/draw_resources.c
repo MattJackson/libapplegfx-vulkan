@@ -274,8 +274,17 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
                                             uint32_t tref) {
     if (!p || !task || !vk || tref == 0u) return NULL;
     uint8_t ttype = 0; uint64_t tva = 0, tgpa = 0;
+    /* Kinds 0x02, 0x03 and 0x0c ALL dispatch to createNormalTexture in
+     * Apple's createObject<PGResource*> jump table (object-delegate-path.md
+     * 0x22db2f85c) — same MTLTexture constructor, same descriptor. The
+     * 0x03-only check made every type-0x02 texture unrealizable: the Xgc
+     * login-panel pipeline's blur/backdrop sources are 0x02, so ALL its
+     * draws were skipped (te=0, GOAL-M2aa). The descriptor plausibility
+     * checks below (placement sizes, stride/height words) still reject a
+     * layout mismatch safely. */
     if (!lagfx_resolve_object_data(p, task, tref, &ttype, &tva, &tgpa)
-        || tva == 0u || ttype != 0x03u) {
+        || tva == 0u
+        || (ttype != 0x03u && ttype != 0x02u && ttype != 0x0cu)) {
         /* GOAL-M2aa: the Xgc login-panel pipeline skips its draws on
          * exactly these bails (te=0 texture refs) — log WHY so the panel's
          * blur/backdrop source-texture type is identifiable from one boot. */
