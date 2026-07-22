@@ -120,6 +120,28 @@ typedef struct {
     int32_t                  *value_id_to_lit_i32;
     bool                     *value_id_lit_i32_valid;
 
+    /* === Block-dispatch control flow (GOAL-M2aa) ====================
+     * General CFG support: bodies that don't match the recognised loop
+     * shapes are emitted as ONE structured loop whose header switches on a
+     * block-index variable (the classic relooper fallback). Values that
+     * cross basic-block boundaries are demoted to Function variables
+     * (def-site store, use-site load) because a dispatch case does not
+     * dominate its successors; PHIs become variables stored by every
+     * predecessor edge. Pointer-typed values are NOT spilled (logical
+     * addressing) — cross-block pointer uses degrade to typed undefs. */
+    bool                      dispatch_mode;
+    uint32_t                  dispatch_cur_bb;
+    /* Function-pointer types keyed by VALUE SPIR-V type — for spills whose
+     * AIR type is the lossy BOOL sentinel (a v4bool compare result spilled
+     * as scalar bool was an OpStore type mismatch). Duplicate OpTypePointer
+     * declarations are permitted by spirv-val, but dedup anyway. */
+    struct { uint32_t val_ty, ptr_ty; } dispatch_ptr_cache[8];
+    uint32_t                  n_dispatch_ptr_cache;
+    uint16_t                 *value_def_bb;   /* per value id; 0xFFFF unknown */
+    uint32_t                 *spill_var;      /* per value id; 0 = none */
+    uint32_t                 *spill_type;     /* value SPIR-V type of the spill */
+    uint32_t                 *phi_var;        /* per PHI value id; 0 = none */
+
     /* Side-table: result SPIR-V TYPE id per value (0 = unknown). AIR type
      * tracking (inst_result_air_type) goes dark through default-typed
      * fallback results; consumers that must type-check operands (SPIR-V
@@ -801,10 +823,27 @@ static uint32_t resolve_relative(uint32_t encoded, uint32_t next_val_id) {
  * unresolvable (in which case the caller substitutes OpUndef of the
  * expected type). */
 static uint32_t resolve_value_spv(xlate_ctx_t *c, uint32_t value_id) {
-    if (value_id < c->value_id_capacity) {
-        return c->value_id_to_spv[value_id];
+    if (value_id >= c->value_id_capacity) return 0u;
+    /* Dispatch mode: a value defined in a DIFFERENT dispatch case does not
+     * dominate this one — return a fresh load of its spill variable. Block
+     * 0 is emitted in the SPIR-V entry (before the loop) and dominates
+     * everything, so its values resolve directly. Unspilled cross-block
+     * values (pointers, unknown types, forward refs) resolve to 0 and the
+     * caller's typed-undef fallback applies. */
+    if (c->dispatch_mode && value_id >= c->inst_id_base && c->value_def_bb) {
+        uint16_t db = c->value_def_bb[value_id];
+        if (db != 0xFFFFu && db != 0u && (uint32_t)db != c->dispatch_cur_bb) {
+            if (c->spill_var && c->spill_var[value_id]) {
+                uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+                uint32_t ops[] = { c->spill_type[value_id], id,
+                                   c->spill_var[value_id] };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, ops, 3);
+                return id;
+            }
+            return 0u;
+        }
     }
-    return 0u;
+    return c->value_id_to_spv[value_id];
 }
 
 static void bind_value_spv(xlate_ctx_t *c, uint32_t value_id, uint32_t spv_id) {
@@ -1927,6 +1966,12 @@ static void emit_module_vars_and_function(xlate_ctx_t *c) {
             if (produces) alloca_val_id++;
         }
     }
+
+    /* Locals splice point: any Function OpVariable the dispatch emitter
+     * creates mid-body (spills / phi vars / %blockvar) is inserted HERE at
+     * finish() — after the pre-emitted alloca variables, before the first
+     * non-variable instruction, keeping SPIR-V's variables-first rule. */
+    lagfx_spv_builder_mark_locals(c->b);
 
     /* For each vertex arg: OpLoad its Input variable into the arg's
      * value-id. The loaded SPIR-V id IS the argument's value (a uint for
@@ -5119,6 +5164,426 @@ static lagfx_status_t translate_body_guarded_loop(
  * Driver
  * =================================================================== */
 
+
+/* ===================================================================
+ * Block-dispatch control flow (GOAL-M2aa) — the general-CFG fallback.
+ *
+ * Any multi-block body that the recognised single/guarded loop plans do
+ * not match is emitted as ONE structured loop:
+ *
+ *   entry:    OpVariables (allocas + spills + phi vars + %blockvar,
+ *             spliced) ; prologue ; bb0 body ; store initial target ;
+ *             OpBranch %header
+ *   header:   %cur = OpLoad %blockvar ; OpLoopMerge %exit %cont ;
+ *             OpBranch %body
+ *   body:     OpSelectionMerge %selmerge ; OpSwitch %cur %selmerge
+ *             [i -> %bb_i]...
+ *   bb_i:     phi loads ; body insts ; terminator -> phi-incoming stores,
+ *             store next block id, OpBranch %selmerge (RET -> OpReturn)
+ *   selmerge: OpBranch %cont      cont: OpBranch %header
+ *   exit:     OpUnreachable       (returns happen inside the cases)
+ *
+ * LLVM bb0 (the entry block) is emitted BEFORE the loop: it dominates
+ * every case, so its values need no spilling. Values defined in cases are
+ * spilled to Function variables at the def site (type known then; the
+ * builder's locals-splice places the OpVariables in the entry block) and
+ * loaded at cross-case uses via the resolve_value_spv hook. PHIs become
+ * variables: every predecessor edge stores its incoming value before
+ * branching (unconditionally for both targets of a conditional branch —
+ * safe: the taken edge's store is always the LAST one executed before the
+ * successor's phi load). Kill-switch: LAGFX_DISABLE_BLOCKSWITCH.
+ * =================================================================== */
+
+/* Function-storage pointer type for a spill of value type `ty_air`
+ * (AIR id or the BOOL sentinel) with SPIR-V type `ty_spv`. Uses the
+ * ptr_cache via emit_type_pointer so alloca-created pointer types are
+ * shared (duplicate OpTypePointer = spirv-val reject). */
+static uint32_t dispatch_ptr_type(xlate_ctx_t *c, uint32_t ty_air,
+                                  uint32_t ty_spv) {
+    return emit_type_pointer(c, ty_air, ty_spv, LAGFX_SPV_STORAGE_FUNCTION);
+}
+
+/* Function-pointer type keyed on the pointee's SPIR-V type id (for values
+ * whose AIR type is unknown/lossy — see dispatch_ptr_cache). */
+static uint32_t dispatch_ptr_type_spv(xlate_ctx_t *c, uint32_t ty_spv) {
+    for (uint32_t i = 0; i < c->n_dispatch_ptr_cache; i++)
+        if (c->dispatch_ptr_cache[i].val_ty == ty_spv)
+            return c->dispatch_ptr_cache[i].ptr_ty;
+    uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t o[] = { id, LAGFX_SPV_STORAGE_FUNCTION, ty_spv };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, o, 3);
+    if (c->n_dispatch_ptr_cache < 8u) {
+        c->dispatch_ptr_cache[c->n_dispatch_ptr_cache].val_ty = ty_spv;
+        c->dispatch_ptr_cache[c->n_dispatch_ptr_cache].ptr_ty = id;
+        c->n_dispatch_ptr_cache++;
+    }
+    return id;
+}
+
+/* Lazily create the Function variable backing a PHI result. */
+static uint32_t dispatch_phi_var(xlate_ctx_t *c, uint32_t phi_value_id,
+                                 uint32_t ty_air, uint32_t ty_spv) {
+    if (!c->phi_var || phi_value_id >= c->value_id_capacity) return 0u;
+    if (c->phi_var[phi_value_id]) return c->phi_var[phi_value_id];
+    uint32_t ptrty = dispatch_ptr_type(c, ty_air, ty_spv);
+    uint32_t var = lagfx_spv_builder_alloc_id(c->b);
+    if (!lagfx_spv_builder_emit_local_var(c->b, ptrty, var)) return 0u;
+    c->phi_var[phi_value_id] = var;
+    return var;
+}
+
+/* Spill a just-defined case-block value to a Function variable so other
+ * cases can load it. Pointer-typed / unknown-typed values are skipped
+ * (their cross-case uses degrade to typed undefs, same as before). */
+static void dispatch_spill_result(xlate_ctx_t *c, uint32_t value_id) {
+    if (!c->spill_var || value_id >= c->value_id_capacity) return;
+    if (c->spill_var[value_id]) return;
+    uint32_t spv = c->value_id_to_spv[value_id];
+    if (!spv) return;
+    if (get_value_storage(c, value_id) != UINT32_MAX) return; /* pointer */
+    uint32_t ty_air = value_air_type_idx(c, value_id);
+    uint32_t precise = get_value_spv_type(c, value_id);
+    uint32_t ty_spv = 0;
+    bool spv_keyed = false;
+    if (ty_air == LAGFX_AIR_TYPE_BOOL) {
+        /* The BOOL sentinel is lossy (a vector compare records it too);
+         * the SPIR-V-type side table carries the precise type. */
+        ty_spv = precise ? precise : emit_type_bool(c);
+        spv_keyed = true;
+    } else if (ty_air != LAGFX_AIR_TYPE_NONE) {
+        uint32_t n_types = 0;
+        const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+        if (ty_air < n_types &&
+            (ts[ty_air].kind == LAGFX_AIR_TYPE_POINTER ||
+             ts[ty_air].kind == LAGFX_AIR_TYPE_VOID))
+            return;
+        ty_spv = emit_air_type(c, ty_air);
+    } else if (precise) {
+        ty_spv = precise;
+        spv_keyed = true;
+    } else {
+        return;   /* unknown type — cross-case uses degrade to undef */
+    }
+    if (!ty_spv) return;
+    uint32_t ptrty = spv_keyed ? dispatch_ptr_type_spv(c, ty_spv)
+                               : dispatch_ptr_type(c, ty_air, ty_spv);
+    uint32_t var = lagfx_spv_builder_alloc_id(c->b);
+    if (!lagfx_spv_builder_emit_local_var(c->b, ptrty, var)) return;
+    uint32_t so[] = { var, spv };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, so, 2);
+    c->spill_var[value_id]  = var;
+    c->spill_type[value_id] = ty_spv;
+}
+
+/* Store the PHI-incoming values for edge cur_bb -> succ. */
+static void dispatch_store_phi_incomings(xlate_ctx_t *c, const lagfx_bb_t *bbs,
+                                         uint32_t nbb, uint32_t cur_bb,
+                                         uint32_t succ) {
+    if (succ >= nbb) return;
+    for (uint32_t i = bbs[succ].first_inst; i <= bbs[succ].last_inst &&
+             i < c->num_insts; i++) {
+        const lagfx_air_inst_t *inst = &c->insts[i];
+        if (inst->code != LAGFX_AIR_INST_PHI) break; /* phis lead the block */
+        if (inst->num_ops < 3u) continue;
+        uint32_t phi_valno = value_id_at_inst(c, i);
+        uint32_t ty_air = (uint32_t)inst->ops[0];
+        uint32_t ty_spv = emit_air_type(c, ty_air);
+        uint32_t var = dispatch_phi_var(c, phi_valno, ty_air, ty_spv);
+        if (!var) continue;
+        uint32_t npairs = (inst->num_ops - 1u) / 2u;
+        for (uint32_t pr = 0; pr < npairs; pr++) {
+            uint32_t bb = (uint32_t)inst->ops[2u + 2u * pr];
+            if (bb != cur_bb) continue;
+            int64_t delta = decode_sign_rotated(inst->ops[1u + 2u * pr]);
+            uint32_t inval_id = (uint32_t)((int64_t)phi_valno - delta);
+            uint32_t inval = resolve_value_spv(c, inval_id);
+            if (!inval) inval = emit_undef(c, ty_spv);
+            uint32_t so[] = { var, inval };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, so, 2);
+            break;
+        }
+    }
+}
+
+/* Lower a block terminator: phi-incoming stores for every successor edge,
+ * store the next block index into %blockvar, branch to `jump_label`
+ * (%header from bb0, %selmerge from a case). RET/UNREACHABLE terminate
+ * directly. */
+static void dispatch_lower_terminator(xlate_ctx_t *c, const lagfx_bb_t *bbs,
+                                      uint32_t nbb, uint32_t cur_bb,
+                                      const lagfx_air_inst_t *inst,
+                                      uint32_t next_val_id,
+                                      uint32_t blockvar, uint32_t jump_label) {
+    uint32_t uint_spv = emit_type_int_w(c, 32u, 0u);
+    switch (inst->code) {
+        case LAGFX_AIR_INST_RET:
+            emit_inst_ret(c, inst, next_val_id);   /* stores outputs + OpReturn */
+            return;
+        case LAGFX_AIR_INST_UNREACHABLE:
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_UNREACHABLE, NULL, 0);
+            return;
+        case LAGFX_AIR_INST_BR:
+            if (inst->num_ops == 1u) {
+                uint32_t t = (uint32_t)inst->ops[0];
+                dispatch_store_phi_incomings(c, bbs, nbb, cur_bb, t);
+                uint32_t so[] = { blockvar, emit_const_uint32(c, t) };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, so, 2);
+            } else if (inst->num_ops >= 3u) {
+                uint32_t t = (uint32_t)inst->ops[0];
+                uint32_t f = (uint32_t)inst->ops[1];
+                dispatch_store_phi_incomings(c, bbs, nbb, cur_bb, t);
+                if (f != t) dispatch_store_phi_incomings(c, bbs, nbb, cur_bb, f);
+                uint32_t cond_id = resolve_relative((uint32_t)inst->ops[2],
+                                                    next_val_id);
+                uint32_t cond = resolve_or_undef(c, cond_id, emit_type_bool(c));
+                uint32_t sel = lagfx_spv_builder_alloc_id(c->b);
+                uint32_t selo[] = { uint_spv, sel, cond,
+                                    emit_const_uint32(c, t),
+                                    emit_const_uint32(c, f) };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_SELECT, selo, 5);
+                uint32_t so[] = { blockvar, sel };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, so, 2);
+            }
+            break;
+        case LAGFX_AIR_INST_SWITCH: {
+            /* [opty, cond_rel, default_bb, (caseval_ABS, casebb)...] */
+            if (inst->num_ops < 3u) break;
+            uint32_t defbb = (uint32_t)inst->ops[2];
+            dispatch_store_phi_incomings(c, bbs, nbb, cur_bb, defbb);
+            uint32_t opty = (uint32_t)inst->ops[0];
+            uint32_t cond_id = resolve_relative((uint32_t)inst->ops[1],
+                                                next_val_id);
+            uint32_t cond_ty = emit_air_type(c, opty);
+            uint32_t cond = resolve_or_undef(c, cond_id, cond_ty);
+            uint32_t next = emit_const_uint32(c, defbb);
+            uint32_t ncase = (inst->num_ops - 3u) / 2u;
+            for (uint32_t k = 0; k < ncase; k++) {
+                uint32_t cval_id = (uint32_t)inst->ops[3u + 2u * k];
+                uint32_t cbb     = (uint32_t)inst->ops[4u + 2u * k];
+                if (cbb != defbb)
+                    dispatch_store_phi_incomings(c, bbs, nbb, cur_bb, cbb);
+                uint32_t cval = resolve_value_spv(c, cval_id);
+                if (!cval) continue;   /* unresolvable case value: falls to default */
+                uint32_t eq = lagfx_spv_builder_alloc_id(c->b);
+                uint32_t eqo[] = { emit_type_bool(c), eq, cond, cval };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_IEQUAL, eqo, 4);
+                uint32_t sel = lagfx_spv_builder_alloc_id(c->b);
+                uint32_t selo[] = { uint_spv, sel, eq,
+                                    emit_const_uint32(c, cbb), next };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_SELECT, selo, 5);
+                next = sel;
+            }
+            uint32_t so[] = { blockvar, next };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, so, 2);
+            break;
+        }
+        default:
+            break;
+    }
+    uint32_t bo[] = { jump_label };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, bo, 1);
+}
+
+/* Emit one basic block's leading PHIs (as variable loads) and body
+ * instructions through the standard per-inst emitters, spilling each
+ * produced value (cases only — bb0 dominates and needs no spills).
+ * *io_val_id advances exactly as the linear path's counter. Stops BEFORE
+ * the terminator. */
+static void dispatch_emit_block(xlate_ctx_t *c, const lagfx_bb_t *bbs,
+                                uint32_t bb, uint32_t *io_val_id) {
+    uint32_t next_val_id = *io_val_id;
+    for (uint32_t i = bbs[bb].first_inst; i < bbs[bb].last_inst &&
+             i < c->num_insts; i++) {
+        const lagfx_air_inst_t *inst = &c->insts[i];
+        bool produces = inst_produces_value(c, inst);
+        uint32_t result_value_id = produces ? next_val_id : 0u;
+        if (inst->code == LAGFX_AIR_INST_PHI) {
+            if (inst->num_ops >= 1u) {
+                uint32_t ty_air = (uint32_t)inst->ops[0];
+                uint32_t ty_spv = emit_air_type(c, ty_air);
+                uint32_t var = dispatch_phi_var(c, result_value_id, ty_air,
+                                                ty_spv);
+                if (var) {
+                    uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+                    uint32_t lo[] = { ty_spv, id, var };
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, lo, 3);
+                    bind_value_spv(c, result_value_id, id);
+                    set_result_air_type(c, result_value_id, ty_air);
+                    set_value_spv_type(c, result_value_id, ty_spv);
+                }
+            }
+        } else {
+            switch (inst->code) {
+                case LAGFX_AIR_INST_ALLOCA:    emit_inst_alloca(c, i, inst, result_value_id); break;
+                case LAGFX_AIR_INST_CAST:      emit_inst_cast(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_CALL:      emit_inst_call(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_GEP:
+                case LAGFX_AIR_INST_GEP_OLD:   emit_inst_gep(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_STORE:
+                case LAGFX_AIR_INST_STORE_OLD: emit_inst_store(c, inst, next_val_id); break;
+                case LAGFX_AIR_INST_LOAD:      emit_inst_load(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_SHUFFLEVEC:emit_inst_shufflevec(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_INSERTVAL: emit_inst_insertval(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_BINOP:     emit_inst_binop(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_UNOP:      emit_inst_unop(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_CMP:       emit_inst_cmp(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_CMP2:      emit_inst_cmp2(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_SELECT:
+                case LAGFX_AIR_INST_VSELECT:   emit_inst_select(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_EXTRACTVAL:emit_inst_extractval(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_EXTRACTELT:emit_inst_extractelt(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_INSERTELT: emit_inst_insertelt(c, i, inst, result_value_id, next_val_id); break;
+                case LAGFX_AIR_INST_DECLAREBLOCKS: break;
+                default:
+                    LAGFX_TRACE("translate_function(dispatch): dropping unhandled "
+                                "AIR opcode raw=%u (code=%d) at i[%u]",
+                                inst->raw_code, (int)inst->code, i);
+                    break;
+            }
+        }
+        if (produces && bb != 0u) dispatch_spill_result(c, result_value_id);
+        if (produces) next_val_id++;
+    }
+    *io_val_id = next_val_id;
+}
+
+/* The dispatch driver. Returns false when the body isn't partitionable
+ * (caller falls to the linear path). */
+static bool translate_body_dispatch(xlate_ctx_t *c, lagfx_status_t *out_st) {
+    /* Partition on the heap — real compositor fragments reach 474 blocks. */
+    uint32_t nterm = 0;
+    for (uint32_t i = 0; i < c->num_insts; i++)
+        if (inst_is_terminator(c->insts[i].code)) nterm++;
+    if (nterm < 2u) return false;      /* single block: linear path is fine */
+    lagfx_bb_t *bbs = (lagfx_bb_t *)calloc(nterm, sizeof(*bbs));
+    if (!bbs) return false;
+    uint32_t nbb = 0, start = 0;
+    for (uint32_t i = 0; i < c->num_insts; i++) {
+        if (inst_is_terminator(c->insts[i].code)) {
+            bbs[nbb].index = nbb;
+            bbs[nbb].first_inst = start;
+            bbs[nbb].last_inst = i;
+            nbb++;
+            start = i + 1u;
+        }
+    }
+    if (start != c->num_insts || nbb < 2u) { free(bbs); return false; }
+
+    /* Def-block map for every value id (0xFFFF = not a body result).
+     * ALLOCAs count as block 0 — their OpVariables are hoisted to the
+     * entry block and dominate everything. */
+    c->value_def_bb = (uint16_t *)malloc(c->value_id_capacity * sizeof(uint16_t));
+    c->spill_var    = (uint32_t *)calloc(c->value_id_capacity, sizeof(uint32_t));
+    c->spill_type   = (uint32_t *)calloc(c->value_id_capacity, sizeof(uint32_t));
+    c->phi_var      = (uint32_t *)calloc(c->value_id_capacity, sizeof(uint32_t));
+    if (!c->value_def_bb || !c->spill_var || !c->spill_type || !c->phi_var) {
+        free(bbs);
+        free(c->value_def_bb); free(c->spill_var);
+        free(c->spill_type);   free(c->phi_var);
+        c->value_def_bb = NULL; c->spill_var = NULL;
+        c->spill_type = NULL;   c->phi_var = NULL;
+        return false;
+    }
+    memset(c->value_def_bb, 0xFF, c->value_id_capacity * sizeof(uint16_t));
+    {
+        uint32_t vid = c->inst_id_base, bb = 0;
+        for (uint32_t i = 0; i < c->num_insts; i++) {
+            const lagfx_air_inst_t *inst = &c->insts[i];
+            if (inst_produces_value(c, inst) && vid < c->value_id_capacity) {
+                c->value_def_bb[vid] =
+                    (inst->code == LAGFX_AIR_INST_ALLOCA) ? 0u : (uint16_t)bb;
+                vid++;
+            }
+            if (inst_is_terminator(inst->code)) bb++;
+        }
+    }
+
+    c->dispatch_mode = true;
+    c->dispatch_cur_bb = 0;
+
+    /* %blockvar (uint, Function) via the locals splice. */
+    uint32_t uint_spv = emit_type_int_w(c, 32u, 0u);
+    uint32_t blk_ptr  = dispatch_ptr_type(c, LAGFX_AIR_TYPE_NONE - 2u, uint_spv);
+    uint32_t blockvar = lagfx_spv_builder_alloc_id(c->b);
+    lagfx_spv_builder_emit_local_var(c->b, blk_ptr, blockvar);
+
+    /* Labels. */
+    uint32_t lbl_header   = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t lbl_body     = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t lbl_selmerge = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t lbl_cont     = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t lbl_exit     = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t *lbl_bb = (uint32_t *)calloc(nbb, sizeof(uint32_t));
+    if (!lbl_bb) { free(bbs); *out_st = LAGFX_ERR_OUT_OF_MEMORY; return true; }
+    for (uint32_t i = 1; i < nbb; i++) lbl_bb[i] = lagfx_spv_builder_alloc_id(c->b);
+
+    /* bb0 body straight into the (already open) entry block. */
+    uint32_t val_id = c->inst_id_base;
+    dispatch_emit_block(c, bbs, 0, &val_id);
+    dispatch_lower_terminator(c, bbs, nbb, 0, &c->insts[bbs[0].last_inst],
+                              val_id, blockvar, lbl_header);
+
+    /* header: cur = load blockvar ; OpLoopMerge exit cont ; branch body */
+    { uint32_t o[] = { lbl_header };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, o, 1); }
+    uint32_t cur = lagfx_spv_builder_alloc_id(c->b);
+    { uint32_t o[] = { uint_spv, cur, blockvar };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, o, 3); }
+    { uint32_t o[] = { lbl_exit, lbl_cont, 0u /* LoopControl None */ };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOOP_MERGE, o, 3); }
+    { uint32_t o[] = { lbl_body };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, o, 1); }
+
+    /* body: selection merge + switch over the block index. */
+    { uint32_t o[] = { lbl_body };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, o, 1); }
+    { uint32_t o[] = { lbl_selmerge, 0u /* SelectionControl None */ };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_SELECTION_MERGE, o, 2); }
+    {
+        /* OpSwitch: [Selector, Default, (literal, label)...] */
+        uint32_t nops = 2u + 2u * (nbb - 1u);
+        uint32_t *o = (uint32_t *)malloc(nops * sizeof(uint32_t));
+        if (!o) { free(bbs); free(lbl_bb); *out_st = LAGFX_ERR_OUT_OF_MEMORY; return true; }
+        o[0] = cur; o[1] = lbl_selmerge;
+        for (uint32_t i = 1; i < nbb; i++) {
+            o[2u + 2u * (i - 1u)] = i;
+            o[3u + 2u * (i - 1u)] = lbl_bb[i];
+        }
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_SWITCH, o, nops);
+        free(o);
+    }
+
+    /* Case blocks. */
+    for (uint32_t i = 1; i < nbb; i++) {
+        { uint32_t o[] = { lbl_bb[i] };
+          lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, o, 1); }
+        c->dispatch_cur_bb = i;
+        dispatch_emit_block(c, bbs, i, &val_id);
+        dispatch_lower_terminator(c, bbs, nbb, i, &c->insts[bbs[i].last_inst],
+                                  val_id, blockvar, lbl_selmerge);
+    }
+
+    /* selmerge -> cont -> header ; exit unreachable (returns are inline). */
+    { uint32_t o[] = { lbl_selmerge };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, o, 1); }
+    { uint32_t o[] = { lbl_cont };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, o, 1); }
+    { uint32_t o[] = { lbl_cont };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, o, 1); }
+    { uint32_t o[] = { lbl_header };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, o, 1); }
+    { uint32_t o[] = { lbl_exit };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, o, 1); }
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_UNREACHABLE, NULL, 0);
+
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_FUNCTION_END, NULL, 0);
+
+    c->dispatch_mode = false;
+    free(bbs); free(lbl_bb);
+    *out_st = LAGFX_OK;
+    return true;
+}
+
 static lagfx_status_t translate_body(xlate_ctx_t *c) {
     /* Structured control flow: if the body matches the recognised single
      * reducible loop, emit multi-basic-block SPIR-V. Otherwise fall
@@ -5139,6 +5604,15 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
             LAGFX_TRACE("translate_function: recognised guarded loop "
                         "(header bb=%u merge bb=%u)", plan.header_bb, plan.merge_bb);
             return translate_body_guarded_loop(c, &plan);
+        }
+    }
+    /* General multi-block CFG: block-dispatch loop (kill-switch keeps the
+     * old linearizing path for A/B). */
+    if (!getenv("LAGFX_DISABLE_BLOCKSWITCH")) {
+        lagfx_status_t dst = LAGFX_OK;
+        if (translate_body_dispatch(c, &dst)) {
+            LAGFX_TRACE("translate_function: block-dispatch control flow");
+            return dst;
         }
     }
 
@@ -5803,6 +6277,10 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
     free(c.arg_alias);
     free(c.value_view);
     free(c.value_spv_type);
+    free(c.value_def_bb);
+    free(c.spill_var);
+    free(c.spill_type);
+    free(c.phi_var);
     free(c.inst_result_air_type);
     lagfx_air_function_body_free(body);
     return LAGFX_OK;
@@ -5821,6 +6299,10 @@ fail:
     free(c.arg_alias);
     free(c.value_view);
     free(c.value_spv_type);
+    free(c.value_def_bb);
+    free(c.spill_var);
+    free(c.spill_type);
+    free(c.phi_var);
     free(c.inst_result_air_type);
     lagfx_air_function_body_free(body);
     return st;

@@ -162,6 +162,8 @@ enum {
     LAGFX_SPV_OP_LABEL                  = 248,
     LAGFX_SPV_OP_BRANCH                 = 249,
     LAGFX_SPV_OP_BRANCH_CONDITIONAL     = 250,
+    LAGFX_SPV_OP_SWITCH                 = 251,
+    LAGFX_SPV_OP_UNREACHABLE            = 255,
     LAGFX_SPV_OP_RETURN                 = 253,
 };
 
@@ -368,6 +370,19 @@ bool lagfx_spv_builder_emit_op_string(lagfx_spv_builder_t *b,
  * builder remains usable afterwards. */
 uint8_t *lagfx_spv_builder_finish(const lagfx_spv_builder_t *b,
                                    size_t                   *out_size_bytes);
+
+/* === Function-local variable splice ================================
+ * SPIR-V requires every Function-storage OpVariable to be among the FIRST
+ * instructions of the function's entry block, but the control-flow
+ * dispatch emitter only learns a spill variable's type mid-body. Mark the
+ * splice point right after the entry OpLabel; emit_local_var appends
+ * OpVariables to a side buffer; finish() splices them into the function
+ * stream at the mark. Without a mark, local vars are dropped (never
+ * marked = never used). */
+void lagfx_spv_builder_mark_locals(lagfx_spv_builder_t *b);
+bool lagfx_spv_builder_emit_local_var(lagfx_spv_builder_t *b,
+                                      uint32_t ptr_type_id,
+                                      uint32_t result_id);
 
 #ifdef __cplusplus
 } /* extern "C" */

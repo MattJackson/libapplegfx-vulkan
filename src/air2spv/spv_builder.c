@@ -39,6 +39,8 @@ typedef struct { uint32_t *w; uint32_t n; uint32_t cap; } spv_section;
 
 struct lagfx_spv_builder {
     spv_section sec[SEC_COUNT];
+    spv_section locals;         /* spliced into SEC_FUNCS at locals_mark */
+    uint32_t    locals_mark;    /* word offset in SEC_FUNCS; ~0u = unset */
     uint32_t    next_id;  /* next SSA id; spec reserves 0, start at 1 */
 };
 
@@ -87,6 +89,7 @@ lagfx_spv_builder_create(uint32_t initial_word_capacity) {
     if (initial_word_capacity < 16u) initial_word_capacity = 16u;
     lagfx_spv_builder_t *b = (lagfx_spv_builder_t *)calloc(1, sizeof(*b));
     if (!b) return NULL;
+    b->locals_mark = ~0u;
     for (int s = 0; s < SEC_COUNT; s++) {
         b->sec[s].w = (uint32_t *)malloc(initial_word_capacity * sizeof(uint32_t));
         if (!b->sec[s].w) {
@@ -104,6 +107,7 @@ void
 lagfx_spv_builder_free(lagfx_spv_builder_t *b) {
     if (!b) return;
     for (int s = 0; s < SEC_COUNT; s++) free(b->sec[s].w);
+    free(b->locals.w);
     free(b);
 }
 
@@ -186,6 +190,23 @@ lagfx_spv_builder_emit_op_string(lagfx_spv_builder_t *b,
     return true;
 }
 
+void lagfx_spv_builder_mark_locals(lagfx_spv_builder_t *b) {
+    if (b) b->locals_mark = b->sec[SEC_FUNCS].n;
+}
+
+bool lagfx_spv_builder_emit_local_var(lagfx_spv_builder_t *b,
+                                      uint32_t ptr_type_id,
+                                      uint32_t result_id) {
+    if (!b || b->locals_mark == ~0u) return false;
+    /* OpVariable: wordcount 4 | opcode, ptr-type, result, StorageClass 7. */
+    if (!sec_grow(&b->locals, b->locals.n + 4u)) return false;
+    b->locals.w[b->locals.n++] = (4u << 16) | 59u /* OpVariable */;
+    b->locals.w[b->locals.n++] = ptr_type_id;
+    b->locals.w[b->locals.n++] = result_id;
+    b->locals.w[b->locals.n++] = 7u /* Function */;
+    return true;
+}
+
 uint8_t *
 lagfx_spv_builder_finish(const lagfx_spv_builder_t *b, size_t *out_size_bytes) {
     /* Header is 5 words: magic, version, generator, bound, schema.
@@ -194,6 +215,7 @@ lagfx_spv_builder_finish(const lagfx_spv_builder_t *b, size_t *out_size_bytes) {
     uint32_t bound = b->next_id;
     size_t body_words = 0u;
     for (int s = 0; s < SEC_COUNT; s++) body_words += b->sec[s].n;
+    body_words += b->locals.n;
     size_t total_words = 5u + body_words;
     size_t total_bytes = total_words * sizeof(uint32_t);
     uint8_t *out = (uint8_t *)malloc(total_bytes);
@@ -207,8 +229,21 @@ lagfx_spv_builder_finish(const lagfx_spv_builder_t *b, size_t *out_size_bytes) {
     /* Concatenate the section streams in SPIR-V module order. */
     uint32_t *dst = p + 5;
     for (int s = 0; s < SEC_COUNT; s++) {
-        memcpy(dst, b->sec[s].w, b->sec[s].n * sizeof(uint32_t));
-        dst += b->sec[s].n;
+        if (s == SEC_FUNCS && b->locals.n && b->locals_mark != ~0u &&
+            b->locals_mark <= b->sec[s].n) {
+            /* Splice the deferred Function-storage OpVariables at the
+             * recorded entry-block mark. */
+            memcpy(dst, b->sec[s].w, b->locals_mark * sizeof(uint32_t));
+            dst += b->locals_mark;
+            memcpy(dst, b->locals.w, b->locals.n * sizeof(uint32_t));
+            dst += b->locals.n;
+            memcpy(dst, b->sec[s].w + b->locals_mark,
+                   (b->sec[s].n - b->locals_mark) * sizeof(uint32_t));
+            dst += b->sec[s].n - b->locals_mark;
+        } else {
+            memcpy(dst, b->sec[s].w, b->sec[s].n * sizeof(uint32_t));
+            dst += b->sec[s].n;
+        }
     }
     if (out_size_bytes) *out_size_bytes = total_bytes;
     return out;
