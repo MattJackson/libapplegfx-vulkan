@@ -241,6 +241,14 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
     vr = vkWaitForFences(vk->device, 1, &fence, VK_TRUE, timeout_ns);
     if (vr != VK_SUCCESS) {
         LAGFX_ERR("draw_record_and_submit: vkWaitForFences failed/timeout (%d)", (int)vr);
+        /* The submission is STILL RUNNING on the lavapipe worker —
+         * destroying the fence + freeing the command buffer here was a
+         * use-after-free (SIGSEGV inside libvulkan_lvp at the next
+         * present; live-observed when a long-running dispatched shader
+         * exceeded the fence timeout). Block until the device is idle —
+         * bounded now that dispatched control flow carries a hard
+         * iteration cap — then clean up safely. */
+        vkDeviceWaitIdle(vk->device);
         vkDestroyFence(vk->device, fence, NULL);
         lagfx_vk_cmdbuf_free(vk, cb);
         return LAGFX_ERR_BACKEND;

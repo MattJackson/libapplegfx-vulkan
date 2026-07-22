@@ -5501,11 +5501,21 @@ static bool translate_body_dispatch(xlate_ctx_t *c, lagfx_status_t *out_st) {
     c->dispatch_mode = true;
     c->dispatch_cur_bb = 0;
 
-    /* %blockvar (uint, Function) via the locals splice. */
+    /* %blockvar + %itervar (uint, Function) via the locals splice. The
+     * iteration counter is a TERMINATION GUARD: while cross-case values
+     * still degrade to undefs (unspilled pointers etc.), a branch condition
+     * can resolve to garbage and the dispatched CFG can spin forever —
+     * live-observed as a vkWaitForFences timeout on the Xgc panel draw
+     * followed by a lavapipe SIGSEGV at the next present. The header
+     * bails to OpReturn after DISPATCH_MAX_ITERS. */
     uint32_t uint_spv = emit_type_int_w(c, 32u, 0u);
     uint32_t blk_ptr  = dispatch_ptr_type(c, LAGFX_AIR_TYPE_NONE - 2u, uint_spv);
     uint32_t blockvar = lagfx_spv_builder_alloc_id(c->b);
     lagfx_spv_builder_emit_local_var(c->b, blk_ptr, blockvar);
+    uint32_t itervar = lagfx_spv_builder_alloc_id(c->b);
+    lagfx_spv_builder_emit_local_var(c->b, blk_ptr, itervar);
+    { uint32_t so[] = { itervar, emit_const_uint32(c, 0u) };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, so, 2); }
 
     /* Labels. */
     uint32_t lbl_header   = lagfx_spv_builder_alloc_id(c->b);
@@ -5523,16 +5533,29 @@ static bool translate_body_dispatch(xlate_ctx_t *c, lagfx_status_t *out_st) {
     dispatch_lower_terminator(c, bbs, nbb, 0, &c->insts[bbs[0].last_inst],
                               val_id, blockvar, lbl_header);
 
-    /* header: cur = load blockvar ; OpLoopMerge exit cont ; branch body */
+    /* header: cur = load blockvar ; iter++ ; OpLoopMerge exit cont ;
+     * branch body while iter < DISPATCH_MAX_ITERS else exit (OpReturn). */
     { uint32_t o[] = { lbl_header };
       lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, o, 1); }
     uint32_t cur = lagfx_spv_builder_alloc_id(c->b);
     { uint32_t o[] = { uint_spv, cur, blockvar };
       lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, o, 3); }
+    uint32_t it = lagfx_spv_builder_alloc_id(c->b);
+    { uint32_t o[] = { uint_spv, it, itervar };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, o, 3); }
+    uint32_t itp = lagfx_spv_builder_alloc_id(c->b);
+    { uint32_t o[] = { uint_spv, itp, it, emit_const_uint32(c, 1u) };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_IADD, o, 4); }
+    { uint32_t so[] = { itervar, itp };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, so, 2); }
+    uint32_t inbound = lagfx_spv_builder_alloc_id(c->b);
+    { uint32_t o[] = { emit_type_bool(c), inbound, itp,
+                       emit_const_uint32(c, 65536u) };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_ULESS_THAN, o, 4); }
     { uint32_t o[] = { lbl_exit, lbl_cont, 0u /* LoopControl None */ };
       lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOOP_MERGE, o, 3); }
-    { uint32_t o[] = { lbl_body };
-      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, o, 1); }
+    { uint32_t o[] = { inbound, lbl_body, lbl_exit };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH_CONDITIONAL, o, 3); }
 
     /* body: selection merge + switch over the block index. */
     { uint32_t o[] = { lbl_body };
@@ -5574,7 +5597,7 @@ static bool translate_body_dispatch(xlate_ctx_t *c, lagfx_status_t *out_st) {
       lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BRANCH, o, 1); }
     { uint32_t o[] = { lbl_exit };
       lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LABEL, o, 1); }
-    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_UNREACHABLE, NULL, 0);
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_RETURN, NULL, 0);
 
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_FUNCTION_END, NULL, 0);
 
