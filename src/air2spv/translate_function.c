@@ -1196,21 +1196,21 @@ static int frag_resource_kind(const xlate_ctx_t *c, uint32_t arg_idx) {
     return 0;
 }
 
-/* True when the shader has a texture resource arg but NO sampler resource
- * arg — the constexpr / in-shader-sampler case. Such a shader samples its
- * texture(s) with a Metal `constexpr sampler` declared in the body, so the
- * air.sample_texture_2d sampler operand never resolves to a bound sampler
- * var. We provide one module-scope default sampler for it to use. */
+/* True when the shader has any texture resource arg — the constexpr /
+ * in-shader-sampler case. A shader (or one of its HELPER functions, e.g.
+ * UberShader::sample_3d_lut, which takes a texture but NO sampler param)
+ * may sample with a Metal `constexpr sampler` declared in the body, so
+ * the air.sample_* sampler operand never resolves to a bound sampler
+ * var. Provide one module-scope default sampler whenever textures exist;
+ * if nothing references it, the binding stays statically unused (legal
+ * to leave unwritten). */
 static bool needs_default_sampler(const xlate_ctx_t *c) {
     uint32_t n = c->num_args < LAGFX_MAX_VERTEX_ARGS
                      ? c->num_args : LAGFX_MAX_VERTEX_ARGS;
-    bool has_texture = false, has_sampler = false;
     for (uint32_t i = 0; i < n; i++) {
-        int rk = frag_resource_kind(c, i);
-        if (rk == 1) has_texture = true;
-        else if (rk == 2) has_sampler = true;
+        if (frag_resource_kind(c, i) == 1) return true;
     }
-    return has_texture && !has_sampler;
+    return false;
 }
 
 /* Shared OpTypeImage 2D float (Sampled=1, used with a sampler). */
@@ -2688,6 +2688,9 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
     set_result_air_type(c, result_value_id, dest_ty);
 }
 
+static uint32_t buffer_arg_runtimearray_elem(xlate_ctx_t *c,
+                                             uint32_t ptr_value_id);
+
 /* Emit an OpFunctionCall to a registered (already-emitted) helper
  * function. Returns true when the call was emitted and the result bound;
  * false to fall through to the typed-undef degradation path.
@@ -2789,10 +2792,25 @@ static bool emit_helper_fncall(xlate_ctx_t *c, uint32_t fn_idx,
                  * arg/param types match by ID); otherwise degrade the
                  * whole call. */
                 uint32_t a = resolve_value_spv(c, vid);
-                if (!a || get_value_spv_type(c, vid) != hf->param[i].spv_ty)
-                    return false;
-                argv[i] = a;
-                break;
+                if (a && get_value_spv_type(c, vid) == hf->param[i].spv_ty) {
+                    argv[i] = a;
+                    break;
+                }
+                /* Whole `device T*` BUFFER ARG passed as a T* param (the
+                 * asg77_sample LUT): the arg is the { runtimearray<T> }
+                 * Block VARIABLE — synthesize &block[0][0], which has
+                 * exactly the param's interior-pointer type. */
+                uint32_t elem = buffer_arg_runtimearray_elem(c, vid);
+                if (a && elem && elem == hf->param[i].pointee_air) {
+                    uint32_t chain = lagfx_spv_builder_alloc_id(c->b);
+                    uint32_t zero = emit_const_uint32(c, 0u);
+                    uint32_t ac[] = { hf->param[i].spv_ty, chain, a, zero, zero };
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_ACCESS_CHAIN,
+                                              ac, 5);
+                    argv[i] = chain;
+                    break;
+                }
+                return false;
             }
             default:
                 return false;
@@ -3322,7 +3340,13 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
      * with OpSampledImage, sample at `uv`, then OpCompositeConstruct the
      * { vec4, i8 } result struct (status byte = undef; only field 0, the
      * colour, is ever extracted). Needs tex + samp + uv operands. */
-    if (strncmp(fn_name, "air.sample_texture_2d", 21u) == 0 &&
+    /* air.sample_texture_3d shares this path: our textures all realize as
+     * 2D images (the tex arg is already declared with the 2D image type),
+     * and a Dim2D OpImageSampleImplicitLod accepts a coordinate with
+     * extra components — so the 3D LUT samples read a 2D slice instead of
+     * binding undef. Approximate, but real data of the right type. */
+    if ((strncmp(fn_name, "air.sample_texture_2d", 21u) == 0 ||
+         strncmp(fn_name, "air.sample_texture_3d", 21u) == 0) &&
         result_value_id != 0u) {
         uint32_t tex_slot = callee_slot_idx + 1u;
         uint32_t samp_slot = callee_slot_idx + 2u;
@@ -3405,6 +3429,66 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
                     bind_value_spv(c, result_value_id, rgba);
                 }
                 LAGFX_TRACE("call: air.sample_texture_2d → OpImageSampleImplicitLod "
+                            "(value-id %u)", result_value_id);
+                return;
+            }
+        }
+    }
+
+    /* === air.read_texture_2d.v4f32 → OpImageFetch (int coords, Lod 0) ===
+     * `tex.read(uint2 xy, lod)` — (tex_ptr, v2i32 coord, i32 lod, i32) →
+     * { vec4, i8 }. Fetch needs no sampler; Lod fixed to 0 (mip chains
+     * aren't realized host-side). */
+    if (strncmp(fn_name, "air.read_texture_2d", 19u) == 0 &&
+        result_value_id != 0u) {
+        uint32_t tex_slot   = callee_slot_idx + 1u;
+        uint32_t coord_slot = callee_slot_idx + 2u;
+        if (inst->num_ops > coord_slot) {
+            uint32_t tex_var = resolve_value_spv(c,
+                resolve_relative((uint32_t)inst->ops[tex_slot], next_val_id));
+            /* Same resource-var validity contract as the sample handler. */
+            {
+                int tex_ok = 0; uint32_t first_tex = 0;
+                for (uint32_t a = 0;
+                     a < c->num_args && a < LAGFX_MAX_VERTEX_ARGS; a++) {
+                    if (c->arg_resource_kind[a] != 1u ||
+                        !c->arg_resource_var[a]) continue;
+                    if (!first_tex) first_tex = c->arg_resource_var[a];
+                    if (tex_var == c->arg_resource_var[a]) tex_ok = 1;
+                }
+                if (!tex_ok) tex_var = first_tex;
+            }
+            if (tex_var) {
+                uint32_t ivec2 = emit_type_vec(c, emit_type_int_w(c, 32u, 0u), 2u);
+                uint32_t coord = resolve_or_undef(c,
+                    resolve_relative((uint32_t)inst->ops[coord_slot], next_val_id),
+                    ivec2);
+                uint32_t img_t = emit_type_image2d_f(c);
+                uint32_t v4f   = emit_type_vec4_f(c);
+                uint32_t img_val = lagfx_spv_builder_alloc_id(c->b);
+                { uint32_t o[] = { img_t, img_val, tex_var };
+                  lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, o, 3); }
+                uint32_t rgba = lagfx_spv_builder_alloc_id(c->b);
+                { uint32_t o[] = { v4f, rgba, img_val, coord,
+                                   0x2u /* ImageOperands Lod */,
+                                   emit_const_uint32(c, 0u) };
+                  lagfx_spv_builder_emit_op(c->b, 95 /* OpImageFetch */, o, 6); }
+                uint32_t struct_spv = (result_ty_air != LAGFX_AIR_TYPE_NONE)
+                                        ? emit_air_type(c, result_ty_air)
+                                        : 0u;
+                uint32_t res = resolve_value_spv(c, result_value_id);
+                if (!res) res = lagfx_spv_builder_alloc_id(c->b);
+                if (struct_spv) {
+                    uint32_t status = emit_undef(c, emit_type_int_w(c, 8u, 0u));
+                    uint32_t o[] = { struct_spv, res, rgba, status };
+                    lagfx_spv_builder_emit_op(c->b,
+                        LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, o, 4);
+                    bind_value_spv(c, result_value_id, res);
+                    set_result_air_type(c, result_value_id, result_ty_air);
+                } else {
+                    bind_value_spv(c, result_value_id, rgba);
+                }
+                LAGFX_TRACE("call: air.read_texture_2d → OpImageFetch "
                             "(value-id %u)", result_value_id);
                 return;
             }
