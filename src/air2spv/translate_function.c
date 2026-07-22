@@ -76,6 +76,15 @@ enum {
     LAGFX_HPARAM_TEX,
     LAGFX_HPARAM_SAMP,
     LAGFX_HPARAM_THREADPTR,
+    /* constant/device pointer to a VALUE-class element (`constant
+     * float4*` colour matrices, `device float*` LUTs): the param is a
+     * ptr-StorageBuffer-T; call sites pass the interior pointer DIRECTLY
+     * (legal with VariablePointersStorageBuffer), and callee-side p[i]
+     * GEPs lower to OpPtrAccessChain (the param's pointer type carries
+     * the required ArrayStride). Struct pointees (GammaLUTs) stay
+     * unsupported — their Block-decorated type identity doesn't match
+     * emit_air_type's plain struct. */
+    LAGFX_HPARAM_DATABUF,
 };
 
 typedef struct {
@@ -108,6 +117,13 @@ typedef struct {
     /* Planning recursion guard. */
     uint32_t visiting[16];
     uint32_t n_visiting;
+    /* VariablePointersStorageBuffer capability emitted (once, on the
+     * first DATABUF param registration). */
+    bool cap_varptr;
+    /* Pointer-type ids already decorated with ArrayStride (dedup —
+     * duplicate identical decorations are legal but noisy). */
+    uint32_t stride_decorated[16];
+    uint32_t n_stride_decorated;
 } xlate_helpers_t;
 
 /* ===================================================================
@@ -352,6 +368,7 @@ typedef struct {
     bool                      is_helper;
     uint32_t                  helper_ret_air;  /* AIR ret type (helpers) */
     uint32_t                  helper_ret_spv;  /* 0 = void */
+    const xlate_helper_fn_t  *helper_self;     /* registry entry (helpers) */
 
     /* Cached ptr-UniformConstant-image / -sampler types. The resource
      * vars and every helper's tex/samp params MUST share ONE pointer type
@@ -2765,6 +2782,18 @@ static bool emit_helper_fncall(xlate_ctx_t *c, uint32_t fn_idx,
                 argv[i] = temp;
                 break;
             }
+            case LAGFX_HPARAM_DATABUF: {
+                /* Interior StorageBuffer pointer, passed directly (legal
+                 * with VariablePointersStorageBuffer). The arg's tracked
+                 * pointer TYPE must equal the param's exactly (call
+                 * arg/param types match by ID); otherwise degrade the
+                 * whole call. */
+                uint32_t a = resolve_value_spv(c, vid);
+                if (!a || get_value_spv_type(c, vid) != hf->param[i].spv_ty)
+                    return false;
+                argv[i] = a;
+                break;
+            }
             default:
                 return false;
         }
@@ -3615,6 +3644,22 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
     uint32_t rtarr_elem  = buffer_arg_runtimearray_elem(c, ptr_id);
     uint32_t first_idx   = rtarr_elem ? 0u : 1u; /* first LLVM index used? */
 
+    /* Helper DATABUF param base (`constant T* p` → `p[i]`): the base is
+     * an INTERIOR StorageBuffer pointer, so LLVM's first index is real
+     * pointer arithmetic — lower to OpPtrAccessChain (its Element operand
+     * IS that first index; the param's pointer type carries the required
+     * ArrayStride). Subsequent indices descend like OpAccessChain. */
+    bool ptr_arith = false;
+    if (c->is_helper && c->helper_self &&
+        ptr_id >= c->arg_id_base && ptr_id < c->arg_id_base + c->num_args) {
+        uint32_t a = ptr_id - c->arg_id_base;
+        if (a < c->helper_self->n_params &&
+            c->helper_self->param[a].kind == LAGFX_HPARAM_DATABUF) {
+            ptr_arith = true;
+            first_idx = 0u;
+        }
+    }
+
     /* Walk the AIR type chain to deduce the result pointer's pointee
      * type. For a runtime-array buffer base, start at the element type and
      * walk through ALL indices; otherwise start at source_ty and skip the
@@ -3628,7 +3673,7 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
      * element index walked one level too deep (a `GEP v4float, ptr, i64 n`
      * result pointee became float → OpAccessChain result-type mismatch,
      * the VfxU11 vertex shader / 5 login pipelines). */
-    for (uint32_t i = rtarr_elem ? first_idx + 1u : first_idx;
+    for (uint32_t i = (rtarr_elem || ptr_arith) ? first_idx + 1u : first_idx;
          i < n_idx_total; i++) {
         if (pointee >= n_types) break;
         const lagfx_air_type_t *t = &ts[pointee];
@@ -3689,13 +3734,19 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
         bind_value_spv(c, result_value_id, ptr_spv);
         set_result_air_type(c, result_value_id, pointee);
         set_value_storage(c, result_value_id, storage);
+        set_value_spv_type(c, result_value_id, get_value_spv_type(c, ptr_id));
         return;
     }
 
-    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_ACCESS_CHAIN, ops, op_count);
+    lagfx_spv_builder_emit_op(c->b,
+        ptr_arith ? LAGFX_SPV_OP_PTR_ACCESS_CHAIN : LAGFX_SPV_OP_ACCESS_CHAIN,
+        ops, op_count);
     bind_value_spv(c, result_value_id, result_id);
     set_result_air_type(c, result_value_id, pointee);
     set_value_storage(c, result_value_id, storage);
+    /* Track the result's POINTER type — helper-call DATABUF args match
+     * param types by ID against exactly this. */
+    set_value_spv_type(c, result_value_id, result_ptr);
 }
 
 static void emit_inst_store(xlate_ctx_t *c, const lagfx_air_inst_t *inst,
@@ -6989,7 +7040,14 @@ static int classify_helper_param(const xlate_ctx_t *c, uint32_t air_ty,
         if (pointee_out) *pointee_out = pointee;
         return LAGFX_HPARAM_THREADPTR;
     }
-    return 0;   /* constant/device data pointer — deferred */
+    if ((addrspace == 1u || addrspace == 2u) &&
+        helper_value_type_ok(c, pointee)) {
+        /* constant/device pointer to a value element — pass through as a
+         * StorageBuffer interior pointer (VariablePointersStorageBuffer). */
+        if (pointee_out) *pointee_out = pointee;
+        return LAGFX_HPARAM_DATABUF;
+    }
+    return 0;   /* struct-pointee data pointer — deferred */
 }
 
 static xlate_helper_fn_t *helpers_find(xlate_helpers_t *h, uint32_t fn_idx) {
@@ -7057,6 +7115,43 @@ static void helpers_register(xlate_ctx_t *c, uint32_t fn_idx) {
                 hf->param[i].spv_ty = emit_type_pointer(
                     c, pointee, hf->param[i].pointee_spv,
                     LAGFX_SPV_STORAGE_FUNCTION);
+                break;
+            }
+            case LAGFX_HPARAM_DATABUF: {
+                hf->param[i].pointee_air = pointee;
+                hf->param[i].pointee_spv = emit_air_type(c, pointee);
+                hf->param[i].spv_ty = emit_type_pointer(
+                    c, pointee, hf->param[i].pointee_spv,
+                    LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+                if (!h->cap_varptr) {
+                    h->cap_varptr = true;
+                    uint32_t cap[] = {
+                        LAGFX_SPV_CAPABILITY_VARIABLE_POINTERS_STORAGE_BUFFER };
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY,
+                                              cap, 1);
+                }
+                /* OpPtrAccessChain requires ArrayStride on the BASE
+                 * pointer type (VUID-StandaloneSpirv-Base-04708); stride =
+                 * the element's std430 size. Decorate once per type id. */
+                bool done = false;
+                for (uint32_t d = 0; d < h->n_stride_decorated; d++)
+                    if (h->stride_decorated[d] == hf->param[i].spv_ty)
+                        { done = true; break; }
+                if (!done) {
+                    uint32_t sz = 0, al = 0;
+                    if (air_type_size_align(c, pointee, &sz, &al) && sz) {
+                        uint32_t dops[] = { hf->param[i].spv_ty,
+                                            LAGFX_SPV_DECORATION_ARRAY_STRIDE,
+                                            lagfx_round_up(sz, al) };
+                        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE,
+                                                  dops, 3);
+                        if (h->n_stride_decorated <
+                            sizeof(h->stride_decorated) /
+                                sizeof(h->stride_decorated[0]))
+                            h->stride_decorated[h->n_stride_decorated++] =
+                                hf->param[i].spv_ty;
+                    }
+                }
                 break;
             }
         }
@@ -7211,6 +7306,7 @@ static void translate_one_helper(xlate_ctx_t *ec, uint32_t slot) {
     }
     hc.helper_ret_air = hf->ret_air;
     hc.helper_ret_spv = hf->ret_spv;
+    hc.helper_self    = hf;
 
     bind_module_constants(&hc);
     bind_local_constants(&hc);
@@ -7250,6 +7346,10 @@ static void translate_one_helper(xlate_ctx_t *ec, uint32_t slot) {
                 set_value_storage(&hc, vid, LAGFX_SPV_STORAGE_FUNCTION);
                 set_value_spv_type(&hc, vid, hf->param[i].spv_ty);
                 set_result_air_type(&hc, vid, hf->param[i].pointee_air);
+                break;
+            case LAGFX_HPARAM_DATABUF:
+                set_value_storage(&hc, vid, LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+                set_value_spv_type(&hc, vid, hf->param[i].spv_ty);
                 break;
         }
     }

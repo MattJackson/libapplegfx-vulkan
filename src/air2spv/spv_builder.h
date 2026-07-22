@@ -74,6 +74,9 @@ enum {
     LAGFX_SPV_OP_LOAD                   = 61,
     LAGFX_SPV_OP_STORE                  = 62,
     LAGFX_SPV_OP_ACCESS_CHAIN           = 65,
+    LAGFX_SPV_OP_PTR_ACCESS_CHAIN       = 67,   /* pointer-arithmetic chain
+                                                 * (VariablePointersStorageBuffer;
+                                                 * base ptr type needs ArrayStride) */
     LAGFX_SPV_OP_IMAGE_READ             = 98,
     LAGFX_SPV_OP_IMAGE_WRITE            = 99,
     LAGFX_SPV_OP_DECORATE               = 71,
@@ -192,6 +195,11 @@ enum {
     LAGFX_SPV_CAPABILITY_INT64     = 11,
     LAGFX_SPV_CAPABILITY_INT16     = 22,
     LAGFX_SPV_CAPABILITY_INT8      = 39,
+    /* SPIR-V 1.3+ core (no OpExtension needed at our 1.4 version): lets
+     * StorageBuffer interior pointers be passed as OpFunctionCall args
+     * and used as OpPtrAccessChain bases. Requires the device feature
+     * variablePointersStorageBuffer (VkPhysicalDeviceVulkan11Features). */
+    LAGFX_SPV_CAPABILITY_VARIABLE_POINTERS_STORAGE_BUFFER = 4441,
 };
 
 /* Addressing & memory model. */
