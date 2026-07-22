@@ -275,8 +275,16 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     if (!p || !task || !vk || tref == 0u) return NULL;
     uint8_t ttype = 0; uint64_t tva = 0, tgpa = 0;
     if (!lagfx_resolve_object_data(p, task, tref, &ttype, &tva, &tgpa)
-        || tva == 0u || ttype != 0x03u)
+        || tva == 0u || ttype != 0x03u) {
+        /* GOAL-M2aa: the Xgc login-panel pipeline skips its draws on
+         * exactly these bails (te=0 texture refs) — log WHY so the panel's
+         * blur/backdrop source-texture type is identifiable from one boot. */
+        LAGFX_LOG("TEXREALIZE-BAIL ref=0x%x resolve=%d type=0x%02x va=0x%llx gpa=0x%llx",
+                  tref,
+                  lagfx_resolve_object_data(p, task, tref, &ttype, &tva, &tgpa) ? 1 : 0,
+                  ttype, (unsigned long long)tva, (unsigned long long)tgpa);
         return NULL;
+    }
     uint8_t desc[64];
     if (!lagfx_task_read_virtual(p, task, tva, sizeof(desc), desc))
         return NULL;
