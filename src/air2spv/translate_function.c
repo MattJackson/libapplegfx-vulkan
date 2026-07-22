@@ -120,6 +120,13 @@ typedef struct {
     int32_t                  *value_id_to_lit_i32;
     bool                     *value_id_lit_i32_valid;
 
+    /* Side-table: result SPIR-V TYPE id per value (0 = unknown). AIR type
+     * tracking (inst_result_air_type) goes dark through default-typed
+     * fallback results; consumers that must type-check operands (SPIR-V
+     * arithmetic requires operand type == result type) consult this to
+     * catch mis-typed resolved operands (Xgc). */
+    uint32_t                 *value_spv_type;
+
     /* Per-instruction result type (AIR type-id) so downstream ops can
      * deduce element types (e.g., GEP+STORE val-type from the GEP
      * source). Indexed by INSTRUCTION INDEX into body, NOT value-id. */
@@ -137,7 +144,10 @@ typedef struct {
      * vertex_id builtin (integer-typed param) or a stage-in attribute
      * (vec/float param) declared as a Location-decorated Input. Indexed
      * by arg index; capped at LAGFX_MAX_VERTEX_ARGS. */
-#define LAGFX_MAX_VERTEX_ARGS 8u
+/* 32: the Xgc login-panel fragment (pipeline 0x31) takes 30 args — its
+ * texture/sampler args sit past the old cap of 8 and were silently
+ * dropped (no OpTypeImage in the module -> every sample undef -> black). */
+#define LAGFX_MAX_VERTEX_ARGS 32u
     uint32_t                  arg_input_var_ids[LAGFX_MAX_VERTEX_ARGS];
 
     /* Fragment colour outputs. A `fragment float4 f()` has one (Location 0);
@@ -166,6 +176,41 @@ typedef struct {
      * 0=none), cached so GEP can tell a buffer var apart for its storage
      * class. */
     uint8_t                   arg_resource_kind[LAGFX_MAX_VERTEX_ARGS];
+    /* Effective-pointee override for a nonstruct `device T*` buffer arg
+     * whose body accesses UNANIMOUSLY reinterpret it as a different element
+     * type. Metal code like `device uchar *raw` GEP'd with
+     * `source_elem_type = float4` models the arg as { runtimearr<uchar> }
+     * but indexes it in float4 units — the OpAccessChain result type then
+     * mismatches the runtime-array element (spirv-val reject, the VfxXgb
+     * login vertex shader). A body prescan collects every GEP source type /
+     * direct-LOAD result type on the arg; if they all agree and differ from
+     * the declared pointee, the Block is synthesized with the ACCESS type
+     * instead (indices are already in access-type units per LLVM GEP
+     * semantics). 0 = no override. */
+    uint32_t                  arg_pointee_override[LAGFX_MAX_VERTEX_ARGS];
+    /* Byte-buffer VIEW variables (descriptor aliasing). Metal code takes a
+     * `device uchar *blob` arg and BITCASTs it to several typed views
+     * (`device Uniforms*`, `device float4*`, ...) — the VfxXgb login vertex
+     * shader. SPIR-V logical form can't reinterpret a { runtimearr<uchar> }
+     * Block, but Vulkan permits MULTIPLE OpVariables decorated with the
+     * SAME DescriptorSet/Binding, one per view type. The prescan registers
+     * a view per (bytebuf arg, cast-dest pointee); the cast emitter binds
+     * the cast result to the view's variable, and GEP/LOAD flow through
+     * the existing struct-Block / runtimearray paths untouched. */
+#define LAGFX_MAX_BYTEBUF_VIEWS 12u
+    struct {
+        uint8_t  arg;         /* owning buffer arg index */
+        uint32_t pointee_ty;  /* AIR type of the view's pointee */
+        uint32_t var_id;      /* pre-allocated OpVariable id */
+    } bytebuf_view[LAGFX_MAX_BYTEBUF_VIEWS];
+    uint32_t                  n_bytebuf_views;
+    /* Per-value view index + 1 (0 = none): cast results that must bind to
+     * a view variable instead of aliasing the raw byte-buffer variable. */
+    uint8_t                  *value_view;
+    /* Per-value buffer-arg alias map (arg index + 1; 0 = none), built by
+     * prescan_buffer_arg_access_types: pointer BITCAST/ADDRSPACECAST
+     * results that alias a buffer arg. Freed with the other side tables. */
+    uint8_t                  *arg_alias;
     uint32_t                  id_default_sampler_var; /* constexpr-sampler fallback (0=none) */
     uint32_t                  id_image_t;        /* OpTypeImage 2D float, Sampled=1 */
     uint32_t                  id_sampler_t;      /* OpTypeSampler */
@@ -769,6 +814,17 @@ static void bind_value_spv(xlate_ctx_t *c, uint32_t value_id, uint32_t spv_id) {
 }
 
 /* Pointer storage-class tracking (see the value_storage field doc). */
+static void set_value_spv_type(xlate_ctx_t *c, uint32_t value_id, uint32_t ty) {
+    if (c->value_spv_type && value_id < c->value_id_capacity)
+        c->value_spv_type[value_id] = ty;
+}
+
+static uint32_t get_value_spv_type(const xlate_ctx_t *c, uint32_t value_id) {
+    if (c->value_spv_type && value_id < c->value_id_capacity)
+        return c->value_spv_type[value_id];
+    return 0u;
+}
+
 static void set_value_storage(xlate_ctx_t *c, uint32_t value_id, uint32_t sc) {
     if (c->value_storage && value_id < c->value_id_capacity)
         c->value_storage[value_id] = (uint8_t)(sc + 1u);
@@ -1068,8 +1124,13 @@ static bool block_struct_handleable(xlate_ctx_t *c, uint32_t struct_ty) {
     return true;
 }
 
-/* Pointee struct AIR type of a buffer arg's pointer type (0 if none). */
+/* Pointee struct AIR type of a buffer arg's pointer type (0 if none).
+ * A prescanned access-type override (see arg_pointee_override) replaces
+ * the declared pointee so every downstream consumer (Block synthesis,
+ * runtime-array element, GEP walk) sees the type the body indexes with. */
 static uint32_t buffer_arg_struct_ty(const xlate_ctx_t *c, uint32_t arg_idx) {
+    if (arg_idx < LAGFX_MAX_VERTEX_ARGS && c->arg_pointee_override[arg_idx])
+        return c->arg_pointee_override[arg_idx];
     uint32_t aty = c->arg_air_type_ids[arg_idx];
     uint32_t n = 0;
     const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n);
@@ -1348,7 +1409,7 @@ static void emit_prologue(xlate_ctx_t *c) {
 
         /* 4. OpEntryPoint Vertex %main "main" %pos <arg inputs + resources> */
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_VERTEX, c->id_main };
-        uint32_t suffix[1u + 3u * LAGFX_MAX_VERTEX_ARGS];
+        uint32_t suffix[1u + 3u * LAGFX_MAX_VERTEX_ARGS + LAGFX_MAX_BYTEBUF_VIEWS];
         uint32_t n_iface = 0u;
         suffix[n_iface++] = c->id_position_var;
         for (uint32_t i = 0; i < n_va; i++) {
@@ -1357,6 +1418,8 @@ static void emit_prologue(xlate_ctx_t *c) {
         }
         for (uint32_t k = 0; k < c->num_vertex_outs; k++)
             suffix[n_iface++] = c->id_vertex_out_vars[k];
+        for (uint32_t v = 0; v < c->n_bytebuf_views; v++)
+            suffix[n_iface++] = c->bytebuf_view[v].var_id;
         lagfx_spv_builder_emit_op_string(c->b, LAGFX_SPV_OP_ENTRY_POINT,
                                           prefix, 2, "main", suffix, n_iface);
         /* DescriptorSet 0 + sequential Binding for vertex resources. */
@@ -1368,8 +1431,20 @@ static void emit_prologue(xlate_ctx_t *c) {
                                    LAGFX_SPV_DECORATION_DESCRIPTOR_SET, 0u };
                 lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, ds, 3);
                 uint32_t bd[] = { c->arg_resource_var[i],
-                                   LAGFX_SPV_DECORATION_BINDING, binding++ };
+                                   LAGFX_SPV_DECORATION_BINDING, binding };
                 lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, bd, 3);
+                /* Byte-buffer views alias the SAME descriptor (set 0,
+                 * same binding) with a different Block type. */
+                for (uint32_t v = 0; v < c->n_bytebuf_views; v++) {
+                    if (c->bytebuf_view[v].arg != i) continue;
+                    uint32_t vds[] = { c->bytebuf_view[v].var_id,
+                                       LAGFX_SPV_DECORATION_DESCRIPTOR_SET, 0u };
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, vds, 3);
+                    uint32_t vbd[] = { c->bytebuf_view[v].var_id,
+                                       LAGFX_SPV_DECORATION_BINDING, binding };
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, vbd, 3);
+                }
+                binding++;
             }
         }
 
@@ -1443,7 +1518,7 @@ static void emit_prologue(xlate_ctx_t *c) {
             c->id_default_sampler_var = lagfx_spv_builder_alloc_id(c->b);
 
         uint32_t prefix[] = { LAGFX_SPV_EXECUTION_MODEL_FRAGMENT, c->id_main };
-        uint32_t suffix[3u * LAGFX_MAX_VERTEX_ARGS];
+        uint32_t suffix[3u * LAGFX_MAX_VERTEX_ARGS + LAGFX_MAX_BYTEBUF_VIEWS];
         uint32_t n_iface = 0u;
         for (uint32_t k = 0; k < c->num_color_outputs; k++)
             suffix[n_iface++] = c->id_color_vars[k];
@@ -1453,6 +1528,8 @@ static void emit_prologue(xlate_ctx_t *c) {
             if (c->arg_resource_var[i])  suffix[n_iface++] = c->arg_resource_var[i];
         }
         if (c->id_default_sampler_var) suffix[n_iface++] = c->id_default_sampler_var;
+        for (uint32_t v = 0; v < c->n_bytebuf_views; v++)
+            suffix[n_iface++] = c->bytebuf_view[v].var_id;
         lagfx_spv_builder_emit_op_string(c->b, LAGFX_SPV_OP_ENTRY_POINT,
                                           prefix, 2, "main", suffix, n_iface);
 
@@ -1480,8 +1557,20 @@ static void emit_prologue(xlate_ctx_t *c) {
                                   LAGFX_SPV_DECORATION_DESCRIPTOR_SET, 0u };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d_set, 3);
             uint32_t d_bind[] = { c->arg_resource_var[i],
-                                   LAGFX_SPV_DECORATION_BINDING, binding++ };
+                                   LAGFX_SPV_DECORATION_BINDING, binding };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d_bind, 3);
+            /* Byte-buffer views alias the SAME descriptor (set 0, same
+             * binding) with a different Block type. */
+            for (uint32_t v = 0; v < c->n_bytebuf_views; v++) {
+                if (c->bytebuf_view[v].arg != i) continue;
+                uint32_t vds[] = { c->bytebuf_view[v].var_id,
+                                   LAGFX_SPV_DECORATION_DESCRIPTOR_SET, 0u };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, vds, 3);
+                uint32_t vbd[] = { c->bytebuf_view[v].var_id,
+                                   LAGFX_SPV_DECORATION_BINDING, binding };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, vbd, 3);
+            }
+            binding++;
         }
         /* The default sampler binds after the texture(s) in the same set. */
         if (c->id_default_sampler_var) {
@@ -1524,6 +1613,23 @@ static void emit_arg_resource_vars(xlate_ctx_t *c, uint32_t n_args) {
             bind_value_spv(c, c->arg_id_base + i, c->arg_resource_var[i]);
             set_value_storage(c, c->arg_id_base + i,
                               LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+            /* Aliased byte-buffer VIEW variables: one Block per cast-dest
+             * pointee, same descriptor as the raw arg (see bytebuf_view). */
+            for (uint32_t v = 0; v < c->n_bytebuf_views; v++) {
+                if (c->bytebuf_view[v].arg != i) continue;
+                uint32_t vblock = emit_type_struct_block(
+                    c, c->bytebuf_view[v].pointee_ty);
+                if (!vblock) continue;
+                uint32_t vptr = lagfx_spv_builder_alloc_id(c->b);
+                uint32_t vpt_ops[] = { vptr, LAGFX_SPV_STORAGE_STORAGE_BUFFER,
+                                       vblock };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER,
+                                          vpt_ops, 3);
+                uint32_t vvar_ops[] = { vptr, c->bytebuf_view[v].var_id,
+                                        LAGFX_SPV_STORAGE_STORAGE_BUFFER };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE,
+                                          vvar_ops, 3);
+            }
             continue;
         }
         uint32_t opaque = (rk == 1u) ? emit_type_image2d_f(c) : emit_type_sampler(c);
@@ -1950,6 +2056,123 @@ static void emit_inst_alloca(xlate_ctx_t *c, uint32_t inst_idx,
     (void)c; (void)inst_idx; (void)inst; (void)result_value_id;
 }
 
+
+/* Lower `fptoui/fptosi float -> i1` to OpFOrdNotEqual(x, 0.0) — the SPIR-V
+ * dest for i1 is OpTypeBool, which OpConvertFToU rejects ("Expected
+ * unsigned int scalar or vector type as Result Type", Xgc). Returns true
+ * if applied. Scalar and 2..4-lane vector dests. */
+static bool emit_float_to_bool_cmp(xlate_ctx_t *c, uint32_t opval_spv,
+                                   uint32_t dest_ty, uint32_t result_value_id) {
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    uint32_t lanes = 1u, elem_ty = dest_ty;
+    if (dest_ty < n_types && ts[dest_ty].kind == LAGFX_AIR_TYPE_VECTOR &&
+        ts[dest_ty].num_op >= 2u) {
+        lanes = (uint32_t)ts[dest_ty].op[0];
+        elem_ty = ts[dest_ty].op[1];
+    }
+    if (elem_ty >= n_types || ts[elem_ty].kind != LAGFX_AIR_TYPE_INTEGER ||
+        ts[elem_ty].num_op < 1u || ts[elem_ty].op[0] != 1u || lanes > 4u)
+        return false;
+
+    uint32_t bool_t = emit_type_bool(c);
+    uint32_t res_t  = (lanes > 1u) ? emit_type_vec(c, bool_t, lanes) : bool_t;
+    uint32_t zero   = emit_const_float32(c, 0.0f);
+    if (lanes > 1u) {
+        uint32_t vf = emit_type_vec(c, emit_type_float32(c), lanes);
+        uint32_t zv[6]; uint32_t zid = lagfx_spv_builder_alloc_id(c->b);
+        zv[0] = vf; zv[1] = zid;
+        for (uint32_t k = 0; k < lanes; k++) zv[2+k] = zero;
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT,
+                                  zv, 2u+lanes);
+        zero = zid;
+    }
+    uint32_t rid = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t ops[] = { res_t, rid, opval_spv, zero };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_FORD_NOT_EQUAL, ops, 4);
+    bind_value_spv(c, result_value_id, rid);
+    set_result_air_type(c, result_value_id, LAGFX_AIR_TYPE_BOOL);
+    set_value_spv_type(c, result_value_id, res_t);
+    return true;
+}
+
+/* Lower `uitofp/sitofp i1 -> float` (bool to float) to
+ * OpSelect(cond, 1.0, 0.0) of the destination float type — SPIR-V bool is
+ * not an integer, so OpConvert*ToF rejects it ("Expected input to be int
+ * scalar or vector", the Xgc v3bool -> v3float conversion). Returns true
+ * if the lowering applied (result bound); false -> caller emits the plain
+ * conversion. Handles scalar float32 and 2..4-lane float32 vectors. */
+static bool emit_bool_to_float_select(xlate_ctx_t *c, uint32_t opval_id,
+                                      uint32_t opval_spv, uint32_t dest_ty,
+                                      uint32_t result_value_id) {
+    uint32_t src_ty = value_air_type_idx(c, opval_id);
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    bool src_bool = (src_ty == LAGFX_AIR_TYPE_BOOL);
+    if (!src_bool && src_ty != LAGFX_AIR_TYPE_NONE && src_ty < n_types) {
+        const lagfx_air_type_t *st = &ts[src_ty];
+        if (st->kind == LAGFX_AIR_TYPE_VECTOR && st->num_op >= 2u &&
+            st->op[1] < n_types)
+            st = &ts[st->op[1]];
+        src_bool = (st->kind == LAGFX_AIR_TYPE_INTEGER && st->num_op >= 1u &&
+                    st->op[0] == 1u);
+    }
+    if (!src_bool) return false;
+
+    uint32_t lanes = 1u, elem_ty = dest_ty;
+    if (dest_ty < n_types && ts[dest_ty].kind == LAGFX_AIR_TYPE_VECTOR &&
+        ts[dest_ty].num_op >= 2u) {
+        lanes = (uint32_t)ts[dest_ty].op[0];
+        elem_ty = ts[dest_ty].op[1];
+    }
+    if (elem_ty >= n_types || ts[elem_ty].kind != LAGFX_AIR_TYPE_FLOAT ||
+        lanes > 4u)
+        return false;   /* half / exotic — keep the plain conversion */
+
+    uint32_t dest_spv = emit_air_type(c, dest_ty);
+    uint32_t one  = emit_const_float32(c, 1.0f);
+    uint32_t zero = emit_const_float32(c, 0.0f);
+    if (lanes > 1u) {
+        uint32_t one_v[6], zero_v[6];
+        uint32_t one_id  = lagfx_spv_builder_alloc_id(c->b);
+        uint32_t zero_id = lagfx_spv_builder_alloc_id(c->b);
+        one_v[0] = dest_spv;  one_v[1] = one_id;
+        zero_v[0] = dest_spv; zero_v[1] = zero_id;
+        for (uint32_t k = 0; k < lanes; k++) { one_v[2+k]=one; zero_v[2+k]=zero; }
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, one_v, 2u+lanes);
+        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, zero_v, 2u+lanes);
+        one = one_id; zero = zero_id;
+    }
+    /* The condition must match the result's lane count. If the source is a
+     * scalar bool but the dest is a vector, broadcast the condition. */
+    uint32_t cond = opval_spv;
+    if (lanes > 1u) {
+        uint32_t want_bvec = emit_type_vec(c, emit_type_bool(c), lanes);
+        uint32_t have = get_value_spv_type(c, opval_id);
+        bool cond_is_vec = (have == want_bvec);
+        if (!cond_is_vec && src_ty != LAGFX_AIR_TYPE_NONE &&
+            src_ty != LAGFX_AIR_TYPE_BOOL && src_ty < n_types &&
+            ts[src_ty].kind == LAGFX_AIR_TYPE_VECTOR)
+            cond_is_vec = true;
+        if (!cond_is_vec) {
+            uint32_t cv[6];
+            uint32_t cv_id = lagfx_spv_builder_alloc_id(c->b);
+            cv[0] = want_bvec; cv[1] = cv_id;
+            for (uint32_t k = 0; k < lanes; k++) cv[2+k] = cond;
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT,
+                                      cv, 2u+lanes);
+            cond = cv_id;
+        }
+    }
+    uint32_t rid = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t sel[] = { dest_spv, rid, cond, one, zero };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_SELECT, sel, 5);
+    bind_value_spv(c, result_value_id, rid);
+    set_result_air_type(c, result_value_id, dest_ty);
+    set_value_spv_type(c, result_value_id, dest_spv);
+    return true;
+}
+
 static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
                              const lagfx_air_inst_t *inst,
                              uint32_t result_value_id, uint32_t next_val_id) {
@@ -1976,7 +2199,21 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
      * We delay emitting the dest_ty_spv until we know which opcode path
      * we're taking — this avoids runtime type emission that would violate
      * SPIR-V ordering rules (types must be declared before variables). */
-    uint32_t opval_spv = resolve_or_undef(c, opval_id, emit_type_int_w(c, 32u, 0u));
+    /* The undef fallback must be in the cast's SOURCE type family:
+     * FPTRUNC/FPEXT/FPTOUI/FPTOSI take a FLOAT source — an int-typed
+     * undef feeds OpFConvert "Expected input to be float scalar or
+     * vector" (Xgc). FPEXT to float32 implies a half source (FConvert
+     * requires differing widths). */
+    uint32_t src_fallback;
+    switch (cast_op) {
+        case 3: case 4: case 7:                 /* FPTOUI/FPTOSI/FPTRUNC */
+            src_fallback = emit_type_float32(c); break;
+        case 8:                                 /* FPEXT (to f32) ← half */
+            src_fallback = emit_type_half(c);    break;
+        default:
+            src_fallback = emit_type_int_w(c, 32u, 0u); break;
+    }
+    uint32_t opval_spv = resolve_or_undef(c, opval_id, src_fallback);
 
     /* Check if result is already bound (e.g., from pre-allocation).
      * If not, allocate a new id. */
@@ -2009,6 +2246,8 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
             break;
 
         case 3:  /* CAST_FPTOUI → OpConvertFToU (float→unsigned int) */
+            if (emit_float_to_bool_cmp(c, opval_spv, dest_ty, result_value_id))
+                return;
             if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
             { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
               uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
@@ -2016,6 +2255,8 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
             break;
 
         case 4:  /* CAST_FPTOSI → OpConvertFToS (float→signed int) */
+            if (emit_float_to_bool_cmp(c, opval_spv, dest_ty, result_value_id))
+                return;
             if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
             { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
               uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
@@ -2023,6 +2264,9 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
             break;
 
         case 5:  /* CAST_UITOFP → OpConvertUToF (unsigned int→float) */
+            if (emit_bool_to_float_select(c, opval_id, opval_spv, dest_ty,
+                                          result_value_id))
+                return;
             if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
             { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
               uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
@@ -2030,6 +2274,11 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
             break;
 
         case 6:  /* CAST_SITOFP → OpConvertSToF (signed int→float) */
+            /* sitofp i1 true is -1.0 in LLVM; Metal emits uitofp for bool
+             * -> 0/1, so the 1.0/0.0 select is the shape that occurs. */
+            if (emit_bool_to_float_select(c, opval_id, opval_spv, dest_ty,
+                                          result_value_id))
+                return;
             if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
             { uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
               uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
@@ -2095,12 +2344,46 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
                     }
                 }
                 if (numeric) {
-                    if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
                     uint32_t dest_ty_spv = emit_air_type(c, dest_ty);
+                    /* OpBitcast requires EQUAL total bit widths. When the
+                     * source's tracked AIR type disagrees (a mis-resolved
+                     * operand through pending control flow — Xgc's
+                     * `OpBitcast %uint %v4float`), bind an undef of the
+                     * dest type instead of emitting an invalid cast. */
+                    uint32_t src_ty = value_air_type_idx(c, opval_id);
+                    bool width_ok = false;
+                    if (src_ty != LAGFX_AIR_TYPE_NONE &&
+                        src_ty != LAGFX_AIR_TYPE_BOOL) {
+                        uint32_t sw, sa, dw, da;
+                        width_ok = air_type_size_align(c, src_ty, &sw, &sa) &&
+                                   air_type_size_align(c, dest_ty, &dw, &da) &&
+                                   sw == dw;
+                    }
+                    if (!width_ok) {
+                        bind_value_spv(c, result_value_id,
+                                       emit_undef(c, dest_ty_spv));
+                        set_result_air_type(c, result_value_id, dest_ty);
+                        return;
+                    }
+                    if (!result_spv) result_spv = lagfx_spv_builder_alloc_id(c->b);
                     uint32_t ops[] = { dest_ty_spv, result_spv, opval_spv };
                     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_BITCAST, ops, 3);
                     bind_value_spv(c, result_value_id, result_spv);
                     set_result_air_type(c, result_value_id, dest_ty);
+                    return;
+                }
+            }
+            /* A registered byte-buffer VIEW binds to its own aliased Block
+             * variable (same descriptor set/binding as the raw arg). */
+            if (c->value_view && result_value_id < c->value_id_capacity &&
+                c->value_view[result_value_id]) {
+                uint32_t v = (uint32_t)c->value_view[result_value_id] - 1u;
+                if (v < c->n_bytebuf_views) {
+                    bind_value_spv(c, result_value_id,
+                                   c->bytebuf_view[v].var_id);
+                    set_result_air_type(c, result_value_id, dest_ty);
+                    set_value_storage(c, result_value_id,
+                                      LAGFX_SPV_STORAGE_STORAGE_BUFFER);
                     return;
                 }
             }
@@ -2117,6 +2400,18 @@ static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
             return;
 
         case 12: /* CAST_ADDRSPACECAST → alias for now */
+            if (c->value_view && result_value_id < c->value_id_capacity &&
+                c->value_view[result_value_id]) {
+                uint32_t v = (uint32_t)c->value_view[result_value_id] - 1u;
+                if (v < c->n_bytebuf_views) {
+                    bind_value_spv(c, result_value_id,
+                                   c->bytebuf_view[v].var_id);
+                    set_result_air_type(c, result_value_id, dest_ty);
+                    set_value_storage(c, result_value_id,
+                                      LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+                    return;
+                }
+            }
             bind_value_spv(c, result_value_id, opval_spv);
             set_result_air_type(c, result_value_id, dest_ty);
             {
@@ -2383,6 +2678,26 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         if (*srctype == '.') srctype++;
         int src_is_bool = (srctype[0] == 'i' && srctype[1] == '1' &&
                            (srctype[2] == '\0'));
+        int src_is_bool_vec = 0;
+        if (!src_is_bool && srctype[0] == 'v') {
+            /* vector-of-bool: "v<N>i1" (air.convert.f.v3f32.u.v3i1, Xgc) */
+            const char *q = srctype + 1;
+            while (*q >= '0' && *q <= '9') q++;
+            src_is_bool_vec = (q != srctype + 1 && q[0] == 'i' &&
+                               q[1] == '1' && q[2] == '\0');
+            src_is_bool |= src_is_bool_vec;
+        }
+
+        /* dsttype substring: after "<dstkind>." up to the next '.'. */
+        const char *dsttype = (q[0] && q[1] == '.') ? q + 2 : q;
+        int dst_is_bool = (dsttype[0] == 'i' && dsttype[1] == '1' &&
+                           (dsttype[2] == '.' || dsttype[2] == '\0'));
+        if (!dst_is_bool && dsttype[0] == 'v') {
+            const char *dq = dsttype + 1;
+            while (*dq >= '0' && *dq <= '9') dq++;
+            dst_is_bool = (dq != dsttype + 1 && dq[0] == 'i' && dq[1] == '1' &&
+                           (dq[2] == '.' || dq[2] == '\0'));
+        }
 
         uint32_t conv_op = 0u;
         if      (dstkind == 'f' && srckind == 'u') conv_op = LAGFX_SPV_OP_CONVERT_U_TO_F;
@@ -2404,9 +2719,20 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
             uint32_t dst_ty_spv = (result_ty_air != LAGFX_AIR_TYPE_NONE)
                                     ? emit_air_type(c, result_ty_air)
                                     : emit_type_float32(c);
+            uint32_t n_types_c = 0;
+            const lagfx_air_type_t *ts_c =
+                lagfx_air_module_types(c->m, &n_types_c);
+            uint32_t src_lanes = 1u;
+            if (src_is_bool_vec && result_ty_air < n_types_c &&
+                ts_c[result_ty_air].kind == LAGFX_AIR_TYPE_VECTOR &&
+                ts_c[result_ty_air].num_op >= 1u)
+                src_lanes = (uint32_t)ts_c[result_ty_air].op[0];
+            uint32_t cond_fallback = src_is_bool_vec
+                ? emit_type_vec(c, emit_type_bool(c), src_lanes)
+                : emit_type_bool(c);
             uint32_t cond = resolve_or_undef(c,
                 resolve_relative((uint32_t)inst->ops[cvt_arg_slot], next_val_id),
-                emit_type_bool(c));
+                cond_fallback);
             uint32_t one = emit_const_float32(c, 1.0f);
             uint32_t zero = emit_const_float32(c, 0.0f);
             /* If the destination is a float vector, the OpSelect needs the
@@ -2427,14 +2753,18 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
                     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, one_v, 2u+lanes);
                     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, zero_v, 2u+lanes);
                     one = one_id; zero = zero_id;
-                    /* OpSelect over a vector result needs a vector condition. */
-                    uint32_t bvec = emit_type_vec(c, emit_type_bool(c), lanes);
-                    uint32_t cv[6];
-                    uint32_t cv_id = lagfx_spv_builder_alloc_id(c->b);
-                    cv[0] = bvec; cv[1] = cv_id;
-                    for (uint32_t k = 0; k < lanes; k++) cv[2+k] = cond;
-                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, cv, 2u+lanes);
-                    cond = cv_id;
+                    /* OpSelect over a vector result needs a vector
+                     * condition; a bool-VECTOR source already is one —
+                     * splatting it would build vec-of-vec. */
+                    if (!src_is_bool_vec) {
+                        uint32_t bvec = emit_type_vec(c, emit_type_bool(c), lanes);
+                        uint32_t cv[6];
+                        uint32_t cv_id = lagfx_spv_builder_alloc_id(c->b);
+                        cv[0] = bvec; cv[1] = cv_id;
+                        for (uint32_t k = 0; k < lanes; k++) cv[2+k] = cond;
+                        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_COMPOSITE_CONSTRUCT, cv, 2u+lanes);
+                        cond = cv_id;
+                    }
                 }
             }
             uint32_t res = resolve_value_spv(c, result_value_id);
@@ -2454,6 +2784,16 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
                                     : emit_type_float32(c);
             uint32_t a_rel  = (uint32_t)inst->ops[cvt_arg_slot];
             uint32_t a_id   = resolve_relative(a_rel, next_val_id);
+            /* float -> i1 dest: SPIR-V bool is not an int; lower to
+             * OpFOrdNotEqual(x, 0.0) (mirrors the CAST-instruction path). */
+            if (dst_is_bool && srckind == 'f' &&
+                result_ty_air != LAGFX_AIR_TYPE_NONE) {
+                uint32_t x_spv = resolve_or_undef(c, a_id,
+                                                  emit_type_float32(c));
+                if (emit_float_to_bool_cmp(c, x_spv, result_ty_air,
+                                           result_value_id))
+                    return;
+            }
             uint32_t a_spv  = resolve_or_undef(c, a_id, emit_type_int_w(c, 32u, 0u));
             uint32_t res    = resolve_value_spv(c, result_value_id);
             if (!res) res = lagfx_spv_builder_alloc_id(c->b);
@@ -2565,23 +2905,34 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
                 resolve_relative((uint32_t)inst->ops[tex_slot], next_val_id));
             uint32_t samp_var = resolve_value_spv(c,
                 resolve_relative((uint32_t)inst->ops[samp_slot], next_val_id));
-            /* Is samp_var a real bound sampler resource var? A constexpr /
-             * in-shader sampler has NO sampler arg, so the operand resolves
-             * to an unbound OpUndef pointer (OpLoad of which fails spirv-val
-             * "not a logical pointer"). Detect that and fall back to the
-             * module-scope default sampler reserved in the prologue. */
+            /* Both operands must be REAL bound resource variables. A
+             * constexpr sampler (or a texture/sampler value that flowed
+             * through not-yet-handled control flow — Xgc's undef-pointer
+             * sampler) resolves to something else; OpLoad through it is a
+             * spirv-val reject ("not a logical pointer"). Fall back to the
+             * default sampler, then to the FIRST bound var of the right
+             * kind (semantically approximate; valid — matching the
+             * pending-control-flow degradation contract). */
             {
-                int is_bound_sampler = 0;
+                int samp_ok = 0, tex_ok = 0;
+                uint32_t first_samp = 0, first_tex = 0;
                 for (uint32_t a = 0;
                      a < c->num_args && a < LAGFX_MAX_VERTEX_ARGS; a++) {
-                    if (c->arg_resource_kind[a] == 2u && samp_var &&
-                        c->arg_resource_var[a] == samp_var) {
-                        is_bound_sampler = 1;
-                        break;
+                    uint32_t v = c->arg_resource_var[a];
+                    if (!v) continue;
+                    if (c->arg_resource_kind[a] == 2u) {
+                        if (!first_samp) first_samp = v;
+                        if (samp_var == v) samp_ok = 1;
+                    } else if (c->arg_resource_kind[a] == 1u) {
+                        if (!first_tex) first_tex = v;
+                        if (tex_var == v) tex_ok = 1;
                     }
                 }
-                if (!is_bound_sampler && c->id_default_sampler_var)
-                    samp_var = c->id_default_sampler_var;
+                if (!samp_ok)
+                    samp_var = c->id_default_sampler_var ? c->id_default_sampler_var
+                                                         : first_samp;
+                if (!tex_ok)
+                    tex_var = first_tex;
             }
             uint32_t uv_spv = resolve_or_undef(c,
                 resolve_relative((uint32_t)inst->ops[uv_slot], next_val_id),
@@ -2739,6 +3090,16 @@ static uint32_t gep_base_storage_class(const xlate_ctx_t *c, uint32_t ptr_value_
  * leading member-0 index in their OpAccessChain, and the LLVM GEP's first
  * index is a REAL runtime-array element index (not a to-be-dropped 0). */
 static uint32_t buffer_arg_runtimearray_elem(xlate_ctx_t *c, uint32_t ptr_value_id) {
+    /* A byte-buffer VIEW binding with a nonstruct pointee is a
+     * { runtimearray<T> } Block too (see bytebuf_view doc). */
+    if (c->value_view && ptr_value_id < c->value_id_capacity &&
+        c->value_view[ptr_value_id]) {
+        uint32_t v = (uint32_t)c->value_view[ptr_value_id] - 1u;
+        if (v < c->n_bytebuf_views)
+            return buffer_arg_nonstruct_pointee(
+                c, c->bytebuf_view[v].pointee_ty);
+        return 0u;
+    }
     if (ptr_value_id < c->arg_id_base ||
         ptr_value_id >= c->arg_id_base + c->num_args)
         return 0u;
@@ -2772,12 +3133,13 @@ static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
     uint32_t ptr_id    = resolve_relative(ptr_rel, next_val_id);
     uint32_t ptr_spv   = resolve_value_spv(c, ptr_id);
     if (!ptr_spv) {
-        /* Base pointer unknown — bind result as OpUndef of a default
-         * pointer type and bail. */
-        uint32_t fallback_ty = emit_air_type(c, source_ty);
-        uint32_t fallback_ptr = emit_type_pointer(c, source_ty, fallback_ty,
-                                                    LAGFX_SPV_STORAGE_FUNCTION);
-        bind_value_spv(c, result_value_id, emit_undef(c, fallback_ptr));
+        /* Base pointer unknown — leave the result UNBOUND (consumers fall
+         * back to a typed undef VALUE). Binding an OpUndef POINTER here
+         * made downstream loads emit `OpLoad %T %undef_ptr` — "Pointer is
+         * not a logical pointer", spirv-val reject (the Xgc login panel
+         * fragment, whose base flowed through then-unhandled control
+         * flow). Keep the result AIR type so GEP+STORE can still type its
+         * undef value. */
         set_result_air_type(c, result_value_id, source_ty);
         return;
     }
@@ -3117,7 +3479,27 @@ static void emit_inst_insertval(xlate_ctx_t *c, uint32_t inst_idx,
     uint32_t vec4_f = emit_type_vec4_f(c);
     uint32_t struct_id = c->id_struct_v4f;
     uint32_t agg_spv = resolve_or_undef(c, agg_id, struct_id);
-    uint32_t val_spv = resolve_or_undef(c, val_id, vec4_f);
+    /* Unresolvable inserted values must fall back to an undef of the
+     * MEMBER's type, not vec4 — inserting a v4float undef into a float
+     * member is a spirv-val type mismatch (VfxXgb's point_size member,
+     * whose value flows through not-yet-handled control flow). */
+    uint32_t val_fallback = vec4_f;
+    {
+        uint32_t n_types = 0;
+        const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+        uint32_t fn_ty = c->fn ? c->fn->type_index : LAGFX_AIR_TYPE_NONE;
+        if (fn_ty < n_types && ts[fn_ty].kind == LAGFX_AIR_TYPE_FUNCTION &&
+            ts[fn_ty].num_op >= 2u) {
+            uint32_t ret_ty = ts[fn_ty].op[1];
+            if (ret_ty < n_types &&
+                (ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_ANON ||
+                 ts[ret_ty].kind == LAGFX_AIR_TYPE_STRUCT_NAMED) &&
+                1u + field < ts[ret_ty].num_op) {
+                val_fallback = emit_air_type(c, ts[ret_ty].op[1u + field]);
+            }
+        }
+    }
+    uint32_t val_spv = resolve_or_undef(c, val_id, val_fallback);
 
     uint32_t result_id = lagfx_spv_builder_alloc_id(c->b);
     /* OpCompositeInsert: [result_type, result, object, composite, idx0, ...] */
@@ -3297,6 +3679,12 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
      * literals as module constants). The RHS type isn't needed: SPIR-V
      * arithmetic result type follows the LHS/result type. */
     uint32_t lhs_ty = value_air_type_idx(c, lhs_id);
+    /* An unresolvable LHS (e.g. a PHI not yet handled by control flow)
+     * falls back to the RHS operand's type — SPIR-V arithmetic requires
+     * BOTH operands to match the result type, and a v4float-default undef
+     * next to a resolved scalar float RHS is a spirv-val reject (Xgc). */
+    if (lhs_ty == LAGFX_AIR_TYPE_NONE && !resolve_value_spv(c, lhs_id))
+        lhs_ty = value_air_type_idx(c, rhs_id);
 
     /* Default to float if we can't resolve the LHS type. */
     bool is_float = true;
@@ -3360,6 +3748,37 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
     uint32_t spv_op = 0u;
     bool use_vector_times_scalar = false;
 
+    /* Boolean logic: LLVM lowers `a && b` / `a || b` / `a ^ b` on i1 to
+     * and/or/xor — SPIR-V requires OpLogical* on OpTypeBool operands
+     * ("Expected int scalar or vector type as Result Type: BitwiseXor",
+     * the Xgc login fragment). Covers the CMP-result BOOL marker, i1, and
+     * vectors of i1. */
+    bool is_bool = (lhs_ty == LAGFX_AIR_TYPE_BOOL);
+    if (!is_bool && lhs_ty != LAGFX_AIR_TYPE_NONE) {
+        uint32_t n_types_b = 0;
+        const lagfx_air_type_t *tsb = lagfx_air_module_types(c->m, &n_types_b);
+        if (lhs_ty < n_types_b) {
+            const lagfx_air_type_t *bt = &tsb[lhs_ty];
+            if (bt->kind == LAGFX_AIR_TYPE_VECTOR && bt->num_op >= 2u &&
+                bt->op[1] < n_types_b)
+                bt = &tsb[bt->op[1]];
+            is_bool = (bt->kind == LAGFX_AIR_TYPE_INTEGER &&
+                       bt->num_op >= 1u && bt->op[0] == 1u);
+        }
+    }
+    if (is_bool && (llvm_binop == 10 || llvm_binop == 11 || llvm_binop == 12)) {
+        uint32_t bool_op =
+            (llvm_binop == 10) ? LAGFX_SPV_OP_LOGICAL_AND :
+            (llvm_binop == 11) ? LAGFX_SPV_OP_LOGICAL_OR
+                               : LAGFX_SPV_OP_LOGICAL_NOT_EQUAL; /* xor */
+        uint32_t ops[] = { result_spv_type, result_spv, lhs_spv, rhs_spv };
+        lagfx_spv_builder_emit_op(c->b, bool_op, ops, 4);
+        bind_value_spv(c, result_value_id, result_spv);
+        set_result_air_type(c, result_value_id, lhs_ty);
+        set_value_spv_type(c, result_value_id, result_spv_type);
+        return;
+    }
+
     switch (llvm_binop) {
         case 0:  /* BINOP_ADD  → FAdd / IAdd  */ spv_op = is_float ? LAGFX_SPV_OP_FADD : LAGFX_SPV_OP_IADD; break;
         case 1:  /* BINOP_SUB  → FSub / ISub  */ spv_op = is_float ? LAGFX_SPV_OP_FSUB : LAGFX_SPV_OP_ISUB; break;
@@ -3420,8 +3839,35 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
         lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VECTOR_TIMES_SCALAR, ops, 4);
         bind_value_spv(c, result_value_id, result_spv);
         set_result_air_type(c, result_value_id, result_ty_air);
+        set_value_spv_type(c, result_value_id, result_spv_type);
         return;
     }
+
+    /* Operand/result type consistency: SPIR-V arithmetic requires both
+     * operands to BE the result type (shift amounts exempt — any int
+     * width). A resolved-but-wrongly-typed operand (mis-resolution through
+     * pending control flow; Xgc's `OpFSub %float %float %v4float`) is
+     * replaced by an undef of the result type — same degradation contract
+     * as an unresolved operand. */
+    if (!(llvm_binop >= 7 && llvm_binop <= 9)) {
+        uint32_t rt = value_air_type_idx(c, rhs_id);
+        if (result_ty_air != LAGFX_AIR_TYPE_NONE &&
+            rt != LAGFX_AIR_TYPE_NONE && rt != result_ty_air)
+            rhs_spv = emit_undef(c, result_spv_type);
+        uint32_t lt = value_air_type_idx(c, lhs_id);
+        if (result_ty_air != LAGFX_AIR_TYPE_NONE &&
+            lt != LAGFX_AIR_TYPE_NONE && lt != result_ty_air)
+            lhs_spv = emit_undef(c, result_spv_type);
+        /* SPIR-V-type-level check catches producers whose AIR type went
+         * dark (default-typed fallback results). */
+        uint32_t rst = get_value_spv_type(c, rhs_id);
+        if (rst && rst != result_spv_type)
+            rhs_spv = emit_undef(c, result_spv_type);
+        uint32_t lst = get_value_spv_type(c, lhs_id);
+        if (lst && lst != result_spv_type)
+            lhs_spv = emit_undef(c, result_spv_type);
+    }
+
 
     uint32_t ops[5];
     ops[0] = result_spv_type;
@@ -3432,6 +3878,7 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
 
     bind_value_spv(c, result_value_id, result_spv);
     set_result_air_type(c, result_value_id, result_ty_air);
+    set_value_spv_type(c, result_value_id, result_spv_type);
 }
 
 /* ===================================================================
@@ -3621,6 +4068,12 @@ static void emit_inst_cmp(xlate_ctx_t *c, uint32_t inst_idx,
     uint32_t bool_spv = emit_type_bool(c);
     uint32_t result_spv_type = bool_spv;
     uint32_t lhs_ty = value_air_type_idx(c, lhs_id);
+    /* Unresolvable LHS (e.g. a PHI pending control-flow support): take the
+     * RHS operand's type — both compare operands must match, and a scalar
+     * default undef next to a resolved v4float RHS is a spirv-val reject
+     * (Xgc: "Expected left and right operands to have the same type"). */
+    if (lhs_ty == LAGFX_AIR_TYPE_NONE && !resolve_value_spv(c, lhs_id))
+        lhs_ty = value_air_type_idx(c, rhs_id);
     if (lhs_ty != LAGFX_AIR_TYPE_NONE) {
         uint32_t n_types = 0u;
         const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
@@ -3667,8 +4120,11 @@ static void emit_inst_cmp(xlate_ctx_t *c, uint32_t inst_idx,
      * results resolves a bool result type (emit_air_type maps the sentinel
      * to OpTypeBool). For a vector compare the result is a bool-vector; we
      * still record the scalar-bool sentinel — the select path handles the
-     * common scalar predicate chains (function-constant predicates). */
+     * common scalar predicate chains (function-constant predicates). The
+     * PRECISE type (incl. bool-vectors) goes to the SPIR-V-type side table
+     * for consumers that must type-check (bool->float select lowering). */
     set_result_air_type(c, result_value_id, LAGFX_AIR_TYPE_BOOL);
+    set_value_spv_type(c, result_value_id, result_spv_type);
 }
 
 /* CMP2 (code 28, modern) shares CMP's record layout for our purposes
@@ -3927,6 +4383,19 @@ static void emit_inst_insertelt(xlate_ctx_t *c, uint32_t inst_idx,
     uint32_t vector_spv = resolve_or_undef(c, vector_id, vec_spv_type);
     uint32_t elem_spv   = resolve_or_undef(c, elem_id, elem_spv_type);
     uint32_t index_spv  = resolve_or_undef(c, index_id, index_spv_type);
+
+    /* Type-check the inserted element / base vector against the vector's
+     * component/vector type — a mis-typed resolved operand (Xgc: v4float
+     * inserted into v3float) degrades to a typed undef, matching the
+     * unresolved-operand contract. */
+    {
+        uint32_t est = get_value_spv_type(c, elem_id);
+        if (est && est != elem_spv_type)
+            elem_spv = emit_undef(c, elem_spv_type);
+        uint32_t vst = get_value_spv_type(c, vector_id);
+        if (vst && vst != vec_spv_type)
+            vector_spv = emit_undef(c, vec_spv_type);
+    }
 
     /* Allocate result SPIR-V id. */
     uint32_t result_spv = resolve_value_spv(c, result_value_id);
@@ -4786,6 +5255,139 @@ static lagfx_status_t translate_body(xlate_ctx_t *c) {
     return LAGFX_OK;
 }
 
+/* Body prescan: collect the element type each nonstruct `device T*` buffer
+ * arg is ACTUALLY accessed with (GEP source_elem_type / direct-LOAD result
+ * type). If every access agrees on one type that differs from the declared
+ * pointee, set arg_pointee_override[a] so the Block is synthesized with the
+ * access type (see the field doc; the VfxXgb `device uchar*`-as-float4
+ * login vertex shader). Runs before emit_prologue — uses only arg/type
+ * tables and the decoded instruction stream. */
+static void prescan_buffer_arg_access_types(xlate_ctx_t *c) {
+    uint32_t access_ty[LAGFX_MAX_VERTEX_ARGS] = {0};
+    bool     mixed[LAGFX_MAX_VERTEX_ARGS] = {false};
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+
+    /* Which args are raw byte buffers (declared pointee = i8)? Their cast
+     * views get their own aliased Block variables (see bytebuf_view doc). */
+    bool is_bytebuf[LAGFX_MAX_VERTEX_ARGS] = {false};
+    for (uint32_t a = 0; a < c->num_args && a < LAGFX_MAX_VERTEX_ARGS; a++) {
+        uint32_t aty = c->arg_air_type_ids[a];
+        if (aty >= n_types || ts[aty].kind != LAGFX_AIR_TYPE_POINTER ||
+            ts[aty].num_op < 1u)
+            continue;
+        uint32_t p = ts[aty].op[0];
+        is_bytebuf[a] = (p < n_types && ts[p].kind == LAGFX_AIR_TYPE_INTEGER &&
+                         ts[p].num_op >= 1u && ts[p].op[0] == 8u);
+    }
+
+    /* Alias map: value-id -> (arg index + 1), 0 = not an arg alias. The
+     * body reaches a buffer arg through pointer BITCAST chains (and
+     * pointer-preserving casts), so track those the same way the emitters'
+     * per-value storage-class table does. */
+    uint8_t *alias = (uint8_t *)calloc(c->value_id_capacity, 1u);
+    uint8_t *vview = (uint8_t *)calloc(c->value_id_capacity, 1u);
+    if (!alias || !vview) { free(alias); free(vview); return; }
+    for (uint32_t a = 0; a < c->num_args && a < LAGFX_MAX_VERTEX_ARGS; a++)
+        alias[c->arg_id_base + a] = (uint8_t)(a + 1u);
+
+    uint32_t next_val_id = c->inst_id_base;
+    for (uint32_t i = 0; i < c->num_insts; i++) {
+        const lagfx_air_inst_t *inst = &c->insts[i];
+        uint32_t ptr_rel = 0, acc = 0;
+        if ((inst->code == LAGFX_AIR_INST_GEP ||
+             inst->code == LAGFX_AIR_INST_GEP_OLD) && inst->num_ops >= 4u) {
+            ptr_rel = (uint32_t)inst->ops[2];
+            acc     = (uint32_t)inst->ops[1];   /* source_elem_type */
+        } else if (inst->code == LAGFX_AIR_INST_LOAD && inst->num_ops >= 2u) {
+            ptr_rel = (uint32_t)inst->ops[0];
+            acc     = (uint32_t)inst->ops[1];   /* result type */
+        } else if (inst->code == LAGFX_AIR_INST_CAST && inst->num_ops >= 3u) {
+            /* Pointer-preserving casts (BITCAST=11 / ADDRSPACECAST=12)
+             * alias the source; a cast of a BYTE-BUFFER arg to a typed
+             * pointer registers a view. */
+            int cast_op = (int)inst->ops[2];
+            if (cast_op == 11 || cast_op == 12) {
+                uint32_t src = resolve_relative((uint32_t)inst->ops[0],
+                                                next_val_id);
+                if (src < c->value_id_capacity &&
+                    next_val_id < c->value_id_capacity) {
+                    alias[next_val_id] = alias[src];
+                    vview[next_val_id] = vview[src];
+                    uint32_t a = alias[src] ? (uint32_t)alias[src] - 1u
+                                            : UINT32_MAX;
+                    uint32_t dest_ty = (uint32_t)inst->ops[1];
+                    if (a < LAGFX_MAX_VERTEX_ARGS && is_bytebuf[a] &&
+                        dest_ty < n_types &&
+                        ts[dest_ty].kind == LAGFX_AIR_TYPE_POINTER &&
+                        ts[dest_ty].num_op >= 1u) {
+                        uint32_t pointee = ts[dest_ty].op[0];
+                        bool p_is_i8 = pointee < n_types &&
+                            ts[pointee].kind == LAGFX_AIR_TYPE_INTEGER &&
+                            ts[pointee].num_op >= 1u && ts[pointee].op[0] == 8u;
+                        if (!p_is_i8) {
+                            /* Find-or-register the (arg, pointee) view. */
+                            uint32_t v;
+                            for (v = 0; v < c->n_bytebuf_views; v++)
+                                if (c->bytebuf_view[v].arg == a &&
+                                    c->bytebuf_view[v].pointee_ty == pointee)
+                                    break;
+                            if (v == c->n_bytebuf_views &&
+                                v < LAGFX_MAX_BYTEBUF_VIEWS) {
+                                c->bytebuf_view[v].arg = (uint8_t)a;
+                                c->bytebuf_view[v].pointee_ty = pointee;
+                                c->bytebuf_view[v].var_id =
+                                    lagfx_spv_builder_alloc_id(c->b);
+                                c->n_bytebuf_views++;
+                                LAGFX_TRACE("translate_function: bytebuf arg "
+                                            "%u view pointee air type %u",
+                                            a, pointee);
+                            }
+                            if (v < c->n_bytebuf_views)
+                                vview[next_val_id] = (uint8_t)(v + 1u);
+                        }
+                    }
+                }
+            }
+        }
+        if (acc) {
+            uint32_t ptr_id = resolve_relative(ptr_rel, next_val_id);
+            if (ptr_id < c->value_id_capacity && alias[ptr_id] &&
+                !vview[ptr_id]) {
+                uint32_t a = (uint32_t)alias[ptr_id] - 1u;
+                if (a < LAGFX_MAX_VERTEX_ARGS) {
+                    if (access_ty[a] && access_ty[a] != acc) mixed[a] = true;
+                    access_ty[a] = acc;
+                }
+            }
+        }
+        if (inst_produces_value(c, inst)) next_val_id++;
+    }
+    c->arg_alias  = alias;   /* kept for the emitters; freed with the
+                              * other side tables */
+    c->value_view = vview;
+
+    for (uint32_t a = 0; a < c->num_args && a < LAGFX_MAX_VERTEX_ARGS; a++) {
+        if (!access_ty[a] || mixed[a]) continue;
+        /* Declared pointee (raw, no override yet). */
+        uint32_t aty = c->arg_air_type_ids[a];
+        if (aty >= n_types || ts[aty].kind != LAGFX_AIR_TYPE_POINTER ||
+            ts[aty].num_op < 1u)
+            continue;
+        uint32_t declared = ts[aty].op[0];
+        if (access_ty[a] == declared) continue;
+        /* Both the declared pointee and the access type must be modellable
+         * nonstruct element types (struct pointees keep the Block==struct
+         * path untouched). */
+        if (!buffer_arg_nonstruct_pointee(c, declared)) continue;
+        if (!buffer_arg_nonstruct_pointee(c, access_ty[a])) continue;
+        c->arg_pointee_override[a] = access_ty[a];
+        LAGFX_TRACE("translate_function: buffer arg %u pointee override "
+                    "air type %u -> %u (unanimous access type)",
+                    a, declared, access_ty[a]);
+    }
+}
+
 lagfx_status_t
 lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
                                   uint32_t                  fn_idx,
@@ -4891,6 +5493,10 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
     c.value_storage = (uint8_t *)calloc(c.value_id_capacity, sizeof(uint8_t));
     if (!c.value_storage) goto oom;
 
+    /* Side-table: result SPIR-V type per value (0 = unknown). */
+    c.value_spv_type = (uint32_t *)calloc(c.value_id_capacity, sizeof(uint32_t));
+    if (!c.value_spv_type) goto oom;
+
     c.inst_result_air_type = (uint32_t *)calloc(n_insts + 1u, sizeof(uint32_t));
     if (!c.inst_result_air_type) goto oom;
     /* Init to NONE, not 0: a zero slot would read as "type index 0"
@@ -4905,6 +5511,8 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
      * We emit the header first, THEN pre-bind module-level constants
      * (which emit OpType* + OpConstant as side effects), then module
      * variables + function. */
+
+    prescan_buffer_arg_access_types(&c);
 
     emit_prologue(&c);
 
@@ -5192,6 +5800,9 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
     free(c.value_id_to_lit_i32);
     free(c.value_id_lit_i32_valid);
     free(c.value_storage);
+    free(c.arg_alias);
+    free(c.value_view);
+    free(c.value_spv_type);
     free(c.inst_result_air_type);
     lagfx_air_function_body_free(body);
     return LAGFX_OK;
@@ -5207,6 +5818,9 @@ fail:
     free(c.value_id_to_lit_i32);
     free(c.value_id_lit_i32_valid);
     free(c.value_storage);
+    free(c.arg_alias);
+    free(c.value_view);
+    free(c.value_spv_type);
     free(c.inst_result_air_type);
     lagfx_air_function_body_free(body);
     return st;

@@ -137,6 +137,10 @@ enum {
     LAGFX_SPV_OP_FUNORD_LESS_EQUAL      = 189,   /* OpFUnordLessThanEqual (§3.32.15) */
     LAGFX_SPV_OP_FORD_GREATER_EQUAL     = 190,   /* OpFOrdGreaterThanEqual (§3.32.15) */
     LAGFX_SPV_OP_FUNORD_GREATER_EQUAL   = 191,   /* OpFUnordGreaterThanEqual (§3.32.15) */
+    LAGFX_SPV_OP_LOGICAL_EQUAL          = 164,   /* OpLogicalEqual (§3.32.15) */
+    LAGFX_SPV_OP_LOGICAL_NOT_EQUAL      = 165,   /* OpLogicalNotEqual (bool xor) */
+    LAGFX_SPV_OP_LOGICAL_OR             = 166,   /* OpLogicalOr */
+    LAGFX_SPV_OP_LOGICAL_AND            = 167,   /* OpLogicalAnd */
     LAGFX_SPV_OP_SELECT                 = 169,   /* OpSelect (§3.32.16) */
     /* Composite instructions (SPIR-V §3.32.12). */
     LAGFX_SPV_OP_VECTOR_EXTRACT_DYNAMIC = 77,  /* OpVectorExtractDynamic (§3.32.12) */

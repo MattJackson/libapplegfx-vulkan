@@ -159,6 +159,20 @@ static const shader_t g_corpus[] = {
      *                (OpTypeArray length 0). */
     { "VfxU11",                  "login_vfxu11_vert.air.bc",          ROLE_VERT },
     { "TvcmXc_Isrc",             "login_tvcmxc_isrc_frag.air.bc",     ROLE_FRAG_TEX },
+    /* KICKOFF-pipe0x31 additions — the last two broken login shaders
+     * (pipeline 0x31, the login panel material):
+     *   VfxXgb: `device uchar*` blob BITCAST to several typed views
+     *           (struct Uniforms / float4 array) — modelled as multiple
+     *           aliased Block variables on ONE descriptor binding, plus
+     *           member-typed INSERTVAL undef fallbacks.
+     *   Xgc:    73 KB fragment with full control flow (474 basic blocks);
+     *           validity fixes: no undef-POINTER binds on unknown-base
+     *           GEPs, operand/result type guards (binop/cmp/insertelt/
+     *           bitcast widths), bool<->float conversion lowerings
+     *           (OpSelect / OpFOrdNotEqual) in both the CAST and the
+     *           air.convert intrinsic paths. */
+    { "VfxXgb",                  "login_vfxxgb_vert.air.bc",          ROLE_VERT },
+    { "Xgc",                     "login_xgc_frag.air.bc",             ROLE_FRAG_TEX },
 };
 
 static uint8_t *find_fixture(const char *basename, size_t *len) {
