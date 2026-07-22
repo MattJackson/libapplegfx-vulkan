@@ -67,7 +67,9 @@ enum {
     LAGFX_SPV_OP_CONSTANT               = 43,
     LAGFX_SPV_OP_CONSTANT_COMPOSITE     = 44,
     LAGFX_SPV_OP_FUNCTION               = 54,
+    LAGFX_SPV_OP_FUNCTION_PARAMETER     = 55,
     LAGFX_SPV_OP_FUNCTION_END           = 56,
+    LAGFX_SPV_OP_FUNCTION_CALL          = 57,
     LAGFX_SPV_OP_VARIABLE               = 59,
     LAGFX_SPV_OP_LOAD                   = 61,
     LAGFX_SPV_OP_STORE                  = 62,
@@ -169,6 +171,7 @@ enum {
     LAGFX_SPV_OP_SWITCH                 = 251,
     LAGFX_SPV_OP_UNREACHABLE            = 255,
     LAGFX_SPV_OP_RETURN                 = 253,
+    LAGFX_SPV_OP_RETURN_VALUE           = 254,
 };
 
 /* Capabilities. */
@@ -382,11 +385,32 @@ uint8_t *lagfx_spv_builder_finish(const lagfx_spv_builder_t *b,
  * splice point right after the entry OpLabel; emit_local_var appends
  * OpVariables to a side buffer; finish() splices them into the function
  * stream at the mark. Without a mark, local vars are dropped (never
- * marked = never used). */
+ * marked = never used).
+ *
+ * Multi-function modules: each call to mark_locals OPENS A NEW SEGMENT
+ * (one per emitted function); emit_local_var appends to the most recent
+ * segment. finish() splices every segment at its own mark. Marks must be
+ * non-decreasing (functions are emitted sequentially). */
 void lagfx_spv_builder_mark_locals(lagfx_spv_builder_t *b);
 bool lagfx_spv_builder_emit_local_var(lagfx_spv_builder_t *b,
                                       uint32_t ptr_type_id,
                                       uint32_t result_id);
+
+/* === Function-stream rollback ======================================
+ * Snapshot the function-section write position (plus the locals-segment
+ * state) before emitting a function; if its translation fails midway,
+ * rewind drops the partial OpFunction words and any locals segments
+ * opened after the snapshot, keeping the module structurally valid.
+ * Types/constants/decorations emitted meanwhile stay (harmless orphans). */
+typedef struct {
+    uint32_t funcs_n;      /* word count of the functions section */
+    uint32_t locals_segs;  /* number of locals segments */
+    uint32_t locals_n;     /* word count of the locals buffer */
+} lagfx_spv_funcs_mark_t;
+void lagfx_spv_builder_funcs_snapshot(const lagfx_spv_builder_t *b,
+                                      lagfx_spv_funcs_mark_t *out);
+void lagfx_spv_builder_funcs_rewind(lagfx_spv_builder_t *b,
+                                    const lagfx_spv_funcs_mark_t *mark);
 
 #ifdef __cplusplus
 } /* extern "C" */

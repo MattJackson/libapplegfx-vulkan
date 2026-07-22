@@ -37,10 +37,16 @@ enum { SEC_CAPS = 0, SEC_PREAMBLE, SEC_ANNOT, SEC_TYPES, SEC_FUNCS, SEC_COUNT };
 
 typedef struct { uint32_t *w; uint32_t n; uint32_t cap; } spv_section;
 
+/* One locals-splice segment per emitted function: `mark` is the word
+ * offset in SEC_FUNCS where the segment's variables are inserted at
+ * finish(); [begin, end) delimits its words in the shared locals buffer. */
+typedef struct { uint32_t mark; uint32_t begin; } locals_seg;
+
 struct lagfx_spv_builder {
     spv_section sec[SEC_COUNT];
-    spv_section locals;         /* spliced into SEC_FUNCS at locals_mark */
-    uint32_t    locals_mark;    /* word offset in SEC_FUNCS; ~0u = unset */
+    spv_section locals;         /* spliced into SEC_FUNCS per segment */
+    locals_seg *segs;
+    uint32_t    n_segs, cap_segs;
     uint32_t    next_id;  /* next SSA id; spec reserves 0, start at 1 */
 };
 
@@ -89,7 +95,6 @@ lagfx_spv_builder_create(uint32_t initial_word_capacity) {
     if (initial_word_capacity < 16u) initial_word_capacity = 16u;
     lagfx_spv_builder_t *b = (lagfx_spv_builder_t *)calloc(1, sizeof(*b));
     if (!b) return NULL;
-    b->locals_mark = ~0u;
     for (int s = 0; s < SEC_COUNT; s++) {
         b->sec[s].w = (uint32_t *)malloc(initial_word_capacity * sizeof(uint32_t));
         if (!b->sec[s].w) {
@@ -108,6 +113,7 @@ lagfx_spv_builder_free(lagfx_spv_builder_t *b) {
     if (!b) return;
     for (int s = 0; s < SEC_COUNT; s++) free(b->sec[s].w);
     free(b->locals.w);
+    free(b->segs);
     free(b);
 }
 
@@ -191,13 +197,22 @@ lagfx_spv_builder_emit_op_string(lagfx_spv_builder_t *b,
 }
 
 void lagfx_spv_builder_mark_locals(lagfx_spv_builder_t *b) {
-    if (b) b->locals_mark = b->sec[SEC_FUNCS].n;
+    if (!b) return;
+    if (b->n_segs == b->cap_segs) {
+        uint32_t nc = b->cap_segs ? b->cap_segs * 2u : 4u;
+        locals_seg *ns = (locals_seg *)realloc(b->segs, nc * sizeof(*ns));
+        if (!ns) return;   /* segment lost: locals for this fn are dropped */
+        b->segs = ns; b->cap_segs = nc;
+    }
+    b->segs[b->n_segs].mark  = b->sec[SEC_FUNCS].n;
+    b->segs[b->n_segs].begin = b->locals.n;
+    b->n_segs++;
 }
 
 bool lagfx_spv_builder_emit_local_var(lagfx_spv_builder_t *b,
                                       uint32_t ptr_type_id,
                                       uint32_t result_id) {
-    if (!b || b->locals_mark == ~0u) return false;
+    if (!b || b->n_segs == 0u) return false;
     /* OpVariable: wordcount 4 | opcode, ptr-type, result, StorageClass 7. */
     if (!sec_grow(&b->locals, b->locals.n + 4u)) return false;
     b->locals.w[b->locals.n++] = (4u << 16) | 59u /* OpVariable */;
@@ -205,6 +220,22 @@ bool lagfx_spv_builder_emit_local_var(lagfx_spv_builder_t *b,
     b->locals.w[b->locals.n++] = result_id;
     b->locals.w[b->locals.n++] = 7u /* Function */;
     return true;
+}
+
+void lagfx_spv_builder_funcs_snapshot(const lagfx_spv_builder_t *b,
+                                      lagfx_spv_funcs_mark_t *out) {
+    if (!b || !out) return;
+    out->funcs_n     = b->sec[SEC_FUNCS].n;
+    out->locals_segs = b->n_segs;
+    out->locals_n    = b->locals.n;
+}
+
+void lagfx_spv_builder_funcs_rewind(lagfx_spv_builder_t *b,
+                                    const lagfx_spv_funcs_mark_t *mark) {
+    if (!b || !mark) return;
+    if (mark->funcs_n <= b->sec[SEC_FUNCS].n) b->sec[SEC_FUNCS].n = mark->funcs_n;
+    if (mark->locals_segs <= b->n_segs)       b->n_segs = mark->locals_segs;
+    if (mark->locals_n <= b->locals.n)        b->locals.n = mark->locals_n;
 }
 
 uint8_t *
@@ -229,22 +260,33 @@ lagfx_spv_builder_finish(const lagfx_spv_builder_t *b, size_t *out_size_bytes) {
     /* Concatenate the section streams in SPIR-V module order. */
     uint32_t *dst = p + 5;
     for (int s = 0; s < SEC_COUNT; s++) {
-        if (s == SEC_FUNCS && b->locals.n && b->locals_mark != ~0u &&
-            b->locals_mark <= b->sec[s].n) {
-            /* Splice the deferred Function-storage OpVariables at the
-             * recorded entry-block mark. */
-            memcpy(dst, b->sec[s].w, b->locals_mark * sizeof(uint32_t));
-            dst += b->locals_mark;
-            memcpy(dst, b->locals.w, b->locals.n * sizeof(uint32_t));
-            dst += b->locals.n;
-            memcpy(dst, b->sec[s].w + b->locals_mark,
-                   (b->sec[s].n - b->locals_mark) * sizeof(uint32_t));
-            dst += b->sec[s].n - b->locals_mark;
+        if (s == SEC_FUNCS && b->locals.n && b->n_segs) {
+            /* Splice each function's deferred Function-storage OpVariables
+             * at that function's recorded entry-block mark. Marks are
+             * non-decreasing (functions emit sequentially). */
+            uint32_t src = 0u;
+            for (uint32_t g = 0; g < b->n_segs; g++) {
+                uint32_t mark = b->segs[g].mark;
+                uint32_t lb   = b->segs[g].begin;
+                uint32_t le   = (g + 1u < b->n_segs) ? b->segs[g + 1u].begin
+                                                     : b->locals.n;
+                if (mark > b->sec[s].n || mark < src || le < lb) continue;
+                memcpy(dst, b->sec[s].w + src, (mark - src) * sizeof(uint32_t));
+                dst += mark - src;
+                src = mark;
+                memcpy(dst, b->locals.w + lb, (le - lb) * sizeof(uint32_t));
+                dst += le - lb;
+            }
+            memcpy(dst, b->sec[s].w + src, (b->sec[s].n - src) * sizeof(uint32_t));
+            dst += b->sec[s].n - src;
         } else {
             memcpy(dst, b->sec[s].w, b->sec[s].n * sizeof(uint32_t));
             dst += b->sec[s].n;
         }
     }
-    if (out_size_bytes) *out_size_bytes = total_bytes;
+    /* Size from what was actually copied: a locals segment with an invalid
+     * mark is dropped, so total_bytes is an upper bound, not the size. */
+    if (out_size_bytes) *out_size_bytes = (size_t)(dst - p) * sizeof(uint32_t);
+    (void)total_bytes;
     return out;
 }
