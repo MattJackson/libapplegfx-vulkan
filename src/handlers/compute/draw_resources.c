@@ -362,10 +362,25 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     uint32_t npx = want / 4u, W = 0, H = 0;
     uint32_t desc_stride = lagfx_le32(desc + 52);   /* word 13 */
     uint32_t desc_h      = lagfx_le32(desc + 60);   /* word 15 */
-    if (desc_stride >= 4u && (desc_stride & 3u) == 0u && desc_h > 0u
-        && (uint64_t)desc_stride * desc_h <= (uint64_t)want) {
-        W = desc_stride / 4u;
-        H = desc_h;
+    /* The format word's TOP BYTE is bytes-per-pixel: 0x04010001 = BGRA8
+     * (4 Bpp), 0x08010001 = RGBA16F (8 Bpp; the 3840x2160 login backdrop —
+     * 66,355,200 B = stride 30720 x 2160 rows). The old 4-Bpp-only
+     * plausibility check rejected 8-Bpp descriptors and the size-inference
+     * fallback fabricated 64x259200 — beyond lavapipe's max dimension,
+     * SIGSEGV on upload. Rows are modelled as BGRA8 texels (W = stride/4)
+     * so byte geometry is exact; 16F content reads with wrong colours
+     * until an RGBA16F surface path lands. Height = min(descriptor height,
+     * rows that fit the allocation) — small textures pad the allocation
+     * (0x16: 23 padded rows vs 17 real), the backdrop under-fills it. */
+    uint32_t bpp = (lagfx_le32(desc + 32) >> 24) & 0xFFu;
+    if (bpp != 4u && bpp != 8u && bpp != 2u && bpp != 1u) bpp = 4u;
+    if (desc_stride >= 4u && (desc_stride & 3u) == 0u && desc_h > 0u) {
+        uint32_t rows_fit = (uint32_t)(want / desc_stride);
+        uint32_t Heff = desc_h < rows_fit ? desc_h : rows_fit;
+        if (Heff > 0u) {
+            W = desc_stride / 4u;
+            H = Heff;
+        }
     }
     if (!W) {
         static const uint32_t widths[] = {64u, 128u, 32u, 256u, 16u, 512u,
@@ -381,8 +396,16 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
         }
     }
     if (!W) { W = 64u; H = npx / 64u ? npx / 64u : 1u; }
-    LAGFX_LOG("TEXREAL: ref=0x%x dims %ux%u (descriptor stride=%u h=%u)",
-              tref, W, H, desc_stride, desc_h);
+    /* Hard sanity clamp: lavapipe's max image dimension is 16384; an
+     * implausible fabricated dim must SKIP, not crash the device. */
+    if (W == 0u || H == 0u || W > 16384u || H > 16384u) {
+        LAGFX_WARN("TEXREAL: ref=0x%x implausible dims %ux%u — skip",
+                   tref, W, H);
+        free(pick);
+        return NULL;
+    }
+    LAGFX_LOG("TEXREAL: ref=0x%x dims %ux%u (descriptor stride=%u h=%u bpp=%u)",
+              tref, W, H, desc_stride, desc_h, bpp);
     lagfx_vk_iosurface_t *ios = NULL;
     if (lagfx_vk_iosurface_create(vk, W, H, 80u, &ios) != LAGFX_OK || !ios) {
         free(pick); return NULL;

@@ -141,6 +141,8 @@ typedef struct {
     uint32_t                 *spill_var;      /* per value id; 0 = none */
     uint32_t                 *spill_type;     /* value SPIR-V type of the spill */
     uint32_t                 *phi_var;        /* per PHI value id; 0 = none */
+    uint32_t                 *value_def_inst; /* per value id; ~0u unknown */
+    uint32_t                  dispatch_remat_depth;
 
     /* Side-table: result SPIR-V TYPE id per value (0 = unknown). AIR type
      * tracking (inst_result_air_type) goes dark through default-typed
@@ -822,6 +824,13 @@ static uint32_t resolve_relative(uint32_t encoded, uint32_t next_val_id) {
 /* Look up an absolute value-id and return its SPIR-V id, or 0 if
  * unresolvable (in which case the caller substitutes OpUndef of the
  * expected type). */
+static void emit_inst_gep(xlate_ctx_t *c, uint32_t inst_idx,
+                           const lagfx_air_inst_t *inst,
+                           uint32_t result_value_id, uint32_t next_val_id);
+static void emit_inst_cast(xlate_ctx_t *c, uint32_t inst_idx,
+                             const lagfx_air_inst_t *inst,
+                             uint32_t result_value_id, uint32_t next_val_id);
+
 static uint32_t resolve_value_spv(xlate_ctx_t *c, uint32_t value_id) {
     if (value_id >= c->value_id_capacity) return 0u;
     /* Dispatch mode: a value defined in a DIFFERENT dispatch case does not
@@ -839,6 +848,35 @@ static uint32_t resolve_value_spv(xlate_ctx_t *c, uint32_t value_id) {
                                    c->spill_var[value_id] };
                 lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, ops, 3);
                 return id;
+            }
+            /* Pointer-typed defs can't be spilled — RE-MATERIALIZE the
+             * access chain in the CURRENT block instead: GEP bases bottom
+             * out at entry-dominating variables (allocas / buffer Blocks),
+             * and the indices resolve through this same hook (spill loads
+             * / recursive remat, depth-capped). The def's value-id map
+             * binding is refreshed to the new chain — safe: only the
+             * latest-emitted block reads it, earlier blocks already
+             * resolved their own copy. */
+            if (c->value_def_inst && c->dispatch_remat_depth < 4u &&
+                c->value_def_inst[value_id] != ~0u) {
+                uint32_t di = c->value_def_inst[value_id];
+                const lagfx_air_inst_t *dinst = &c->insts[di];
+                if (dinst->code == LAGFX_AIR_INST_GEP ||
+                    dinst->code == LAGFX_AIR_INST_GEP_OLD) {
+                    c->dispatch_remat_depth++;
+                    emit_inst_gep(c, di, dinst, value_id, value_id);
+                    c->dispatch_remat_depth--;
+                    return c->value_id_to_spv[value_id];
+                }
+                if (dinst->code == LAGFX_AIR_INST_CAST) {
+                    c->dispatch_remat_depth++;
+                    emit_inst_cast(c, di, dinst, value_id, value_id);
+                    c->dispatch_remat_depth--;
+                    return c->value_id_to_spv[value_id];
+                }
+                LAGFX_TRACE("dispatch: cross-case MISS vid=%u def_bb=%u "
+                            "def_inst=%u code=%d raw=%u", value_id, db, di,
+                            (int)dinst->code, dinst->raw_code);
             }
             return 0u;
         }
@@ -4335,6 +4373,40 @@ static void emit_inst_extractelt(xlate_ctx_t *c, uint32_t inst_idx,
 
     /* Resolve the vector's AIR type to get its element type. */
     uint32_t vec_ty_air = value_air_type_idx(c, vector_id);
+
+    /* Bool-VECTOR operand: a vector compare's tracked AIR type is the
+     * lossy scalar-BOOL sentinel, so the AIR walk below can't type it —
+     * but the SPIR-V-type side table has the precise vNbool. Emit the
+     * extraction with a bool element (this single dropped case fed
+     * OpUndef %bool into EIGHT of Xgc's dispatched branch conditions). */
+    {
+        uint32_t vspv = get_value_spv_type(c, vector_id);
+        /* Back-edge operand: unemitted def, but the dispatch pre-pass
+         * already typed its spill variable. */
+        if (!vspv && c->spill_type && vector_id < c->value_id_capacity)
+            vspv = c->spill_type[vector_id];
+        if (vspv &&
+            (vec_ty_air == LAGFX_AIR_TYPE_NONE ||
+             vec_ty_air == LAGFX_AIR_TYPE_BOOL)) {
+            uint32_t b = emit_type_bool(c);
+            bool is_bvec = false;
+            for (uint32_t l = 2; l <= 4 && !is_bvec; l++)
+                is_bvec = (vspv == emit_type_vec(c, b, l));
+            if (is_bvec) {
+                uint32_t vec_spv = resolve_or_undef(c, vector_id, vspv);
+                uint32_t idx_spv = resolve_or_undef(c, index_id,
+                                                    emit_type_int_w(c, 32u, 0u));
+                uint32_t rid = lagfx_spv_builder_alloc_id(c->b);
+                uint32_t o[] = { b, rid, vec_spv, idx_spv };
+                lagfx_spv_builder_emit_op(c->b,
+                    LAGFX_SPV_OP_VECTOR_EXTRACT_DYNAMIC, o, 4);
+                bind_value_spv(c, result_value_id, rid);
+                set_result_air_type(c, result_value_id, LAGFX_AIR_TYPE_BOOL);
+                set_value_spv_type(c, result_value_id, b);
+                return;
+            }
+        }
+    }
     if (vec_ty_air == LAGFX_AIR_TYPE_NONE) {
         LAGFX_WARN("extractelt: couldn't resolve vector operand type — drop");
         return;
@@ -5237,9 +5309,24 @@ static uint32_t dispatch_phi_var(xlate_ctx_t *c, uint32_t phi_value_id,
  * (their cross-case uses degrade to typed undefs, same as before). */
 static void dispatch_spill_result(xlate_ctx_t *c, uint32_t value_id) {
     if (!c->spill_var || value_id >= c->value_id_capacity) return;
-    if (c->spill_var[value_id]) return;
     uint32_t spv = c->value_id_to_spv[value_id];
     if (!spv) return;
+    if (c->spill_var[value_id]) {
+        /* Pre-created by the inference pre-pass (back-edge support): emit
+         * the def-site store — guarding the type (an OpStore mismatch is
+         * a spirv-val reject; a skipped store just leaves the var undef,
+         * the standing degradation contract). */
+        uint32_t ty_air2 = value_air_type_idx(c, value_id);
+        uint32_t have = get_value_spv_type(c, value_id);
+        if (!have && ty_air2 != LAGFX_AIR_TYPE_NONE &&
+            ty_air2 != LAGFX_AIR_TYPE_BOOL)
+            have = emit_air_type(c, ty_air2);
+        if (have && have == c->spill_type[value_id]) {
+            uint32_t so[] = { c->spill_var[value_id], spv };
+            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, so, 2);
+        }
+        return;
+    }
     if (get_value_storage(c, value_id) != UINT32_MAX) return; /* pointer */
     uint32_t ty_air = value_air_type_idx(c, value_id);
     uint32_t precise = get_value_spv_type(c, value_id);
@@ -5447,6 +5534,131 @@ static void dispatch_emit_block(xlate_ctx_t *c, const lagfx_bb_t *bbs,
     *io_val_id = next_val_id;
 }
 
+
+/* Pre-pass type inference for case-defined values (back-edge support).
+ * Loop back edges make a value's USE emit before its DEF — the def-site
+ * spill var doesn't exist yet, so those uses degraded to undefs (8/61 of
+ * Xgc's branch conditions). Infer result AIR types where the record
+ * carries or trivially implies them, pre-create the spill variables, and
+ * the resolve hook's forward-ref loads become runtime-correct (dominance
+ * in the ORIGINAL CFG guarantees the def's store executes first). */
+static void dispatch_precreate_spills(xlate_ctx_t *c, uint32_t nbb) {
+    (void)nbb;
+    uint32_t n_types = 0;
+    const lagfx_air_type_t *ts = lagfx_air_module_types(c->m, &n_types);
+    /* inferred AIR type per value id (NONE = unknown); lanes for BOOL. */
+    uint32_t *ity = (uint32_t *)malloc(c->value_id_capacity * sizeof(uint32_t));
+    uint8_t  *blanes = (uint8_t *)calloc(c->value_id_capacity, 1u);
+    if (!ity || !blanes) { free(ity); free(blanes); return; }
+    for (uint32_t i = 0; i < c->value_id_capacity; i++)
+        ity[i] = LAGFX_AIR_TYPE_NONE;
+    /* Seed args + constants (their types are declared). */
+    for (uint32_t a = 0; a < c->num_args; a++)
+        ity[c->arg_id_base + a] = c->arg_air_type_ids[a];
+    {
+        uint32_t nmc = 0;
+        const lagfx_air_constant_t *mc = lagfx_air_module_constants(c->m, &nmc);
+        uint32_t base = c->module_val_count - nmc;
+        for (uint32_t i = 0; i < nmc; i++)
+            if (base + i < c->value_id_capacity)
+                ity[base + i] = mc[i].type_index;
+        uint32_t nlc = 0;
+        const lagfx_air_constant_t *lc =
+            lagfx_air_function_body_local_constants(c->body, &nlc);
+        uint32_t lbase = c->arg_id_base + c->num_args;
+        for (uint32_t i = 0; i < nlc && lc; i++)
+            if (lbase + i < c->value_id_capacity)
+                ity[lbase + i] = lc[i].type_index;
+    }
+
+    uint32_t vid = c->inst_id_base;
+    for (uint32_t i = 0; i < c->num_insts; i++) {
+        const lagfx_air_inst_t *inst = &c->insts[i];
+        if (!inst_produces_value(c, inst)) continue;
+        uint32_t t = LAGFX_AIR_TYPE_NONE; uint8_t lanes = 0;
+        switch (inst->code) {
+            case LAGFX_AIR_INST_PHI:
+                if (inst->num_ops >= 1u) t = (uint32_t)inst->ops[0];
+                break;
+            case LAGFX_AIR_INST_LOAD:
+                if (inst->num_ops >= 2u) t = (uint32_t)inst->ops[1];
+                break;
+            case LAGFX_AIR_INST_CAST:
+                if (inst->num_ops >= 2u) t = (uint32_t)inst->ops[1];
+                break;
+            case LAGFX_AIR_INST_CALL:
+                t = call_return_air_type(c, inst);
+                break;
+            case LAGFX_AIR_INST_BINOP:
+            case LAGFX_AIR_INST_SELECT: {
+                uint32_t opnd = resolve_relative((uint32_t)inst->ops[0], vid);
+                if (opnd < c->value_id_capacity) t = ity[opnd];
+                break;
+            }
+            case LAGFX_AIR_INST_INSERTELT: {
+                uint32_t opnd = resolve_relative((uint32_t)inst->ops[0], vid);
+                if (opnd < c->value_id_capacity) t = ity[opnd];
+                break;
+            }
+            case LAGFX_AIR_INST_EXTRACTELT: {
+                uint32_t opnd = resolve_relative((uint32_t)inst->ops[0], vid);
+                if (opnd < c->value_id_capacity) {
+                    if (ity[opnd] < n_types &&
+                        ts[ity[opnd]].kind == LAGFX_AIR_TYPE_VECTOR &&
+                        ts[ity[opnd]].num_op >= 2u)
+                        t = ts[ity[opnd]].op[1];
+                    else if (ity[opnd] == LAGFX_AIR_TYPE_BOOL) {
+                        t = LAGFX_AIR_TYPE_BOOL; lanes = 1;
+                    }
+                }
+                break;
+            }
+            case LAGFX_AIR_INST_CMP:
+            case LAGFX_AIR_INST_CMP2: {
+                t = LAGFX_AIR_TYPE_BOOL; lanes = 1;
+                uint32_t opnd = resolve_relative((uint32_t)inst->ops[0], vid);
+                if (opnd < c->value_id_capacity && ity[opnd] < n_types &&
+                    ts[ity[opnd]].kind == LAGFX_AIR_TYPE_VECTOR &&
+                    ts[ity[opnd]].num_op >= 1u)
+                    lanes = (uint8_t)ts[ity[opnd]].op[0];
+                break;
+            }
+            default:
+                break;
+        }
+        if (t < n_types &&
+            (ts[t].kind == LAGFX_AIR_TYPE_POINTER ||
+             ts[t].kind == LAGFX_AIR_TYPE_VOID))
+            t = LAGFX_AIR_TYPE_NONE;   /* never spill pointers/void */
+        ity[vid] = t; blanes[vid] = lanes;
+        vid++;
+    }
+
+    /* Pre-create spill vars for CASE-defined (def_bb > 0) inferred values. */
+    for (uint32_t v = c->inst_id_base; v < c->value_id_capacity; v++) {
+        if (!c->value_def_bb || c->value_def_bb[v] == 0xFFFFu ||
+            c->value_def_bb[v] == 0u)
+            continue;
+        uint32_t t = ity[v];
+        if (t == LAGFX_AIR_TYPE_NONE) continue;
+        uint32_t ty_spv, ptrty;
+        if (t == LAGFX_AIR_TYPE_BOOL) {
+            uint32_t b = emit_type_bool(c);
+            ty_spv = (blanes[v] > 1u) ? emit_type_vec(c, b, blanes[v]) : b;
+            ptrty = dispatch_ptr_type_spv(c, ty_spv);
+        } else {
+            ty_spv = emit_air_type(c, t);
+            if (!ty_spv) continue;
+            ptrty = dispatch_ptr_type(c, t, ty_spv);
+        }
+        uint32_t var = lagfx_spv_builder_alloc_id(c->b);
+        if (!lagfx_spv_builder_emit_local_var(c->b, ptrty, var)) break;
+        c->spill_var[v]  = var;
+        c->spill_type[v] = ty_spv;
+    }
+    free(ity); free(blanes);
+}
+
 /* The dispatch driver. Returns false when the body isn't partitionable
  * (caller falls to the linear path). */
 static bool translate_body_dispatch(xlate_ctx_t *c, lagfx_status_t *out_st) {
@@ -5485,6 +5697,9 @@ static bool translate_body_dispatch(xlate_ctx_t *c, lagfx_status_t *out_st) {
         return false;
     }
     memset(c->value_def_bb, 0xFF, c->value_id_capacity * sizeof(uint16_t));
+    c->value_def_inst = (uint32_t *)malloc(c->value_id_capacity * sizeof(uint32_t));
+    if (c->value_def_inst)
+        memset(c->value_def_inst, 0xFF, c->value_id_capacity * sizeof(uint32_t));
     {
         uint32_t vid = c->inst_id_base, bb = 0;
         for (uint32_t i = 0; i < c->num_insts; i++) {
@@ -5492,6 +5707,7 @@ static bool translate_body_dispatch(xlate_ctx_t *c, lagfx_status_t *out_st) {
             if (inst_produces_value(c, inst) && vid < c->value_id_capacity) {
                 c->value_def_bb[vid] =
                     (inst->code == LAGFX_AIR_INST_ALLOCA) ? 0u : (uint16_t)bb;
+                if (c->value_def_inst) c->value_def_inst[vid] = i;
                 vid++;
             }
             if (inst_is_terminator(inst->code)) bb++;
@@ -5500,6 +5716,8 @@ static bool translate_body_dispatch(xlate_ctx_t *c, lagfx_status_t *out_st) {
 
     c->dispatch_mode = true;
     c->dispatch_cur_bb = 0;
+
+    dispatch_precreate_spills(c, nbb);
 
     /* %blockvar + %itervar (uint, Function) via the locals splice. The
      * iteration counter is a TERMINATION GUARD: while cross-case values
@@ -6304,6 +6522,7 @@ lagfx_air2spv_translate_function(const lagfx_air_module_t *m,
     free(c.spill_var);
     free(c.spill_type);
     free(c.phi_var);
+    free(c.value_def_inst);
     free(c.inst_result_air_type);
     lagfx_air_function_body_free(body);
     return LAGFX_OK;
@@ -6326,6 +6545,7 @@ fail:
     free(c.spill_var);
     free(c.spill_type);
     free(c.phi_var);
+    free(c.value_def_inst);
     free(c.inst_result_air_type);
     lagfx_air_function_body_free(body);
     return st;
