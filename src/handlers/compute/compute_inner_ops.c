@@ -1372,14 +1372,14 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                 /* Recover the merged set-0 binding list (binding + kind) so the
                  * draw site can populate a descriptor set from the guest's
                  * bound resources. */
-                lagfx_spv_binding_t rb[16]; size_t nrb = 0;
+                lagfx_spv_binding_t rb[32]; size_t nrb = 0;
                 if (has_resources) {
                     for (int s = 0; s < 2; s++) {
                         if (!spv_keep[s]) continue;
-                        lagfx_spv_binding_t tmp[16];
-                        size_t nt = lagfx_spv_reflect_bindings(spv_keep[s], spv_keep_sz[s], tmp, 16);
-                        if (nt > 16) nt = 16;
-                        for (size_t t = 0; t < nt && nrb < 16; t++) {
+                        lagfx_spv_binding_t tmp[32];
+                        size_t nt = lagfx_spv_reflect_bindings(spv_keep[s], spv_keep_sz[s], tmp, 32);
+                        if (nt > 32) nt = 32;
+                        for (size_t t = 0; t < nt && nrb < 32; t++) {
                             if (tmp[t].set != 0u) continue;
                             bool seen = false;
                             for (size_t u = 0; u < nrb; u++)

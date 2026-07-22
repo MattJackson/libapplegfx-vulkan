@@ -220,15 +220,19 @@ typedef struct {
      * matching descriptor set from the guest's bound resources. kind is
      * lagfx_spv_binding_kind_t (1=sampled image, 2=sampler, 3=storage buffer).
      * n_spv_bindings==0 ⇒ resource-free. */
-    uint8_t    spv_binding_no[16];
-    uint8_t    spv_binding_kind[16];
+    /* 32 (was 16): the Xgc login-panel fragment reflects ~20+ set-0
+     * bindings; the old cap silently truncated the list, leaving the
+     * tail descriptors unwritten (undef samples). Matches the
+     * translator's LAGFX_MAX_VERTEX_ARGS raise to 32. */
+    uint8_t    spv_binding_no[32];
+    uint8_t    spv_binding_kind[32];
     /* Metal resource index per reflected binding (from the AIR arg metadata's
      * air.location_index — lagfx_air_arg_bindings). THE authoritative
      * binding→guest-slot map: e.g. UberCompositeVertex's mvp_matrix is
      * [[buffer(1)]], VfxVertex's is [[buffer(2)]] — no fixed convention, so
      * content/skip heuristics can't substitute. -1 = unknown → legacy
      * heuristics apply. */
-    int16_t    spv_binding_metal[16];
+    int16_t    spv_binding_metal[32];
     uint8_t    n_spv_bindings;
     /* Vertex stage-in attributes reflected from the translated VERTEX shader
      * (Location-decorated Inputs). The host builds a non-empty vertex-input

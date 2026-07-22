@@ -62,9 +62,9 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
     if (vkAllocateDescriptorSets(vk->device, &ai, &set) != VK_SUCCESS) {
         return VK_NULL_HANDLE;
     }
-    VkWriteDescriptorSet    writes[16];
-    VkDescriptorBufferInfo  binfos[16];
-    VkDescriptorImageInfo   iinfos[16];
+    VkWriteDescriptorSet    writes[32];
+    VkDescriptorBufferInfo  binfos[32];
+    VkDescriptorImageInfo   iinfos[32];
     uint32_t nw = 0;
     /* M1 texture-composite: when fragment bindings are offset (LAGFX_M1_TEXCOMP),
      * the reflected binding number no longer equals the Metal resource index.
@@ -129,7 +129,7 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
      * is drawn; with src-over blending and preserved submit order, an early
      * opaque background does not destroy later layers and a transparent black
      * layer does not wipe what is under it. Black is never special-cased. */
-    for (uint32_t i = 0; i < n && i < 16u; i++) {
+    for (uint32_t i = 0; i < n && i < 32u; i++) {
         uint32_t slot = binding_no[i];
         /* M1 (c): texture (SAMPLED_IMAGE) binding — resolve the guest's bound
          * fragment texture ref → IOSurface VkImageView via the task-agnostic
