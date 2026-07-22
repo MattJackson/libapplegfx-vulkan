@@ -81,10 +81,16 @@ enum {
      * ptr-StorageBuffer-T; call sites pass the interior pointer DIRECTLY
      * (legal with VariablePointersStorageBuffer), and callee-side p[i]
      * GEPs lower to OpPtrAccessChain (the param's pointer type carries
-     * the required ArrayStride). Struct pointees (GammaLUTs) stay
-     * unsupported — their Block-decorated type identity doesn't match
-     * emit_air_type's plain struct. */
+     * the required ArrayStride). */
     LAGFX_HPARAM_DATABUF,
+    /* constant/device pointer to a NAMED DATA STRUCT (`constant
+     * GammaLUTs*`): the param type is the SAME cached
+     * OpTypePointer(StorageBuffer, <Block-struct>) the entry's
+     * [[buffer(n)]] variable is declared with (emit_type_block_ptr —
+     * call args match param types by ID), so call sites pass the Block
+     * variable (or a tracked same-typed alias) directly. Callee GEPs
+     * skip LLVM's leading 0 like any struct buffer base. */
+    LAGFX_HPARAM_STRUCTBUF,
 };
 
 typedef struct {
@@ -331,6 +337,13 @@ typedef struct {
      * `{ runtimearray<T> }` Block synthesized for non-struct `device T*`. */
     struct { uint32_t air_ty; uint32_t spv_id; } rtarr_cache[LAGFX_MAX_VERTEX_ARGS];
     uint32_t                  rtarr_cache_len;
+    /* OpTypePointer(StorageBuffer, <Block>) cache, keyed on the Block's
+     * pointee AIR type. The entry's buffer-arg variable and any helper
+     * STRUCTBUF param must share ONE pointer type id — OpFunctionCall
+     * matches arg/param types by ID, and a re-emit would be a duplicate
+     * pointer type declaration. */
+    struct { uint32_t air_ty; uint32_t spv_id; } blockptr_cache[LAGFX_MAX_VERTEX_ARGS];
+    uint32_t                  blockptr_cache_len;
 
     /* Common SPIR-V type ids (filled lazily). */
     uint32_t                  id_void;
@@ -407,6 +420,8 @@ static void copy_module_state(xlate_ctx_t *dst, const xlate_ctx_t *src) {
     dst->block_cache_len = src->block_cache_len;
     memcpy(dst->rtarr_cache, src->rtarr_cache, sizeof(dst->rtarr_cache));
     dst->rtarr_cache_len = src->rtarr_cache_len;
+    memcpy(dst->blockptr_cache, src->blockptr_cache, sizeof(dst->blockptr_cache));
+    dst->blockptr_cache_len = src->blockptr_cache_len;
     memcpy(dst->vec_cache, src->vec_cache, sizeof(dst->vec_cache));
     dst->n_vec_cache    = src->n_vec_cache;
     dst->module_val_count = src->module_val_count;
@@ -1281,6 +1296,8 @@ static bool air_type_size_align(xlate_ctx_t *c, uint32_t ty,
     const lagfx_air_type_t *t = &ts[ty];
     switch (t->kind) {
         case LAGFX_AIR_TYPE_FLOAT: *size = 4u; *align = 4u; return true;
+        case LAGFX_AIR_TYPE_HALF: *size = 2u; *align = 2u; return true;
+        case LAGFX_AIR_TYPE_DOUBLE: *size = 8u; *align = 8u; return true;
         case LAGFX_AIR_TYPE_INTEGER: {
             uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
             uint32_t b = w / 8u; if (b == 0u) b = 1u;
@@ -1529,12 +1546,21 @@ static uint32_t emit_type_struct_block(xlate_ctx_t *c, uint32_t struct_ty) {
         return 0u;
     }
     uint32_t nfields = t->num_op > 1u ? t->num_op - 1u : 0u;
-    if (nfields == 0u || nfields > 32u) return 0u;
+    if (nfields == 0u || nfields > 32u) {
+        LAGFX_TRACE("block: struct ty %u nfields %u out of range", struct_ty,
+                    nfields);
+        return 0u;
+    }
 
     uint32_t offsets[33], member_spv[33], off = 0u;
     for (uint32_t i = 0; i < nfields; i++) {
         uint32_t ms, ma;
-        if (!air_type_size_align(c, t->op[1u + i], &ms, &ma)) return 0u;
+        if (!air_type_size_align(c, t->op[1u + i], &ms, &ma)) {
+            LAGFX_TRACE("block: struct ty %u field %u ty %u kind %d — "
+                        "size/align failed", struct_ty, i, t->op[1u + i],
+                        t->op[1u + i] < n ? (int)ts[t->op[1u + i]].kind : -1);
+            return 0u;
+        }
         off = lagfx_round_up(off, ma);
         offsets[i] = off;
         off += ms;
@@ -1575,6 +1601,28 @@ static uint32_t emit_type_struct_block(xlate_ctx_t *c, uint32_t struct_ty) {
         c->block_cache_len++;
     }
     return sid;
+}
+
+/* Cached OpTypePointer(StorageBuffer, <Block>) for a buffer pointee —
+ * shared between the entry's [[buffer(n)]] OpVariable declarations and
+ * helper STRUCTBUF params (arg/param types must match by ID). Key: the
+ * pointee AIR type (struct or non-struct, same key emit_type_struct_block
+ * caches its Block under). 0 if the Block itself is unhandled. */
+static uint32_t emit_type_block_ptr(xlate_ctx_t *c, uint32_t pointee_ty) {
+    for (uint32_t i = 0; i < c->blockptr_cache_len; i++)
+        if (c->blockptr_cache[i].air_ty == pointee_ty)
+            return c->blockptr_cache[i].spv_id;
+    uint32_t block = emit_type_struct_block(c, pointee_ty);
+    if (!block) return 0u;
+    uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t ops[] = { id, LAGFX_SPV_STORAGE_STORAGE_BUFFER, block };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, ops, 3);
+    if (c->blockptr_cache_len < LAGFX_MAX_VERTEX_ARGS) {
+        c->blockptr_cache[c->blockptr_cache_len].air_ty = pointee_ty;
+        c->blockptr_cache[c->blockptr_cache_len].spv_id = id;
+        c->blockptr_cache_len++;
+    }
+    return id;
 }
 
 /* ===================================================================
@@ -1852,30 +1900,28 @@ static void emit_arg_resource_vars(xlate_ctx_t *c, uint32_t n_args) {
         uint32_t rk = c->arg_resource_kind[i];
         if (rk == 0u || !c->arg_resource_var[i]) continue;
         if (rk == 3u) {
-            /* [[buffer(n)]]: a StorageBuffer Block variable. */
-            uint32_t block = emit_type_struct_block(c, buffer_arg_struct_ty(c, i));
-            if (!block) continue;
-            uint32_t ptr_id = lagfx_spv_builder_alloc_id(c->b);
-            uint32_t pt_ops[] = { ptr_id, LAGFX_SPV_STORAGE_STORAGE_BUFFER, block };
-            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, pt_ops, 3);
+            /* [[buffer(n)]]: a StorageBuffer Block variable. The pointer
+             * type comes from the shared blockptr cache — helper STRUCTBUF
+             * params reuse the same id, and duplicate pointer declarations
+             * (two args with one struct type) are invalid anyway. */
+            uint32_t ptr_id = emit_type_block_ptr(c, buffer_arg_struct_ty(c, i));
+            if (!ptr_id) continue;
             uint32_t var_ops[] = { ptr_id, c->arg_resource_var[i],
                                     LAGFX_SPV_STORAGE_STORAGE_BUFFER };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE, var_ops, 3);
             bind_value_spv(c, c->arg_id_base + i, c->arg_resource_var[i]);
             set_value_storage(c, c->arg_id_base + i,
                               LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+            /* Track the arg's POINTER type — helper-call STRUCTBUF args
+             * match param types by ID against exactly this. */
+            set_value_spv_type(c, c->arg_id_base + i, ptr_id);
             /* Aliased byte-buffer VIEW variables: one Block per cast-dest
              * pointee, same descriptor as the raw arg (see bytebuf_view). */
             for (uint32_t v = 0; v < c->n_bytebuf_views; v++) {
                 if (c->bytebuf_view[v].arg != i) continue;
-                uint32_t vblock = emit_type_struct_block(
+                uint32_t vptr = emit_type_block_ptr(
                     c, c->bytebuf_view[v].pointee_ty);
-                if (!vblock) continue;
-                uint32_t vptr = lagfx_spv_builder_alloc_id(c->b);
-                uint32_t vpt_ops[] = { vptr, LAGFX_SPV_STORAGE_STORAGE_BUFFER,
-                                       vblock };
-                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER,
-                                          vpt_ops, 3);
+                if (!vptr) continue;
                 uint32_t vvar_ops[] = { vptr, c->bytebuf_view[v].var_id,
                                         LAGFX_SPV_STORAGE_STORAGE_BUFFER };
                 lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_VARIABLE,
@@ -2812,6 +2858,18 @@ static bool emit_helper_fncall(xlate_ctx_t *c, uint32_t fn_idx,
                 }
                 return false;
             }
+            case LAGFX_HPARAM_STRUCTBUF: {
+                /* The arg must be the Block VARIABLE (an entry buffer arg,
+                 * a GEP-0 alias of it, or an enclosing helper's own
+                 * STRUCTBUF param) with the shared blockptr type — types
+                 * match by ID; otherwise degrade the whole call. */
+                uint32_t a = resolve_value_spv(c, vid);
+                if (a && get_value_spv_type(c, vid) == hf->param[i].spv_ty) {
+                    argv[i] = a;
+                    break;
+                }
+                return false;
+            }
             default:
                 return false;
         }
@@ -3051,6 +3109,9 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
          * Xgc login fragment, f16 + f32 variants). */
         {"air.fma.",           LAGFX_SPV_GLSL_FMA,          3},
         {"air.fast_fma",       LAGFX_SPV_GLSL_FMA,          3},
+        /* sign(x) — air.sign.<ty> (the GammaLUTs srgb helpers). */
+        {"air.sign.",          LAGFX_SPV_GLSL_FSIGN,        1},
+        {"air.fast_sign",      LAGFX_SPV_GLSL_FSIGN,        1},
     };
 
     uint32_t glsl_inst = 0u;
@@ -4337,12 +4398,19 @@ static void emit_inst_binop(xlate_ctx_t *c, uint32_t inst_idx,
         }
     }
 
-    /* Determine result SPIR-V type */
+    /* Determine result SPIR-V type. AIR type unknown → the operands'
+     * TRACKED SPIR-V type before the vec4f guess (a scalar-float chain
+     * through an untyped value fed FDiv a v4float result type — spirv-val
+     * reject, the GammaLUTs helpers). */
     uint32_t result_spv_type;
     if (result_ty_air != LAGFX_AIR_TYPE_NONE) {
         result_spv_type = emit_air_type(c, result_ty_air);
     } else {
-        result_spv_type = is_float ? emit_type_vec4_f(c) : emit_type_int_w(c, 32u, 0u);
+        uint32_t tracked = get_value_spv_type(c, lhs_id);
+        if (!tracked) tracked = get_value_spv_type(c, rhs_id);
+        result_spv_type = tracked ? tracked
+                        : is_float ? emit_type_vec4_f(c)
+                                   : emit_type_int_w(c, 32u, 0u);
     }
 
     /* Resolve operands to SPIR-V ids; undef if unresolvable */
@@ -4529,17 +4597,18 @@ static void emit_inst_unop(xlate_ctx_t *c, uint32_t inst_idx,
         return;
     }
 
-    /* Resolve operand */
+    /* Resolve operand; type from the AIR side table (insts, args, local
+     * and module consts), else the tracked SPIR-V type (values whose AIR
+     * type is unknown but whose emitted type is — e.g. extractelement
+     * feeding fneg in the GammaLUTs helpers), else the vec4f default. */
     uint32_t opval_id = resolve_relative(opval_rel, next_val_id);
-    uint32_t result_spv_type = emit_type_vec4_f(c); /* Assume vec4 for now */
-
-    /* Try to deduce actual type from inst_result_air_type or arg types */
-    if (opval_id >= c->inst_id_base && opval_id < c->value_id_capacity) {
-        int idx = (int)(opval_id - c->inst_id_base);
-        if (idx >= 0 && (uint32_t)idx < c->num_insts) {
-            uint32_t ty_air = c->inst_result_air_type[idx];
-            if (ty_air != LAGFX_AIR_TYPE_NONE) result_spv_type = emit_air_type(c, ty_air);
-        }
+    uint32_t ty_air = value_air_type_idx(c, opval_id);
+    uint32_t result_spv_type;
+    if (ty_air != LAGFX_AIR_TYPE_NONE) {
+        result_spv_type = emit_air_type(c, ty_air);
+    } else {
+        uint32_t tracked = get_value_spv_type(c, opval_id);
+        result_spv_type = tracked ? tracked : emit_type_vec4_f(c);
     }
 
     /* Resolve operand to SPIR-V id; undef if unresolvable */
@@ -4558,12 +4627,12 @@ static void emit_inst_unop(xlate_ctx_t *c, uint32_t inst_idx,
     ops[2] = opval_spv;
     lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_FNEGATE, ops, 3);
 
-    /* Bind the result value-id */
+    /* Bind the result value-id. AIR type may be NONE (unknown operand) —
+     * but the EMITTED SPIR-V type is always known; track it so downstream
+     * binops type their result from it instead of the vec4f default. */
     bind_value_spv(c, result_value_id, result_spv);
-    /* UNOP result type isn't reliably known here (we negate as vec4f by
-     * default); record NONE = unknown so downstream resolves it like any
-     * other untyped value rather than mistaking it for type index 0. */
-    set_result_air_type(c, result_value_id, LAGFX_AIR_TYPE_NONE);
+    set_result_air_type(c, result_value_id, ty_air);
+    set_value_spv_type(c, result_value_id, result_spv_type);
 }
 
 /* Best-effort AIR type index for a resolved value-id: instruction
@@ -7105,8 +7174,12 @@ static int classify_helper_param(const xlate_ctx_t *c, uint32_t air_ty,
                 return LAGFX_HPARAM_TEX;
             if (strstr(p, "_sampler")) return LAGFX_HPARAM_SAMP;
         }
-        /* Named data struct — constant/device buffer pointer; deferred
-         * (VariablePointersStorageBuffer). */
+        /* Named data struct (`constant GammaLUTs*`) — passed as the
+         * entry's Block variable itself (shared blockptr type). */
+        if (addrspace == 1u || addrspace == 2u) {
+            if (pointee_out) *pointee_out = pointee;
+            return LAGFX_HPARAM_STRUCTBUF;
+        }
         return 0;
     }
     if (pointee < n && ts[pointee].kind == LAGFX_AIR_TYPE_UNKNOWN) {
@@ -7180,7 +7253,12 @@ static void helpers_register(xlate_ctx_t *c, uint32_t fn_idx) {
         uint32_t air_ty = ts[fn_ty].op[2u + i];
         uint32_t pointee = 0u;
         int kind = classify_helper_param(c, air_ty, &pointee);
-        if (!kind) return;                         /* unsupported param */
+        if (!kind) {                               /* unsupported param */
+            LAGFX_TRACE("air2spv: helper fn[%u] param %u air_ty %u kind %d "
+                        "unsupported — not registered", fn_idx, i, air_ty,
+                        air_ty < n_types ? (int)ts[air_ty].kind : -1);
+            return;
+        }
         hf->param[i].kind   = (uint8_t)kind;
         hf->param[i].air_ty = air_ty;
         switch (kind) {
@@ -7235,6 +7313,25 @@ static void helpers_register(xlate_ctx_t *c, uint32_t fn_idx) {
                             h->stride_decorated[h->n_stride_decorated++] =
                                 hf->param[i].spv_ty;
                     }
+                }
+                break;
+            }
+            case LAGFX_HPARAM_STRUCTBUF: {
+                hf->param[i].pointee_air = pointee;
+                hf->param[i].spv_ty = emit_type_block_ptr(c, pointee);
+                if (!hf->param[i].spv_ty) {
+                    LAGFX_TRACE("air2spv: helper fn[%u] param %u STRUCTBUF "
+                                "pointee %u — Block layout failed", fn_idx,
+                                i, pointee);
+                    return;
+                }
+                hf->param[i].pointee_spv = block_struct_spv_id(c, pointee);
+                if (!h->cap_varptr) {
+                    h->cap_varptr = true;
+                    uint32_t cap[] = {
+                        LAGFX_SPV_CAPABILITY_VARIABLE_POINTERS_STORAGE_BUFFER };
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CAPABILITY,
+                                              cap, 1);
                 }
                 break;
             }
@@ -7432,6 +7529,13 @@ static void translate_one_helper(xlate_ctx_t *ec, uint32_t slot) {
                 set_result_air_type(&hc, vid, hf->param[i].pointee_air);
                 break;
             case LAGFX_HPARAM_DATABUF:
+                set_value_storage(&hc, vid, LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+                set_value_spv_type(&hc, vid, hf->param[i].spv_ty);
+                break;
+            case LAGFX_HPARAM_STRUCTBUF:
+                /* Struct-Block base: GEPs skip LLVM's leading 0 like any
+                 * struct buffer arg (no ptr_arith), so only storage class
+                 * and the shared pointer type need tracking. */
                 set_value_storage(&hc, vid, LAGFX_SPV_STORAGE_STORAGE_BUFFER);
                 set_value_spv_type(&hc, vid, hf->param[i].spv_ty);
                 break;
