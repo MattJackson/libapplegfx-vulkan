@@ -2666,6 +2666,7 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
         {"air.fast.radians",    LAGFX_SPV_GLSL_RADIANS, 1},
         {"air.fast.degrees",    LAGFX_SPV_GLSL_DEGREES, 1},
         {"air.fast.atan2",      LAGFX_SPV_GLSL_ATAN2,   2},
+        {"air.fast_atan2",      LAGFX_SPV_GLSL_ATAN2,   2},   /* REAL Apple name (observed live: air.fast_atan2.f32) */
         {"air.fast.ldexp",      LAGFX_SPV_GLSL_LDEXP,   2},
         {"air.fast.refract",    LAGFX_SPV_GLSL_REFRACT, 3},
         {"air.precise.tan",     LAGFX_SPV_GLSL_TAN,     1},
@@ -3064,6 +3065,58 @@ static void emit_inst_call(xlate_ctx_t *c, uint32_t inst_idx,
                             "(value-id %u)", result_value_id);
                 return;
             }
+        }
+    }
+
+    /* === air.any.vNi1 / air.all.vNi1 → OpAny / OpAll ===
+     * Vector-bool reductions; unhandled they bound an UNDEF i1 that fed
+     * EIGHT of Xgc's dispatched branch conditions. One arg (the vNbool). */
+    if ((strncmp(fn_name, "air.any.", 8u) == 0 ||
+         strncmp(fn_name, "air.all.", 8u) == 0) && result_value_id != 0u) {
+        uint32_t a_slot = callee_slot_idx + 1u;
+        if (inst->num_ops > a_slot) {
+            uint32_t a_id = resolve_relative((uint32_t)inst->ops[a_slot],
+                                             next_val_id);
+            uint32_t b = emit_type_bool(c);
+            /* Lane count from the name suffix "vNi1". */
+            uint32_t lanes = 4u;
+            const char *vv = strrchr(fn_name, '.');
+            if (vv && vv[1] == 'v' && vv[2] >= '2' && vv[2] <= '4')
+                lanes = (uint32_t)(vv[2] - '0');
+            uint32_t bvec = emit_type_vec(c, b, lanes);
+            uint32_t a_spv = resolve_or_undef(c, a_id, bvec);
+            uint32_t rid = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t o[] = { b, rid, a_spv };
+            lagfx_spv_builder_emit_op(c->b,
+                fn_name[4] == 'n' /* aNy */ ? LAGFX_SPV_OP_ANY
+                                            : LAGFX_SPV_OP_ALL, o, 3);
+            bind_value_spv(c, result_value_id, rid);
+            set_result_air_type(c, result_value_id, LAGFX_AIR_TYPE_BOOL);
+            set_value_spv_type(c, result_value_id, b);
+            return;
+        }
+    }
+
+    /* === air.dfdx / air.dfdy → OpDPdx / OpDPdy (fragment derivatives) === */
+    if ((strncmp(fn_name, "air.dfdx.", 9u) == 0 ||
+         strncmp(fn_name, "air.dfdy.", 9u) == 0) && result_value_id != 0u &&
+        c->stage == LAGFX_XLATE_STAGE_FRAGMENT) {
+        uint32_t a_slot = callee_slot_idx + 1u;
+        if (inst->num_ops > a_slot &&
+            result_ty_air != LAGFX_AIR_TYPE_NONE) {
+            uint32_t rt = emit_air_type(c, result_ty_air);
+            uint32_t a_id = resolve_relative((uint32_t)inst->ops[a_slot],
+                                             next_val_id);
+            uint32_t a_spv = resolve_or_undef(c, a_id, rt);
+            uint32_t rid = lagfx_spv_builder_alloc_id(c->b);
+            uint32_t o[] = { rt, rid, a_spv };
+            lagfx_spv_builder_emit_op(c->b,
+                fn_name[7] == 'x' ? LAGFX_SPV_OP_DPDX : LAGFX_SPV_OP_DPDY,
+                o, 3);
+            bind_value_spv(c, result_value_id, rid);
+            set_result_air_type(c, result_value_id, result_ty_air);
+            set_value_spv_type(c, result_value_id, rt);
+            return;
         }
     }
 
@@ -5422,6 +5475,17 @@ static void dispatch_lower_terminator(xlate_ctx_t *c, const lagfx_bb_t *bbs,
                 if (f != t) dispatch_store_phi_incomings(c, bbs, nbb, cur_bb, f);
                 uint32_t cond_id = resolve_relative((uint32_t)inst->ops[2],
                                                     next_val_id);
+                if (!resolve_value_spv(c, cond_id)) {
+                    uint32_t di2 = (c->value_def_inst &&
+                                    cond_id < c->value_id_capacity)
+                                       ? c->value_def_inst[cond_id] : ~0u;
+                    LAGFX_TRACE("dispatch: UNDEF cond vid=%u def_inst=%u "
+                                "code=%d def_bb=%u cur_bb=%u", cond_id, di2,
+                                di2 != ~0u ? (int)c->insts[di2].code : -1,
+                                (c->value_def_bb && cond_id < c->value_id_capacity)
+                                    ? c->value_def_bb[cond_id] : 0xFFFF,
+                                cur_bb);
+                }
                 uint32_t cond = resolve_or_undef(c, cond_id, emit_type_bool(c));
                 uint32_t sel = lagfx_spv_builder_alloc_id(c->b);
                 uint32_t selo[] = { uint_spv, sel, cond,

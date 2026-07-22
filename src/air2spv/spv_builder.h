@@ -137,6 +137,10 @@ enum {
     LAGFX_SPV_OP_FUNORD_LESS_EQUAL      = 189,   /* OpFUnordLessThanEqual (§3.32.15) */
     LAGFX_SPV_OP_FORD_GREATER_EQUAL     = 190,   /* OpFOrdGreaterThanEqual (§3.32.15) */
     LAGFX_SPV_OP_FUNORD_GREATER_EQUAL   = 191,   /* OpFUnordGreaterThanEqual (§3.32.15) */
+    LAGFX_SPV_OP_ANY                    = 154,   /* OpAny: any lane of vNbool */
+    LAGFX_SPV_OP_ALL                    = 155,   /* OpAll: all lanes of vNbool */
+    LAGFX_SPV_OP_DPDX                   = 207,   /* OpDPdx (fragment derivative) */
+    LAGFX_SPV_OP_DPDY                   = 208,   /* OpDPdy */
     LAGFX_SPV_OP_LOGICAL_EQUAL          = 164,   /* OpLogicalEqual (§3.32.15) */
     LAGFX_SPV_OP_LOGICAL_NOT_EQUAL      = 165,   /* OpLogicalNotEqual (bool xor) */
     LAGFX_SPV_OP_LOGICAL_OR             = 166,   /* OpLogicalOr */
