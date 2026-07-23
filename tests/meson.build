@@ -1275,3 +1275,20 @@ if fs.is_file(meson.current_source_dir() / 'air2spv-arg-bindings-unit.c')
   test('air2spv arg-metadata metal-index map (unit)', air2spv_argbind_test,
     workdir : meson.current_source_dir() / '..')
 endif
+
+# PGCmdSetBufferOffset (0x6f/0x7e) wire-format: [index:u32@0][offset:u64@4]
+# per Apple's decoder disasm. Red-on-revert guard for the swapped-field
+# parse that zeroed the Xgc backdrop draws' vertex stream (2026-07-23).
+if fs.is_file(meson.current_source_dir() / 'compute-inner-buffer-offset-unit.c')
+  buf_off_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    buf_off_deps += [vulkan_dep]
+  endif
+  buf_off_test = executable('compute-inner-buffer-offset-unit',
+    'compute-inner-buffer-offset-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : buf_off_deps,
+    build_by_default : true,
+  )
+  test('PGCmdSetBufferOffset field order (unit)', buf_off_test)
+endif

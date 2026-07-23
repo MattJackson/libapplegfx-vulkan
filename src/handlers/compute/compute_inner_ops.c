@@ -781,14 +781,19 @@ static int op_set_fragment_buffer_offset(lagfx_protocol_t *p,
                                             size_t            body_len) {
 
     (void)encoder_type;
-    /* RE: render-decoder-handlers.md line 108 — PGCmdSetBufferOffset (12 B), scalar family.
-     * Wire layout per spec: [offset:u64@0-7][padding:u32@8-11][index:u32] */
+    /* PGCmdSetBufferOffset (12 B): [index:u32@0][offset:u64@4] — sourced from
+     * Apple's decodeSetFragmentBufferOffsetWithIterator (pvg-disasm: index =
+     * u32@0, validated vs the buffer-array count; offset = u64@+4 passed as the
+     * msgSend arg). The old [offset:u64@0][index:u32@8] read came from a stale
+     * render-decoder-handlers.md spec (don't-do #21) and produced garbage
+     * offsets like 0x1020000000001 → every subsequent read of that slot failed
+     * → zero buffer → the Xgc backdrop draws rendered degenerate geometry. */
     if (body_len < 12u) {
         LAGFX_WARN("compute_inner: 0x6f SetFragmentBufferOffset payload too small (%zu < 12)", body_len);
         return 1;
     }
-    uint64_t offset = lagfx_le64(body + 0);
-    uint32_t index = lagfx_le32(body + 8);
+    uint32_t index  = lagfx_le32(body + 0);
+    uint64_t offset = lagfx_le64(body + 4);
 
     if (task_id >= LAGFX_MAX_TASKS) {
         LAGFX_WARN("compute_inner: 0x6f SetFragmentBufferOffset task_id=%u out of range", task_id);
@@ -1037,14 +1042,18 @@ static int op_set_vertex_buffer_offset(lagfx_protocol_t *p,
                                           const uint8_t    *body,
                                           size_t            body_len) {
     (void)encoder_type;
-    /* RE: render-decoder-handlers.md line 133 — PGCmdSetBufferOffset (12 B), scalar family.
-     * Wire layout per spec: [offset:u64@0-7][padding:u32@8-11][index:u32] but index at +8 in practice */
+    /* PGCmdSetBufferOffset (12 B): [index:u32@0][offset:u64@4] — sourced from
+     * Apple's decodeSetVertexBufferOffsetWithIterator (pvg-disasm 16299: r15d =
+     * u32@0 validated vs count → index; rdx = u64@-0x20(=+4) → offset). Live
+     * wire cross-check: the old swapped read logged offset=0x1020000000001
+     * (= index 1, offset 0x10200=66048 — a pool-0x24 offset right among the
+     * draw's other bindings at 59392..64000). */
     if (body_len < 12u) {
         LAGFX_WARN("compute_inner: 0x7e SetVertexBufferOffset payload too small (%zu < 12)", body_len);
         return 1;
     }
-    uint64_t offset = lagfx_le64(body + 0);
-    uint32_t index = lagfx_le32(body + 8);
+    uint32_t index  = lagfx_le32(body + 0);
+    uint64_t offset = lagfx_le64(body + 4);
 
     if (task_id >= LAGFX_MAX_TASKS) {
         LAGFX_WARN("compute_inner: 0x7e SetVertexBufferOffset task_id=%u out of range", task_id);

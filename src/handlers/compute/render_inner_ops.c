@@ -521,8 +521,9 @@ static int op_set_fragment_buffers(lagfx_protocol_t *p, const uint8_t *payload, 
 static int op_set_fragment_buffer_offset(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
     (void)p;
     if (len < 12) { LAGFX_WARN("SetFragmentBufferOffset: payload too short (%zu < 12)", len); return 0; }
+    /* PGCmdSetBufferOffset: [index:u32@0][offset:u64@4] (Apple decoder disasm) */
     LAGFX_LOG("SetFragmentBufferOffset: offset=%llu index=%u",
-                (unsigned long long)lagfx_le64(payload + 0), lagfx_le32(payload + 8));
+                (unsigned long long)lagfx_le64(payload + 4), lagfx_le32(payload + 0));
     return 0;
 }
 
@@ -626,8 +627,9 @@ static int op_set_vertex_buffers(lagfx_protocol_t *p, const uint8_t *payload, si
 static int op_set_vertex_buffer_offset(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
     (void)p;
     if (len < 12) { LAGFX_WARN("SetVertexBufferOffset: payload too short (%zu < 12)", len); return 0; }
+    /* PGCmdSetBufferOffset: [index:u32@0][offset:u64@4] (Apple decoder disasm) */
     LAGFX_LOG("SetVertexBufferOffset: offset=%llu index=%u",
-                (unsigned long long)lagfx_le64(payload + 0), lagfx_le32(payload + 8));
+                (unsigned long long)lagfx_le64(payload + 4), lagfx_le32(payload + 0));
     return 0;
 }
 
@@ -862,8 +864,9 @@ static int op_set_tile_buffers(lagfx_protocol_t *p, const uint8_t *payload, size
 static int op_set_tile_buffer_offset(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
     (void)p;
     if (len < 12) { LAGFX_WARN("SetTileBufferOffset: payload too short (%zu < 12)", len); return 0; }
+    /* PGCmdSetBufferOffset: [index:u32@0][offset:u64@4] (Apple decoder disasm) */
     LAGFX_TRACE("SetTileBufferOffset: offset=%llu index=%u",
-                (unsigned long long)lagfx_le64(payload + 0), lagfx_le32(payload + 8));
+                (unsigned long long)lagfx_le64(payload + 4), lagfx_le32(payload + 0));
     return 0;
 }
 
@@ -912,10 +915,12 @@ static int op_set_vertex_buffers_with_stride(lagfx_protocol_t *p, const uint8_t 
 static int op_set_vertex_buffer_offset_with_stride(lagfx_protocol_t *p, const uint8_t *payload, size_t len) {
     (void)p;
     if (len < 20) { LAGFX_WARN("SetVertexBufferOffsetWithStride: payload too short (%zu < 20)", len); return 0; }
+    /* PGCmdSetBufferOffsetWithStride: [index:u32@0][offset:u64@4][stride:u64@12]
+     * (Apple decodeSetVertexBufferOffsetWithStrideWithIterator disasm) */
     LAGFX_TRACE("SetVertexBufferOffsetWithStride: offset=%llu stride=%llu index=%u",
-                (unsigned long long)lagfx_le64(payload + 0),
-                (unsigned long long)lagfx_le64(payload + 8),
-                lagfx_le32(payload + 16));
+                (unsigned long long)lagfx_le64(payload + 4),
+                (unsigned long long)lagfx_le64(payload + 12),
+                lagfx_le32(payload + 0));
     return 0;
 }
 
