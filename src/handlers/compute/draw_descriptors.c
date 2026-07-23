@@ -585,26 +585,23 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
         }
         if (have) {
             /* LAGFX_DUMP_BINDS=<pipe-ref>: write each bound buffer's FULL 64 KiB
-             * window to /tmp/lagfx-binds/ (once per binding) — the offline
-             * lavapipe harness needs the exact binary inputs, and the log lines
-             * only carry the first 32 bytes. */
+             * window to /tmp/lagfx-binds/ — the offline lavapipe harness needs
+             * the exact binary inputs; the log lines only carry the first 32
+             * bytes. OVERWRITE per draw (last draw wins): the boot's FIRST
+             * matching draw runs before the guest sets its buffer offsets, so
+             * first-wins captured a zeroed vertex window (2026-07-23). Copy the
+             * files out any time after the boot burst. */
             {
                 const char *dbp = getenv("LAGFX_DUMP_BINDS");
                 if (dbp && strtoul(dbp, NULL, 0) == task->pending_pipeline.reference) {
                     char bpath[96];
                     snprintf(bpath, sizeof(bpath), "/tmp/lagfx-binds/pipe0x%x-bind%u.bin",
                              task->pending_pipeline.reference, binding_no[i]);
-                    FILE *bf = fopen(bpath, "r");
+                    (void)system("mkdir -p /tmp/lagfx-binds");
+                    FILE *bf = fopen(bpath, "wb");
                     if (bf) {
-                        fclose(bf);           /* already dumped — first draw wins */
-                    } else {
-                        (void)system("mkdir -p /tmp/lagfx-binds");
-                        bf = fopen(bpath, "wb");
-                        if (bf) {
-                            fwrite(data, 1, LAGFX_DRAW_DS_BUF_SZ, bf);
-                            fclose(bf);
-                            LAGFX_LOG("DUMP_BINDS wrote %s", bpath);
-                        }
+                        fwrite(data, 1, LAGFX_DRAW_DS_BUF_SZ, bf);
+                        fclose(bf);
                     }
                 }
             }

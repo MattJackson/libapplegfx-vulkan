@@ -60,3 +60,15 @@ executable('air-translate',
   dependencies : libapplegfx_vulkan_dep,
   build_by_default : true,
 )
+
+# xgc-replay — offline replay of the Xgc login-material draw on lavapipe
+# with the real captured uniform windows (LAGFX_DUMP_BINDS) + texture set;
+# bisects which input blackens the output (KICKOFF-fragment-survival).
+if vulkan_dep.found()
+  executable('xgc-replay',
+    'xgc-replay.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : [libapplegfx_vulkan_dep, vulkan_dep],
+    build_by_default : true,
+  )
+endif
