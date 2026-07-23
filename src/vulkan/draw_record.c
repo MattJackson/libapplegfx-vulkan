@@ -236,9 +236,30 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
         return LAGFX_ERR_BACKEND;
     }
     
-    /* Wait for completion (1 second timeout from triangle-lavapipe-e2e.c:510-513) */
-    const uint64_t timeout_ns = 1ull * 1000ull * 1000ull * 1000ull;
+    /* Wait for completion. 30 s (was 1 s): with real rasterization the
+     * big CA fixed-function draws legitimately shade for seconds on
+     * lavapipe; at 1 s the common case became timeout → ERR + unbounded
+     * vkDeviceWaitIdle, serializing the drain for minutes and stalling
+     * the guest's GPU stack (KICKOFF-shading-throughput). Env-tunable:
+     * LAGFX_DRAW_FENCE_MS. */
+    uint64_t timeout_ns = 30ull * 1000ull * 1000ull * 1000ull;
+    {
+        const char *fm = getenv("LAGFX_DRAW_FENCE_MS");
+        if (fm && fm[0]) {
+            unsigned long ms = strtoul(fm, NULL, 10);
+            if (ms) timeout_ns = (uint64_t)ms * 1000000ull;
+        }
+    }
+    uint64_t fence_t0 = lagfx_now_ns();
     vr = vkWaitForFences(vk->device, 1, &fence, VK_TRUE, timeout_ns);
+    {
+        uint64_t waited_ms = (lagfx_now_ns() - fence_t0) / 1000000ull;
+        if (waited_ms > 1000u)
+            LAGFX_LOG("draw_record_and_submit: SLOW draw %llums "
+                      "(indexed=%d count=%u)",
+                      (unsigned long long)waited_ms, indexed ? 1 : 0,
+                      vertex_count);
+    }
     if (vr != VK_SUCCESS) {
         LAGFX_ERR("draw_record_and_submit: vkWaitForFences failed/timeout (%d)", (int)vr);
         /* The submission is STILL RUNNING on the lavapipe worker —
