@@ -382,6 +382,42 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
             }
         }
     }
+    /* INPUT-BISECTION DIAGNOSTICS (opt-in, 2026-07-23 fragment-survival):
+     * the Xgc material rasterizes full-coverage but lands pure black RGB;
+     * 10 of its 13 sampled textures are all-zero. Two gates isolate which
+     * input blackens the output without an offline harness:
+     * - LAGFX_DUMMY_WHITE: an ALL-ZERO small backing (the 1x1 dummies
+     *   0x33/0x34) uploads as opaque white instead. Output turns nonblack
+     *   → the dummies' black/zero-alpha samples are the multiplier.
+     * - LAGFX_CLAMP16F: every 16F half outside [0,1] (NaN/inf/negative/
+     *   extended-range) clamps into range. Output turns nonblack → the
+     *   backdrop's extended-range texels poison the material's sums. */
+    if (getenv("LAGFX_DUMMY_WHITE") && nb == 0u && want <= 4096u) {
+        memset(pick, 0xFF, want);
+        nb = want / 4u;
+        LAGFX_LOG("TEXREAL: ref=0x%x DUMMY_WHITE — all-zero %uB backing forced opaque white",
+                  tref, want);
+    }
+    if (getenv("LAGFX_CLAMP16F")) {
+        uint32_t bpp_probe = (lagfx_le32(desc + 32) >> 24) & 0xFFu;
+        if (bpp_probe == 8u) {
+            uint32_t fixed = 0;
+            for (uint32_t o = 0; o + 2u <= want; o += 2u) {
+                uint16_t hv = lagfx_le16(pick + o);
+                uint16_t mag = (uint16_t)(hv & 0x7FFFu);
+                if (hv & 0x8000u) {                    /* negative → 0 */
+                    lagfx_put_le16(pick + o, 0u); fixed++;
+                } else if (mag >= 0x7C00u) {           /* inf/NaN → 1.0 */
+                    lagfx_put_le16(pick + o, 0x3C00u); fixed++;
+                } else if (mag > 0x3C00u) {            /* >1.0 → 1.0 */
+                    lagfx_put_le16(pick + o, 0x3C00u); fixed++;
+                }
+            }
+            if (fixed)
+                LAGFX_LOG("TEXREAL: ref=0x%x CLAMP16F — %u halves clamped into [0,1]",
+                          tref, fixed);
+        }
+    }
     /* Dims from the DESCRIBED contract, not size inference: the type-0x03
      * descriptor carries rowBytes at word 13 and height at word 15 (RE'd from
      * ref 0x10=1280x1024 stride 5120, 0x16=32x17 stride 128, 0x2e=240x234
