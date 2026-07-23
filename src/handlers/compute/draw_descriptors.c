@@ -584,6 +584,30 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
             }
         }
         if (have) {
+            /* LAGFX_DUMP_BINDS=<pipe-ref>: write each bound buffer's FULL 64 KiB
+             * window to /tmp/lagfx-binds/ (once per binding) — the offline
+             * lavapipe harness needs the exact binary inputs, and the log lines
+             * only carry the first 32 bytes. */
+            {
+                const char *dbp = getenv("LAGFX_DUMP_BINDS");
+                if (dbp && strtoul(dbp, NULL, 0) == task->pending_pipeline.reference) {
+                    char bpath[96];
+                    snprintf(bpath, sizeof(bpath), "/tmp/lagfx-binds/pipe0x%x-bind%u.bin",
+                             task->pending_pipeline.reference, binding_no[i]);
+                    FILE *bf = fopen(bpath, "r");
+                    if (bf) {
+                        fclose(bf);           /* already dumped — first draw wins */
+                    } else {
+                        (void)system("mkdir -p /tmp/lagfx-binds");
+                        bf = fopen(bpath, "wb");
+                        if (bf) {
+                            fwrite(data, 1, LAGFX_DRAW_DS_BUF_SZ, bf);
+                            fclose(bf);
+                            LAGFX_LOG("DUMP_BINDS wrote %s", bpath);
+                        }
+                    }
+                }
+            }
             LAGFX_LOG("P6b bind#%u slot=%u DATA first32: %02x %02x %02x %02x %02x %02x %02x %02x "
                       "%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x "
                       "%02x %02x %02x %02x %02x %02x %02x %02x", binding_no[i], slot,
