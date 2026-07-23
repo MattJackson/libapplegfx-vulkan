@@ -356,24 +356,28 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     for (uint32_t o = 0; o + 4u <= want; o += 4u)
         if (pick[o] | pick[o+1] | pick[o+2]) nb++;
     /* Opaque-layer alpha: the 16F login backdrop's backing carries REAL RGB
-     * imagery (render-verified: the Sequoia forest wallpaper) but an ALL-ZERO
-     * alpha channel — the layer is opaque, so the guest's compositor ignores
-     * alpha and never writes it. Our sampled VkImage returns that a=0 into
-     * the panel material's alpha-threshold → every draw sampling the
-     * backdrop discards → black scene. Apply the opaque contract only when
-     * the WHOLE channel is zero (any real alpha anywhere → leave untouched):
-     * rewrite alpha halves to 1.0 (0x3C00). */
+     * imagery (render-verified: the Sequoia forest wallpaper) but its alpha
+     * channel is 0xFFFF (NaN) in every texel — an RGBX16F opaque layer whose
+     * X filler the guest never writes meaningfully. Sampled NaN alpha poisons
+     * the panel material's blending/threshold math → the settled scene went
+     * black once AUTHTEX bound the real backdrop. Apply the opaque contract
+     * only when NO texel carries a finite nonzero alpha (a single real alpha
+     * value anywhere → leave the channel untouched): rewrite alpha halves to
+     * 1.0 (0x3C00). */
     {
         uint32_t bpp_probe = (lagfx_le32(desc + 32) >> 24) & 0xFFu;
         if (bpp_probe == 8u && want >= 8u) {
             bool any_alpha = false;
             for (uint32_t o = 6u; o + 2u <= want; o += 8u) {
-                if ((lagfx_le16(pick + o) & 0x7FFFu) != 0u) { any_alpha = true; break; }
+                uint16_t mag = (uint16_t)(lagfx_le16(pick + o) & 0x7FFFu);
+                /* finite nonzero half: mag in (0, 0x7C00) — 0x7C00 = inf,
+                 * above = NaN */
+                if (mag != 0u && mag < 0x7C00u) { any_alpha = true; break; }
             }
             if (!any_alpha) {
                 for (uint32_t o = 6u; o + 2u <= want; o += 8u)
                     lagfx_put_le16(pick + o, 0x3C00u);
-                LAGFX_LOG("TEXREAL: ref=0x%x all-zero 16F alpha -> opaque (a=1.0)",
+                LAGFX_LOG("TEXREAL: ref=0x%x no finite 16F alpha -> opaque (a=1.0)",
                           tref);
             }
         }
