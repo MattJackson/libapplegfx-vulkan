@@ -33,6 +33,8 @@ VkFormat lagfx_metal_pixel_format_to_vk(uint32_t pixel_format) {
     case 80: return VK_FORMAT_B8G8R8A8_UNORM;      /* MTLPixelFormatBGRA8Unorm */
     case 70: return VK_FORMAT_R8G8B8A8_UNORM;      /* MTLPixelFormatRGBA8Unorm */
     case 115: return VK_FORMAT_R16G16B16A16_SFLOAT; /* MTLPixelFormatRGBA16Float */
+    case 1:  /* MTLPixelFormatA8Unorm — glyph-atlas coverage bytes */
+    case 10: return VK_FORMAT_R8_UNORM;            /* MTLPixelFormatR8Unorm */
     case 252: return VK_FORMAT_D32_SFLOAT;         /* MTLPixelFormatDepth32Float */
     case 25: return VK_FORMAT_D16_UNORM;           /* MTLPixelFormatDepth16Unorm */
     default:
@@ -127,6 +129,13 @@ lagfx_status_t lagfx_vk_iosurface_create(struct lagfx_vk_state *vk,
         .image    = ios->image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
         .format   = fmt,
+        /* A8/R8 glyph atlases carry COVERAGE in the single channel; the panel
+         * shaders sample .a (and some .r). Broadcast r → (r,r,r,r) so both
+         * conventions see the coverage byte instead of alpha=1/rgb=0. */
+        .components = (fmt == VK_FORMAT_R8_UNORM)
+            ? (VkComponentMapping){ VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
+                                    VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R }
+            : (VkComponentMapping){ 0 },
         .subresourceRange = {
             .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel   = 0,
@@ -242,6 +251,7 @@ lagfx_status_t lagfx_vk_iosurface_upload_pixels(struct lagfx_vk_state *vk,
     switch (ios->format) {
     case VK_FORMAT_R16G16B16A16_SFLOAT: texel_bytes = 8u; break;
     case VK_FORMAT_D16_UNORM:           texel_bytes = 2u; break;
+    case VK_FORMAT_R8_UNORM:            texel_bytes = 1u; break;
     default:                            texel_bytes = 4u; break;
     }
     const VkDeviceSize img_bytes = (VkDeviceSize)ios->width * ios->height * texel_bytes;

@@ -28,6 +28,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -370,17 +371,20 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
      * SIGSEGV on upload. 8-Bpp surfaces get a true RGBA16F VkImage
      * (W = stride/8) — modelling them as doubled-width BGRA8 fed the panel
      * half-float bytes as colour/alpha, i.e. near-black with garbage alpha.
-     * 1/2-Bpp rows still ride the BGRA8 view (W = stride/4; byte-exact).
+     * 1-Bpp (A8 glyph atlases) get a true R8_UNORM VkImage (W = stride) with
+     * an (r,r,r,r)-swizzled view — the 4-Bpp byte-model put the coverage
+     * bytes in the WRONG CHANNELS (alpha mostly 0 → invisible text).
+     * 2-Bpp rows still ride the BGRA8 view (W = stride/4; byte-exact).
      * Height = min(descriptor height, rows that fit the allocation) — small
      * textures pad the allocation (0x16: 23 padded rows vs 17 real), the
      * backdrop under-fills it. */
     uint32_t bpp = (lagfx_le32(desc + 32) >> 24) & 0xFFu;
     if (bpp != 4u && bpp != 8u && bpp != 2u && bpp != 1u) bpp = 4u;
-    if (desc_stride >= 4u && (desc_stride & 3u) == 0u && desc_h > 0u) {
+    if (desc_stride >= 4u && ((desc_stride & 3u) == 0u || bpp == 1u) && desc_h > 0u) {
         uint32_t rows_fit = (uint32_t)(want / desc_stride);
         uint32_t Heff = desc_h < rows_fit ? desc_h : rows_fit;
         if (Heff > 0u) {
-            W = desc_stride / (bpp == 8u ? 8u : 4u);
+            W = desc_stride / (bpp == 8u ? 8u : bpp == 1u ? 1u : 4u);
             H = Heff;
         }
     }
@@ -409,7 +413,9 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     LAGFX_LOG("TEXREAL: ref=0x%x dims %ux%u (descriptor stride=%u h=%u bpp=%u)",
               tref, W, H, desc_stride, desc_h, bpp);
     lagfx_vk_iosurface_t *ios = NULL;
-    uint32_t mtl_fmt = (bpp == 8u) ? 115u /* RGBA16Float */ : 80u /* BGRA8 */;
+    uint32_t mtl_fmt = (bpp == 8u) ? 115u /* RGBA16Float */
+                     : (bpp == 1u) ? 10u  /* R8Unorm (A8 coverage, rrrr view) */
+                                   : 80u  /* BGRA8 */;
     if (lagfx_vk_iosurface_create(vk, W, H, mtl_fmt, &ios) != LAGFX_OK || !ios) {
         free(pick); return NULL;
     }
@@ -452,6 +458,51 @@ void lagfx_texture_refresh(lagfx_protocol_t *p, lagfx_task_entry_t *task,
     if (!te || !te->host_handle) return;
     lagfx_vk_iosurface_t *ios = (lagfx_vk_iosurface_t *)te->host_handle;
     if (ios->image == VK_NULL_HANDLE) return;
+    /* Live texdump trigger (imagery-vs-noise judging is only possible from an
+     * actual image — nonzero-count heuristics can't tell a dim desktop from
+     * noise). `echo 0x52 > /tmp/lagfx_texdump.txt` inside the container dumps
+     * that realized ref's CURRENT backing bytes to
+     * /tmp/lagfx_texdump_ref0x<ref>.bin on its next sample-bind; the trigger
+     * file is consumed. Offline: reshape by the TEXREAL-logged stride/format. */
+    {
+        FILE *tf = fopen("/tmp/lagfx_texdump.txt", "r");
+        if (tf) {
+            unsigned want_ref = 0;
+            int ok = fscanf(tf, "%i", &want_ref);
+            fclose(tf);
+            if (ok == 1 && (uint32_t)want_ref == tref) {
+                uint64_t dsz = te->size;
+                if (dsz >= 4096u && dsz <= 128u * 1024u * 1024u) {
+                    uint8_t *db = calloc(1u, (size_t)dsz);
+                    if (db) {
+                        const char *dhow = "none";
+                        uint32_t dgot = lagfx_read_vtx_source(p, task, tref, 0u,
+                                                              (uint32_t)dsz, db,
+                                                              &dhow, 0);
+                        if (dgot) {
+                            char path[96];
+                            snprintf(path, sizeof(path),
+                                     "/tmp/lagfx_texdump_ref0x%x.bin", tref);
+                            FILE *df = fopen(path, "wb");
+                            if (df) {
+                                fwrite(db, 1u, dgot, df);
+                                fclose(df);
+                                remove("/tmp/lagfx_texdump.txt");
+                                LAGFX_LOG("TEXDUMP: ref=0x%x wrote %u/%llu B → %s "
+                                          "(read=%s img=%ux%u fmt=%d)",
+                                          tref, dgot, (unsigned long long)dsz, path,
+                                          dhow, ios->width, ios->height,
+                                          (int)ios->format);
+                            }
+                        } else {
+                            LAGFX_WARN("TEXDUMP: ref=0x%x read failed", tref);
+                        }
+                        free(db);
+                    }
+                }
+            }
+        }
+    }
     if (ios->gpu_drawn && !te->backing_dirty) return;
     if ((te->realize_seen++ & 7u) != 0u) return;      /* rate limit: 1 in 8 */
     uint64_t total = te->size;
