@@ -20,6 +20,15 @@
 #endif
 
 #ifdef LAGFX_HAVE_VULKAN
+/* Guest-declared per-draw viewport + scissor rects, framebuffer coords
+ * (top-left origin, matching both Metal and Vulkan). A zero width disables
+ * that rect (the draw falls back to the full render target). The rects are
+ * clamped to the RT bounds at record time. */
+typedef struct {
+    uint32_t vp_x, vp_y, vp_w, vp_h;
+    uint32_t sc_x, sc_y, sc_w, sc_h;
+} lagfx_draw_region_t;
+
 /* Record and submit a single draw command into a one-shot command buffer.
  *
  * Parameters:
@@ -73,7 +82,8 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
     int32_t first_vertex,
     uint32_t first_instance,
     uint32_t index_buffer_ref,
-    VkBuffer vertex_buffer);   /* VK_NULL_HANDLE = no vertex-input binding */
+    VkBuffer vertex_buffer,    /* VK_NULL_HANDLE = no vertex-input binding */
+    const lagfx_draw_region_t *region); /* NULL = full-RT viewport+scissor */
 #endif /* LAGFX_HAVE_VULKAN */
 
 #endif /* LIBAPPLEGFX_VULKAN_DRAW_RECORD_H */

@@ -33,7 +33,7 @@ lagfx_status_t lagfx_vk_draw_record_and_submit(
     return lagfx_vk_draw_record_and_submit_bound(
         vk, pipeline, VK_NULL_HANDLE, VK_NULL_HANDLE, rt, indexed,
         vertex_count, instance_count, first_vertex, first_instance,
-        index_buffer_ref, VK_NULL_HANDLE);
+        index_buffer_ref, VK_NULL_HANDLE, NULL);
 }
 
 lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
@@ -48,7 +48,8 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
     int32_t first_vertex,
     uint32_t first_instance,
     uint32_t index_buffer_ref,
-    VkBuffer vertex_buffer) {
+    VkBuffer vertex_buffer,
+    const lagfx_draw_region_t *region) {
 
     (void)index_buffer_ref;  /* TODO: bind actual VkBuffer in future stage */
     
@@ -159,13 +160,37 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
      * LAGFX_DISABLE_YFLIP. */
     {
         bool yflip = (getenv("LAGFX_DISABLE_YFLIP") == NULL);
+        /* Guest region (KICKOFF-shading-throughput): CA transforms vertices
+         * for the DECLARED viewport rect (pixel->NDC matrix = 2/vp_w etc.)
+         * and clips with the declared scissor. Mapping NDC onto the full RT
+         * stretched small layers across the whole target, and the missing
+         * scissor made full-target wash triangles shade EVERY RT pixel
+         * (2M-8M px of the 73KB Xgc ubershader on lavapipe = the 20-30s
+         * "runaway" draws). Clamp both rects to the RT; zero width = unset. */
+        uint32_t vx = 0, vy = 0, vw = rt->width, vh = rt->height;
+        uint32_t sx = 0, sy = 0, sw = rt->width, sh = rt->height;
+        if (region && region->vp_w && region->vp_x < rt->width
+            && region->vp_y < rt->height) {
+            vx = region->vp_x; vy = region->vp_y;
+            vw = region->vp_w; vh = region->vp_h;
+            if (vx + vw > rt->width)  vw = rt->width - vx;
+            if (vy + vh > rt->height) vh = rt->height - vy;
+        }
+        if (region && region->sc_w && region->sc_x < rt->width
+            && region->sc_y < rt->height) {
+            sx = region->sc_x; sy = region->sc_y;
+            sw = region->sc_w; sh = region->sc_h;
+            if (sx + sw > rt->width)  sw = rt->width - sx;
+            if (sy + sh > rt->height) sh = rt->height - sy;
+        }
         VkViewport dvp = {
-            .x = 0.0f, .y = yflip ? (float)rt->height : 0.0f,
-            .width = (float)rt->width,
-            .height = yflip ? -(float)rt->height : (float)rt->height,
+            .x = (float)vx, .y = yflip ? (float)(vy + vh) : (float)vy,
+            .width = (float)vw,
+            .height = yflip ? -(float)vh : (float)vh,
             .minDepth = 0.0f, .maxDepth = 1.0f,
         };
-        VkRect2D dsc = { .offset = {0, 0}, .extent = { rt->width, rt->height } };
+        VkRect2D dsc = { .offset = {(int32_t)sx, (int32_t)sy},
+                         .extent = { sw, sh } };
         vkCmdSetViewport(cb, 0, 1, &dvp);
         vkCmdSetScissor(cb, 0, 1, &dsc);
     }

@@ -1072,6 +1072,27 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                   nread, rd, task->scissor_w, task->scissor_h);
     }
 
+    /* Guest per-draw viewport + scissor (KICKOFF-shading-throughput): the
+     * rects the guest declared for THIS pass (0x82/0x75, reset at 0x1a).
+     * Without them every draw mapped NDC onto the full RT and shaded every
+     * RT pixel — small scissored washes cost 450x their real pixel count
+     * (the 20-30s draws). Kill-switch LAGFX_DISABLE_GUEST_VPSC. */
+    lagfx_draw_region_t region = {0};
+    bool have_region = false;
+    if (getenv("LAGFX_DISABLE_GUEST_VPSC") == NULL) {
+        if (task->vp_current) {
+            region.vp_x = task->vp_x; region.vp_y = task->vp_y;
+            region.vp_w = task->vp_w; region.vp_h = task->vp_h;
+            have_region = true;
+        }
+        if (task->sc_have) {
+            region.sc_x = task->sc_x; region.sc_y = task->sc_y;
+            region.sc_w = task->sc_w; region.sc_h = task->sc_h;
+            have_region = true;
+        }
+    }
+    const lagfx_draw_region_t *regionp = have_region ? &region : NULL;
+
     if (resource_using) {
         /* Bind the guest's storage buffers into a descriptor set matching the
          * reflected layout, then draw the guest geometry. Failure → skip (no crash). */
@@ -1093,7 +1114,7 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                 st = lagfx_vk_draw_record_and_submit_bound(
                     dev_with_vk->vk, pipeline,
                     (VkPipelineLayout)task->pending_pipeline.pipeline_layout, ds,
-                    active_rt, false, vc, 1, 0, 0, 0, vbuf);
+                    active_rt, false, vc, 1, 0, 0, 0, vbuf, regionp);
             }
             if (st == LAGFX_OK) {
                 LAGFX_LOG("%s P6b: drew TRANSLATED resource pipeline ref=0x%x verts=%u bindings=%u",
@@ -1159,7 +1180,7 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
          * is the SkyLight ref=0x14/0x1d case — stage-in attrs, no [[buffer]]. */
         st = lagfx_vk_draw_record_and_submit_bound(
             dev_with_vk->vk, pipeline, VK_NULL_HANDLE, VK_NULL_HANDLE,
-            active_rt, false, vc, 1, 0, 0, 0, vbuf);
+            active_rt, false, vc, 1, 0, 0, 0, vbuf, regionp);
         if (st == LAGFX_OK) {
             LAGFX_LOG("%s VTX: drew TRANSLATED vertex-input pipeline ref=0x%x verts=%u stride=%u",
                       op, task->pending_pipeline.reference, vc, vstride);

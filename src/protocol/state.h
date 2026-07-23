@@ -289,6 +289,17 @@ typedef struct {
     uint32_t scissor_w;
     uint32_t scissor_h;
 
+    /* KICKOFF-shading-throughput: the CURRENT guest scissor rect (full
+     * MTLScissorRect from 0x75, unguarded — scissor_w/h above keeps its
+     * per-pass-surface-size role with its 16px floor). Forwarded to
+     * vkCmdSetScissor per draw; sc_have reset at 0x1a render-pass begin
+     * (Metal resets encoder scissor/viewport to full-RT defaults). The
+     * missing scissor let full-target wash triangles shade the ENTIRE
+     * 1920x1080/3840x2160 RT instead of the guest's tiny region (160x29
+     * observed) — the "20-30s 3-vertex draw" throughput collapse. */
+    uint32_t sc_x, sc_y, sc_w, sc_h;
+    uint8_t  sc_have;
+
     /* Viewport rect (0x82 SetViewport, MTLViewport = 6× f64). originX/Y +
      * width/height are the layer's DESTINATION rect in the render target /
      * scanout — the guest-declared placement for compositing each per-pass
@@ -296,6 +307,13 @@ typedef struct {
      * valid=0 until the guest sets one. */
     uint32_t vp_x, vp_y, vp_w, vp_h;
     uint8_t  vp_valid;
+    /* Set by 0x82 and cleared at 0x1a render-pass begin: the viewport is
+     * CURRENT for this pass and must be applied to the draw's
+     * vkCmdSetViewport (the guest's pixel->NDC vertex matrices target the
+     * viewport rect, e.g. 2/160 x -2/64 for a 160x64 layer — mapping that
+     * NDC onto the full RT stretched small layers across the whole
+     * 1920x1080 target). vp_valid stays sticky for ASMBLIT placement. */
+    uint8_t  vp_current;
 
     /* Pending draw description — populated by Draw opcode handlers (0x01, 0x03, 0x06, 0x07).
      * Per-task state: each task has its own pending draw descriptor. */

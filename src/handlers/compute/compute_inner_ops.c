@@ -497,6 +497,14 @@ static int op_render_describe_render_pass(lagfx_protocol_t *p,
         return 1;
     }
 
+    /* Metal resets a new render encoder's viewport/scissor to full-RT
+     * defaults; mirror that so a small rect from the previous pass can't
+     * leak into a pass that never sets one (0x75/0x82 re-arm these).
+     * vp_valid (the ASMBLIT layer-placement hint) keeps its existing
+     * sticky semantics — only the per-draw rects reset. */
+    task->sc_have = 0u;
+    task->vp_current = 0u;
+
     /* Parse payload fields using lagfx_le32 for alignment-safe reads. */
     uint32_t view_count = lagfx_le32(body + 0);           /* offset 0 — u32 */
     uint32_t color_fmt_raw = lagfx_le32(body + 4);        /* offset 4 — u32 Apple format code */
@@ -1631,7 +1639,17 @@ static int op_set_scissor_rect(lagfx_protocol_t *p,
         p->tasks[task_id].scissor_w = (uint32_t)w;
         p->tasks[task_id].scissor_h = (uint32_t)h;
     }
-    /* TODO: Stage 70 — translate to vkCmdSetScissor. */
+    /* Current draw scissor (unguarded — a 1x1 clip is legitimate). Applied
+     * per draw via vkCmdSetScissor; reset at 0x1a render-pass begin. */
+    if (task_id < LAGFX_MAX_TASKS && p->tasks[task_id].live
+        && w >= 1u && w <= 16384u && h >= 1u && h <= 16384u
+        && x <= 16384u && y <= 16384u) {
+        p->tasks[task_id].sc_x = (uint32_t)x;
+        p->tasks[task_id].sc_y = (uint32_t)y;
+        p->tasks[task_id].sc_w = (uint32_t)w;
+        p->tasks[task_id].sc_h = (uint32_t)h;
+        p->tasks[task_id].sc_have = 1u;
+    }
     return 0;
 }
 
@@ -1669,6 +1687,7 @@ static int op_set_viewport(lagfx_protocol_t *p,
         p->tasks[task_id].vp_w = (uint32_t)(width + 0.5);
         p->tasks[task_id].vp_h = (uint32_t)(height + 0.5);
         p->tasks[task_id].vp_valid = 1u;
+        p->tasks[task_id].vp_current = 1u;   /* cleared at 0x1a pass begin */
     }
     return 0;
 }
