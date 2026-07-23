@@ -156,6 +156,10 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                                                  uint32_t *out_size) {
     *out_mem = VK_NULL_HANDLE;
     *out_size = LAGFX_DRAW_DS_BUF_SZ;
+    /* Fresh per draw — cleared here so a draw that bails before computing the
+     * bbox (BACKUPD/placement paths) can't leave a stale rect for the tile
+     * compositor (KICKOFF-scanout-composite-reliability). */
+    task->vtx_bbox_valid = 0u;
     if (!task->bindings.vertex_buffers[0].valid
         || task->bindings.vertex_buffers[0].ref == 0u)
         return VK_NULL_HANDLE;
@@ -519,6 +523,37 @@ VkBuffer lagfx_upload_guest_vertex_buffer(lagfx_protocol_t *p,
                 free(ib);
             }
             if (ffill) {
+                /* KICKOFF-scanout-composite-reliability: stash the screen-space
+                 * bbox of the decoded vertex positions (float x@0, y@4 at the
+                 * pipeline stride). The guest encodes each UI element's on-screen
+                 * placement in its VERTICES — the scissor origin is (0,0) — so
+                 * this bbox is the element's real dst rect for the poor-man's
+                 * tile compositor. Range-filter [0,4096) discards the NaN/garbage
+                 * lanes some composite draws carry in z/w. */
+                {
+                    float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
+                    uint32_t nv = 0;
+                    uint32_t st = pstride ? pstride : 24u;
+                    for (size_t bo = 0; bo + 8u <= (size_t)want; bo += st) {
+                        float vx, vy; uint32_t u;
+                        u = lagfx_le32(full + bo + 0); memcpy(&vx, &u, 4);
+                        u = lagfx_le32(full + bo + 4); memcpy(&vy, &u, 4);
+                        if (!(vx >= 0.0f && vx < 4096.0f
+                              && vy >= 0.0f && vy < 4096.0f)) continue;
+                        if (vx < minx) minx = vx;
+                        if (vx > maxx) maxx = vx;
+                        if (vy < miny) miny = vy;
+                        if (vy > maxy) maxy = vy;
+                        nv++;
+                    }
+                    if (nv >= 3u && maxx > minx && maxy > miny) {
+                        task->vtx_bbox_x = (uint32_t)minx;
+                        task->vtx_bbox_y = (uint32_t)miny;
+                        task->vtx_bbox_w = (uint32_t)(maxx - minx);
+                        task->vtx_bbox_h = (uint32_t)(maxy - miny);
+                        task->vtx_bbox_valid = 1u;
+                    }
+                }
                 lagfx_flag_pixel_texcoords(task, full, want, pstride,
                                            (uint32_t)task->pending_pipeline.vtx_in_comp[0] * 4u);
                 VkBuffer svb = VK_NULL_HANDLE;
@@ -1223,27 +1258,30 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
     /* POOR-MAN'S TILE COMPOSITOR (KICKOFF-scanout-composite-reliability).
      *
      * The login UI draws its panels + glyphs DIRECTLY to the scanout
-     * (target_ref==0 → active_rt==&display->rt) at a small per-draw SCISSOR
-     * rect that IS the on-screen placement (e.g. "Enter Password" at 160x29,
-     * the clock at ~200x147), sampling FINISHED guest-CPU-rendered tiles
-     * (texture_realize uploads: the clock digits, the password prompt). But
-     * that composite runs on the CA ubershader (pipe 0x51/0x9b) which fails
-     * to translate (xlated=0) → the draw drops → nothing lands → black screen.
+     * (target_ref==0 → active_rt==&display->rt), sampling FINISHED
+     * guest-CPU-rendered tiles (texture_realize uploads: the clock digits,
+     * the username/password text). But that composite runs on the CA
+     * ubershader (pipe 0x51/0x9b) which fails to translate (xlated=0) → the
+     * draw drops → nothing lands → black screen. We already HOLD those tiles
+     * as sampled VkImages and can already blit to display->rt (RGB test-boxes
+     * proved it) — connect the two, no shader needed.
      *
-     * We already HOLD those tiles as sampled VkImages, and we can already
-     * blit to display->rt (proven by the RGB test-boxes). Connect the two:
-     * blit each realized content tile the draw samples into display->rt at
-     * the draw's scissor rect. No shader translation needed; placement is the
-     * guest's own scissor. This is the DETERMINISTIC clock/text path the
-     * shader compositor is not — it works whether or not pipe 0x51 translates.
+     * PLACEMENT: the guest puts each element's on-screen rect in its VERTICES
+     * (the 0x75 scissor origin is always (0,0)); task->vtx_bbox is that rect.
+     * We size-MATCH the bbox to the tile (within ~2x) so we pick the draw that
+     * composites the WHOLE tile as one quad, not the tiny per-glyph sub-draws.
+     * Fallback to the scissor rect when no bbox (content still shows, if
+     * mis-placed) so a boot is never silently black.
      *
-     * Kill-switch: only fires under LAGFX_TILE_BLIT. Skips 1x1 dummies /
-     * small masks and any scanout-sized-or-larger surface (per-pass RTs, the
-     * 3840x2160 backdrop) — only real placed tiles composite. */
-    if (getenv("LAGFX_TILE_BLIT") && active_rt == &display->rt
-        && task->sc_have && task->sc_w >= 8u && task->sc_h >= 8u
-        && task->sc_w < display->rt.width) {
-        uint32_t nblit = 0;
+     * SURVIVAL: a single per-draw blit is overwritten by a later full-screen
+     * draw before present. So we don't blit here — we ENQUEUE {tile, dst} into
+     * p->tile_overlay and RE-BLIT the whole set after every draw (below), the
+     * same trick the ASMBLIT uses. Reset at present.
+     *
+     * Kill-switch: only under LAGFX_TILE_BLIT. Skips 1x1 dummies / <=32px masks
+     * and any scanout-sized-or-larger surface (per-pass RTs / 3840x2160
+     * backdrop) — only real placed tiles composite. */
+    if (getenv("LAGFX_TILE_BLIT") && active_rt == &display->rt) {
         for (uint32_t s = 0; s < LAGFX_MAX_BINDING_SLOTS; s++) {
             if (!task->bindings.fragment_textures[s].valid) continue;
             uint32_t tref = task->bindings.fragment_textures[s].ref;
@@ -1252,34 +1290,61 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
             if (!te || !te->host_handle) continue;
             lagfx_vk_iosurface_t *tios = (lagfx_vk_iosurface_t *)te->host_handle;
             if (!tios || tios->image == VK_NULL_HANDLE) continue;
-            /* content tiles only: skip 1x1 dummies + <=32x32 masks and any
-             * surface as large as the scanout (per-pass RTs / backdrop). */
             if (tios->width <= 32u && tios->height <= 32u) continue;
             if (tios->width >= display->rt.width
                 || tios->height >= display->rt.height) continue;
-            /* Placement sanity: the scissor must be a REASONABLE frame for
-             * this tile — a small glyph tile drawn under a full-screen
-             * (1280x1024) scissor would smear stretched across the whole
-             * screen. Only blit when the dst rect is within ~3x the tile's
-             * own dimensions (the login UI's element scissors match their
-             * tiles: clock 256x161->199x147, password 128x34->160x29). */
-            if (task->sc_w > tios->width * 3u || task->sc_h > tios->height * 3u)
-                continue;
-            if (lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, tios->view,
-                                        task->sc_x, task->sc_y,
-                                        task->sc_w, task->sc_h) == LAGFX_OK) {
-                nblit++;
-                LAGFX_LOG("TILEBLIT pipe=0x%x tile=0x%x %ux%u -> dst=(%u,%u %ux%u) slot=%u",
+            /* choose placement: vertex bbox (real) preferred, else scissor. */
+            uint32_t dx, dy, dw, dh; const char *psrc;
+            if (task->vtx_bbox_valid && task->vtx_bbox_w >= 8u
+                && task->vtx_bbox_h >= 8u) {
+                dx = task->vtx_bbox_x; dy = task->vtx_bbox_y;
+                dw = task->vtx_bbox_w; dh = task->vtx_bbox_h; psrc = "bbox";
+            } else if (task->sc_have && task->sc_w >= 8u && task->sc_h >= 8u) {
+                dx = task->sc_x; dy = task->sc_y;
+                dw = task->sc_w; dh = task->sc_h; psrc = "scissor";
+            } else continue;
+            /* size-MATCH: the dst rect must be a reasonable frame for the tile
+             * (within ~2x each dim) — picks the whole-tile quad, rejects tiny
+             * per-glyph sub-draws and full-screen passes. */
+            if (dw > tios->width * 2u || dh > tios->height * 2u
+                || tios->width > dw * 2u || tios->height > dh * 2u) continue;
+            if (dx >= display->rt.width || dy >= display->rt.height) continue;
+            /* enqueue (dedup by ios; update rect to the latest placement). */
+            uint32_t qi;
+            for (qi = 0; qi < p->tile_overlay_n; qi++)
+                if (p->tile_overlay[qi].ios == (uintptr_t)tios) break;
+            if (qi == p->tile_overlay_n && p->tile_overlay_n < 16u)
+                p->tile_overlay_n++;
+            if (qi < 16u) {
+                p->tile_overlay[qi].ios = (uintptr_t)tios;
+                p->tile_overlay[qi].x = dx; p->tile_overlay[qi].y = dy;
+                p->tile_overlay[qi].w = dw; p->tile_overlay[qi].h = dh;
+                LAGFX_LOG("TILEBLIT enqueue pipe=0x%x tile=0x%x %ux%u -> dst=(%u,%u %ux%u) via=%s qn=%u",
                           task->pending_pipeline.reference, tref,
-                          tios->width, tios->height,
-                          task->sc_x, task->sc_y, task->sc_w, task->sc_h, s);
+                          tios->width, tios->height, dx, dy, dw, dh, psrc,
+                          p->tile_overlay_n);
             }
         }
-        if (nblit) {
-            (void)lagfx_display_overlay_cursor(display);
-            if (getenv("LAGFX_FRAME_ON_SWAP") == NULL)
-                lagfx_display_signal_frame_ready(display);
+    }
+
+    /* Re-blit the tile-overlay set into display->rt at the END of EVERY draw
+     * (survival: the last write each draw wins over a full-screen draw that
+     * cleared it). Cheap — the set is a handful of small tiles. */
+    if (getenv("LAGFX_TILE_BLIT") && p->tile_overlay_n
+        && display->rt_ready && display->rt.image != VK_NULL_HANDLE) {
+        for (uint32_t qi = 0; qi < p->tile_overlay_n && qi < 16u; qi++) {
+            lagfx_vk_iosurface_t *tios =
+                (lagfx_vk_iosurface_t *)p->tile_overlay[qi].ios;
+            if (!tios || tios->image == VK_NULL_HANDLE) continue;
+            (void)lagfx_vk_composite_over(dev_with_vk->vk, &display->rt,
+                                          tios->view, p->tile_overlay[qi].x,
+                                          p->tile_overlay[qi].y,
+                                          p->tile_overlay[qi].w,
+                                          p->tile_overlay[qi].h);
         }
+        (void)lagfx_display_overlay_cursor(display);
+        if (getenv("LAGFX_FRAME_ON_SWAP") == NULL)
+            lagfx_display_signal_frame_ready(display);
     }
 
     /* Scanout assembly: a per-pass draw records its surface in draw order

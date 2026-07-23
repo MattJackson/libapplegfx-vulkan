@@ -315,6 +315,16 @@ typedef struct {
      * 1920x1080 target). vp_valid stays sticky for ASMBLIT placement. */
     uint8_t  vp_current;
 
+    /* KICKOFF-scanout-composite-reliability: screen-space bounding box of the
+     * draw's DECODED vertex positions (float x@0,y@4 per vertex). The guest
+     * puts each UI element's on-screen placement in the VERTICES (the scissor
+     * origin is (0,0)); this bbox is the element's real dst rect on the
+     * scanout. Used by the poor-man's tile compositor to place a sampled
+     * content tile (clock/username text) at its true position. Set in
+     * lagfx_upload_guest_vertex_buffer; valid=0 when no plausible positions. */
+    uint32_t vtx_bbox_x, vtx_bbox_y, vtx_bbox_w, vtx_bbox_h;
+    uint8_t  vtx_bbox_valid;
+
     /* Pending draw description — populated by Draw opcode handlers (0x01, 0x03, 0x06, 0x07).
      * Per-task state: each task has its own pending draw descriptor. */
     lagfx_pending_draw_t pending_draw;
@@ -478,6 +488,16 @@ typedef struct lagfx_protocol {
      * Entries are lagfx_vk_iosurface_t* as uintptr_t (vulkan.h-free). */
     uintptr_t frame_blit_queue[16];
     uint32_t  frame_blit_n;
+
+    /* KICKOFF-scanout-composite-reliability: poor-man's tile-compositor
+     * overlay. A scanout draw that samples a finished content tile (clock,
+     * username text) enqueues {tile IOSurface, screen dst rect from the
+     * draw's vertex bbox}. The whole set is RE-BLITTED into display->rt at
+     * the end of EVERY draw so a later full-screen draw can't wipe it (the
+     * per-draw blit alone was overwritten before present). Reset at present.
+     * ios stored as uintptr_t (vulkan.h-free), like frame_blit_queue. */
+    struct { uintptr_t ios; uint32_t x, y, w, h; } tile_overlay[16];
+    uint32_t  tile_overlay_n;
 
     /* 0x39 MapMemoryImmediate big regions (>=4 MiB). The wallpaper IOSurface's
      * pixels are written by the guest into one of these guest-physical regions,

@@ -594,6 +594,7 @@ lagfx_handler_status_t lagfx_display_vchan_display_submit(
              * as they render; a present marks a frame boundary, so reset the
              * queue here to start the next frame's composition fresh. */
             p->frame_blit_n = 0u;
+            p->tile_overlay_n = 0u;  /* KICKOFF-scanout-composite-reliability */
 
             lagfx_status_t st = lagfx_display_submit_rendered_frame(
                 disp, fb_base, scanout_len);
