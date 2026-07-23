@@ -28,8 +28,12 @@
  *   fragment module: raw bindings shifted +16 here (production's
  *     lagfx_spv_offset_bindings contract) →
  *     buffers 16-22,31 ← pipe0x31-bind{16..22,31}.bin
- *     sampled images 23-30, 32-36 (23=feedback 1280x1024, 24=forest
- *       RGBA16F, 30=32x32 colorful, rest=1x1 black)
+ *     sampled images 23-30, 32-36 (23=feedback 1280x1024, 30=32x32
+ *       colorful, rest=1x1 black; live TEXBIND says 24 is usually the
+ *       1x1 dummy 0x33 / sometimes the 256x2 gamma LUT 0x55 — NOT the
+ *       forest; the forest 0x54 never binds into pipe 0x31, it feeds
+ *       the 0x17-writing blur pipes. The [forest.ppm] arg therefore
+ *       populates a slot the material ignores in the captured configs.)
  *     samplers 37-39 (linear)
  *
  * Exit 0 = rendered (stats printed); 77 = no ICD; 1 = fail.
