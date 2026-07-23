@@ -14,6 +14,11 @@
  *
  * usage: xgc-replay <vert.spv> <frag.spv> <binds-dir> [forest.ppm]
  *          [--ones=16,17,...]   fill those merged-binding buffers with 1.0f
+ *          [--zero=16,17,...]   zero-fill those merged-binding buffers
+ *          [--zrange=16:0:64]   zero bytes [lo,hi) of one buffer (repeatable)
+ *          [--poke=16:12:ff]    set one byte of one buffer (repeatable)
+ *          [--solid=24:1,0,0,1] override a texture slot with a 64x64 solid
+ *                               RGBA color (repeatable, panel-truth bisector)
  *          [--gray-feedback]    feedback texture mid-gray instead of black
  *          [--out=path.ppm]     write the rendered frame (default out.ppm)
  *
@@ -215,9 +220,34 @@ int main(int argc, char **argv) {
     const char *vpath = argv[1], *fpath = argv[2], *bdir = argv[3];
     const char *forest_ppm = NULL, *outpath = "out.ppm";
     int gray_feedback = 0, wide = 0, f16rt = 0;
-    char ones[512] = {0};
+    char ones[512] = {0}, zeros[512] = {0};
+    struct { uint32_t bind; float rgba[4]; } solids[16]; int nsolid = 0;
+    struct { uint32_t bind, lo, hi; } zrs[32]; int nzr = 0;
+    struct { uint32_t bind, off, val; } pokes[32]; int npoke = 0;
     for (int a = 4; a < argc; a++) {
         if (!strncmp(argv[a], "--ones=", 7)) snprintf(ones, sizeof(ones), ",%s,", argv[a] + 7);
+        else if (!strncmp(argv[a], "--zero=", 7)) snprintf(zeros, sizeof(zeros), ",%s,", argv[a] + 7);
+        else if (!strncmp(argv[a], "--solid=", 8) && nsolid < 16) {
+            unsigned b = 0; float r = 0, gcol = 0, bl = 0, al = 1;
+            if (sscanf(argv[a] + 8, "%u:%f,%f,%f,%f", &b, &r, &gcol, &bl, &al) >= 4) {
+                solids[nsolid].bind = b;
+                solids[nsolid].rgba[0] = r; solids[nsolid].rgba[1] = gcol;
+                solids[nsolid].rgba[2] = bl; solids[nsolid].rgba[3] = al;
+                nsolid++;
+            }
+        }
+        else if (!strncmp(argv[a], "--zrange=", 9) && nzr < 32) {
+            unsigned b = 0, lo = 0, hi = 0;
+            if (sscanf(argv[a] + 9, "%u:%u:%u", &b, &lo, &hi) == 3 && hi <= 65536 && lo < hi) {
+                zrs[nzr].bind = b; zrs[nzr].lo = lo; zrs[nzr].hi = hi; nzr++;
+            }
+        }
+        else if (!strncmp(argv[a], "--poke=", 7) && npoke < 32) {
+            unsigned b = 0, off = 0, val = 0;
+            if (sscanf(argv[a] + 7, "%u:%u:%x", &b, &off, &val) == 3 && off < 65536) {
+                pokes[npoke].bind = b; pokes[npoke].off = off; pokes[npoke].val = val; npoke++;
+            }
+        }
         else if (!strcmp(argv[a], "--gray-feedback")) gray_feedback = 1;
         else if (!strcmp(argv[a], "--wide")) wide = 1;
         else if (!strcmp(argv[a], "--f16rt")) f16rt = 1;
@@ -323,9 +353,13 @@ int main(int argc, char **argv) {
         uint32_t bnum = i < NBUF_V ? vbufs[i] : fbufs[i - NBUF_V];
         char key[16]; snprintf(key, sizeof(key), ",%u,", bnum);
         int force_ones = ones[0] && strstr(ones, key) != NULL;
+        int force_zero = zeros[0] && strstr(zeros, key) != NULL;
         char path[512]; snprintf(path, sizeof(path), "%s/pipe0x31-bind%u.bin", bdir, bnum);
         size_t got = 0; uint8_t *fd = slurp(path, &got);
-        if (fd && got >= 65536 && !force_ones) {
+        if (force_zero) {
+            memset(filedata, 0, 65536);
+            printf("bind%u: ZEROED\n", bnum);
+        } else if (fd && got >= 65536 && !force_ones) {
             memcpy(filedata, fd, 65536);
         } else if (force_ones) {
             float one = 1.0f;
@@ -336,6 +370,12 @@ int main(int argc, char **argv) {
             printf("bind%u: MISSING file %s — zero\n", bnum, path);
         }
         free(fd);
+        for (int z = 0; z < nzr; z++)
+            if (zrs[z].bind == bnum)
+                memset(filedata + zrs[z].lo, 0, zrs[z].hi - zrs[z].lo);
+        for (int p = 0; p < npoke; p++)
+            if (pokes[p].bind == bnum)
+                filedata[pokes[p].off] = (uint8_t)pokes[p].val;
         VkBuffer b = make_ssbo(filedata, 65536);
         VkDescriptorBufferInfo bi = { b, 0, VK_WHOLE_SIZE };
         VkWriteDescriptorSet wr = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -395,6 +435,19 @@ int main(int argc, char **argv) {
         if (timgs[i] == 23) v = v_feedback;
         else if (timgs[i] == 24) v = v_forest;
         else if (timgs[i] == 30) v = v_c32;
+        for (int s = 0; s < nsolid; s++) {
+            if (solids[s].bind != timgs[i]) continue;
+            uint8_t spx[64 * 64 * 4];
+            for (int q = 0; q < 64 * 64; q++) {    /* BGRA byte order */
+                spx[q*4+0] = (uint8_t)(solids[s].rgba[2] * 255.0f);
+                spx[q*4+1] = (uint8_t)(solids[s].rgba[1] * 255.0f);
+                spx[q*4+2] = (uint8_t)(solids[s].rgba[0] * 255.0f);
+                spx[q*4+3] = (uint8_t)(solids[s].rgba[3] * 255.0f);
+            }
+            v = make_texture(64, 64, VK_FORMAT_B8G8R8A8_UNORM, spx, sizeof(spx));
+            printf("tex%u: SOLID %.2f,%.2f,%.2f,%.2f\n", timgs[i],
+                   solids[s].rgba[0], solids[s].rgba[1], solids[s].rgba[2], solids[s].rgba[3]);
+        }
         VkDescriptorImageInfo ii = { VK_NULL_HANDLE, v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkWriteDescriptorSet wr = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = ds, .dstBinding = timgs[i], .descriptorCount = 1,
@@ -569,8 +622,11 @@ int main(int argc, char **argv) {
         if (mx - mn > 12) cf++;
         if (a > 8) an++;
     }
-    printf("RESULT %ux%u: nonblack=%.2f%% colorful=%.2f%% alpha-nonzero=%.2f%%\n",
-           W, H, 100.0 * nb / (W * H), 100.0 * cf / (W * H), 100.0 * an / (W * H));
+    size_t ci = ((size_t)H / 2) * W + W / 2;
+    printf("RESULT %ux%u: nonblack=%.2f%% colorful=%.2f%% alpha-nonzero=%.2f%% "
+           "center=rgba(%u,%u,%u,%u)\n",
+           W, H, 100.0 * nb / (W * H), 100.0 * cf / (W * H), 100.0 * an / (W * H),
+           px[ci*4+2], px[ci*4+1], px[ci*4], px[ci*4+3]);
     FILE *of = fopen(outpath, "wb");
     if (of) {
         fprintf(of, "P6\n%u %u\n255\n", W, H);
