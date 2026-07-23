@@ -315,6 +315,17 @@ typedef struct {
 #define LAGFX_MAX_BYTEBUF_VIEWS 12u
     struct {
         uint8_t  arg;         /* owning buffer arg index */
+        uint8_t  arrayed;     /* 1 = some GEP indexes this view with a LIVE
+                               * (instruction-result) first index — declare
+                               * the Block as { pointee[] } and keep the
+                               * element index (dropping it collapsed every
+                               * VfxXgb vertex fetch to element 0 →
+                               * degenerate triangles → nothing rasterized;
+                               * KICKOFF-panel-truth root cause). Lowered as
+                               * a runtime array because lavapipe steps
+                               * OpPtrAccessChain-on-Block-variable by
+                               * stride 0 (verified by hand-patched SPIR-V:
+                               * u32/u64 element index both land on elem 0). */
         uint32_t pointee_ty;  /* AIR type of the view's pointee */
         uint32_t var_id;      /* pre-allocated OpVariable id */
     } bytebuf_view[LAGFX_MAX_BYTEBUF_VIEWS];
@@ -345,6 +356,13 @@ typedef struct {
      * pointer type declaration. */
     struct { uint32_t air_ty; uint32_t spv_id; } blockptr_cache[LAGFX_MAX_VERTEX_ARGS];
     uint32_t                  blockptr_cache_len;
+    /* ARRAYED-view Block pointer cache: OpTypePointer(StorageBuffer,
+     * { pointee[] }) for struct pointees indexed per-element (see the
+     * bytebuf_view.arrayed doc). Separate from blockptr_cache — the same
+     * pointee AIR type may need BOTH the bare-struct Block (STRUCTBUF
+     * helper params) and the arrayed Block (per-element views). */
+    struct { uint32_t air_ty; uint32_t spv_id; } arrblockptr_cache[LAGFX_MAX_VERTEX_ARGS];
+    uint32_t                  arrblockptr_cache_len;
 
     /* Common SPIR-V type ids (filled lazily). */
     uint32_t                  id_void;
@@ -1641,6 +1659,42 @@ static uint32_t emit_type_block_ptr(xlate_ctx_t *c, uint32_t pointee_ty) {
     return id;
 }
 
+/* OpTypePointer(StorageBuffer, { pointee[] }) for an ARRAYED view: a
+ * struct pointee accessed per-element (`views[vertex_id].field`). Same
+ * shape as emit_type_nonstruct_block but with its own cache — the bare
+ * struct Block for the same pointee may coexist (see arrblockptr_cache
+ * doc). 0 if the pointee can't be laid out. */
+static uint32_t emit_type_arrayed_block_ptr(xlate_ctx_t *c, uint32_t pointee_ty) {
+    for (uint32_t i = 0; i < c->arrblockptr_cache_len; i++)
+        if (c->arrblockptr_cache[i].air_ty == pointee_ty)
+            return c->arrblockptr_cache[i].spv_id;
+    uint32_t elem_spv = emit_air_type(c, pointee_ty);
+    if (!elem_spv) return 0u;
+    uint32_t laid_out[64]; uint32_t n_laid_out = 0;
+    decorate_nested_layout(c, pointee_ty, laid_out, &n_laid_out);
+    uint32_t rt = emit_type_runtime_array(c, pointee_ty, elem_spv);
+    if (!rt) return 0u;
+    uint32_t sid = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t sops[] = { sid, rt };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_STRUCT, sops, 2);
+    { uint32_t d[] = { sid, LAGFX_SPV_DECORATION_BLOCK };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_DECORATE, d, 2); }
+    { uint32_t md[] = { sid, 0u, LAGFX_SPV_DECORATION_OFFSET, 0u };
+      lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_MEMBER_DECORATE, md, 4); }
+    /* Element pointer the GEP results need. */
+    (void)emit_type_pointer(c, pointee_ty, elem_spv,
+                            LAGFX_SPV_STORAGE_STORAGE_BUFFER);
+    uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+    uint32_t ops[] = { id, LAGFX_SPV_STORAGE_STORAGE_BUFFER, sid };
+    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_TYPE_POINTER, ops, 3);
+    if (c->arrblockptr_cache_len < LAGFX_MAX_VERTEX_ARGS) {
+        c->arrblockptr_cache[c->arrblockptr_cache_len].air_ty = pointee_ty;
+        c->arrblockptr_cache[c->arrblockptr_cache_len].spv_id = id;
+        c->arrblockptr_cache_len++;
+    }
+    return id;
+}
+
 /* ===================================================================
  * Prologue
  * =================================================================== */
@@ -1935,8 +1989,11 @@ static void emit_arg_resource_vars(xlate_ctx_t *c, uint32_t n_args) {
              * pointee, same descriptor as the raw arg (see bytebuf_view). */
             for (uint32_t v = 0; v < c->n_bytebuf_views; v++) {
                 if (c->bytebuf_view[v].arg != i) continue;
-                uint32_t vptr = emit_type_block_ptr(
-                    c, c->bytebuf_view[v].pointee_ty);
+                uint32_t vptr = c->bytebuf_view[v].arrayed
+                    ? emit_type_arrayed_block_ptr(
+                          c, c->bytebuf_view[v].pointee_ty)
+                    : emit_type_block_ptr(
+                          c, c->bytebuf_view[v].pointee_ty);
                 if (!vptr) continue;
                 uint32_t vvar_ops[] = { vptr, c->bytebuf_view[v].var_id,
                                         LAGFX_SPV_STORAGE_STORAGE_BUFFER };
@@ -3748,9 +3805,14 @@ static uint32_t buffer_arg_runtimearray_elem(xlate_ctx_t *c, uint32_t ptr_value_
     if (c->value_view && ptr_value_id < c->value_id_capacity &&
         c->value_view[ptr_value_id]) {
         uint32_t v = (uint32_t)c->value_view[ptr_value_id] - 1u;
-        if (v < c->n_bytebuf_views)
+        if (v < c->n_bytebuf_views) {
+            /* An ARRAYED view is { pointee[] } even for a STRUCT pointee —
+             * the GEP path must keep the element index (see arrayed doc). */
+            if (c->bytebuf_view[v].arrayed)
+                return c->bytebuf_view[v].pointee_ty;
             return buffer_arg_nonstruct_pointee(
                 c, c->bytebuf_view[v].pointee_ty);
+        }
         return 0u;
     }
     if (ptr_value_id < c->arg_id_base ||
@@ -6691,6 +6753,22 @@ static void prescan_buffer_arg_access_types(xlate_ctx_t *c) {
              inst->code == LAGFX_AIR_INST_GEP_OLD) && inst->num_ops >= 4u) {
             ptr_rel = (uint32_t)inst->ops[2];
             acc     = (uint32_t)inst->ops[1];   /* source_elem_type */
+            /* A view GEP'd with a LIVE (instruction-result) first index is
+             * real per-element pointer arithmetic (`views[vertex_id]`) —
+             * mark the view arrayed so its Block declares { pointee[] }
+             * and the element index survives (see the arrayed field doc). */
+            {
+                uint32_t pid = resolve_relative(ptr_rel, next_val_id);
+                if (pid < c->value_id_capacity && vview[pid]) {
+                    uint32_t idx0 = resolve_relative((uint32_t)inst->ops[3],
+                                                     next_val_id);
+                    if (idx0 >= c->inst_id_base) {
+                        uint32_t v = (uint32_t)vview[pid] - 1u;
+                        if (v < c->n_bytebuf_views)
+                            c->bytebuf_view[v].arrayed = 1u;
+                    }
+                }
+            }
         } else if (inst->code == LAGFX_AIR_INST_LOAD && inst->num_ops >= 2u) {
             ptr_rel = (uint32_t)inst->ops[0];
             acc     = (uint32_t)inst->ops[1];   /* result type */
@@ -6966,6 +7044,17 @@ static void bind_module_constants(xlate_ctx_t *c) {
                                                 (uint32_t)(bits & 0xFFFFFFFFu),
                                                 (uint32_t)(bits >> 32u) };
                             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CONSTANT, ops, 4);
+                            /* i64 constants that fit int32 are literal too
+                             * (GEP first-index zero detection needs them —
+                             * LLVM's pointer-arithmetic index is i64 0). */
+                            if ((int64_t)bits >= INT32_MIN &&
+                                (int64_t)bits <= INT32_MAX) {
+                                bind_value_lit_i32(c, vid, (int32_t)(int64_t)bits);
+                                if (h && h->mod_const_lit_valid) {
+                                    h->mod_const_lit[i] = (int32_t)(int64_t)bits;
+                                    h->mod_const_lit_valid[i] = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -6990,10 +7079,10 @@ static void bind_module_constants(xlate_ctx_t *c) {
                     spv_id = lagfx_spv_builder_alloc_id(c->b);
                     uint32_t ops[] = { ty_spv, spv_id };
                     lagfx_spv_builder_emit_op(c->b, 46 /* OpConstantNull */, ops, 2);
-                    /* NULL of an i32 type is the integer literal 0. */
+                    /* NULL of any integer type is the literal 0 (i64 nulls
+                     * are LLVM's canonical GEP pointer-arithmetic index). */
                     const lagfx_air_type_t *tt = &((const lagfx_air_type_t *)lagfx_air_module_types(c->m, &(uint32_t){0}))[ty_air];
-                    if (tt->kind == LAGFX_AIR_TYPE_INTEGER &&
-                        tt->num_op >= 1u && tt->op[0] == 32u) {
+                    if (tt->kind == LAGFX_AIR_TYPE_INTEGER) {
                         bind_value_lit_i32(c, vid, 0);
                         if (h && h->mod_const_lit_valid) {
                             h->mod_const_lit[i] = 0;
@@ -7071,6 +7160,10 @@ static void bind_local_constants(xlate_ctx_t *c) {
                     }
                     if (w == 32u) {
                         bind_value_lit_i32(c, vid, (int32_t)(uint64_t)k->payload.i64);
+                    } else if (w == 64u &&
+                               k->payload.i64 >= INT32_MIN &&
+                               k->payload.i64 <= INT32_MAX) {
+                        bind_value_lit_i32(c, vid, (int32_t)k->payload.i64);
                     }
                 }
                 break;
@@ -7104,8 +7197,7 @@ static void bind_local_constants(xlate_ctx_t *c) {
                 spv_id = lagfx_spv_builder_alloc_id(c->b);
                 uint32_t ops[] = { ty_spv, spv_id };
                 lagfx_spv_builder_emit_op(c->b, 46 /* OpConstantNull */, ops, 2);
-                if (t->kind == LAGFX_AIR_TYPE_INTEGER &&
-                    t->num_op >= 1u && t->op[0] == 32u) {
+                if (t->kind == LAGFX_AIR_TYPE_INTEGER) {
                     bind_value_lit_i32(c, vid, 0);
                 }
                 break;

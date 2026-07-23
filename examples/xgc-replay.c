@@ -223,7 +223,7 @@ int main(int argc, char **argv) {
     }
     const char *vpath = argv[1], *fpath = argv[2], *bdir = argv[3];
     const char *forest_ppm = NULL, *outpath = "out.ppm";
-    int gray_feedback = 0, wide = 0, f16rt = 0;
+    int gray_feedback = 0, wide = 0, f16rt = 0, points = 0;
     char ones[512] = {0}, zeros[512] = {0};
     struct { uint32_t bind; float rgba[4]; } solids[16]; int nsolid = 0;
     struct { uint32_t bind, lo, hi; } zrs[32]; int nzr = 0;
@@ -254,6 +254,7 @@ int main(int argc, char **argv) {
         }
         else if (!strcmp(argv[a], "--gray-feedback")) gray_feedback = 1;
         else if (!strcmp(argv[a], "--wide")) wide = 1;
+        else if (!strcmp(argv[a], "--points")) points = 1;
         else if (!strcmp(argv[a], "--f16rt")) f16rt = 1;
         else if (!strncmp(argv[a], "--out=", 6)) outpath = argv[a] + 6;
         else forest_ppm = argv[a];
@@ -506,7 +507,8 @@ int main(int argc, char **argv) {
     };
     VkPipelineVertexInputStateCreateInfo vin = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
     VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
+        .topology = points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+                    : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
     /* --wide: map NDC [-4,+4] onto the RT instead of [-1,+1] so geometry
      * that lands outside the normal clip volume (e.g. a parked-band rect at
      * guest x>=1280 -> NDC x>=1.0) becomes VISIBLE — locates the quad. */
