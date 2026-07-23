@@ -1257,6 +1257,14 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
             if (tios->width <= 32u && tios->height <= 32u) continue;
             if (tios->width >= display->rt.width
                 || tios->height >= display->rt.height) continue;
+            /* Placement sanity: the scissor must be a REASONABLE frame for
+             * this tile — a small glyph tile drawn under a full-screen
+             * (1280x1024) scissor would smear stretched across the whole
+             * screen. Only blit when the dst rect is within ~3x the tile's
+             * own dimensions (the login UI's element scissors match their
+             * tiles: clock 256x161->199x147, password 128x34->160x29). */
+            if (task->sc_w > tios->width * 3u || task->sc_h > tios->height * 3u)
+                continue;
             if (lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, tios->view,
                                         task->sc_x, task->sc_y,
                                         task->sc_w, task->sc_h) == LAGFX_OK) {
