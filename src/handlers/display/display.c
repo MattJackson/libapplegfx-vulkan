@@ -64,6 +64,29 @@ static void lagfx_dump_one_surface(struct lagfx_vk_state *vk, VkImage img,
     size_t stride = 0;
     if (lagfx_vk_render_target_readback(vk, &rt, buf, need, &stride) == LAGFX_OK) {
         char path[160];
+        /* Alpha channel as a PGM sibling: with blending off, a fragment that
+         * RASTERIZED wrote its alpha even when its RGB is black — this is the
+         * discriminator between "draw landed black output" (math problem) and
+         * "draw never rasterized" (geometry problem) for the 0x17 audit. */
+        if (bpp == 4u || bpp == 8u) {
+            snprintf(path, sizeof(path), "/tmp/lagfx-passes/%s-%ux%u-alpha.pgm",
+                     label, w, h);
+            FILE *fa = fopen(path, "wb");
+            if (fa) {
+                fprintf(fa, "P5\n%u %u\n255\n", w, h);
+                for (uint32_t y = 0; y < h; y++) {
+                    const uint8_t *row = buf + (size_t)y * stride;
+                    for (uint32_t x = 0; x < w; x++) {
+                        const uint8_t *px = row + (size_t)x * bpp;
+                        uint8_t a = (bpp == 8u)
+                            ? lagfx_half_to_u8((uint16_t)(px[6] | (px[7] << 8)))
+                            : px[3];
+                        fwrite(&a, 1, 1, fa);
+                    }
+                }
+                fclose(fa);
+            }
+        }
         snprintf(path, sizeof(path), "/tmp/lagfx-passes/%s-%ux%u.ppm", label, w, h);
         FILE *f = fopen(path, "wb");
         if (f) {

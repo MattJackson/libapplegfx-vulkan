@@ -155,16 +155,20 @@ lagfx_status_t lagfx_pipeline_build(VkDevice device,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
 
-    /* Color blend attachment — src-over alpha (M2q dumb-faithful): SkyLight
-     * composites layers src-over; with loadOp=LOAD this makes a draw's
-     * transparent/alpha-0 pixels PRESERVE what is already in the target
-     * instead of replacing it with black (the "opaque clear wipes the
-     * wallpaper" bug). Opaque (alpha=1) pixels — incl. the substitute
-     * triangle — replace, exactly as before.
+    /* Color blend attachment — PREMULTIPLIED src-over (CoreAnimation's
+     * universal convention: MTLBlendFactorOne / OneMinusSourceAlpha). The
+     * earlier non-premultiplied SRC_ALPHA factor multiplied the fragment's
+     * already-premultiplied RGB by alpha AGAIN — for the material passes that
+     * legitimately emit alpha≈0 with nonzero RGB (additive glow/blur terms),
+     * that dropped the contribution entirely: the 2026-07-23 A/B
+     * (LAGFX_DISABLE_M2_SRCOVER=1) showed per-pass RT 0xb go 0→18.8% nonblack
+     * the moment blending stopped scaling RGB by alpha. Premultiplied
+     * src-over keeps alpha-0 pixels preserving the target AND lets alpha-0
+     * nonzero-RGB terms add, exactly as CA composites.
      * Kill-switch: LAGFX_DISABLE_M2_SRCOVER → no blending. */
     VkPipelineColorBlendAttachmentState blend_att = {
         .blendEnable         = LAGFX_POLICY("M2_SRCOVER") ? VK_TRUE : VK_FALSE,
-        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
         .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         .colorBlendOp        = VK_BLEND_OP_ADD,
         .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
