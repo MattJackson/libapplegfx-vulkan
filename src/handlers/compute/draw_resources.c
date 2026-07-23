@@ -461,28 +461,37 @@ void lagfx_texture_refresh(lagfx_protocol_t *p, lagfx_task_entry_t *task,
     /* Live texdump trigger (imagery-vs-noise judging is only possible from an
      * actual image — nonzero-count heuristics can't tell a dim desktop from
      * noise). `echo 0x52 > /tmp/lagfx_texdump.txt` inside the container dumps
-     * that realized ref's CURRENT backing bytes to
-     * /tmp/lagfx_texdump_ref0x<ref>.bin on its next sample-bind; the trigger
-     * file is consumed. Offline: reshape by the TEXREAL-logged stride/format. */
+     * that REALIZED ref's CURRENT backing bytes to
+     * /tmp/lagfx_texdump_ref0x<ref>.bin on the next refresh tick of ANY
+     * texture (boot-time-only refs like the 66 MB login backdrop never rebind,
+     * so the trigger cannot wait for the target ref itself to bind); the
+     * trigger file is consumed. The read walks the CURRENT drawing task's
+     * radix — correct for same-task refs, which all login-scene textures are.
+     * Offline: reshape by the TEXREAL-logged stride/format. */
     {
         FILE *tf = fopen("/tmp/lagfx_texdump.txt", "r");
         if (tf) {
             unsigned want_ref = 0;
             int ok = fscanf(tf, "%i", &want_ref);
             fclose(tf);
-            if (ok == 1 && (uint32_t)want_ref == tref) {
-                uint64_t dsz = te->size;
+            lagfx_resource_entry_t *dte = (ok == 1)
+                ? lagfx_resource_lookup_texture(&p->resources, (uint32_t)want_ref)
+                : NULL;
+            if (dte) {
+                uint64_t dsz = dte->size;
+                lagfx_vk_iosurface_t *dios = (lagfx_vk_iosurface_t *)dte->host_handle;
                 if (dsz >= 4096u && dsz <= 128u * 1024u * 1024u) {
                     uint8_t *db = calloc(1u, (size_t)dsz);
                     if (db) {
                         const char *dhow = "none";
-                        uint32_t dgot = lagfx_read_vtx_source(p, task, tref, 0u,
+                        uint32_t dgot = lagfx_read_vtx_source(p, task,
+                                                              (uint32_t)want_ref, 0u,
                                                               (uint32_t)dsz, db,
                                                               &dhow, 0);
                         if (dgot) {
                             char path[96];
                             snprintf(path, sizeof(path),
-                                     "/tmp/lagfx_texdump_ref0x%x.bin", tref);
+                                     "/tmp/lagfx_texdump_ref0x%x.bin", want_ref);
                             FILE *df = fopen(path, "wb");
                             if (df) {
                                 fwrite(db, 1u, dgot, df);
@@ -490,12 +499,14 @@ void lagfx_texture_refresh(lagfx_protocol_t *p, lagfx_task_entry_t *task,
                                 remove("/tmp/lagfx_texdump.txt");
                                 LAGFX_LOG("TEXDUMP: ref=0x%x wrote %u/%llu B → %s "
                                           "(read=%s img=%ux%u fmt=%d)",
-                                          tref, dgot, (unsigned long long)dsz, path,
-                                          dhow, ios->width, ios->height,
-                                          (int)ios->format);
+                                          want_ref, dgot, (unsigned long long)dsz,
+                                          path,
+                                          dhow, dios ? dios->width : 0u,
+                                          dios ? dios->height : 0u,
+                                          dios ? (int)dios->format : -1);
                             }
                         } else {
-                            LAGFX_WARN("TEXDUMP: ref=0x%x read failed", tref);
+                            LAGFX_WARN("TEXDUMP: ref=0x%x read failed", want_ref);
                         }
                         free(db);
                     }
