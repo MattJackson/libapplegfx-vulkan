@@ -28,6 +28,23 @@
 /* LAGFX_DUMP_PASSES: read back every per-pass IOSurface (+ display->rt) to a PPM
  * under /tmp/lagfx-passes/ so we can SEE which surface holds the forest / UI /
  * black — turning the pass-DAG trace from inference into looking. Gated. */
+/* half → clamped u8 (naive tonemap: clamp [0,1], NaN/negative → 0). */
+static uint8_t lagfx_half_to_u8(uint16_t hb) {
+    uint32_t exp = (hb >> 10) & 0x1fu, man = hb & 0x3ffu;
+    if (hb & 0x8000u) return 0;                    /* negative */
+    if (exp == 0x1fu) return man ? 0 : 255;        /* NaN → 0, +inf → 255 */
+    float v;
+    if (exp == 0) v = (float)man / 1024.0f / 16384.0f;
+    else {
+        int e = (int)exp - 15;
+        v = (1.0f + (float)man / 1024.0f);
+        while (e > 0) { v *= 2.0f; e--; }
+        while (e < 0) { v *= 0.5f; e++; }
+    }
+    if (v >= 1.0f) return 255;
+    return (uint8_t)(v * 255.0f);
+}
+
 static void lagfx_dump_one_surface(struct lagfx_vk_state *vk, VkImage img,
                                    VkImageView view, VkDeviceMemory mem,
                                    uint32_t w, uint32_t h, VkFormat fmt,
@@ -36,7 +53,12 @@ static void lagfx_dump_one_surface(struct lagfx_vk_state *vk, VkImage img,
     lagfx_vk_render_target_t rt;
     if (lagfx_vk_render_target_wrap(img, view, mem, w, h, fmt, &rt) != LAGFX_OK)
         return;
-    size_t need = (size_t)w * h * 4u;
+    /* Match the readback's format-aware texel size — a 4-Bpp buffer for an
+     * 8-Bpp RGBA16F image was a 33 MB staging-copy overflow (heap corruption
+     * that killed the QEMU process minutes after each backdrop dump). */
+    size_t bpp = (fmt == VK_FORMAT_R16G16B16A16_SFLOAT) ? 8u
+               : (fmt == VK_FORMAT_R8_UNORM)            ? 1u : 4u;
+    size_t need = (size_t)w * h * bpp;
     uint8_t *buf = malloc(need);
     if (!buf) return;
     size_t stride = 0;
@@ -46,12 +68,20 @@ static void lagfx_dump_one_surface(struct lagfx_vk_state *vk, VkImage img,
         FILE *f = fopen(path, "wb");
         if (f) {
             fprintf(f, "P6\n%u %u\n255\n", w, h);
-            /* readback is BGRA8; write RGB */
             for (uint32_t y = 0; y < h; y++) {
                 const uint8_t *row = buf + (size_t)y * stride;
                 for (uint32_t x = 0; x < w; x++) {
-                    const uint8_t *px = row + (size_t)x * 4u;
-                    uint8_t rgb[3] = { px[2], px[1], px[0] };
+                    const uint8_t *px = row + (size_t)x * bpp;
+                    uint8_t rgb[3];
+                    if (bpp == 8u) {          /* RGBA16F: halves, RGB order */
+                        rgb[0] = lagfx_half_to_u8((uint16_t)(px[0] | (px[1] << 8)));
+                        rgb[1] = lagfx_half_to_u8((uint16_t)(px[2] | (px[3] << 8)));
+                        rgb[2] = lagfx_half_to_u8((uint16_t)(px[4] | (px[5] << 8)));
+                    } else if (bpp == 1u) {   /* R8 coverage: replicate */
+                        rgb[0] = rgb[1] = rgb[2] = px[0];
+                    } else {                  /* BGRA8 */
+                        rgb[0] = px[2]; rgb[1] = px[1]; rgb[2] = px[0];
+                    }
                     fwrite(rgb, 1, 3, f);
                 }
             }

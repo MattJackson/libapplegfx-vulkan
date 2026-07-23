@@ -395,8 +395,17 @@ lagfx_status_t lagfx_vk_render_target_readback(struct lagfx_vk_state *vk,
         return LAGFX_ERR_INVALID_ARG;
     }
 
-    /* BGRA8 / RGBA8 = 4 bytes per pixel; linear row = width*4. */
-    const size_t stride = (size_t)rt->width * 4u;
+    /* vkCmdCopyImageToBuffer writes the image's REAL texel size — sizing the
+     * staging buffer as 4 Bpp for an RGBA16F (8 Bpp) image overflows it by
+     * w*h*4 bytes (lavapipe runs in-process: heap corruption killed two
+     * containers minutes after a `passes` dump of the 66 MB backdrop). */
+    size_t bpp = 4u;
+    switch (rt->format) {
+    case VK_FORMAT_R16G16B16A16_SFLOAT: bpp = 8u; break;
+    case VK_FORMAT_R8_UNORM:            bpp = 1u; break;
+    default:                            bpp = 4u; break;
+    }
+    const size_t stride = (size_t)rt->width * bpp;
     const size_t need   = stride * (size_t)rt->height;
     if (dst_size < need) {
         LAGFX_ERR("render_target_readback: dst_size=%zu < need=%zu",
