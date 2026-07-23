@@ -214,12 +214,13 @@ int main(int argc, char **argv) {
     }
     const char *vpath = argv[1], *fpath = argv[2], *bdir = argv[3];
     const char *forest_ppm = NULL, *outpath = "out.ppm";
-    int gray_feedback = 0, wide = 0;
+    int gray_feedback = 0, wide = 0, f16rt = 0;
     char ones[512] = {0};
     for (int a = 4; a < argc; a++) {
         if (!strncmp(argv[a], "--ones=", 7)) snprintf(ones, sizeof(ones), ",%s,", argv[a] + 7);
         else if (!strcmp(argv[a], "--gray-feedback")) gray_feedback = 1;
         else if (!strcmp(argv[a], "--wide")) wide = 1;
+        else if (!strcmp(argv[a], "--f16rt")) f16rt = 1;
         else if (!strncmp(argv[a], "--out=", 6)) outpath = argv[a] + 6;
         else forest_ppm = argv[a];
     }
@@ -262,7 +263,11 @@ int main(int argc, char **argv) {
 
     /* ---- render target 640x512 BGRA8 ------------------------------- */
     const uint32_t W = 640, H = 512;
-    const VkFormat rfmt = VK_FORMAT_B8G8R8A8_UNORM;
+    /* --f16rt: float RT preserves NaN/negative/extended values verbatim —
+     * discriminates "fragment computed 0" from "fragment emitted the NaN
+     * typed-undef placeholder" (NaN clamps to 0 in a UNORM RT). */
+    const VkFormat rfmt = f16rt ? VK_FORMAT_R16G16B16A16_SFLOAT
+                                : VK_FORMAT_B8G8R8A8_UNORM;
     VkImageCreateInfo rci = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D, .format = rfmt, .extent = { W, H, 1 },
         .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -482,7 +487,7 @@ int main(int argc, char **argv) {
         VkCommandBufferBeginInfo bi2 = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
         vkBeginCommandBuffer(cbuf, &bi2);
-        VkClearValue clr = { .color = { .float32 = { 0, 0, 0, 0 } } };
+        VkClearValue clr = { .color = { .float32 = { 0.10f, 0.10f, 0.50f, 1.0f } } };  /* non-black clear: rasterized black fragments show as a silhouette */
         VkRenderPassBeginInfo rbi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .renderPass = dud.rp, .framebuffer = dud.fb,
             .renderArea = { { 0, 0 }, { dud.W, dud.H } },
@@ -501,7 +506,7 @@ int main(int argc, char **argv) {
     }
 
     /* readback */
-    size_t need = (size_t)W * H * 4;
+    size_t need = (size_t)W * H * (f16rt ? 8 : 4);
     VkBufferCreateInfo rbc = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = need, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
     VkBuffer rbuf; vkCreateBuffer(g.dev, &rbc, NULL, &rbuf);
@@ -530,6 +535,30 @@ int main(int argc, char **argv) {
         vkFreeCommandBuffers(g.dev, g.pool, 1, &cbuf);
     }
     uint8_t *px; vkMapMemory(g.dev, rbmem, 0, need, 0, (void **)&px);
+
+    if (f16rt) {
+        uint32_t nan = 0, zero = 0, other = 0, neg = 0;
+        uint16_t sample[4] = {0};
+        for (size_t i = 0; i < (size_t)W * H; i++) {
+            int all0 = 1, isnan = 0, isneg = 0;
+            for (int c = 0; c < 4; c++) {
+                uint16_t hv = (uint16_t)(px[i*8+c*2] | (px[i*8+c*2+1] << 8));
+                if (hv != 0) all0 = 0;
+                if ((hv & 0x7fffu) > 0x7c00u) isnan = 1;
+                if (hv & 0x8000u) isneg = 1;
+            }
+            if (i == (size_t)W * H / 2 + W / 2)
+                for (int c = 0; c < 4; c++)
+                    sample[c] = (uint16_t)(px[i*8+c*2] | (px[i*8+c*2+1] << 8));
+            if (all0) zero++; else if (isnan) nan++; else other++;
+            if (isneg) neg++;
+        }
+        printf("F16RT %ux%u: zero=%.2f%% nan=%.2f%% other=%.2f%% neg=%.2f%% center=[%04x %04x %04x %04x]\n",
+               W, H, 100.0 * zero / (W * H), 100.0 * nan / (W * H),
+               100.0 * other / (W * H), 100.0 * neg / (W * H),
+               sample[0], sample[1], sample[2], sample[3]);
+        return 0;
+    }
 
     uint32_t nb = 0, cf = 0, an = 0;
     for (size_t i = 0; i < (size_t)W * H; i++) {

@@ -231,6 +231,7 @@ typedef struct {
     uint32_t                 *spill_var;      /* per value id; 0 = none */
     uint32_t                 *spill_type;     /* value SPIR-V type of the spill */
     uint32_t                 *phi_var;        /* per PHI value id; 0 = none */
+    uint32_t                 *phi_type;       /* value SPIR-V type of the phi var */
     uint32_t                 *value_def_inst; /* per value id; ~0u unknown */
     uint32_t                  dispatch_remat_depth;
 
@@ -868,9 +869,14 @@ static bool air_type_requires_extra_cap(xlate_ctx_t *c, uint32_t air_type_idx,
     switch (t->kind) {
         case LAGFX_AIR_TYPE_INTEGER: {
             uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
-            /* i32 + i64 are first-class; only i1/i8/i16/i128 require
-             * extra caps we don't declare. */
-            return !(w == 32u || w == 64u);
+            /* i8/i16/i32/i64 are all first-class now (Int8/Int16 caps have
+             * been declared since the byte-buffer work; uchar/ushort types
+             * emit throughout). Filtering i8 here left uchar CST_CODE_NULL
+             * constants unbound — the Xgc mode SWITCH's `case 0` compare was
+             * silently dropped, so the REAL runtime mode byte (0) fell to the
+             * default = undef-phi = NaN output (offline replay, 2026-07-23).
+             * Only i1/i128-style widths still fall back. */
+            return !(w == 8u || w == 16u || w == 32u || w == 64u);
         }
         case LAGFX_AIR_TYPE_VECTOR:
         case LAGFX_AIR_TYPE_ARRAY:
@@ -1012,6 +1018,16 @@ static uint32_t resolve_value_spv(xlate_ctx_t *c, uint32_t value_id) {
                 uint32_t id = lagfx_spv_builder_alloc_id(c->b);
                 uint32_t ops[] = { c->spill_type[value_id], id,
                                    c->spill_var[value_id] };
+                lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, ops, 3);
+                return id;
+            }
+            /* A PHI value has no spill — its live value is in its dispatch
+             * phi variable (stored by every executed predecessor edge). */
+            if (c->phi_var && c->phi_var[value_id] &&
+                c->phi_type && c->phi_type[value_id]) {
+                uint32_t id = lagfx_spv_builder_alloc_id(c->b);
+                uint32_t ops[] = { c->phi_type[value_id], id,
+                                   c->phi_var[value_id] };
                 lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, ops, 3);
                 return id;
             }
@@ -5909,6 +5925,7 @@ static uint32_t dispatch_phi_var(xlate_ctx_t *c, uint32_t phi_value_id,
     uint32_t var = lagfx_spv_builder_alloc_id(c->b);
     if (!lagfx_spv_builder_emit_local_var(c->b, ptrty, var)) return 0u;
     c->phi_var[phi_value_id] = var;
+    if (c->phi_type) c->phi_type[phi_value_id] = ty_spv;
     return var;
 }
 
@@ -5992,7 +6009,31 @@ static void dispatch_store_phi_incomings(xlate_ctx_t *c, const lagfx_bb_t *bbs,
             int64_t delta = decode_sign_rotated(inst->ops[1u + 2u * pr]);
             uint32_t inval_id = (uint32_t)((int64_t)phi_valno - delta);
             uint32_t inval = resolve_value_spv(c, inval_id);
-            if (!inval) inval = emit_undef(c, ty_spv);
+            /* The incoming value may itself be a PHI (chained phi networks
+             * through pass-through blocks): it has no in-case SSA binding —
+             * its live value sits in ITS dispatch phi variable, stored by
+             * whichever predecessor executed. Load it. Without this the
+             * undef fallback CLOBBERED the receiving phi var with NaN on
+             * every pass-through edge — the Xgc login material's final
+             * color flowed through exactly such a block chain and emitted
+             * NaN at 100% of pixels (offline lavapipe replay, 2026-07-23:
+             * F16RT center [7e00 x4]). */
+            if (!inval && c->phi_var && inval_id < c->value_id_capacity &&
+                c->phi_var[inval_id]) {
+                uint32_t lty = (c->phi_type && c->phi_type[inval_id])
+                                   ? c->phi_type[inval_id] : ty_spv;
+                if (lty == ty_spv) {
+                    uint32_t lid = lagfx_spv_builder_alloc_id(c->b);
+                    uint32_t lo[] = { lty, lid, c->phi_var[inval_id] };
+                    lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_LOAD, lo, 3);
+                    inval = lid;
+                }
+            }
+            /* Pass-through edge whose incoming could not be resolved at
+             * all: SKIP the store rather than clobber the phi variable —
+             * a dominating def-site store already holds the best-known
+             * value; overwriting with undef is strictly worse. */
+            if (!inval) break;
             uint32_t so[] = { var, inval };
             lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_STORE, so, 2);
             break;
@@ -6307,12 +6348,14 @@ static bool translate_body_dispatch(xlate_ctx_t *c, lagfx_status_t *out_st) {
     c->spill_var    = (uint32_t *)calloc(c->value_id_capacity, sizeof(uint32_t));
     c->spill_type   = (uint32_t *)calloc(c->value_id_capacity, sizeof(uint32_t));
     c->phi_var      = (uint32_t *)calloc(c->value_id_capacity, sizeof(uint32_t));
-    if (!c->value_def_bb || !c->spill_var || !c->spill_type || !c->phi_var) {
+    c->phi_type     = (uint32_t *)calloc(c->value_id_capacity, sizeof(uint32_t));
+    if (!c->value_def_bb || !c->spill_var || !c->spill_type || !c->phi_var
+        || !c->phi_type) {
         free(bbs);
         free(c->value_def_bb); free(c->spill_var);
-        free(c->spill_type);   free(c->phi_var);
+        free(c->spill_type);   free(c->phi_var);   free(c->phi_type);
         c->value_def_bb = NULL; c->spill_var = NULL;
-        c->spill_type = NULL;   c->phi_var = NULL;
+        c->spill_type = NULL;   c->phi_var = NULL; c->phi_type = NULL;
         return false;
     }
     memset(c->value_def_bb, 0xFF, c->value_id_capacity * sizeof(uint16_t));
@@ -6830,6 +6873,7 @@ static void xlate_ctx_free_fn(xlate_ctx_t *c) {
     free(c->spill_var);
     free(c->spill_type);
     free(c->phi_var);
+    free(c->phi_type);
     free(c->value_def_inst);
     free(c->inst_result_air_type);
     if (c->body) lagfx_air_function_body_free(c->body);
@@ -6877,15 +6921,33 @@ static void bind_module_constants(xlate_ctx_t *c) {
         uint32_t spv_id = 0u;
         switch (k->kind) {
             case LAGFX_AIR_CONST_INTEGER: {
-                /* Bind i32 and i64 integer constants. Other widths
-                 * (i1/i8/i16/i128) require extra capabilities we don't
-                 * declare; operands referencing them fall back to OpUndef. */
+                /* Bind i8/i16/i32/i64 integer constants. i8/i16 were once
+                 * skipped "pending capabilities" — STALE: the translator has
+                 * emitted uchar/ushort types (Int8/Int16 caps) since the
+                 * byte-buffer work, but unbound i8 constants made every
+                 * SWITCH whose case values are i8 constants (the Xgc login
+                 * material's final-composite mode switch, inst 2521: cases
+                 * 284/285/288, default = the undef-phi block) drop ALL cases
+                 * → always default → NaN placeholder at 100% of pixels
+                 * (offline replay, 2026-07-23). i1/i128 still fall back. */
                 uint32_t ty_air = k->type_index;
                 if (ty_air < c->num_air_types) {
                     const lagfx_air_type_t *t = &((const lagfx_air_type_t *)lagfx_air_module_types(c->m, &(uint32_t){0}))[ty_air];
                     if (t->kind == LAGFX_AIR_TYPE_INTEGER) {
                         uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
-                        if (w == 32u) {
+                        if (w == 8u || w == 16u) {
+                            uint32_t ty_spv = emit_type_int_w(c, w, 0u);
+                            spv_id = lagfx_spv_builder_alloc_id(c->b);
+                            uint32_t mask = w == 8u ? 0xFFu : 0xFFFFu;
+                            uint32_t ops[] = { ty_spv, spv_id,
+                                                (uint32_t)(uint64_t)k->payload.i64 & mask };
+                            lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CONSTANT, ops, 3);
+                            bind_value_lit_i32(c, vid, (int32_t)((uint64_t)k->payload.i64 & mask));
+                            if (h && h->mod_const_lit_valid) {
+                                h->mod_const_lit[i] = (int32_t)((uint64_t)k->payload.i64 & mask);
+                                h->mod_const_lit_valid[i] = true;
+                            }
+                        } else if (w == 32u) {
                             uint32_t ty_spv = emit_type_int_w(c, 32u, 0u);
                             spv_id = lagfx_spv_builder_alloc_id(c->b);
                             uint32_t ops[] = { ty_spv, spv_id,
@@ -6977,7 +7039,22 @@ static void bind_local_constants(xlate_ctx_t *c) {
             case LAGFX_AIR_CONST_INTEGER: {
                 if (t->kind == LAGFX_AIR_TYPE_INTEGER) {
                     uint32_t w = t->num_op >= 1u ? t->op[0] : 32u;
-                    if (w == 32u) {
+                    if (w == 8u || w == 16u) {
+                        /* i8/i16 were unbound ("pending capabilities" —
+                         * stale; uchar/ushort types already emit). Unbound
+                         * i8 case values made the Xgc login material's
+                         * final-composite SWITCH drop every case → default
+                         * = the undef-phi block → NaN output at 100% of
+                         * pixels (offline lavapipe replay, 2026-07-23). */
+                        uint32_t mask = w == 8u ? 0xFFu : 0xFFFFu;
+                        uint32_t ty_spv = emit_type_int_w(c, w, 0u);
+                        spv_id = lagfx_spv_builder_alloc_id(c->b);
+                        uint32_t ops[] = { ty_spv, spv_id,
+                                            (uint32_t)(uint64_t)k->payload.i64 & mask };
+                        lagfx_spv_builder_emit_op(c->b, LAGFX_SPV_OP_CONSTANT, ops, 3);
+                        bind_value_lit_i32(c, vid,
+                                           (int32_t)((uint64_t)k->payload.i64 & mask));
+                    } else if (w == 32u) {
                         uint32_t ty_spv = emit_type_int_w(c, 32u, 0u);
                         spv_id = lagfx_spv_builder_alloc_id(c->b);
                         uint32_t ops[] = { ty_spv, spv_id,
