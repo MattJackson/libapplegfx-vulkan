@@ -1107,6 +1107,43 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
             } else {
                 LAGFX_WARN("%s P6b: bound draw failed (%d)", op, (int)st);
             }
+            /* LAGFX_DUMP_SLOW_BINDS=<ms>: the descriptor build snapshotted
+             * this draw's storage windows into task->slowsnap; if the fence
+             * wait (set by draw_record even on timeout) exceeded the
+             * threshold, flush them — the runaway draws' exact inputs for
+             * the offline xgc-replay harness. Cap 16 dump sets per boot. */
+            {
+                const char *sb = getenv("LAGFX_DUMP_SLOW_BINDS");
+                if (sb && task->slowsnap && task->slowsnap_n) {
+                    uint32_t thresh = (uint32_t)strtoul(sb, NULL, 10);
+                    if (thresh < 100u) thresh = 1000u;
+                    struct lagfx_vk_state *vks = dev_with_vk->vk;
+                    if (vks->last_draw_wait_ms >= thresh
+                        && vks->slow_bind_dumps < 16u) {
+                        uint32_t seq = vks->slow_bind_dumps++;
+                        (void)system("mkdir -p /tmp/lagfx-binds-slow");
+                        for (uint32_t w = 0; w < task->slowsnap_n; w++) {
+                            char bp[128];
+                            snprintf(bp, sizeof(bp),
+                                     "/tmp/lagfx-binds-slow/d%02u-%ums-pipe0x%x-bind%u.bin",
+                                     seq, vks->last_draw_wait_ms,
+                                     task->pending_pipeline.reference,
+                                     task->slowsnap_bindno[w]);
+                            FILE *bf = fopen(bp, "wb");
+                            if (bf) {
+                                fwrite(task->slowsnap + (size_t)w * LAGFX_DRAW_DS_BUF_SZ,
+                                       1, LAGFX_DRAW_DS_BUF_SZ, bf);
+                                fclose(bf);
+                            }
+                        }
+                        LAGFX_LOG("SLOWBINDS: dumped set d%02u (%u windows, %ums, "
+                                  "pipe=0x%x tgt=0x%x verts=%u)",
+                                  seq, task->slowsnap_n, vks->last_draw_wait_ms,
+                                  task->pending_pipeline.reference,
+                                  task->render_pass_desc.target_ref, vc);
+                    }
+                }
+            }
             for (uint32_t k = 0; k < ntr; k++) {
                 vkDestroyBuffer(device, tbuf[k], NULL);
                 vkFreeMemory(device, tmem[k], NULL);

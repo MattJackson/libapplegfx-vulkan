@@ -10,6 +10,8 @@
 #include "common/le.h"
 #include "common/log.h"
 
+#include <stdlib.h>
+
 lagfx_handler_status_t lagfx_task_define_task2(lagfx_protocol_t *p, const lagfx_cmd_header_t *hdr) {
     if (!p || !hdr) {
         return LAGFX_HANDLER_ERR_INTERNAL;
@@ -105,6 +107,7 @@ lagfx_handler_status_t lagfx_task_delete_task(lagfx_protocol_t *p, const lagfx_c
 
     /* Clear task resources and mark slot free. */
     lagfx_resource_clear_task(&p->resources, task_id);
+    free(entry->slowsnap);   /* LAGFX_DUMP_SLOW_BINDS arena (NULL when off) */
     memset(entry, 0, sizeof(*entry));
     entry->live = false;
 

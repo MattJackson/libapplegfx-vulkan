@@ -66,6 +66,15 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
     VkDescriptorBufferInfo  binfos[32];
     VkDescriptorImageInfo   iinfos[32];
     uint32_t nw = 0;
+    /* LAGFX_DUMP_SLOW_BINDS: snapshot every storage window into the task's
+     * RAM arena; draw_emit flushes it to /tmp only when the draw turns out
+     * SLOW. Reset per build so the snapshot always describes THIS draw. */
+    const bool slowsnap_on = getenv("LAGFX_DUMP_SLOW_BINDS") != NULL;
+    if (slowsnap_on) {
+        if (!task->slowsnap)
+            task->slowsnap = (uint8_t *)malloc(32u * (size_t)LAGFX_DRAW_DS_BUF_SZ);
+        task->slowsnap_n = 0;
+    }
     /* M1 texture-composite: when fragment bindings are offset (LAGFX_M1_TEXCOMP),
      * the reflected binding number no longer equals the Metal resource index.
      * Demux per stage/kind: bindings < FRAG_BASE are vertex; >= FRAG_BASE are
@@ -604,6 +613,13 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                         fclose(bf);
                     }
                 }
+            }
+            if (slowsnap_on && task->slowsnap && task->slowsnap_n < 32u) {
+                uint32_t w = task->slowsnap_n;
+                memcpy(task->slowsnap + (size_t)w * LAGFX_DRAW_DS_BUF_SZ,
+                       data, LAGFX_DRAW_DS_BUF_SZ);
+                task->slowsnap_bindno[w] = binding_no[i];
+                task->slowsnap_n = w + 1u;
             }
             LAGFX_LOG("P6b bind#%u slot=%u DATA first32: %02x %02x %02x %02x %02x %02x %02x %02x "
                       "%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x "

@@ -328,6 +328,17 @@ typedef struct {
         uint32_t object_ids[64];   /* dedup'd set of active objectIds */
         uint32_t count;
     } active_objects;
+
+    /* KICKOFF-shading-throughput (LAGFX_DUMP_SLOW_BINDS): RAM snapshot of
+     * the most recent translated draw's storage-buffer bind windows,
+     * captured during descriptor-set build and flushed to /tmp by
+     * draw_emit only when that draw's fence wait exceeded the threshold —
+     * so the runaway draws' exact inputs are preserved without last-
+     * draw-wins races. Arena is 32 × 64 KiB, lazily allocated only when
+     * the env gate is set. */
+    uint8_t  *slowsnap;             /* lazily allocated window arena */
+    uint8_t   slowsnap_bindno[32];  /* SPIR-V binding number per window */
+    uint32_t  slowsnap_n;           /* windows captured for the last draw */
 } lagfx_task_entry_t;
 
 /* === FIFO Entry ================================================== */

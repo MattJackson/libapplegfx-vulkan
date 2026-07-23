@@ -254,6 +254,7 @@ lagfx_status_t lagfx_vk_draw_record_and_submit_bound(
     vr = vkWaitForFences(vk->device, 1, &fence, VK_TRUE, timeout_ns);
     {
         uint64_t waited_ms = (lagfx_now_ns() - fence_t0) / 1000000ull;
+        vk->last_draw_wait_ms = (uint32_t)waited_ms;
         if (waited_ms > 1000u)
             LAGFX_LOG("draw_record_and_submit: SLOW draw %llums "
                       "(indexed=%d count=%u)",

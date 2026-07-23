@@ -115,6 +115,14 @@ struct lagfx_vk_state {
     uint64_t              perf_frame_draws;
     uint64_t              perf_frame_draw_ns;
 
+    /* KICKOFF-shading-throughput: fence-wait duration of the most recent
+     * draw submit (set unconditionally in draw_record_and_submit, including
+     * the timeout path). draw_emit reads it after each translated draw to
+     * decide whether to flush the RAM bind-window snapshot to disk
+     * (LAGFX_DUMP_SLOW_BINDS). slow_bind_dumps caps total dump sets/boot. */
+    uint32_t              last_draw_wait_ms;
+    uint32_t              slow_bind_dumps;
+
     VkPipeline       cursor_pipeline;
     VkPipelineLayout cursor_layout;
     VkDescriptorSetLayout cursor_dsl;
