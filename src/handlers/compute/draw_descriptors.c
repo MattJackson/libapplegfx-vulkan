@@ -146,6 +146,24 @@ VkDescriptorSet lagfx_build_draw_descriptor_set(
                 ? (tex_ord < n_valid_tex ? valid_tex_slots[tex_ord] : LAGFX_MAX_BINDING_SLOTS)
                 : slot;
             tex_ord++;
+            /* AUTHORITATIVE texture binding (AIR arg metadata, same contract as
+             * AUTHBIND for buffers): the shader's [[texture(n)]] Metal index,
+             * captured at translate time. The N-th-VALID-slot heuristic mis-binds
+             * multi-texture composites — the settled login-scene backdrop draw
+             * sets the 3840x2160 wallpaper at SetFragmentTextures[3] but the
+             * heuristic bound the first valid slot (a gray per-pass feedback
+             * surface) instead: wallpaper never composited. -1 / unset slot →
+             * heuristic stands. */
+            {
+                int16_t tmidx = task->pending_pipeline.spv_binding_metal[i];
+                if (tmidx >= 0 && tmidx < (int16_t)LAGFX_MAX_BINDING_SLOTS
+                    && task->bindings.fragment_textures[tmidx].valid) {
+                    tex_idx = (uint32_t)tmidx;
+                    LAGFX_LOG("AUTHTEX: binding %u -> fragment_textures[%d] ref=0x%x",
+                              binding_no[i], (int)tmidx,
+                              task->bindings.fragment_textures[tmidx].ref);
+                }
+            }
             uint32_t tref = 0;
             if (tex_idx < LAGFX_MAX_BINDING_SLOTS
                 && task->bindings.fragment_textures[tex_idx].valid) {
