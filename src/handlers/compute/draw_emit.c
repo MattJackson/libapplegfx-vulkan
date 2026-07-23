@@ -1220,6 +1220,60 @@ void lagfx_emit_pending_draw(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         }
     }
 
+    /* POOR-MAN'S TILE COMPOSITOR (KICKOFF-scanout-composite-reliability).
+     *
+     * The login UI draws its panels + glyphs DIRECTLY to the scanout
+     * (target_ref==0 → active_rt==&display->rt) at a small per-draw SCISSOR
+     * rect that IS the on-screen placement (e.g. "Enter Password" at 160x29,
+     * the clock at ~200x147), sampling FINISHED guest-CPU-rendered tiles
+     * (texture_realize uploads: the clock digits, the password prompt). But
+     * that composite runs on the CA ubershader (pipe 0x51/0x9b) which fails
+     * to translate (xlated=0) → the draw drops → nothing lands → black screen.
+     *
+     * We already HOLD those tiles as sampled VkImages, and we can already
+     * blit to display->rt (proven by the RGB test-boxes). Connect the two:
+     * blit each realized content tile the draw samples into display->rt at
+     * the draw's scissor rect. No shader translation needed; placement is the
+     * guest's own scissor. This is the DETERMINISTIC clock/text path the
+     * shader compositor is not — it works whether or not pipe 0x51 translates.
+     *
+     * Kill-switch: only fires under LAGFX_TILE_BLIT. Skips 1x1 dummies /
+     * small masks and any scanout-sized-or-larger surface (per-pass RTs, the
+     * 3840x2160 backdrop) — only real placed tiles composite. */
+    if (getenv("LAGFX_TILE_BLIT") && active_rt == &display->rt
+        && task->sc_have && task->sc_w >= 8u && task->sc_h >= 8u
+        && task->sc_w < display->rt.width) {
+        uint32_t nblit = 0;
+        for (uint32_t s = 0; s < LAGFX_MAX_BINDING_SLOTS; s++) {
+            if (!task->bindings.fragment_textures[s].valid) continue;
+            uint32_t tref = task->bindings.fragment_textures[s].ref;
+            lagfx_resource_entry_t *te =
+                lagfx_resource_lookup_texture(&p->resources, tref);
+            if (!te || !te->host_handle) continue;
+            lagfx_vk_iosurface_t *tios = (lagfx_vk_iosurface_t *)te->host_handle;
+            if (!tios || tios->image == VK_NULL_HANDLE) continue;
+            /* content tiles only: skip 1x1 dummies + <=32x32 masks and any
+             * surface as large as the scanout (per-pass RTs / backdrop). */
+            if (tios->width <= 32u && tios->height <= 32u) continue;
+            if (tios->width >= display->rt.width
+                || tios->height >= display->rt.height) continue;
+            if (lagfx_vk_composite_over(dev_with_vk->vk, &display->rt, tios->view,
+                                        task->sc_x, task->sc_y,
+                                        task->sc_w, task->sc_h) == LAGFX_OK) {
+                nblit++;
+                LAGFX_LOG("TILEBLIT pipe=0x%x tile=0x%x %ux%u -> dst=(%u,%u %ux%u) slot=%u",
+                          task->pending_pipeline.reference, tref,
+                          tios->width, tios->height,
+                          task->sc_x, task->sc_y, task->sc_w, task->sc_h, s);
+            }
+        }
+        if (nblit) {
+            (void)lagfx_display_overlay_cursor(display);
+            if (getenv("LAGFX_FRAME_ON_SWAP") == NULL)
+                lagfx_display_signal_frame_ready(display);
+        }
+    }
+
     /* Scanout assembly: a per-pass draw records its surface in draw order
      * (dedup, first-draw position) and re-blits the WHOLE ordered set into
      * display->rt — earlier passes first, this pass last. Re-blitting all of
