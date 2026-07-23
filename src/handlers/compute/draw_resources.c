@@ -499,8 +499,23 @@ void lagfx_texture_refresh(lagfx_protocol_t *p, lagfx_task_entry_t *task,
         FILE *tf = fopen("/tmp/lagfx_texdump.txt", "r");
         if (tf) {
             unsigned want_ref = 0;
-            int ok = fscanf(tf, "%i", &want_ref);
+            char word[16] = {0};
+            int ok = fscanf(tf, "%15s", word);
             fclose(tf);
+            /* `echo passes > /tmp/lagfx_texdump.txt` → dump every registered
+             * IOSurface (per-pass RTs included) to /tmp/lagfx-passes/ PPMs.
+             * The env-gated LAGFX_DUMP_PASSES call-site lives in
+             * vchan_display_submit, which never runs in the current present
+             * configuration — this live trigger replaces it. */
+            if (ok == 1 && strcmp(word, "passes") == 0) {
+                extern void lagfx_dump_all_passes(lagfx_protocol_t *, lagfx_display_t *);
+                lagfx_dump_all_passes(p, NULL);
+                remove("/tmp/lagfx_texdump.txt");
+                LAGFX_LOG("TEXDUMP: dumped all pass surfaces to /tmp/lagfx-passes/");
+                ok = 0;
+            } else if (ok == 1) {
+                ok = sscanf(word, "%i", &want_ref);
+            }
             lagfx_resource_entry_t *dte = (ok == 1)
                 ? lagfx_resource_lookup_texture(&p->resources, (uint32_t)want_ref)
                 : NULL;
