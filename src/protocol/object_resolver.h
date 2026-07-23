@@ -90,6 +90,28 @@ bool lagfx_lookup_pipeline_function_refs(lagfx_protocol_t *p,
                                           uint8_t *out_fragment_ref);
 
 /*
+ * Collect ALL function-typed refs from the pipeline descriptor (full length,
+ * any order), up to `cap`, into out_refs; returns the count. The caller binds
+ * each stage from whichever ref's metallib contains that stage — robust to the
+ * fragment-ref-first ordering and >128-byte descriptors that broke the
+ * two-ref vertex/fragment split above. Returns 0 on any failure.
+ */
+size_t lagfx_lookup_pipeline_function_ref_list(lagfx_protocol_t *p,
+                                               const lagfx_task_entry_t *task,
+                                               uint32_t pipeline_object_id,
+                                               uint8_t *out_refs, size_t cap);
+
+/*
+ * Pure, guest-memory-free descriptor token scan used by the list lookup above.
+ * For each `0x04 XX` tag in desc[0..limit), collects the distinct nonzero XX
+ * (first-seen order) for which is_function(ctx, XX) is true, up to cap. Exposed
+ * for unit testing the fragment-ref-first / >128-byte-vertex ordering fix.
+ */
+size_t lagfx_scan_descriptor_function_refs(const uint8_t *desc, uint32_t limit,
+                                           bool (*is_function)(void *ctx, uint8_t ref),
+                                           void *ctx, uint8_t *out, size_t cap);
+
+/*
  * Decode the vertex-buffer-layout stride from a render pipeline's serialized
  * MTLVertexDescriptor (the PSO blob). The blob is a `04 <u32 value> <tag:u8>`
  * token stream; a MTLVertexBufferLayout stride is `04 <stride> 02`. Returns the

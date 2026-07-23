@@ -396,6 +396,96 @@ lagfx_lookup_pipeline_function_refs(lagfx_protocol_t *p,
     return true;
 }
 
+/*
+ * Robust replacement for the vertex/fragment split above: collect ALL
+ * function-typed (`0x04 XX` → slot type 0x06) refs found in the pipeline
+ * descriptor, in byte order, up to `cap`. The caller then binds each stage
+ * from whichever ref's metallib actually contains that stage.
+ *
+ * Why this exists: the two-ref scan above assumed "first function = vertex,
+ * second = fragment" AND only scanned the first 128 bytes. Both assumptions
+ * fail on real login composites — the shared TextureCopy fragment ref (0x1f)
+ * appears in the byte stream BEFORE the vertex ref, and the vertex ref often
+ * lives past byte 128 in the 0x3c..0x154-byte descriptor. Result: the scan
+ * returned {frag, <junk>} and "no vertex function" → every composite draw
+ * substituted (the login scene never composited). Collecting all refs over
+ * the full descriptor length lets the caller find the real vertex regardless
+ * of order or position. Returns the count found (0 on any failure).
+ */
+/*
+ * Pure descriptor token scan (no guest memory — unit-testable). Walks the
+ * descriptor bytes, and for each `0x04 XX` tag collects the distinct byte XX
+ * (in first-seen order, XX != 0) for which is_function(ctx, XX) is true, up to
+ * cap. Returns the count. `is_function` may be NULL to accept every nonzero XX.
+ */
+size_t
+lagfx_scan_descriptor_function_refs(const uint8_t *desc, uint32_t limit,
+                                    bool (*is_function)(void *ctx, uint8_t ref),
+                                    void *ctx, uint8_t *out, size_t cap) {
+    if (!desc || !out || cap == 0u) return 0u;
+    size_t n = 0;
+    for (uint32_t i = 0; i + 1u < limit && n < cap; i++) {
+        if (desc[i] != 0x04u) continue;
+        uint8_t candidate = desc[i + 1];
+        if (candidate == 0u) continue;
+        if (is_function && !is_function(ctx, candidate)) continue;
+        bool seen = false;
+        for (size_t k = 0; k < n; k++)
+            if (out[k] == candidate) { seen = true; break; }
+        if (!seen) out[n++] = candidate;
+    }
+    return n;
+}
+
+/* Adapter so the live path filters candidates by real slot type 0x06. */
+typedef struct { lagfx_protocol_t *p; const lagfx_task_entry_t *task; } fnref_scan_ctx_t;
+static bool fnref_is_function(void *vctx, uint8_t ref) {
+    fnref_scan_ctx_t *c = (fnref_scan_ctx_t *)vctx;
+    uint8_t t = 0;
+    if (!lookup_slot_type(c->p, c->task, ref, &t)) return false;
+    return t == LAGFX_APV_TYPE_FUNCTION;
+}
+
+size_t
+lagfx_lookup_pipeline_function_ref_list(lagfx_protocol_t *p,
+                                        const lagfx_task_entry_t *task,
+                                        uint32_t pipeline_object_id,
+                                        uint8_t *out_refs, size_t cap) {
+    if (!p || !task || !out_refs || cap == 0u || task->heap_pfn == 0u)
+        return 0u;
+
+    uint64_t slot_va = slot_va_for(task->heap_pfn, pipeline_object_id);
+    uint64_t slot_gpa = 0;
+    if (!lagfx_task_translate(p, task, slot_va, &slot_gpa)) return 0u;
+
+    lagfx_device_t *dev = (lagfx_device_t *)p->dev;
+    uint8_t slot_type = 0;
+    uint64_t bytes_va = 0;
+    if (!read_slot_fields((const lagfx_device_descriptor_t *)&dev->desc,
+                          slot_gpa, &slot_type, &bytes_va))
+        return 0u;
+    if (slot_type != LAGFX_APV_TYPE_PIPELINE) return 0u;
+
+    uint64_t bytes_gpa = 0;
+    if (!lagfx_task_translate(p, task, bytes_va, &bytes_gpa)) return 0u;
+
+    /* Read a generous window; the serialized descriptor's own length lives at
+     * blob+4 (same field lagfx_parse_pso_vertex_attrs trusts). Fall back to the
+     * full buffer if the length is implausible. Observed descriptors top out at
+     * 0x154 bytes, so 384 covers the tail the 128-byte scan missed. */
+    uint8_t desc[384] = {0};
+    if (!dev->desc.shell.read_memory(dev->desc.shell.opaque, bytes_gpa,
+                                     sizeof(desc), desc))
+        return 0u;
+    uint32_t total = lagfx_le32(desc + 4);
+    uint32_t limit = (total >= 16u && total <= sizeof(desc)) ? total
+                                                             : (uint32_t)sizeof(desc);
+
+    fnref_scan_ctx_t ctx = { p, task };
+    return lagfx_scan_descriptor_function_refs(desc, limit, fnref_is_function,
+                                               &ctx, out_refs, cap);
+}
+
 
 uint32_t
 lagfx_parse_pso_vertex_attrs(lagfx_protocol_t *p,

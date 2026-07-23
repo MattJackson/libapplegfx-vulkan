@@ -1186,14 +1186,29 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
         task->heap_pfn != 0u) {
 
         uint8_t vert_ref = 0, frag_ref = 0;
-        bool lookup_ok = lagfx_lookup_pipeline_function_refs(p, task, reference,
-                                                              &vert_ref, &frag_ref);
-        if (getenv("LAGFX_HEAPDUMP"))
-            LAGFX_LOG("op_0x74 P6a LOOKUP ref=0x%x t%u heap=0x%llx ok=%d vref=0x%x fref=0x%x",
+        bool old_lookup_ok = lagfx_lookup_pipeline_function_refs(p, task, reference,
+                                                                 &vert_ref, &frag_ref);
+        /* Collect EVERY function ref in the descriptor (full length, any order).
+         * The old two-ref split mis-assigned the shared fragment ref (0x1f) as
+         * vertex and missed the real vertex past byte 128 → login composites
+         * substituted en masse. Bind each stage from whichever listed ref's
+         * metallib holds that stage. */
+        uint8_t cand_list[16];
+        size_t n_cand = lagfx_lookup_pipeline_function_ref_list(p, task, reference,
+                                                                cand_list, 16);
+        bool lookup_ok = (n_cand > 0u);
+        if (getenv("LAGFX_HEAPDUMP")) {
+            char lb[80]; size_t lp = 0;
+            for (size_t li = 0; li < n_cand && lp + 6 < sizeof(lb); li++)
+                lp += (size_t)snprintf(lb + lp, sizeof(lb) - lp, "0x%x ", cand_list[li]);
+            lb[lp] = '\0';
+            LAGFX_LOG("op_0x74 P6a LOOKUP ref=0x%x t%u heap=0x%llx old_ok=%d vref=0x%x fref=0x%x "
+                      "n_cand=%zu [%s]",
                       reference, task->id, (unsigned long long)task->heap_pfn,
-                      lookup_ok ? 1 : 0, vert_ref, frag_ref);
+                      old_lookup_ok ? 1 : 0, vert_ref, frag_ref, n_cand, lb);
+        }
         if (!lookup_ok) {
-            LAGFX_LOG("op_0x74 P6a: lookup_pipeline_function_refs failed for ref=0x%x (heap_pfn=0x%llx) — falling back",
+            LAGFX_LOG("op_0x74 P6a: no function refs in descriptor for ref=0x%x (heap_pfn=0x%llx) — falling back",
                       reference, (unsigned long long)task->heap_pfn);
         }
         if (lookup_ok) {
@@ -1217,20 +1232,16 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                     (stage == 0) ? LAGFX_METALLIB_STAGE_VERTEX
                                  : LAGFX_METALLIB_STAGE_FRAGMENT;
                 /* The pipeline descriptor's function-ref order is NOT a reliable
-                 * vertex/fragment split — some pipelines (e.g. the wallpaper
-                 * composites) carry the refs swapped, so the assigned ref's
-                 * metallib lacks the wanted stage. Try the assigned ref first,
-                 * then the sibling; bind each stage from whichever metallib
-                 * actually contains that stage. */
-                uint8_t cand_refs[2] = {
-                    (stage == 0) ? vert_ref : frag_ref,
-                    (stage == 0) ? frag_ref : vert_ref,
-                };
+                 * vertex/fragment split — the shared TextureCopy fragment ref
+                 * appears before the vertex ref, which can also live past the
+                 * old 128-byte scan. So try EVERY function ref the descriptor
+                 * lists (cand_list) and bind this stage from whichever metallib
+                 * actually contains it. */
                 uint8_t *mlib_buf = NULL;
                 lagfx_metallib_function_t fns[8] = {0};
                 const lagfx_metallib_function_t *fn = NULL;
-                for (int ci = 0; ci < 2 && !fn; ci++) {
-                    uint8_t fn_ref = cand_refs[ci];
+                for (size_t ci = 0; ci < n_cand && !fn; ci++) {
+                    uint8_t fn_ref = cand_list[ci];
                     if (fn_ref == 0u) continue;
                     uint64_t mlib_gpa = 0; uint32_t mlib_len = 0; uint64_t mlib_va = 0;
                     if (!lagfx_lookup_function_bytes(p, task, fn_ref, &mlib_gpa, &mlib_len, &mlib_va))
@@ -1247,8 +1258,25 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                     }
                     lagfx_metallib_function_t tmpf[8] = {0};
                     size_t fn_count = 0;
-                    if (lagfx_metallib_extract_functions(buf, mlib_len, tmpf, 8, &fn_count) != LAGFX_OK
-                        || fn_count == 0u) {
+                    lagfx_status_t ex_st = lagfx_metallib_extract_functions(buf, mlib_len, tmpf, 8, &fn_count);
+                    if (getenv("LAGFX_DUMP_MLIB")) {
+                        /* Per-candidate diagnostic: is the wanted stage present,
+                         * misclassified, or does extraction fail? Also dump the
+                         * raw metallib keyed by ref for offline stage analysis. */
+                        char stg[48]; size_t sp = 0;
+                        for (size_t i = 0; i < fn_count && i < 8 && sp + 4 < sizeof(stg); i++)
+                            sp += (size_t)snprintf(stg + sp, sizeof(stg) - sp, "%u ", (unsigned)tmpf[i].stage);
+                        stg[sp] = '\0';
+                        LAGFX_LOG("op_0x74 CAND pipe=0x%x want=%s ref=0x%x ex_st=%d fn_count=%zu stages=[%s]",
+                                  reference, want == LAGFX_METALLIB_STAGE_VERTEX ? "vtx" : "frag",
+                                  fn_ref, (int)ex_st, fn_count, stg);
+                        char rp[80];
+                        snprintf(rp, sizeof(rp), "/tmp/mlib-rawcand-ref0x%x.metallib", fn_ref);
+                        FILE *rf = fopen(rp, "rb");
+                        if (rf) fclose(rf);
+                        else if ((rf = fopen(rp, "wb")) != NULL) { fwrite(buf, 1, mlib_len, rf); fclose(rf); }
+                    }
+                    if (ex_st != LAGFX_OK || fn_count == 0u) {
                         free(buf); continue;
                     }
                     const lagfx_metallib_function_t *found = NULL;
@@ -1285,9 +1313,9 @@ static int op_set_render_pipeline_state(lagfx_protocol_t *p,
                         if (fns[i].stage == want) { fn = &fns[i]; break; }
                 }
                 if (!fn) {
-                    LAGFX_LOG("op_0x74 P6a: no %s function in metallib (ref=0x%x/0x%x)",
-                              stage == 0 ? "vertex" : "fragment",
-                              cand_refs[0], cand_refs[1]);
+                    LAGFX_LOG("op_0x74 P6a: no %s function among %zu descriptor ref(s) "
+                              "(pipe ref=0x%x)",
+                              stage == 0 ? "vertex" : "fragment", n_cand, reference);
                     break;
                 }
 

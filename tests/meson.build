@@ -111,6 +111,22 @@ if fs.is_file(meson.current_source_dir() / 'resource-unit.c')
   test('resource registry (unit)', resource_unit_test)
 endif
 
+# Pipeline descriptor function-ref scan (unit) — red-on-revert for the
+# login-composite substitution bug (fragment-ref-first / vertex past 128B).
+if fs.is_file(meson.current_source_dir() / 'object-resolver-scan-unit.c')
+  objres_scan_deps = [libapplegfx_vulkan_dep]
+  if vulkan_dep.found()
+    objres_scan_deps += [vulkan_dep]
+  endif
+  objres_scan_test = executable('object-resolver-scan-unit',
+    'object-resolver-scan-unit.c',
+    include_directories : [include_dir, internal_include_dir],
+    dependencies : objres_scan_deps,
+    build_by_default : true,
+  )
+  test('object-resolver scan (unit)', objres_scan_test)
+endif
+
 # Stamp advancement unit tests (standalone — no Vulkan dependency).
 # Tests lagfx_advance_stamp_cell monotonicity directly with buffer inputs.
 if fs.is_file(meson.current_source_dir() / 'stamp-unit.c')
