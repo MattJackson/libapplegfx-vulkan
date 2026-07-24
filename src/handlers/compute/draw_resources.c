@@ -491,10 +491,16 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
      * textures get tinted. bpp: 4=BGRA8, 8=RGBA16F(1.0 finite, not NaN), 1=R8. */
     const char *fts = getenv("LAGFX_FORCE_TEX_SOLID");
     if (fts && fts[0]) {
-        /* Ref filter: "1" tints EVERY realized texture; a comma-list of hex
-         * refs (e.g. "0x54,0x36") tints ONLY those — bisect which sampled
-         * surface carries the composite RTs' blackness. */
+        /* Selector: "1" tints EVERY realized texture. A comma-list of hex refs
+         * (e.g. "0x54,0x36") tints ONLY those — BUT refs are PER-BOOT DYNAMIC
+         * (the forest is a different ref each boot), so ref-selection is
+         * unreliable for the forest. Prefer SIZE/FORMAT tokens, stable across
+         * boots: "16f" tints every RGBA16F (bpp=8) texture (the wallpaper is the
+         * dominant 16F); "big" tints any texture >= 1 MiB (the forest backing).
+         * Tokens compose with the ref list. */
         bool tint = (strcmp(fts, "1") == 0);
+        if (!tint && strstr(fts, "16f") && bpp == 8u) tint = true;
+        if (!tint && strstr(fts, "big") && want >= (1u << 20)) tint = true;
         if (!tint) {
             char needle[16]; snprintf(needle, sizeof(needle), "0x%x", tref);
             tint = (strstr(fts, needle) != NULL);
