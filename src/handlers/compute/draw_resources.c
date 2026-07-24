@@ -482,6 +482,31 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
     if (lagfx_vk_iosurface_create(vk, W, H, mtl_fmt, &ios) != LAGFX_OK || !ios) {
         free(pick); return NULL;
     }
+    /* Diagnostic splitter (KICKOFF-composite-fragment-output): overwrite the
+     * realized content with a solid BRIGHT color before upload. A composite
+     * that SAMPLES this texture then reveals whether our sampler/binding/layout
+     * path carries texel content to the fragment output AT ALL — the composite
+     * RTs are black despite bright, correctly-bound inputs. RTs with empty
+     * backing return NULL above (never reach here), so only genuinely-sampled
+     * textures get tinted. bpp: 4=BGRA8, 8=RGBA16F(1.0 finite, not NaN), 1=R8. */
+    if (getenv("LAGFX_FORCE_TEX_SOLID")) {
+        if (bpp == 4u) {
+            for (uint32_t o = 0; o + 4u <= want; o += 4u) {
+                pick[o+0] = 0x00; pick[o+1] = 0x00;   /* B, G */
+                pick[o+2] = 0xff; pick[o+3] = 0xff;   /* R, A → opaque red */
+            }
+        } else if (bpp == 8u) {
+            for (uint32_t o = 0; o + 8u <= want; o += 8u) {
+                pick[o+0] = 0x00; pick[o+1] = 0x3c;   /* R = 1.0 (half) */
+                pick[o+2] = 0x00; pick[o+3] = 0x00;   /* G = 0 */
+                pick[o+4] = 0x00; pick[o+5] = 0x00;   /* B = 0 */
+                pick[o+6] = 0x00; pick[o+7] = 0x3c;   /* A = 1.0 (half) */
+            }
+        } else {
+            memset(pick, 0xff, want);
+        }
+        LAGFX_LOG("FORCE_TEX_SOLID: ref=0x%x filled %uB bpp=%u solid-red", tref, want, bpp);
+    }
     if (lagfx_vk_iosurface_upload_pixels(vk, ios, pick, want) != LAGFX_OK) {
         lagfx_vk_iosurface_destroy(vk, ios);
         free(pick); return NULL;
