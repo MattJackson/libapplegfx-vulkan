@@ -489,23 +489,34 @@ lagfx_vk_iosurface_t *lagfx_texture_realize(lagfx_protocol_t *p,
      * RTs are black despite bright, correctly-bound inputs. RTs with empty
      * backing return NULL above (never reach here), so only genuinely-sampled
      * textures get tinted. bpp: 4=BGRA8, 8=RGBA16F(1.0 finite, not NaN), 1=R8. */
-    if (getenv("LAGFX_FORCE_TEX_SOLID")) {
-        if (bpp == 4u) {
-            for (uint32_t o = 0; o + 4u <= want; o += 4u) {
-                pick[o+0] = 0x00; pick[o+1] = 0x00;   /* B, G */
-                pick[o+2] = 0xff; pick[o+3] = 0xff;   /* R, A → opaque red */
-            }
-        } else if (bpp == 8u) {
-            for (uint32_t o = 0; o + 8u <= want; o += 8u) {
-                pick[o+0] = 0x00; pick[o+1] = 0x3c;   /* R = 1.0 (half) */
-                pick[o+2] = 0x00; pick[o+3] = 0x00;   /* G = 0 */
-                pick[o+4] = 0x00; pick[o+5] = 0x00;   /* B = 0 */
-                pick[o+6] = 0x00; pick[o+7] = 0x3c;   /* A = 1.0 (half) */
-            }
-        } else {
-            memset(pick, 0xff, want);
+    const char *fts = getenv("LAGFX_FORCE_TEX_SOLID");
+    if (fts && fts[0]) {
+        /* Ref filter: "1" tints EVERY realized texture; a comma-list of hex
+         * refs (e.g. "0x54,0x36") tints ONLY those — bisect which sampled
+         * surface carries the composite RTs' blackness. */
+        bool tint = (strcmp(fts, "1") == 0);
+        if (!tint) {
+            char needle[16]; snprintf(needle, sizeof(needle), "0x%x", tref);
+            tint = (strstr(fts, needle) != NULL);
         }
-        LAGFX_LOG("FORCE_TEX_SOLID: ref=0x%x filled %uB bpp=%u solid-red", tref, want, bpp);
+        if (tint) {
+            if (bpp == 4u) {
+                for (uint32_t o = 0; o + 4u <= want; o += 4u) {
+                    pick[o+0] = 0x00; pick[o+1] = 0x00;   /* B, G */
+                    pick[o+2] = 0xff; pick[o+3] = 0xff;   /* R, A → opaque red */
+                }
+            } else if (bpp == 8u) {
+                for (uint32_t o = 0; o + 8u <= want; o += 8u) {
+                    pick[o+0] = 0x00; pick[o+1] = 0x3c;   /* R = 1.0 (half) */
+                    pick[o+2] = 0x00; pick[o+3] = 0x00;   /* G = 0 */
+                    pick[o+4] = 0x00; pick[o+5] = 0x00;   /* B = 0 */
+                    pick[o+6] = 0x00; pick[o+7] = 0x3c;   /* A = 1.0 (half) */
+                }
+            } else {
+                memset(pick, 0xff, want);
+            }
+            LAGFX_LOG("FORCE_TEX_SOLID: ref=0x%x filled %uB bpp=%u solid-red", tref, want, bpp);
+        }
     }
     if (lagfx_vk_iosurface_upload_pixels(vk, ios, pick, want) != LAGFX_OK) {
         lagfx_vk_iosurface_destroy(vk, ios);
