@@ -1,5 +1,9 @@
 # libapplegfx-vulkan
 
+[![CI](https://github.com/MattJackson/libapplegfx-vulkan/actions/workflows/ci.yml/badge.svg)](https://github.com/MattJackson/libapplegfx-vulkan/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/MattJackson/libapplegfx-vulkan?display_name=tag&sort=semver)](https://github.com/MattJackson/libapplegfx-vulkan/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Linux clean-room reimplementation of Apple's
 `ParavirtualizedGraphics.framework` host-side library, with a
 Vulkan rendering backend.** The host counterpart to the
@@ -283,6 +287,14 @@ meson setup build && meson install -C build
 cc app.c $(pkg-config --cflags --libs libapplegfx-vulkan)
 ```
 
+## Contributing
+
+Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for
+how to build, test, and submit patches, and
+**[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)** for the standards we hold each
+other to. CI (fmt/build/tests as configured) runs on every push and pull
+request, so please build and run the tests locally before opening a PR.
+
 ## License
 
 **[MIT](LICENSE).** The whole tree — including the clean-room
@@ -294,6 +306,9 @@ copyright holder.)
 
 - **Security:** [SECURITY.md](SECURITY.md) — privately via GitHub
   Security Advisories or `matthew@pq.io`.
+- **Private vulnerability reports:** please report security
+  vulnerabilities privately as described in [SECURITY.md](SECURITY.md)
+  rather than in public issues.
 - **Bugs / patches:** see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Code of conduct:** [CODE\_OF\_CONDUCT.md](CODE_OF_CONDUCT.md).
 
@@ -319,3 +334,8 @@ macOS Metal on Linux, QEMU apple-gfx-pci, paravirt GPU Linux,
 AppleParavirtGPU kext, PVG Linux implementation,
 `MTLCopyAllDevices` under QEMU, Metal over Vulkan, lavapipe Metal,
 AIR to SPIR-V.
+
+## Changelog
+
+Release history and notable changes are tracked in
+[CHANGELOG.md](CHANGELOG.md).
